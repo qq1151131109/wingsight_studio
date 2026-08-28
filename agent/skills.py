@@ -8,6 +8,9 @@
 import json
 import os
 import re
+import shutil
+import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -17,6 +20,12 @@ from typing_extensions import Literal
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
 DECOMPOSE_FLOW_ID = os.environ.get("LANGFLOW_DECOMPOSE_FLOW_ID", "")
+IMAGEGEN_FLOW_ID = os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID", "")
+DMX_API_KEY = os.environ.get("DMX_API_KEY", "")
+VOLC_SEARCH_API_KEY = os.environ.get("VOLC_SEARCH_API_KEY", "")
+
+# 生成图片的对外暴露目录（main.py 挂 /assets 端点，前端经 /agent-service/assets/ 访问）
+ASSETS_DIR = Path(__file__).resolve().parent / "static" / "assets"
 
 MAX_RESULT_CHARS = 1500
 
@@ -149,6 +158,87 @@ async def decompose_script(script: str) -> str:
             + (f"｜视觉：{a.visual_notes}" if a.visual_notes else "")
         )
     return "\n".join(lines)
+
+
+# ---------- 资产出图 ----------
+
+
+async def generate_asset_images(assets: List[Dict[str, Any]]) -> str:
+    """调出图 flow 批量生成设定图，返回给 LLM 的结果清单。
+
+    成功的图片复制到 agent/static/assets/ 并以 /agent-service/assets/<file>
+    相对路径回传（前端同源代理可直接 <img> 渲染）。
+    """
+    if not IMAGEGEN_FLOW_ID:
+        return "（未配置 LANGFLOW_IMAGEGEN_FLOW_ID，出图技能不可用）"
+    if not assets:
+        return "（资产列表为空，没有可生成的资产）"
+
+    # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
+    # 搜索 key，剥掉后走纯文生图（参考图是增强项，不影响出图）
+    payload_assets = [
+        {k: v for k, v in a.items() if k != "search_query"}
+        for a in assets
+    ] if not VOLC_SEARCH_API_KEY else assets
+
+    raw = await run_flow_blocking(
+        IMAGEGEN_FLOW_ID,
+        tweaks={
+            "BatchAssetSheet-img02": {
+                "assets_payload": json.dumps({"assets": payload_assets}, ensure_ascii=False),
+                "api_key": DMX_API_KEY,
+            }
+        },
+    )
+    if raw.startswith("（"):
+        return f"出图技能调用失败：{raw}"
+
+    # flow 返回 JSON（可能裹 ```json 围栏），抽出所有结果对象
+    obj_text = _extract_json_object(raw) or _extract_json_objects_loose(raw)
+    results: List[Dict[str, Any]] = []
+    if obj_text:
+        try:
+            parsed = json.loads(obj_text)
+            results = parsed if isinstance(parsed, list) else [parsed]
+        except json.JSONDecodeError:
+            results = []
+
+    if not results:
+        return (
+            "出图 flow 返回的结果无法解析。原始输出前 300 字：\n" + raw[:300]
+        )
+
+    lines = []
+    for r in results:
+        name = r.get("name", "?")
+        if r.get("status") == "ok" and r.get("image_path"):
+            src = Path(r["image_path"])
+            if src.is_file():
+                ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+                dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
+                shutil.copy2(src, ASSETS_DIR / dest)
+                lines.append(
+                    f"✓ {name}｜image_url=/agent-service/assets/{dest}"
+                )
+                continue
+        err = (r.get("error") or "未知错误")[:120]
+        lines.append(f"✗ {name}｜失败：{err}")
+    return "\n".join(lines)
+
+
+def _extract_json_objects_loose(text: str) -> Optional[str]:
+    """兜底：抓文本里第一个 {...} 或 [{...}] 块（含结果数组）。"""
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", text, re.DOTALL)
+    if fenced:
+        return fenced.group(1)
+    start = min(
+        (i for i in (text.find("{"), text.find("[")) if i != -1), default=-1
+    )
+    if start == -1:
+        return None
+    closer = "}" if text[start] == "{" else "]"
+    end = text.rfind(closer)
+    return text[start : end + 1] if end > start else None
 
 
 # ---------- 通用技能表 ----------

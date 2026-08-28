@@ -8,6 +8,7 @@
 - 画布 ground truth 走共享状态 canvasSummary（前端 useCoAgent setState 同步）。
 """
 
+import json
 import os
 from typing import Any, Dict, List
 
@@ -66,7 +67,27 @@ async def run_langflow_skill(skill: str, input_text: str) -> str:
     return await skills.run_skill(skill, input_text)
 
 
-backend_tools = [list_langflow_skills, decompose_script, run_langflow_skill]
+@tool
+async def generate_asset_images(assets_json: str) -> str:
+    """为资产批量生成设定图（豆包搜参考图 + AI 出图，并发执行）。
+
+    用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
+    {"type":"character|scene|prop","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词"}
+    （字段与 decompose_script 的输出一致）。返回每个资产的成败与 image_url。
+
+    Args:
+        assets_json: 资产数组 JSON 文本。
+    """
+    try:
+        assets = json.loads(assets_json)
+        if not isinstance(assets, list):
+            return "assets_json 必须是资产数组 JSON"
+    except json.JSONDecodeError as e:
+        return f"assets_json 不是合法 JSON：{e}"
+    return await skills.generate_asset_images(assets)
+
+
+backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）
@@ -101,7 +122,9 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
    角色→character 卡（name 做标题）；场景/道具→note 卡（标题带「场景：」「道具：」前缀）；description 与 visual_notes 写进 body
 4. 汇报拆解结果并请用户确认增删。用户补充/删除角色时直接用 canvas_ops 改画布，不要重新拆解；
    需要回看剧本原文时用 read_node(剧本卡id)
-5. 出图能力暂未接入——用户要求出图时说明这一步即将上线，先完成卡片
+5. 用户确认后要求出图时：调 generate_asset_images(资产数组 JSON，字段与拆解清单一致，从拆解结果或画布卡内容取)。
+   注意每张约需 1 分钟，调用前先告知用户预计耗时。完成后用 canvas_ops 为每张成功的图建 image 卡
+   （title=资产名，imageUrl 用返回的 image_url），并 connect_nodes 连到对应资产卡；失败的在汇报中说明可重试
 
 ## 行为准则
 1. 用户要求增删改卡片时，必须调用 canvas_ops 实际执行，不要只口头描述；只做用户要求的操作，不要自作主张添加用户没提的节点。
