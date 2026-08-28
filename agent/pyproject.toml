@@ -1,0 +1,12 @@
+[project]
+name = "wingsight-agent"
+version = "0.1.0"
+description = "Wingsight Studio 画布助手 — LangGraph 主 Agent，AG-UI 协议服务"
+requires-python = ">=3.12"
+dependencies = [
+    "copilotkit>=0.1.96",
+    "langchain-openai",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "python-dotenv>=1.0",
+]

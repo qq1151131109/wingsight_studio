@@ -1,0 +1,134 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import {
+  useCoAgent,
+  useCopilotAction,
+  useCopilotReadable,
+} from "@copilotkit/react-core";
+import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
+import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
+import { applyOps, type OpResult } from "@/lib/canvas/ops";
+
+/** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
+interface WingsightAgentState {
+  canvasSummary: string;
+}
+
+const EMPTY: WingsightAgentState = { canvasSummary: "（画布为空）" };
+
+/**
+ * 画布 ↔ Agent 桥：
+ *   读通道：画布摘要写入共享状态（useCoAgent state）+ 上下文（useCopilotReadable）
+ *   写通道：canvas_ops 前端工具（available:"remote"），agent 调用 → 浏览器执行 applyOps
+ */
+export default function CanvasAgentBridge() {
+  const nodes = useCanvasStore((s) => s.nodes);
+  const edges = useCanvasStore((s) => s.edges);
+
+  const { setState } = useCoAgent<WingsightAgentState>({
+    name: "default",
+    initialState: EMPTY,
+  });
+
+  const summary = summarizeCanvas(
+    nodes,
+    edges,
+    nodes.filter((n) => n.selected).map((n) => n.id),
+  );
+
+  // 画布变化 → 更新共享状态与上下文（agent 下轮读取 ground truth）。
+  // 用 ref 记录上次同步值：setState 引用可能每轮渲染都变，不做值比较会死循环卡死页面。
+  const lastSyncedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (summary === lastSyncedRef.current) return;
+    lastSyncedRef.current = summary;
+    setState((prev) => ({
+      ...(prev ?? EMPTY),
+      canvasSummary: summary,
+    }));
+  }, [summary, setState]);
+
+  useCopilotReadable({
+    description: "当前画布内容（节点 / 连线 / 选中项）",
+    value: summary,
+  });
+
+  useCopilotAction({
+    name: "canvas_ops",
+    description:
+      "操作无限画布。ops 是操作数组，每个元素形如 " +
+      '{op:"add_node",nodeType:"note|script|character|image",title,body,position:{x,y}} / ' +
+      '{op:"update_node",id,title,body} / {op:"delete_nodes",ids:[...]} / ' +
+      '{op:"connect_nodes",fromId,toId} / {op:"set_viewport",x,y,zoom}。' +
+      "可以在一批里执行多个操作。",
+    available: "remote",
+    parameters: [
+      {
+        name: "ops",
+        type: "object[]",
+        required: true,
+        description: "画布操作数组",
+      },
+    ],
+    handler: ({ ops }: { ops?: unknown }) => {
+      // 容错：部分模型会把数组序列化成字符串
+      const raw =
+        typeof ops === "string"
+          ? safeParse(ops)
+          : Array.isArray(ops)
+            ? ops
+            : ops && typeof ops === "object"
+              ? ops
+              : [];
+      return applyOps(raw) as unknown as string;
+    },
+    render: ({ status, result }) => {
+      if (status !== "complete" || !result) {
+        return (
+          <div className="flex items-center gap-1.5 py-1 text-xs text-text-3">
+            <Wrench className="h-3.5 w-3.5" /> 正在操作画布…
+          </div>
+        );
+      }
+      const r = result as unknown as OpResult;
+      const ok = r.errors.length === 0;
+      return (
+        <div className="my-1 rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
+          <div
+            className={`flex items-center gap-1.5 font-medium ${
+              ok ? "text-good" : "text-warn"
+            }`}
+          >
+            {ok ? (
+              <CheckCircle2 className="h-3.5 w-3.5" />
+            ) : (
+              <CircleAlert className="h-3.5 w-3.5" />
+            )}
+            画布操作：执行 {r.applied} 项
+            {r.createdIds.length > 0
+              ? `，新建 ${r.createdIds.length} 个节点`
+              : ""}
+          </div>
+          {r.errors.length > 0 ? (
+            <ul className="mt-1 list-inside list-disc text-text-3">
+              {r.errors.slice(0, 5).map((e, i) => (
+                <li key={i}>{e}</li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      );
+    },
+  });
+
+  return null;
+}
+
+function safeParse(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return [];
+  }
+}

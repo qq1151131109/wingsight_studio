@@ -39,3 +39,11 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python agent
+agent/.venv/
+agent/.env
+__pycache__/
+
+# zcode 会话产物
+.zcode/

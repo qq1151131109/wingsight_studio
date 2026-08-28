@@ -1,26 +1,221 @@
 @import "tailwindcss";
+@import "@fontsource/fraunces/400.css";
+@import "@fontsource/fraunces/500.css";
+@import "@fontsource-variable/noto-serif-sc";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+    /* 表面色 — light/warm 米黄系（移植自 juben 设计系统） */
+    --color-bg: oklch(0.95 0.012 80);
+    --color-bg-grad-a: oklch(0.96 0.013 80);
+    --color-bg-grad-b: oklch(0.93 0.012 80);
+    --color-surface-0: oklch(0.96 0.013 80);
+    --color-surface-1: oklch(0.975 0.006 80);
+    --color-surface-2: oklch(0.97 0.012 80);
+
+    /* 描边 — 墨色透明梯度 */
+    --color-hairline: oklch(0.30 0.02 60 / 0.16);
+    --color-hairline-strong: oklch(0.30 0.02 60 / 0.28);
+    --color-hairline-soft: oklch(0.30 0.02 60 / 0.08);
+
+    /* 文字四档 — 墨色梯度 */
+    --color-text: oklch(0.20 0.012 60);
+    --color-text-2: oklch(0.32 0.014 60);
+    --color-text-3: oklch(0.50 0.020 70);
+    --color-text-4: oklch(0.70 0.022 70);
+
+    /* Accent — 砖红 */
+    --color-accent: oklch(0.55 0.16 38);
+    --color-accent-2: oklch(0.68 0.13 50);
+    --color-accent-soft: oklch(0.55 0.16 38 / 0.22);
+    --color-accent-dim: oklch(0.55 0.16 38 / 0.10);
+    --color-accent-glow: oklch(0.55 0.16 38 / 0.30);
+
+    /* 状态色 */
+    --color-good: oklch(0.50 0.10 130);
+    --color-warn: oklch(0.62 0.16 60);
+    --color-danger: oklch(0.48 0.16 28);
+
+    /* warm 系 */
+    --color-warm: oklch(0.68 0.13 50);
+    --color-warm-bright: oklch(0.75 0.12 55);
+    --color-warm-soft: oklch(0.68 0.13 50 / 0.16);
+    --color-warm-tint: oklch(0.68 0.13 50 / 0.25);
+    --color-warm-fade: oklch(0.68 0.13 50 / 0.50);
+    --color-warm-glow: oklch(0.68 0.13 50 / 0.45);
+
+    /* 字体 */
+    --font-sans: "Inter", "Noto Sans SC", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "Fira Code", "Noto Sans Mono", ui-monospace, monospace;
+    --font-editorial: "Fraunces", "Noto Serif SC Variable", "Songti SC", Georgia, serif;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+html {
+    color-scheme: light;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* 夜间采用暖墨黑而非蓝黑，保留纸面层级和砖红创作标记。 */
+html.dark {
+    color-scheme: dark;
+    --color-bg: oklch(0.155 0.010 65);
+    --color-bg-grad-a: oklch(0.185 0.012 65);
+    --color-bg-grad-b: oklch(0.135 0.009 65);
+    --color-surface-0: oklch(0.185 0.010 65);
+    --color-surface-1: oklch(0.205 0.011 65);
+    --color-surface-2: oklch(0.225 0.012 65);
+
+    --color-hairline: oklch(0.91 0.010 80 / 0.16);
+    --color-hairline-strong: oklch(0.91 0.010 80 / 0.28);
+    --color-hairline-soft: oklch(0.91 0.010 80 / 0.08);
+
+    --color-text: oklch(0.93 0.010 80);
+    --color-text-2: oklch(0.80 0.012 80);
+    --color-text-3: oklch(0.67 0.014 75);
+    --color-text-4: oklch(0.54 0.014 75);
+
+    --color-accent: oklch(0.64 0.15 38);
+    --color-accent-2: oklch(0.74 0.12 52);
+    --color-accent-soft: oklch(0.64 0.15 38 / 0.30);
+    --color-accent-dim: oklch(0.64 0.15 38 / 0.15);
+    --color-accent-glow: oklch(0.64 0.15 38 / 0.34);
+
+    --color-good: oklch(0.70 0.12 140);
+    --color-warn: oklch(0.76 0.14 70);
+    --color-danger: oklch(0.66 0.16 28);
+    --color-warm: oklch(0.74 0.12 52);
+    --color-warm-bright: oklch(0.80 0.11 62);
+    --color-warm-soft: oklch(0.74 0.12 52 / 0.18);
+    --color-warm-tint: oklch(0.74 0.12 52 / 0.28);
+    --color-warm-fade: oklch(0.74 0.12 52 / 0.55);
+    --color-warm-glow: oklch(0.74 0.12 52 / 0.42);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+    background:
+        radial-gradient(var(--color-hairline-soft) 1px, transparent 1px) 0 0 / 3px 3px,
+        linear-gradient(180deg, var(--color-bg-grad-a) 0%, var(--color-bg-grad-b) 100%);
+    background-attachment: fixed;
+    color: var(--color-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+/* 衬线 display 标题 */
+.font-editorial {
+    font-family: var(--font-editorial);
+}
+
+/* 滚动条 */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb {
+    background: color-mix(in oklab, var(--color-text-4) 55%, transparent);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in oklab, var(--color-text-3) 72%, transparent);
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+::-webkit-scrollbar-track { background: transparent; }
+
+/* === 画布卡片 — 纸面质感 === */
+
+.ws-card {
+    background: var(--color-surface-1);
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.75rem;
+    box-shadow: 0 1px 3px oklch(0 0 0 / 0.06);
+    transition: border-color 150ms, box-shadow 150ms;
+}
+.ws-card:hover {
+    border-color: var(--color-hairline-strong);
+}
+.ws-card.selected {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-dim);
+}
+
+.ws-card-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    color: var(--color-text-3);
+    text-transform: uppercase;
+}
+.ws-card-dot {
+    width: 0.375rem;
+    height: 0.375rem;
+    border-radius: 9999px;
+}
+
+/* === React Flow 主题适配 === */
+
+.react-flow__handle {
+    width: 0.5rem;
+    height: 0.5rem;
+    background: var(--color-surface-2);
+    border: 1.5px solid var(--color-text-4);
+}
+.react-flow__handle:hover { border-color: var(--color-accent); }
+.react-flow__handle-connecting { border-color: var(--color-accent); }
+
+.react-flow__edge-path {
+    stroke: var(--color-hairline-strong);
+    stroke-width: 1.5;
+}
+.react-flow__edge.selected .react-flow__edge-path {
+    stroke: var(--color-accent);
+    stroke-width: 2;
+}
+.react-flow__edge-text {
+    fill: var(--color-text-3);
+    font-size: 0.65rem;
+}
+
+.react-flow__controls {
+    box-shadow: none;
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: var(--color-surface-1);
+}
+.react-flow__controls-button {
+    background: var(--color-surface-1);
+    border-bottom: 1px solid var(--color-hairline-soft);
+    color: var(--color-text-2);
+    width: 1.75rem;
+    height: 1.75rem;
+}
+.react-flow__controls-button:hover { background: var(--color-surface-2); }
+.react-flow__controls-button svg { fill: currentColor; }
+
+.react-flow__minimap {
+    background: var(--color-surface-1);
+    border: 1px solid var(--color-hairline);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+.react-flow__attribution { display: none; }
+
+.react-flow__node {
+    color: var(--color-text);
+    font-family: var(--font-sans);
+}
+
+/* 尊重系统级"减少动效"偏好 */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+    }
 }
