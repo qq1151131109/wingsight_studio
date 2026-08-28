@@ -13,8 +13,8 @@ import {
   type Viewport,
 } from "@xyflow/react";
 
-/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 */
-export type WingNodeType = "note" | "script" | "character" | "image";
+/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 / 分镜 */
+export type WingNodeType = "note" | "script" | "character" | "image" | "storyboard";
 
 export interface WingNodeData {
   nodeType: WingNodeType;
@@ -24,11 +24,20 @@ export interface WingNodeData {
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
+  /** storyboard 卡：景别（远景/全景/中景/近景/特写）与时长（如 3s） */
+  shotSize?: string;
+  duration?: string;
   [key: string]: unknown;
 }
 
 export type WingNode = Node<WingNodeData>;
 export type WingEdge = Edge;
+
+/** 一份可撤销的画布快照（不含 viewport——视图位置不入栈） */
+interface CanvasSnapshot {
+  nodes: WingNode[];
+  edges: WingEdge[];
+}
 
 interface CanvasState {
   nodes: WingNode[];
@@ -54,12 +63,41 @@ interface CanvasState {
   onEdgesChange: (changes: EdgeChange<WingEdge>[]) => void;
   onConnect: (connection: Connection) => void;
   setViewport: (viewport: Viewport) => void;
+  /** 撤销/重做（快照栈，上限 50） */
+  undo: () => boolean;
+  redo: () => boolean;
+  canUndo: () => boolean;
+  canRedo: () => boolean;
+  /** 在语义操作前调用：把当前状态压入撤销栈 */
+  commitHistory: () => void;
+  /** 复制/粘贴（内部剪贴板：选中节点 + 连线 + 原点，粘贴时整体偏移） */
+  copySelection: () => number;
+  pasteClipboard: () => string[];
 }
 
 let idCounter = 0;
 export function genNodeId(): string {
   idCounter += 1;
   return `n_${Date.now().toString(36)}_${idCounter}`;
+}
+
+const HISTORY_LIMIT = 50;
+const PASTE_OFFSET = 32;
+
+/** 模块级撤销栈与内部剪贴板（跨项目共享，简单优先） */
+const history: { past: CanvasSnapshot[]; future: CanvasSnapshot[] } = {
+  past: [],
+  future: [],
+};
+let internalClipboard: CanvasSnapshot | null = null;
+/** 拖拽会话防重入（一次拖动只 commit 一份"拖动前"快照） */
+let dragCommitted = false;
+
+function snapshot(state: CanvasState): CanvasSnapshot {
+  return {
+    nodes: structuredClone(state.nodes),
+    edges: structuredClone(state.edges),
+  };
 }
 
 export const useCanvasStore = create<CanvasState>()(
@@ -74,37 +112,114 @@ export const useCanvasStore = create<CanvasState>()(
       setProject: (id, name) =>
         set({ projectId: id, projectName: name, hydrated: false }),
 
-      replaceCanvas: (nodes, edges, viewport) =>
+      replaceCanvas: (nodes, edges, viewport) => {
+        // 项目切换/装载：撤销栈跨项目无意义
+        history.past = [];
+        history.future = [];
         set((state) => ({
           nodes,
           edges,
           viewport,
           hydrated: true,
-          // 项目切换后旧数据不再参与持久化键（persist 由 partialize 控制）
           projectId: state.projectId,
-        })),
+        }));
+      },
 
       setNodes: (nodes) => set({ nodes }),
+
+      commitHistory: () => {
+        const snap = snapshot(get());
+        history.past.push(snap);
+        if (history.past.length > HISTORY_LIMIT) history.past.shift();
+        history.future = [];
+      },
+
+      undo: () => {
+        const prev = history.past.pop();
+        if (!prev) return false;
+        history.future.push(snapshot(get()));
+        set({ nodes: prev.nodes, edges: prev.edges });
+        return true;
+      },
+
+      redo: () => {
+        const next = history.future.pop();
+        if (!next) return false;
+        history.past.push(snapshot(get()));
+        set({ nodes: next.nodes, edges: next.edges });
+        return true;
+      },
+
+      canUndo: () => history.past.length > 0,
+      canRedo: () => history.future.length > 0,
+
+      copySelection: () => {
+        const { nodes } = get();
+        const selected = nodes.filter((n) => n.selected);
+        if (selected.length === 0) return 0;
+        const ids = new Set(selected.map((n) => n.id));
+        internalClipboard = {
+          nodes: structuredClone(selected),
+          edges: structuredClone(get().edges.filter(
+            (e) => ids.has(e.source) && ids.has(e.target),
+          )),
+        };
+        return selected.length;
+      },
+
+      pasteClipboard: () => {
+        if (!internalClipboard) return [];
+        get().commitHistory();
+        const idMap = new Map<string, string>();
+        const newNodes = internalClipboard.nodes.map((n) => {
+          const id = genNodeId();
+          idMap.set(n.id, id);
+          return {
+            ...structuredClone(n),
+            id,
+            selected: true,
+            position: { x: n.position.x + PASTE_OFFSET, y: n.position.y + PASTE_OFFSET },
+          } as WingNode;
+        });
+        const newEdges = internalClipboard.edges.map((e) => ({
+          ...structuredClone(e),
+          id: `e_${genNodeId()}`,
+          source: idMap.get(e.source) ?? e.source,
+          target: idMap.get(e.target) ?? e.target,
+        }));
+        set((state) => ({
+          nodes: [
+            ...state.nodes.map((n) => ({ ...n, selected: false })),
+            ...newNodes,
+          ],
+          edges: [...state.edges, ...newEdges],
+        }));
+        return newNodes.map((n) => n.id);
+      },
 
       addNode: (node) => {
         const id = node.id ?? genNodeId();
         // React Flow 靠 node.type 选自定义渲染器；调用方只给 data.nodeType 时自动推导
         const type = node.type ?? node.data?.nodeType ?? "note";
+        get().commitHistory();
         set((state) => ({
           nodes: [...state.nodes, { ...node, id, type } as WingNode],
         }));
         return id;
       },
 
-      updateNodeData: (id, patch) =>
+      updateNodeData: (id, patch) => {
+        get().commitHistory();
         set((state) => ({
           nodes: state.nodes.map((n) =>
             n.id === id ? { ...n, data: { ...n.data, ...patch } } : n,
           ),
-        })),
+        }));
+      },
 
       deleteNodes: (ids) => {
         const idSet = new Set(ids);
+        get().commitHistory();
         set((state) => ({
           nodes: state.nodes.filter((n) => !idSet.has(n.id)),
           edges: state.edges.filter(
@@ -113,7 +228,8 @@ export const useCanvasStore = create<CanvasState>()(
         }));
       },
 
-      connect: (connection) =>
+      connect: (connection) => {
+        get().commitHistory();
         set((state) => ({
           edges: addEdge(
             {
@@ -123,10 +239,24 @@ export const useCanvasStore = create<CanvasState>()(
             },
             state.edges,
           ),
-        })),
+        }));
+      },
 
-      onNodesChange: (changes) =>
-        set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) })),
+      onNodesChange: (changes) => {
+        // 拖拽会话只在开始帧提交一次快照（松手前的中间帧不入栈）
+        const hasDrag = changes.some(
+          (c) => c.type === "position" && c.dragging === true,
+        );
+        const dragEnded = changes.some(
+          (c) => c.type === "position" && c.dragging === false,
+        );
+        if (hasDrag && !dragCommitted) {
+          get().commitHistory();
+          dragCommitted = true;
+        }
+        if (dragEnded) dragCommitted = false;
+        set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
+      },
 
       onEdgesChange: (changes) =>
         set((state) => ({ edges: applyEdgeChanges(changes, state.edges) })),
@@ -145,6 +275,7 @@ export const NODE_META: Record<
   script: { label: "剧本", dot: "var(--color-accent)", hint: "故事大纲或分场剧本" },
   character: { label: "角色", dot: "var(--color-good)", hint: "角色设定卡" },
   image: { label: "图片", dot: "var(--color-warn)", hint: "设定图 / 参考图占位" },
+  storyboard: { label: "分镜", dot: "var(--color-accent-2)", hint: "镜头画面描述" },
 };
 
 /** 画布摘要（给 agent 的读通道，压缩到预算内） */

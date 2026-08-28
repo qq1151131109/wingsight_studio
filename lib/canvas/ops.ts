@@ -33,6 +33,9 @@ export type UpdateNodeOp = {
   status?: "loading" | "error" | "ready";
   imageUrl?: string;
   errorMessage?: string;
+  /** storyboard 卡：景别与时长 */
+  shotSize?: string;
+  duration?: string;
 };
 
 export type DeleteNodesOp = {
@@ -157,6 +160,12 @@ export function applyOps(rawOps: unknown): OpResult {
             ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
             ...(op.errorMessage !== undefined
               ? { errorMessage: op.errorMessage.slice(0, 300) }
+              : {}),
+            ...(op.shotSize !== undefined
+              ? { shotSize: op.shotSize.slice(0, 20) }
+              : {}),
+            ...(op.duration !== undefined
+              ? { duration: op.duration.slice(0, 20) }
               : {}),
           });
           applied += 1;

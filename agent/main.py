@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
@@ -64,6 +64,29 @@ def serve_asset(filename: str) -> FileResponse:
     if not path.is_file():
         return FileResponse(status_code=404, path="/dev/null")
     return FileResponse(path)
+
+
+@app.post("/assets")
+async def upload_asset(request: Request):
+    """粘贴图片上传：body 为图片二进制；返回同源可访问 URL。"""
+    import uuid as _uuid
+
+    body = await request.body()
+    if not body:
+        return Response(status_code=400)
+    if len(body) > 15 * 1024 * 1024:
+        return Response(status_code=413)
+    ctype = (request.headers.get("content-type") or "image/png").split(";")[0]
+    ext = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/webp": ".webp",
+        "image/gif": ".gif",
+    }.get(ctype, ".png")
+    skills.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    name = f"{_uuid.uuid4().hex[:12]}{ext}"
+    (skills.ASSETS_DIR / name).write_bytes(body)
+    return {"url": f"/agent-service/assets/{name}"}
 
 
 # ---------- 项目与画布持久化（前端经 /agent-service/projects/* 访问）----------

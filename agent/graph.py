@@ -117,11 +117,15 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 
 ## 操作画布
 调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项：
-- {{"op":"add_node","nodeType":"note|script|character|image","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局）
+- {{"op":"add_node","nodeType":"note|script|character|image|storyboard","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局）
 - {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
 - {{"op":"delete_nodes","ids":["节点id",...]}}  删除卡片
 - {{"op":"connect_nodes","fromId":"节点id","toId":"节点id"}}  连线（方向：from → to）
 - {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
+
+storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么、机位运动），
+update_node 可带 shotSize（远景/全景/中景/近景/特写）与 duration（如 3s）。
+用户要求分镜/故事板时为每个镜头建一张 storyboard 卡并按顺序连线。
 
 节点 id 形如 n_xxx_x，可以在「画布当前状态」里查到。新建后若要连线，先等工具结果返回新节点 id。
 

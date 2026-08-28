@@ -297,9 +297,49 @@ function ImageCard({ data, id, selected }: NodeProps) {
   );
 }
 
+/** 分镜卡：宽卡 + 景别/时长徽标行 + 衬线编辑风 */
+function StoryboardCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const update = makeUpdater(id);
+  if (!d || typeof d.nodeType !== "string") return null;
+  return (
+    <CardShell selected={selected} width="w-[20rem]">
+      <div className="flex items-center justify-between gap-2">
+        <Badge nodeType="storyboard" />
+        <div className="flex gap-1">
+          {(["shotSize", "duration"] as const).map((key) =>
+            d[key] ? (
+              <span
+                key={key}
+                className="rounded border border-hairline bg-surface-2 px-1 text-[10px] text-text-3"
+              >
+                {d[key]}
+              </span>
+            ) : null,
+          )}
+        </div>
+      </div>
+      <Editable
+        value={d.title}
+        onSave={(title) => update({ title })}
+        className="font-editorial mt-1.5 line-clamp-2 text-sm font-semibold text-text"
+        placeholder="镜头标题"
+      />
+      <Editable
+        value={d.body}
+        onSave={(body) => update({ body })}
+        multiline
+        placeholder="画面描述（谁、在哪、做什么、机位运动）"
+        className="nowheel mt-1.5 max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+      />
+    </CardShell>
+  );
+}
+
 export const nodeTypes = {
   note: memo(NoteCard),
   script: memo(ScriptCard),
   character: memo(CharacterCard),
   image: memo(ImageCard),
+  storyboard: memo(StoryboardCard),
 };

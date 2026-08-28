@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -8,8 +8,10 @@ import {
   MiniMap,
   ReactFlow,
   useReactFlow,
+  type OnConnectEnd,
 } from "@xyflow/react";
 import {
+  Clapperboard,
   Drama,
   Image as ImageIcon,
   ScrollText,
@@ -18,6 +20,7 @@ import {
 } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNodeType } from "@/lib/canvas/store";
 import { nodeTypes } from "./nodes";
+import CanvasShortcuts from "./CanvasShortcuts";
 
 function AddNodeToolbar() {
   const addNode = useCanvasStore((s) => s.addNode);
@@ -25,6 +28,7 @@ function AddNodeToolbar() {
     { type: "note", icon: <StickyNote className="h-4 w-4" /> },
     { type: "script", icon: <ScrollText className="h-4 w-4" /> },
     { type: "character", icon: <Drama className="h-4 w-4" /> },
+    { type: "storyboard", icon: <Clapperboard className="h-4 w-4" /> },
     { type: "image", icon: <ImageIcon className="h-4 w-4" /> },
   ];
   return (
@@ -105,6 +109,53 @@ export default function CanvasView() {
     [addNode],
   );
 
+  // 连线拖到空白处 → 弹建卡菜单（选中类型后建卡并自动连线）
+  const { screenToFlowPosition } = useReactFlow();
+  const [pendingLink, setPendingLink] = useState<{
+    x: number;
+    y: number;
+    sourceId: string;
+  } | null>(null);
+  const onConnectEnd: OnConnectEnd = useCallback(
+    (event, connectionState) => {
+      if (connectionState.isValid) return; // 有效连线交给 onConnect
+      const sourceId = connectionState.fromNode?.id;
+      if (!sourceId) return;
+      const pos =
+        "clientX" in event
+          ? { x: event.clientX, y: event.clientY }
+          : { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      setPendingLink({ ...pos, sourceId });
+    },
+    [],
+  );
+  const createAt = useCallback(
+    (type: WingNodeType) => {
+      if (!pendingLink) return;
+      const flow = screenToFlowPosition({
+        x: pendingLink.x,
+        y: pendingLink.y,
+      });
+      const id = addNode({
+        position: { x: flow.x - 110, y: flow.y - 40 },
+        data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+      });
+      useCanvasStore.getState().connect({
+        source: pendingLink.sourceId,
+        target: id,
+      });
+      setPendingLink(null);
+    },
+    [pendingLink, addNode, screenToFlowPosition],
+  );
+
+  const linkMenuTypes: WingNodeType[] = [
+    "note",
+    "character",
+    "storyboard",
+    "image",
+  ];
+
   return (
     <div className="relative h-full w-full">
       {nodes.length === 0 ? <EmptyState /> : null}
@@ -115,6 +166,7 @@ export default function CanvasView() {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        onConnectEnd={onConnectEnd}
         onDoubleClick={onDoubleClick}
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
         fitView={nodes.length > 0}
@@ -145,7 +197,40 @@ export default function CanvasView() {
           <AddNodeToolbar />
           <FitViewButton />
         </div>
+        <CanvasShortcuts />
       </ReactFlow>
+      {pendingLink ? (
+        <>
+          <div
+            className="fixed inset-0 z-20"
+            onClick={() => setPendingLink(null)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setPendingLink(null);
+            }}
+          />
+          <div
+            className="fixed z-30 flex flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+            style={{ left: pendingLink.x + 8, top: pendingLink.y + 8 }}
+          >
+            <p className="px-2 py-1 text-[10px] text-text-4">建卡并连线</p>
+            {linkMenuTypes.map((t) => (
+              <button
+                key={t}
+                type="button"
+                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-2 hover:bg-surface-2 hover:text-text"
+                onClick={() => createAt(t)}
+              >
+                <span
+                  className="ws-card-dot"
+                  style={{ background: NODE_META[t].dot }}
+                />
+                {NODE_META[t].label}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : null}
     </div>
   );
 }
