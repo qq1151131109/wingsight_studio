@@ -82,21 +82,26 @@ def serve_asset(filename: str) -> FileResponse:
 
 @app.post("/assets")
 async def upload_asset(request: Request, user: auth.CurrentUser) -> dict:
-    """粘贴/拖拽图片上传：body 为图片二进制；返回同源可访问 URL。"""
+    """粘贴/拖拽媒体上传：body 为二进制；返回同源可访问 URL。图片 ≤15MB，视频 ≤200MB。"""
     import uuid as _uuid
 
     _ = user  # 认证关闭时为匿名 admin；开启后要求登录（软隔离，资源名随机不可猜）
     body = await request.body()
     if not body:
         return Response(status_code=400)  # type: ignore[return-value]
-    if len(body) > 15 * 1024 * 1024:
-        return Response(status_code=413)  # type: ignore[return-value]
     ctype = (request.headers.get("content-type") or "image/png").split(";")[0]
+    is_video = ctype.startswith("video/")
+    limit = 200 * 1024 * 1024 if is_video else 15 * 1024 * 1024
+    if len(body) > limit:
+        return Response(status_code=413)  # type: ignore[return-value]
     ext = {
         "image/png": ".png",
         "image/jpeg": ".jpg",
         "image/webp": ".webp",
         "image/gif": ".gif",
+        "video/mp4": ".mp4",
+        "video/webm": ".webm",
+        "video/quicktime": ".mov",
     }.get(ctype, ".png")
     skills.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     name = f"{_uuid.uuid4().hex[:12]}{ext}"

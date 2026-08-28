@@ -13,12 +13,13 @@ import {
   type Viewport,
 } from "@xyflow/react";
 
-/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 / 分镜 / 分组框 */
+/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 / 视频 / 分镜 / 分组框 */
 export type WingNodeType =
   | "note"
   | "script"
   | "character"
   | "image"
+  | "video"
   | "storyboard"
   | "group";
 
@@ -27,6 +28,8 @@ export interface WingNodeData {
   title: string;
   body: string;
   imageUrl?: string;
+  /** video 卡：视频源（生成或上传回填）；imageUrl 可作封面帧 */
+  videoUrl?: string;
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
@@ -154,9 +157,19 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   script: { w: 352, h: 260 },
   character: { w: 256, h: 150 },
   image: { w: 256, h: 260 },
+  video: { w: 320, h: 300 },
   storyboard: { w: 320, h: 220 },
   group: { w: 480, h: 360 },
 };
+
+/** 卡片创建时的默认宽度（resize 前提：包装层有显式宽度，卡片内容 h-full/w-full 撑满） */
+function withDefaultWidth(n: WingNode): WingNode {
+  if (n.style?.width) return n;
+  return {
+    ...n,
+    style: { ...n.style, width: NODE_FOOTPRINT[n.data?.nodeType]?.w ?? 256 },
+  };
+}
 
 /** 节点集合的占位盒（绝对坐标 + 分组偏移差；对齐/分布与多选工具条定位共用） */
 export function selectionBoxes(nodes: WingNode[], ids: string[]) {
@@ -197,11 +210,11 @@ export const useCanvasStore = create<CanvasState>()(
         set({ projectId: id, projectName: name, hydrated: false }),
 
       replaceCanvas: (nodes, edges, viewport) => {
-        // 项目切换/装载：撤销栈跨项目无意义
+        // 项目切换/装载：撤销栈跨项目无意义；旧项目补默认宽度（resize 依赖）
         history.past = [];
         history.future = [];
         set((state) => ({
-          nodes,
+          nodes: nodes.map(withDefaultWidth),
           edges,
           viewport,
           hydrated: true,
@@ -287,7 +300,7 @@ export const useCanvasStore = create<CanvasState>()(
         const type = node.type ?? node.data?.nodeType ?? "note";
         get().commitHistory();
         set((state) => ({
-          nodes: [...state.nodes, { ...node, id, type } as WingNode],
+          nodes: [...state.nodes, withDefaultWidth({ ...node, id, type } as WingNode)],
         }));
         return id;
       },
@@ -418,18 +431,23 @@ export const useCanvasStore = create<CanvasState>()(
       },
 
       onNodesChange: (changes) => {
-        // 拖拽会话只在开始帧提交一次快照（松手前的中间帧不入栈）
+        // 拖拽/缩放会话只在开始帧提交一次快照（松手前的中间帧不入栈）
         const hasDrag = changes.some(
           (c) => c.type === "position" && c.dragging === true,
         );
-        const dragEnded = changes.some(
-          (c) => c.type === "position" && c.dragging === false,
+        const hasResize = changes.some(
+          (c) => c.type === "dimensions" && c.resizing === true,
         );
-        if (hasDrag && !dragCommitted) {
+        const gestureEnded = changes.some(
+          (c) =>
+            (c.type === "position" && c.dragging === false) ||
+            (c.type === "dimensions" && c.resizing === false),
+        );
+        if ((hasDrag || hasResize) && !dragCommitted) {
           get().commitHistory();
           dragCommitted = true;
         }
-        if (dragEnded) dragCommitted = false;
+        if (gestureEnded) dragCommitted = false;
         set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
       },
 
@@ -529,6 +547,7 @@ export const NODE_META: Record<
   script: { label: "剧本", dot: "var(--color-accent)", hint: "故事大纲或分场剧本" },
   character: { label: "角色", dot: "var(--color-good)", hint: "角色设定卡" },
   image: { label: "图片", dot: "var(--color-warn)", hint: "设定图 / 参考图占位" },
+  video: { label: "视频", dot: "var(--color-cool)", hint: "镜头视频 / 动态预览" },
   storyboard: { label: "分镜", dot: "var(--color-accent-2)", hint: "镜头画面描述" },
   group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
 };

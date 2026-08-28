@@ -11,6 +11,7 @@ import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
 import { applyOps, type OpResult } from "@/lib/canvas/ops";
 import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
+import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
@@ -92,6 +93,7 @@ export default function CanvasAgentBridge() {
       const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
       const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
       if (!node) return;
+      const what = node.data.nodeType === "video" ? "视频" : "设定图";
       useCanvasStore.getState().updateNodeData(nodeId, {
         status: "loading",
         errorMessage: undefined,
@@ -100,13 +102,59 @@ export default function CanvasAgentBridge() {
         {
           id: `retry_${nodeId}_${Date.now()}`,
           role: "user",
-          content: `重新生成「${node.data.title}」的设定图`,
+          content: `重新生成「${node.data.title}」的${what}`,
         },
         { followUp: true },
       );
     };
     window.addEventListener(RETRY_GENERATION_EVENT, onRetry);
     return () => window.removeEventListener(RETRY_GENERATION_EVENT, onRetry);
+  }, [sendMessage]);
+
+  // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
+  useEffect(() => {
+    const onGenerate = (e: Event) => {
+      const { nodeId, kind, prompt, refIds } = (e as CustomEvent<GenerateDetail>)
+        .detail;
+      const st = useCanvasStore.getState();
+      const node = st.nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      st.updateNodeData(nodeId, {
+        status: "loading",
+        errorMessage: undefined,
+        body: prompt || node.data.body,
+      });
+      const refLines = refIds
+        .map((rid) => st.nodes.find((n) => n.id === rid))
+        .filter((n): n is NonNullable<typeof n> => Boolean(n))
+        .map(
+          (n) =>
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 200)}`,
+        )
+        .join("\n");
+      const field = kind === "video" ? "videoUrl" : "imageUrl";
+      const kindLabel = kind === "video" ? "视频" : "图片";
+      const content = [
+        `请为画布节点 ${nodeId}（${kindLabel}卡「${node.data.title}」）生成内容：`,
+        prompt || "（按卡片标题与正文生成）",
+        refLines
+          ? `严格参考以下画布卡片的内容描述，保持角色外形/服装/场景细节一致：\n${refLines}`
+          : "",
+        `完成后用 canvas_ops update_node 把 ${nodeId} 置为 {status:"ready", ${field}:<url>}；失败则置 {status:"error", errorMessage:<原因>}，不要让卡片停在 loading。`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      void sendMessage(
+        {
+          id: `gen_${nodeId}_${Date.now()}`,
+          role: "user",
+          content,
+        },
+        { followUp: true },
+      );
+    };
+    window.addEventListener(GENERATE_EVENT, onGenerate);
+    return () => window.removeEventListener(GENERATE_EVENT, onGenerate);
   }, [sendMessage]);
 
   useCopilotAction({

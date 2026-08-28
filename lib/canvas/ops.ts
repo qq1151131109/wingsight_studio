@@ -22,6 +22,9 @@ export type AddNodeOp = {
   position?: { x: number; y: number };
   /** 指定 id（幂等用）；已存在则报错 */
   id?: string;
+  /** 图片/视频卡的媒体源（生成结果回填） */
+  imageUrl?: string;
+  videoUrl?: string;
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长（建卡时可直接带上） */
   shotNumber?: string;
   shotSize?: string;
@@ -36,9 +39,10 @@ export type UpdateNodeOp = {
   id: string;
   title?: string;
   body?: string;
-  /** image 卡生命周期状态（生成循环用） */
+  /** image/video 卡生命周期状态（生成循环用） */
   status?: "loading" | "error" | "ready";
   imageUrl?: string;
+  videoUrl?: string;
   errorMessage?: string;
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长 / 台词 */
   shotNumber?: string;
@@ -163,6 +167,8 @@ export function applyOps(rawOps: unknown): OpResult {
               nodeType: op.nodeType,
               title: (op.title ?? NODE_META[op.nodeType].hint).slice(0, 80),
               body: op.body ?? "",
+              ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
+              ...(op.videoUrl !== undefined ? { videoUrl: op.videoUrl } : {}),
               ...(op.shotNumber !== undefined
                 ? { shotNumber: op.shotNumber.slice(0, 8) }
                 : {}),
@@ -195,6 +201,7 @@ export function applyOps(rawOps: unknown): OpResult {
             ...(op.body !== undefined ? { body: op.body.slice(0, 8000) } : {}),
             ...(op.status !== undefined ? { status: op.status } : {}),
             ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
+            ...(op.videoUrl !== undefined ? { videoUrl: op.videoUrl } : {}),
             ...(op.errorMessage !== undefined
               ? { errorMessage: op.errorMessage.slice(0, 300) }
               : {}),

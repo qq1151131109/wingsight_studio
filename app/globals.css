@@ -36,6 +36,7 @@
     --color-good: oklch(0.50 0.10 130);
     --color-warn: oklch(0.62 0.16 60);
     --color-danger: oklch(0.48 0.16 28);
+    --color-cool: oklch(0.55 0.09 240);
 
     /* warm 系 */
     --color-warm: oklch(0.68 0.13 50);
@@ -83,6 +84,7 @@ html.dark {
     --color-good: oklch(0.70 0.12 140);
     --color-warn: oklch(0.76 0.14 70);
     --color-danger: oklch(0.66 0.16 28);
+    --color-cool: oklch(0.72 0.09 240);
     --color-warm: oklch(0.74 0.12 52);
     --color-warm-bright: oklch(0.80 0.11 62);
     --color-warm-soft: oklch(0.74 0.12 52 / 0.18);
@@ -199,6 +201,17 @@ body {
     stroke: var(--color-accent);
     stroke-width: 2;
 }
+
+/* 生成中的连线：目标节点 loading 时前端标 animated，强调色流动虚线（对标 S-Copilot） */
+.react-flow__edge.animated .react-flow__edge-path {
+    stroke: var(--color-accent);
+    stroke-width: 2;
+    stroke-dasharray: 8 8;
+    animation: ws-edge-flow 0.8s linear infinite;
+}
+@keyframes ws-edge-flow {
+    to { stroke-dashoffset: -16; }
+}
 .react-flow__edge-text {
     fill: var(--color-text-3);
     font-size: 0.65rem;
@@ -228,6 +241,18 @@ body {
     overflow: hidden;
 }
 .react-flow__attribution { display: none; }
+
+/* NodeResizer 主题：强调色细线 + 纸面手柄（xyflow 样式在 globals 之后引入，需 !important 覆盖） */
+.react-flow__resize-control.line {
+    border-color: var(--color-accent) !important;
+}
+.ws-resize-handle {
+    border: 1.5px solid var(--color-accent) !important;
+    background: var(--color-surface-1) !important;
+    border-radius: 2px !important;
+    width: 0.5rem !important;
+    height: 0.5rem !important;
+}
 
 .react-flow__node {
     color: var(--color-text);

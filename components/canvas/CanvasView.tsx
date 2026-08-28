@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -17,6 +17,7 @@ import {
 import {
   Clapperboard,
   Drama,
+  Film,
   Image as ImageIcon,
   ScrollText,
   StickyNote,
@@ -104,6 +105,24 @@ async function importDroppedFiles(
       } catch {
         /* 上传失败跳过该文件 */
       }
+    } else if (f.type.startsWith("video/")) {
+      try {
+        const url = await uploadAsset(f, f.type);
+        if (!url) continue;
+        store.addNode({
+          position,
+          data: {
+            nodeType: "video",
+            title: name || "导入视频",
+            body: "",
+            videoUrl: url,
+            status: "ready",
+          },
+        });
+        i += 1;
+      } catch {
+        /* 上传失败跳过该文件 */
+      }
     } else if (/\.(txt|md|markdown)$/i.test(f.name)) {
       try {
         const text = (await f.text()).slice(0, 8000);
@@ -133,6 +152,7 @@ function AddNodeToolbar() {
     { type: "character", icon: <Drama className="h-4 w-4" /> },
     { type: "storyboard", icon: <Clapperboard className="h-4 w-4" /> },
     { type: "image", icon: <ImageIcon className="h-4 w-4" /> },
+    { type: "video", icon: <Film className="h-4 w-4" /> },
   ];
   // 建卡落在画布可视区中心（而非随机坐标）
   const addAtCenter = (type: WingNodeType) => {
@@ -313,6 +333,21 @@ export default function CanvasView() {
     useCanvasStore.getState().setViewport(vp);
   }, []);
 
+  // 生成中的连线流动动画：目标节点 loading 时给边标 animated（样式在 globals.css）
+  const loadingKey = useCanvasStore((s) =>
+    s.nodes
+      .filter((n) => n.data.status === "loading")
+      .map((n) => n.id)
+      .join(","),
+  );
+  const displayEdges = useMemo(() => {
+    if (!loadingKey) return edges;
+    const loading = new Set(loadingKey.split(","));
+    return edges.map((e) =>
+      loading.has(e.target) ? { ...e, animated: true } : e,
+    );
+  }, [edges, loadingKey]);
+
   const onDoubleClick = useCallback(
     (event: React.MouseEvent) => {
       // 用 screenToFlowPosition 换算落点（原先按 clientX 硬编码偏移，平移/缩放后会飘）
@@ -395,6 +430,7 @@ export default function CanvasView() {
     "character",
     "storyboard",
     "image",
+    "video",
   ];
 
   // ---------- 右键菜单（空白 / 节点 / 多选 / 连线） ----------
@@ -523,7 +559,7 @@ export default function CanvasView() {
       <SelectionToolbar />
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={displayEdges}
         nodeTypes={nodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
@@ -623,7 +659,7 @@ export default function CanvasView() {
               <>
                 <p className="px-2 py-1 text-[10px] text-text-4">在此处添加</p>
                 {(
-                  ["note", "script", "character", "storyboard", "image"] as WingNodeType[]
+                  ["note", "script", "character", "storyboard", "image", "video"] as WingNodeType[]
                 ).map((t) => (
                   <CtxItem
                     key={t}
