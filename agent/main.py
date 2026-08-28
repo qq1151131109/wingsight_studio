@@ -23,6 +23,7 @@ import skills  # noqa: E402
 
 projects.init_db()
 
+
 app = FastAPI(title="wingsight-agent")
 
 app.add_middleware(

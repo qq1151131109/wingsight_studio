@@ -10,6 +10,7 @@
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
@@ -17,8 +18,8 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
 from langgraph.graph import END, StateGraph
-from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
+from copilotkit import CopilotKitState
 from langgraph.prebuilt import ToolNode
 from copilotkit import CopilotKitState
 
@@ -81,8 +82,8 @@ async def run_langflow_skill(
 
 
 @tool
-async def generate_asset_images(assets_json: str) -> str:
-    """为资产批量生成设定图（豆包搜参考图 + AI 出图，并发执行）。
+async def generate_asset_images(assets_json: str, config: RunnableConfig) -> str:
+    """为资产批量生成设定图（并发出图，每张完成会实时推送进度到聊天）。
 
     用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
     {"type":"character|scene|prop","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词"}
@@ -97,7 +98,7 @@ async def generate_asset_images(assets_json: str) -> str:
             return "assets_json 必须是资产数组 JSON"
     except json.JSONDecodeError as e:
         return f"assets_json 不是合法 JSON：{e}"
-    return await skills.generate_asset_images(assets)
+    return await skills.generate_asset_images(assets, config=config)
 
 
 backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill]
@@ -314,5 +315,60 @@ workflow.add_node("tool_node", ToolNode(backend_tools))
 workflow.add_edge("tool_node", "chat_node")
 workflow.set_entry_point("chat_node")
 
-# 进程内会话记忆（重启即失；后续可换 SqliteSaver/PostgresSaver）
-graph = workflow.compile(checkpointer=MemorySaver())
+# 聊天会话持久化（AsyncSqliteSaver：重启不丢对话）。
+# 它的构造需要运行中的事件循环，而 graph 在模块级编译——用惰性代理：
+# 首次在请求事件循环内使用时才真正创建并建表。
+import aiosqlite
+import threading
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+
+class _LazyAsyncSaver(BaseCheckpointSaver):
+    """模块级占位；async 方法首次调用时在当前事件循环内初始化真身。
+
+    继承 BaseCheckpointSaver 以通过 langgraph.compile 的类型校验；
+    同步接口（get_tuple/put/...）不实现，本图全异步运行。"""
+
+
+    def __init__(self, db_path: str):
+        self._db_path = db_path
+        self._saver: AsyncSqliteSaver | None = None
+
+    async def _ensure(self) -> AsyncSqliteSaver:
+        if self._saver is None:
+            saver = AsyncSqliteSaver(aiosqlite.connect(self._db_path))
+            await saver.setup()
+            self._saver = saver
+        return self._saver
+
+    # 显式覆写（基类默认实现抛 NotImplementedError，__getattr__ 拦不住）
+    async def aget_tuple(self, config, *args, **kwargs):
+        return await (await self._ensure()).aget_tuple(config, *args, **kwargs)
+
+    async def aput(self, config, checkpoint, metadata, new_versions, *args, **kwargs):
+        return await (await self._ensure()).aput(
+            config, checkpoint, metadata, new_versions, *args, **kwargs
+        )
+
+    async def aput_writes(self, config, writes, task_path, *args, **kwargs):
+        return await (await self._ensure()).aput_writes(
+            config, writes, task_path, *args, **kwargs
+        )
+
+    async def adelete_thread(self, thread_id, *args, **kwargs):
+        return await (await self._ensure()).adelete_thread(thread_id, *args, **kwargs)
+
+    async def alist(self, config, *args, **kwargs):
+        saver = await self._ensure()
+        async for item in saver.alist(config, *args, **kwargs):
+            yield item
+
+
+CHECKPOINT_DB = str(Path(__file__).resolve().parent / "data" / "checkpoints.db")
+Path(CHECKPOINT_DB).parent.mkdir(parents=True, exist_ok=True)
+# 触发 DB 文件占位，避免首次并发请求竞争创建
+threading.Event()
+checkpointer = _LazyAsyncSaver(CHECKPOINT_DB)
+graph = workflow.compile(checkpointer=checkpointer)

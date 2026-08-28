@@ -56,3 +56,6 @@ agent/static/assets/
 
 # 项目持久化数据库
 agent/data/
+
+# 启动脚本日志与 pid
+logs/

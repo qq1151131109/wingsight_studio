@@ -5,6 +5,7 @@
 （纯链式 flow 在 agui 协议下不产生 TEXT_MESSAGE 事件）。
 """
 
+import asyncio
 import json
 import os
 import re
@@ -163,8 +164,10 @@ async def decompose_script(script: str) -> str:
 # ---------- 资产出图 ----------
 
 
-async def generate_asset_images(assets: List[Dict[str, Any]]) -> str:
-    """调出图 flow 批量生成设定图，返回给 LLM 的结果清单。
+async def generate_asset_images(
+    assets: List[Dict[str, Any]], config: Any = None
+) -> str:
+    """逐资产并发出图（并发 3），每张完成即向聊天流推送进度（若有 config）。
 
     成功的图片复制到 agent/static/assets/ 并以 /agent-service/assets/<file>
     相对路径回传（前端同源代理可直接 <img> 渲染）。
@@ -173,57 +176,82 @@ async def generate_asset_images(assets: List[Dict[str, Any]]) -> str:
         return "（未配置 LANGFLOW_IMAGEGEN_FLOW_ID，出图技能不可用）"
     if not assets:
         return "（资产列表为空，没有可生成的资产）"
+    if not DMX_API_KEY:
+        return "（未配置 DMX_API_KEY，出图不可用）"
 
     # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
     # 搜索 key，剥掉后走纯文生图（参考图是增强项，不影响出图）
-    payload_assets = [
-        {k: v for k, v in a.items() if k != "search_query"}
-        for a in assets
-    ] if not VOLC_SEARCH_API_KEY else assets
+    if not VOLC_SEARCH_API_KEY:
+        assets = [{k: v for k, v in a.items() if k != "search_query"} for a in assets]
 
-    raw = await run_flow_blocking(
-        IMAGEGEN_FLOW_ID,
-        tweaks={
-            "BatchAssetSheet-img02": {
-                "assets_payload": json.dumps({"assets": payload_assets}, ensure_ascii=False),
-                "api_key": DMX_API_KEY,
-            }
-        },
+    sem = asyncio.Semaphore(3)
+    done = [0]
+    total = len(assets)
+
+    async def one(asset: Dict[str, Any]) -> str:
+        name = str(asset.get("name", "?"))
+        async with sem:
+            raw = await run_flow_blocking(
+                IMAGEGEN_FLOW_ID,
+                tweaks={
+                    "BatchAssetSheet-img02": {
+                        "assets_payload": json.dumps(
+                            {"assets": [asset]}, ensure_ascii=False
+                        ),
+                        "api_key": DMX_API_KEY,
+                    }
+                },
+            )
+        done[0] += 1
+        line = _format_asset_result(name, raw)
+        if config is not None:
+            try:
+                await _emit_progress(config, f"出图 {done[0]}/{total}：{line}")
+            except Exception as e:  # noqa: BLE001
+                print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
+        return line
+
+    lines = await asyncio.gather(*[one(a) for a in assets])
+    return "\n".join(lines)
+
+
+async def _emit_progress(config: Any, message: str) -> None:
+    """向聊天流推送中途进度消息。
+
+    copilotkit 包的 emit_message 发 "copilotkit_manually_emit_message"，
+    而当前 ag-ui-langgraph 只认 "manually_emit_message"（版本错位）——
+    直接按 ag-ui 侧期望的事件名与 payload 发送。
+    """
+    import uuid as _uuid
+
+    from langchain_core.callbacks import adispatch_custom_event
+
+    await adispatch_custom_event(
+        "manually_emit_message",
+        {"message": message, "message_id": f"progress_{_uuid.uuid4().hex[:10]}", "role": "assistant"},
+        config=config,
     )
-    if raw.startswith("（"):
-        return f"出图技能调用失败：{raw}"
 
-    # flow 返回 JSON（可能裹 ```json 围栏），抽出所有结果对象
+
+def _format_asset_result(name: str, raw: str) -> str:
+    """把单资产 flow 结果整理为一行汇报（成功附 image_url）。"""
+    if raw.startswith("（"):
+        return f"✗ {name}｜调用失败：{raw[:100]}"
     obj_text = _extract_json_object(raw) or _extract_json_objects_loose(raw)
-    results: List[Dict[str, Any]] = []
     if obj_text:
         try:
             parsed = json.loads(obj_text)
-            results = parsed if isinstance(parsed, list) else [parsed]
-        except json.JSONDecodeError:
-            results = []
-
-    if not results:
-        return (
-            "出图 flow 返回的结果无法解析。原始输出前 300 字：\n" + raw[:300]
-        )
-
-    lines = []
-    for r in results:
-        name = r.get("name", "?")
-        if r.get("status") == "ok" and r.get("image_path"):
-            src = Path(r["image_path"])
-            if src.is_file():
-                ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-                dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
-                shutil.copy2(src, ASSETS_DIR / dest)
-                lines.append(
-                    f"✓ {name}｜image_url=/agent-service/assets/{dest}"
-                )
-                continue
-        err = (r.get("error") or "未知错误")[:120]
-        lines.append(f"✗ {name}｜失败：{err}")
-    return "\n".join(lines)
+            r = parsed[0] if isinstance(parsed, list) else parsed
+            if r.get("status") == "ok" and r.get("image_path"):
+                src = Path(r["image_path"])
+                if src.is_file():
+                    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+                    dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
+                    shutil.copy2(src, ASSETS_DIR / dest)
+                    return f"✓ {name}｜image_url=/agent-service/assets/{dest}"
+        except (json.JSONDecodeError, IndexError, KeyError):
+            pass
+    return f"✗ {name}｜结果解析失败：{raw[:100]}"
 
 
 def _extract_json_objects_loose(text: str) -> Optional[str]:
