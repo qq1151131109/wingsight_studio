@@ -38,8 +38,21 @@ class AgentState(CopilotKitState):
 
 @tool
 async def list_langflow_skills() -> str:
-    """列出当前可用的 Langflow 技能（预置的生成管线，如宣发文案、资产设定图）。"""
+    """列出当前可用的 Langflow 技能（预置的生成管线，如宣发文案）。"""
     return skills.describe_skills()
+
+
+@tool
+async def decompose_script(script: str) -> str:
+    """把剧本拆解为资产清单（角色/场景/道具，含外形与视觉要点）。
+
+    用户给出剧本（完整或片段）并想要资产卡/设定图时，先用这个工具拆解，
+    再用 canvas_ops 把拆出的资产建成画布卡片，等用户确认增删。
+
+    Args:
+        script: 剧本原文（尽量完整传入，不要自行摘要）。
+    """
+    return await skills.decompose_script(script)
 
 
 @tool
@@ -53,7 +66,7 @@ async def run_langflow_skill(skill: str, input_text: str) -> str:
     return await skills.run_skill(skill, input_text)
 
 
-backend_tools = [list_langflow_skills, run_langflow_skill]
+backend_tools = [list_langflow_skills, decompose_script, run_langflow_skill]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）
@@ -78,7 +91,14 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 节点 id 形如 n_xxx_x，可以在「画布当前状态」里查到。新建后若要连线，先等工具结果返回新节点 id。
 
 ## 生成管线（Langflow 技能）
-涉及批量生成（宣发文案、资产设定图等）时，先用 list_langflow_skills 查可用技能，再用 run_langflow_skill 调用。
+涉及批量生成（宣发文案等）时，先用 list_langflow_skills 查可用技能，再用 run_langflow_skill 调用。
+
+## 剧本 → 资产工作流
+用户给出剧本并想要资产/设定图时，按以下次序：
+1. 调 decompose_script(剧本原文) 拆出资产清单
+2. 用一次 canvas_ops 批量建卡：角色→character 卡（name 做标题）；场景/道具→note 卡（标题带「场景：」「道具：」前缀，description 与 visual_notes 写进 body）
+3. 汇报拆解结果并请用户确认增删（用户补充/删除角色时直接用 canvas_ops 改画布，不要重新拆解）
+4. 出图能力暂未接入——用户要求出图时说明这一步即将上线，先完成卡片
 
 ## 行为准则
 1. 用户要求增删改卡片时，必须调用 canvas_ops 实际执行，不要只口头描述；只做用户要求的操作，不要自作主张添加用户没提的节点。
