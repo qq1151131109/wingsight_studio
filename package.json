@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@ag-ui/client": "^0.0.57",
+    "@copilotkit/react-core": "^1.69.3",
+    "@copilotkit/react-ui": "^1.69.3",
     "next": "16.3.3",
     "react": "19.2.8",
     "react-dom": "19.2.8"
