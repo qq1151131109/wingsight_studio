@@ -1,14 +1,17 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   Drama,
+  FolderPlus,
   LayoutGrid,
   Moon,
   ScrollText,
   Settings,
   Sun,
 } from "lucide-react";
+import { useCanvasStore } from "@/lib/canvas/store";
+import { createProject, listProjects, type ProjectMeta } from "@/lib/projects";
 
 /** 订阅 <html> 的 dark class（主题脚本/本组件都可能改它） */
 function useThemeIsDark() {
@@ -36,6 +39,48 @@ const ITEMS = [
 
 export default function ActivityBar() {
   const dark = useThemeIsDark();
+  const projectId = useCanvasStore((s) => s.projectId);
+  const projectName = useCanvasStore((s) => s.projectName);
+  const [projects, setProjects] = useState<ProjectMeta[]>([]);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      setProjects(await listProjects());
+    } catch {
+      /* 服务不可达时保持现有列表 */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    listProjects()
+      .then((ps) => {
+        if (alive) setProjects(ps);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
+  const switchTo = (pid: string) => {
+    window.dispatchEvent(
+      new CustomEvent("wingsight:switch-project", { detail: { pid } }),
+    );
+  };
+
+  const newProject = async () => {
+    const name = window.prompt("项目名称", "新项目");
+    if (!name?.trim()) return;
+    try {
+      const created = await createProject(name.trim());
+      await refreshProjects();
+      switchTo(created.id);
+    } catch {
+      /* 服务不可达 */
+    }
+  };
 
   const toggleTheme = () => {
     const next = !document.documentElement.classList.contains("dark");
@@ -50,10 +95,34 @@ export default function ActivityBar() {
   return (
     <aside className="flex w-14 shrink-0 flex-col items-center border-r border-hairline bg-surface-1/60 py-3 backdrop-blur">
       <div
-        className="font-editorial mb-4 flex h-8 w-8 select-none items-center justify-center rounded-lg bg-accent text-sm font-semibold text-white"
+        className="font-editorial mb-2 flex h-8 w-8 select-none items-center justify-center rounded-lg bg-accent text-sm font-semibold text-white"
         title="Wingsight Studio"
       >
         翼
+      </div>
+      {/* 项目切换器 */}
+      <div className="mb-3 flex w-12 flex-col items-center gap-1">
+        <select
+          title={projectName || "切换项目"}
+          value={projectId ?? ""}
+          onChange={(e) => e.target.value && switchTo(e.target.value)}
+          className="w-12 cursor-pointer truncate rounded-md border border-hairline bg-surface-2 px-1 py-0.5 text-[10px] text-text-2 outline-none hover:border-hairline-strong"
+        >
+          {projects.length === 0 && <option value="">{projectName || "…"}</option>}
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          title="新建项目"
+          onClick={() => void newProject()}
+          className="flex h-6 w-8 items-center justify-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          <FolderPlus className="h-3.5 w-3.5" />
+        </button>
       </div>
       <nav className="flex flex-1 flex-col items-center gap-1">
         {ITEMS.map(({ id, label, icon: Icon, enabled }) => (

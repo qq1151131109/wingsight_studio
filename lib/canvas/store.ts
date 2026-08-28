@@ -1,7 +1,6 @@
 "use client";
 
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
 import {
   addEdge,
   applyEdgeChanges,
@@ -35,6 +34,17 @@ interface CanvasState {
   nodes: WingNode[];
   edges: WingEdge[];
   viewport: Viewport;
+  /** 当前项目（服务端持久化）；null = 尚未初始化 */
+  projectId: string | null;
+  projectName: string;
+  /** 初始装载完成前不同步到服务端 */
+  hydrated: boolean;
+  setProject: (id: string, name: string) => void;
+  replaceCanvas: (
+    nodes: WingNode[],
+    edges: WingEdge[],
+    viewport: Viewport,
+  ) => void;
   setNodes: (nodes: WingNode[]) => void;
   addNode: (node: Omit<WingNode, "id"> & { id?: string }) => string;
   updateNodeData: (id: string, patch: Partial<WingNodeData>) => void;
@@ -53,11 +63,26 @@ export function genNodeId(): string {
 }
 
 export const useCanvasStore = create<CanvasState>()(
-  persist(
-    (set, get) => ({
+  (set, get) => ({
       nodes: [],
       edges: [],
       viewport: { x: 0, y: 0, zoom: 1 },
+      projectId: null,
+      projectName: "",
+      hydrated: false,
+
+      setProject: (id, name) =>
+        set({ projectId: id, projectName: name, hydrated: false }),
+
+      replaceCanvas: (nodes, edges, viewport) =>
+        set((state) => ({
+          nodes,
+          edges,
+          viewport,
+          hydrated: true,
+          // 项目切换后旧数据不再参与持久化键（persist 由 partialize 控制）
+          projectId: state.projectId,
+        })),
 
       setNodes: (nodes) => set({ nodes }),
 
@@ -109,17 +134,7 @@ export const useCanvasStore = create<CanvasState>()(
       onConnect: (connection) => get().connect(connection),
 
       setViewport: (viewport) => set({ viewport }),
-    }),
-    {
-      name: "wingsight-canvas",
-      partialize: (state) => ({
-        nodes: state.nodes,
-        edges: state.edges,
-        viewport: state.viewport,
-      }),
-    },
-  ),
-);
+    }));
 
 /** 节点类型的展示元数据（徽标名 / 徽标色） */
 export const NODE_META: Record<

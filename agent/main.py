@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
 
 # 配置优先级：agent/.env > 项目根 .env.local > 进程环境
@@ -18,7 +18,10 @@ load_dotenv(_HERE / ".env")
 load_dotenv(_HERE.parent / ".env.local")
 
 import graph  # noqa: E402  (在 dotenv 之后导入，读取最终环境变量)
+import projects  # noqa: E402
 import skills  # noqa: E402
+
+projects.init_db()
 
 app = FastAPI(title="wingsight-agent")
 
@@ -60,3 +63,43 @@ def serve_asset(filename: str) -> FileResponse:
     if not path.is_file():
         return FileResponse(status_code=404, path="/dev/null")
     return FileResponse(path)
+
+
+# ---------- 项目与画布持久化（前端经 /agent-service/projects/* 访问）----------
+
+
+@app.get("/projects")
+def api_list_projects():
+    return projects.list_projects()
+
+
+@app.post("/projects")
+async def api_create_project(req: dict):
+    return projects.create_project(str(req.get("name", "")))
+
+
+@app.patch("/projects/{pid}")
+async def api_rename_project(pid: str, req: dict):
+    ok = projects.rename_project(pid, str(req.get("name", "")))
+    return {"ok": ok} if ok else Response(status_code=404)
+
+
+@app.delete("/projects/{pid}")
+def api_delete_project(pid: str):
+    return {"ok": projects.delete_project(pid)}
+
+
+@app.get("/projects/{pid}/canvas")
+def api_load_canvas(pid: str):
+    data = projects.load_canvas(pid)
+    if data is None:
+        return Response(status_code=404)
+    return data
+
+
+@app.put("/projects/{pid}/canvas")
+async def api_save_canvas(pid: str, req: dict):
+    ok = projects.save_canvas(
+        pid, req.get("nodes", []), req.get("edges", []), req.get("viewport")
+    )
+    return {"ok": ok} if ok else Response(status_code=404)

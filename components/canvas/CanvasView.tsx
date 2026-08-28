@@ -122,6 +122,10 @@ export default function CanvasView() {
         minZoom={0.2}
         maxZoom={2}
         deleteKeyCode={["Backspace", "Delete"]}
+        multiSelectionKeyCode={["Shift", "Meta"]}
+        selectionOnDrag
+        panOnScroll
+        zoomOnDoubleClick={false}
         className="bg-transparent"
       >
         <Background

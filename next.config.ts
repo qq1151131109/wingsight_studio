@@ -24,6 +24,10 @@ const nextConfig: NextConfig = {
         source: "/agent-service/assets/:path*",
         destination: "http://127.0.0.1:8123/assets/:path*",
       },
+      {
+        source: "/agent-service/projects/:path*",
+        destination: "http://127.0.0.1:8123/projects/:path*",
+      },
     ];
   },
 };

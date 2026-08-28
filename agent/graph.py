@@ -22,6 +22,7 @@ from langgraph.types import Command
 from langgraph.prebuilt import ToolNode
 from copilotkit import CopilotKitState
 
+import camera
 import skills
 
 # ---------- 状态 ----------
@@ -57,14 +58,26 @@ async def decompose_script(script: str) -> str:
 
 
 @tool
-async def run_langflow_skill(skill: str, input_text: str) -> str:
+async def run_langflow_skill(
+    skill: str, input_text: str, params_json: str = ""
+) -> str:
     """调用一个 Langflow 技能（预置生成管线）并返回其文本结果。
 
     Args:
-        skill: 技能名（先用 list_langflow_skills 查可用技能）。
-        input_text: 传给技能的输入（如剧本片段、角色设定描述）。
+        skill: 技能名（先用 list_langflow_skills 查可用技能与参数）。
+        input_text: 传给技能的主输入（如剧本片段、补充说明）。
+        params_json: 技能参数，JSON 对象字符串，如 {"platform":"抖音","count":6}；
+            只能使用技能清单里声明的参数，不需要时留空。
     """
-    return await skills.run_skill(skill, input_text)
+    params = None
+    if params_json and params_json.strip():
+        try:
+            params = json.loads(params_json)
+            if not isinstance(params, dict):
+                return "params_json 必须是 JSON 对象字符串"
+        except json.JSONDecodeError as e:
+            return f"params_json 不是合法 JSON：{e}"
+    return await skills.run_skill(skill, input_text, params)
 
 
 @tool
@@ -124,7 +137,10 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
    需要回看剧本原文时用 read_node(剧本卡id)
 5. 用户确认后要求出图时：调 generate_asset_images(资产数组 JSON，字段与拆解清单一致，从拆解结果或画布卡内容取)。
    注意每张约需 1 分钟，调用前先告知用户预计耗时。完成后用 canvas_ops 为每张成功的图建 image 卡
-   （title=资产名，imageUrl 用返回的 image_url），并 connect_nodes 连到对应资产卡；失败的在汇报中说明可重试
+   （title=资产名，imageUrl 用返回的 image_url），并 connect_nodes 连到对应资产卡；失败的在汇报中说明可重试。
+   出图前可为资产补充摄影质感描述（见下方摄影速查），让设定图更有电影感
+
+{camera_cheat}
 
 ## 行为准则
 1. 用户要求增删改卡片时，必须调用 canvas_ops 实际执行，不要只口头描述；只做用户要求的操作，不要自作主张添加用户没提的节点。
@@ -252,7 +268,10 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
 
     canvas_summary = state.get("canvasSummary") or "（画布摘要不可用）"
     system_message = SystemMessage(
-        content=SYSTEM_PROMPT.format(canvas_summary=canvas_summary),
+        content=SYSTEM_PROMPT.format(
+            canvas_summary=canvas_summary,
+            camera_cheat=camera.camera_cheat_sheet(),
+        ),
     )
 
     # 截断历史，末尾再放一次最新 ground truth，抑制状态漂移；

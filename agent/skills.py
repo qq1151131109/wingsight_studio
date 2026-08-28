@@ -244,23 +244,35 @@ def _extract_json_objects_loose(text: str) -> Optional[str]:
 # ---------- 通用技能表 ----------
 
 
-def load_skill_registry() -> Dict[str, Dict[str, str]]:
-    """技能表来自 LANGFLOW_SKILLS_JSON：{"技能名": {"flowId": "...", "description": "..."}}"""
+def load_skill_registry() -> Dict[str, Dict[str, Any]]:
+    """技能表来自 LANGFLOW_SKILLS_JSON：
+    {"技能名": {"flowId": "...", "description": "...",
+                "params": {"参数名": {"target": "组件id", "desc": "说明"}}}}
+    """
     raw = os.environ.get("LANGFLOW_SKILLS_JSON", "").strip()
     if not raw:
         return {}
     try:
         data = json.loads(raw)
-        return {
-            name: {
-                "flowId": str(item.get("flowId", "")),
-                "description": str(item.get("description", "")),
-            }
-            for name, item in data.items()
-            if isinstance(item, dict) and item.get("flowId")
-        }
     except json.JSONDecodeError:
         return {}
+    registry: Dict[str, Dict[str, Any]] = {}
+    for name, item in data.items():
+        if not isinstance(item, dict) or not item.get("flowId"):
+            continue
+        entry: Dict[str, Any] = {
+            "flowId": str(item["flowId"]),
+            "description": str(item.get("description", "")),
+        }
+        params = item.get("params")
+        if isinstance(params, dict) and params:
+            entry["params"] = {
+                k: v
+                for k, v in params.items()
+                if isinstance(v, dict) and v.get("target")
+            }
+        registry[name] = entry
+    return registry
 
 
 def describe_skills() -> str:
@@ -271,11 +283,15 @@ def describe_skills() -> str:
     for name, item in registry.items():
         desc = f" — {item['description']}" if item["description"] else ""
         lines.append(f"- {name}{desc}")
+        for pname, p in (item.get("params") or {}).items():
+            lines.append(f"    参数 {pname}: {p.get('desc', '')}")
     return "\n".join(lines)
 
 
-async def run_skill(skill: str, input_text: str) -> str:
-    """调用一个 Langflow 技能（阻塞式）并返回其文本结果。"""
+async def run_skill(
+    skill: str, input_text: str, params: Optional[Dict[str, Any]] = None
+) -> str:
+    """调用一个 Langflow 技能（阻塞式），params 按技能表声明翻译成 tweaks。"""
     registry = load_skill_registry()
     entry = registry.get(skill)
     if entry is None:
@@ -284,7 +300,26 @@ async def run_skill(skill: str, input_text: str) -> str:
             if registry
             else f"技能 {skill!r} 不存在，且当前没有配置任何技能。"
         )
-    text = await run_flow_blocking(entry["flowId"], input_value=input_text)
+
+    tweaks: Dict[str, Any] = {}
+    declared = entry.get("params") or {}
+    if params:
+        unknown = [k for k in params if k not in declared]
+        if unknown:
+            return (
+                f"技能 {skill} 不支持参数：{', '.join(unknown)}。"
+                f"可用参数：{', '.join(declared) or '（无）'}"
+            )
+        for pname, value in params.items():
+            target = declared[pname]["target"]
+            # Prompt 模板变量字段只收字符串（传 int 会让组件构建 KeyError）
+            if isinstance(value, (int, float)):
+                value = str(value)
+            tweaks.setdefault(target, {})[pname] = value
+
+    text = await run_flow_blocking(
+        entry["flowId"], input_value=input_text, tweaks=tweaks or None
+    )
     text = text.strip()
     if len(text) > MAX_RESULT_CHARS:
         text = text[:MAX_RESULT_CHARS] + "…（已截断）"

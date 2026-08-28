@@ -3,6 +3,7 @@
 import { ReactFlowProvider } from "@xyflow/react";
 import CanvasView from "@/components/canvas/CanvasView";
 import CanvasAgentBridge from "@/components/copilot/CanvasAgentBridge";
+import ProjectManager from "@/components/copilot/ProjectManager";
 import ThemedSidebar from "@/components/copilot/Sidebar";
 import ActivityBar from "@/components/shell/ActivityBar";
 
@@ -16,6 +17,7 @@ export default function Home() {
         </ReactFlowProvider>
       </main>
       <CanvasAgentBridge />
+      <ProjectManager />
       <ThemedSidebar />
     </div>
   );
