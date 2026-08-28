@@ -5,6 +5,7 @@ import {
   Drama,
   FolderPlus,
   LayoutGrid,
+  LogOut,
   Moon,
   ScrollText,
   Settings,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { createProject, listProjects, type ProjectMeta } from "@/lib/projects";
+import { clearToken, getToken } from "@/lib/auth";
 
 /** 订阅 <html> 的 dark class（主题脚本/本组件都可能改它） */
 function useThemeIsDark() {
@@ -42,6 +44,8 @@ export default function ActivityBar() {
   const projectId = useCanvasStore((s) => s.projectId);
   const projectName = useCanvasStore((s) => s.projectName);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  // 登录/登出都是整页跳转，token 在本页生命周期内不变；AuthGate 保证仅在客户端挂载
+  const [hasToken] = useState(() => Boolean(getToken()));
 
   const refreshProjects = useCallback(async () => {
     try {
@@ -150,6 +154,19 @@ export default function ActivityBar() {
       >
         {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
       </button>
+      {hasToken ? (
+        <button
+          type="button"
+          title="退出登录"
+          onClick={() => {
+            clearToken();
+            window.location.href = "/login";
+          }}
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          <LogOut className="h-4 w-4" />
+        </button>
+      ) : null}
     </aside>
   );
 }

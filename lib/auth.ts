@@ -1,0 +1,75 @@
+"use client";
+
+/**
+ * 认证工具（移植自 juben 前端 utils/auth.ts + api.ts 的 withAuth 模式）。
+ * token 存 localStorage；apiFetch 统一注入 Bearer 并在 401 时回登录页。
+ * AUTH_ENABLED=false 时无 token 也能正常访问（后端匿名放行）。
+ */
+
+const TOKEN_KEY = "wingsight_studio_token";
+
+export function getToken(): string | null {
+  try {
+    return localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setToken(token: string): void {
+  try {
+    localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    /* 隐私模式等忽略 */
+  }
+}
+
+export function clearToken(): void {
+  try {
+    localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+export function authHeaders(): Record<string, string> {
+  const token = getToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+/** 回跳路径白名单：只允许站内路径，防开放重定向（juben safeReturnPath 同款） */
+export function safeReturnPath(from: string | null | undefined): string {
+  if (from && from.startsWith("/") && !from.startsWith("//")) return from;
+  return "/";
+}
+
+/** 带 Bearer 的 fetch；401 清 token 回登录页（保留当前页做回跳） */
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(path, {
+    ...init,
+    headers: { ...authHeaders(), ...(init?.headers ?? {}) },
+  });
+  if (res.status === 401) {
+    clearToken();
+    const from = encodeURIComponent(
+      window.location.pathname + window.location.search,
+    );
+    window.location.href = `/login?from=${from}`;
+  }
+  return res;
+}
+
+export interface AuthStatus {
+  enabled: boolean;
+  register_open: boolean;
+}
+
+export async function fetchAuthStatus(): Promise<AuthStatus | null> {
+  try {
+    const r = await fetch("/api/v1/auth/status");
+    if (!r.ok) return null;
+    return (await r.json()) as AuthStatus;
+  } catch {
+    return null;
+  }
+}

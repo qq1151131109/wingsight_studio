@@ -6,19 +6,22 @@ import CanvasAgentBridge from "@/components/copilot/CanvasAgentBridge";
 import ProjectManager from "@/components/copilot/ProjectManager";
 import ThemedSidebar from "@/components/copilot/Sidebar";
 import ActivityBar from "@/components/shell/ActivityBar";
+import AuthGate from "@/components/shell/AuthGate";
 
 export default function Home() {
   return (
-    <div className="flex h-dvh overflow-hidden">
-      <ActivityBar />
-      <main className="relative min-w-0 flex-1">
-        <ReactFlowProvider>
-          <CanvasView />
-        </ReactFlowProvider>
-      </main>
-      <CanvasAgentBridge />
-      <ProjectManager />
-      <ThemedSidebar />
-    </div>
+    <AuthGate>
+      <div className="flex h-dvh overflow-hidden">
+        <ActivityBar />
+        <main className="relative min-w-0 flex-1">
+          <ReactFlowProvider>
+            <CanvasView />
+          </ReactFlowProvider>
+        </main>
+        <CanvasAgentBridge />
+        <ProjectManager />
+        <ThemedSidebar />
+      </div>
+    </AuthGate>
   );
 }

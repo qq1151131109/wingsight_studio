@@ -84,6 +84,27 @@ node scripts/agui-client-test.mjs   # 需 agent 服务已启动；验证两轮�
 - 画布体验 P0/P1（撤销重做/复制粘贴/粘贴图片、分镜卡、视口双向同步）：tsc + eslint + next build 全绿 ✓
 - 画布体验 P2（右键菜单四态、拖拽文件导入、分组框、网格吸附、Cmd+A）：tsc + eslint + next build 全绿 ✓（自动化浏览器后端不可用，交互细节待人工冒烟）
 
+## 用户与认证（移植自 juben / Wingsight 主项目）
+
+默认 `AUTH_ENABLED=false`：全链路匿名 admin，单人使用零登录（与旧版行为一致）。
+
+开启多人模式：`.env.local` 设 `AUTH_ENABLED=true`，配置 `AUTH_USERNAME` / `AUTH_PASSWORD`
+（留空则首次启动自动生成并回写）与 `AUTH_TOKEN_SECRET`。能力：
+
+- JWT（7 天）+ Argon2 密码哈希；env 管理员 + DB 用户双轨登录；角色 admin / member
+- API Key（`wingsight-` 前缀 Bearer，SHA-256 落库，明文仅创建时返回一次）
+- 项目归属隔离：owner / 协作者可见可编辑，他人一律 404（防探测枚举）；
+  存量项目（owner=default）全员可见，向后兼容
+- 协作者共享：owner 在项目上增删协作者（按用户名）
+- 用户管理：`/api/v1/admin/users`（不能停用自己 / 不能降级最后一个 admin）
+- 自助注册默认关闭（`AUTH_REGISTER_OPEN=true` 开放）
+
+前端：`/login` `/register` 页 + AuthGate 守卫（关闭认证时自动跳过）；
+API 调用统一走 `apiFetch`（自动 Bearer、401 回登录）；Agent 请求带 Bearer header。
+
+已知边界：AG-UI 根端点与 `/assets` 静态文件未鉴权（资源名为随机 hex，
+等价 capability URL）。后端冒烟测试：`cd agent && uv run python ../scripts/auth-smoke-test.py`（34 项）。
+
 ## 已知边界
 
 - 设计系统移植自 juben（米黄纸感 / 砖红 accent / Fraunces + Noto Serif SC），暗色跟随系统或左下角手动切换
@@ -92,6 +113,7 @@ node scripts/agui-client-test.mjs   # 需 agent 服务已启动；验证两轮�
 
 ## 后续规划
 
-1. 画布体验余项：对齐辅助线、悬停工具条、撤销/重做的工具条按钮
-2. `@引用` token（提示词引用上游卡/参考图）→ 角色一致性管线（三视图 + 接力帧）
-3. 分镜卡批量生成画面；多技能意图路由
+1. 平台余项：用户/API Key/协作者管理界面（目前只有 API）、项目 ZIP 导入导出（juben 有实现可搬）、公开只读分享链接（juben 也没有，需自建）
+2. 画布体验余项：对齐辅助线、悬停工具条、撤销/重做的工具条按钮
+3. `@引用` token（提示词引用上游卡/参考图）→ 角色一致性管线（三视图 + 接力帧）
+4. 分镜卡批量生成画面；多技能意图路由

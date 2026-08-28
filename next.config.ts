@@ -28,6 +28,11 @@ const nextConfig: NextConfig = {
         source: "/agent-service/projects/:path*",
         destination: "http://127.0.0.1:8123/projects/:path*",
       },
+      {
+        // 认证/用户/API Key（与 juben 的 /api/v1 路径约定一致）
+        source: "/api/v1/:path*",
+        destination: "http://127.0.0.1:8123/api/v1/:path*",
+      },
     ];
   },
 };
