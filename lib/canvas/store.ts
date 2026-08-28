@@ -63,7 +63,11 @@ export const useCanvasStore = create<CanvasState>()(
 
       addNode: (node) => {
         const id = node.id ?? genNodeId();
-        set((state) => ({ nodes: [...state.nodes, { ...node, id } as WingNode] }));
+        // React Flow 靠 node.type 选自定义渲染器；调用方只给 data.nodeType 时自动推导
+        const type = node.type ?? node.data?.nodeType ?? "note";
+        set((state) => ({
+          nodes: [...state.nodes, { ...node, id, type } as WingNode],
+        }));
         return id;
       },
 

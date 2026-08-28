@@ -47,3 +47,6 @@ __pycache__/
 
 # zcode 会话产物
 .zcode/
+
+# 参考项目（不进仓库）
+references/
