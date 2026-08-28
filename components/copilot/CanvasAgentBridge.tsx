@@ -24,6 +24,7 @@ const NODE_TYPE_LABEL: Record<string, string> = {
   script: "剧本",
   character: "角色",
   image: "图片",
+  storyboard: "分镜",
 };
 
 /**
@@ -110,7 +111,7 @@ export default function CanvasAgentBridge() {
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|image",title,body,position:{x,y}} / ' +
+      '{op:"add_node",nodeType:"note|script|character|image|storyboard",title,body,position:{x,y}}（分镜卡可带 shotSize/duration）/ ' +
       '{op:"update_node",id,title,body} / {op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"set_viewport",x,y,zoom}。' +
       "可以在一批里执行多个操作。",

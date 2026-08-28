@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // 克隆的对标参考项目（第三方代码，不参与 lint/tsc）
+    "references/**",
   ]),
 ]);
 

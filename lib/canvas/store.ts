@@ -291,9 +291,13 @@ export function summarizeCanvas(
   for (const n of nodes) {
     const meta = NODE_META[n.data.nodeType];
     const title = n.data.title.slice(0, 30) || "（无标题）";
+    const shot =
+      n.data.nodeType === "storyboard" && (n.data.shotSize || n.data.duration)
+        ? `（${[n.data.shotSize, n.data.duration].filter(Boolean).join("·")}）`
+        : "";
     const body = n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
     const sel = selectedIds.includes(n.id) ? " [选中]" : "";
-    lines.push(`- ${n.id} [${meta.label}] ${title}${body}${sel}`);
+    lines.push(`- ${n.id} [${meta.label}] ${title}${shot}${body}${sel}`);
   }
   for (const e of edges) {
     lines.push(`- 连线 ${e.source} → ${e.target}`);

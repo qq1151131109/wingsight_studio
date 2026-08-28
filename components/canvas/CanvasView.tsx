@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
@@ -9,6 +9,8 @@ import {
   ReactFlow,
   useReactFlow,
   type OnConnectEnd,
+  type OnMoveEnd,
+  type Viewport,
 } from "@xyflow/react";
 import {
   Clapperboard,
@@ -21,6 +23,10 @@ import {
 import { NODE_META, useCanvasStore, type WingNodeType } from "@/lib/canvas/store";
 import { nodeTypes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
+
+/** 视口相等判断（按值比较，防程序化 setViewport 与 store 回写互触发） */
+const vpEq = (a: Viewport, b: Viewport) =>
+  a.x === b.x && a.y === b.y && a.zoom === b.zoom;
 
 function AddNodeToolbar() {
   const addNode = useCanvasStore((s) => s.addNode);
@@ -98,6 +104,23 @@ export default function CanvasView() {
   const onEdgesChange = useCanvasStore((s) => s.onEdgesChange);
   const onConnect = useCanvasStore((s) => s.onConnect);
   const addNode = useCanvasStore((s) => s.addNode);
+  const viewport = useCanvasStore((s) => s.viewport);
+
+  // 视口双向同步：agent 的 set_viewport / 项目装载 → 画布动画跟随；
+  // 用户平移缩放 → 回写 store（供持久化与 agent 感知）。
+  // ref 按值比较防回环：程序化 setViewport 结束也会触发 onMoveEnd。
+  const { setViewport: setRfViewport } = useReactFlow();
+  const lastSyncedVp = useRef<Viewport>(viewport);
+  useEffect(() => {
+    if (vpEq(viewport, lastSyncedVp.current)) return;
+    lastSyncedVp.current = viewport;
+    void setRfViewport(viewport, { duration: 300 });
+  }, [viewport, setRfViewport]);
+  const onMoveEnd = useCallback<OnMoveEnd>((_event, vp) => {
+    if (vpEq(vp, lastSyncedVp.current)) return;
+    lastSyncedVp.current = vp;
+    useCanvasStore.getState().setViewport(vp);
+  }, []);
 
   const onDoubleClick = useCallback(
     (event: React.MouseEvent) => {
@@ -167,6 +190,7 @@ export default function CanvasView() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={onConnectEnd}
+        onMoveEnd={onMoveEnd}
         onDoubleClick={onDoubleClick}
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
         fitView={nodes.length > 0}

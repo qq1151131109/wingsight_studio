@@ -7,8 +7,8 @@ AI 影视创作无限画布工作台：**React Flow 画布 + CopilotKit 聊天 +
 
 ```
 Next.js 前端（8002）
-├─ React Flow 无限画布（zustand + localStorage 持久化）
-│   节点：note 便签 / script 剧本 / character 角色 / image 图片占位
+├─ React Flow 无限画布（zustand；多项目服务端持久化，localStorage 作离线缓存）
+│   节点：note 便签 / script 剧本 / character 角色 / storyboard 分镜 / image 图片
 ├─ CopilotKit 1.69（v1 SDK，selfManagedAgents + HttpAgent）
 │   ├─ 读通道：useCopilotReadable + useCoAgent 共享 canvasSummary（画布摘要 ground truth）
 │   └─ 写通道：useCopilotAction("canvas_ops", available:"remote")（浏览器执行）
@@ -34,7 +34,9 @@ cd agent && uv sync
 uv run uvicorn main:app --port 8123 --host 127.0.0.1
 ```
 
-打开 http://localhost:8002 ：双击画布加便签 / 工具条加卡片 / 右侧聊天让助手建卡连线、调技能。
+打开 http://localhost:8002 ：双击画布加便签 / 工具条加卡片 / 连线拖到空白处快速建卡 / 右侧聊天让助手建卡连线、调技能。
+
+画布快捷键：`Cmd/Ctrl+Z` 撤销、`Shift+Cmd/Ctrl+Z` 或 `Ctrl+Y` 重做、`Cmd/Ctrl+C/V` 复制粘贴选中卡（连线随行）、粘贴系统剪贴板图片直接落成图片卡（经 `/agent-service/assets` 上传）。文本编辑中不拦截。
 
 ### .env.local 配置
 
@@ -55,7 +57,7 @@ Agent 走同源代理 `/agent-service`，隧道访问无需为 8123 单独开隧
 
 ```jsonc
 [
-  {"op": "add_node", "nodeType": "note|script|character|image", "title": "…", "body": "…", "position": {"x":0,"y":0}},  // position 可省，自动布局
+  {"op": "add_node", "nodeType": "note|script|character|storyboard|image", "title": "…", "body": "…", "position": {"x":0,"y":0}},  // position 可省，自动布局；分镜卡可带 shotSize（景别）/ duration（时长）
   {"op": "update_node", "id": "n_xxx", "title": "…", "body": "…"},
   {"op": "delete_nodes", "ids": ["n_xxx"]},
   {"op": "connect_nodes", "fromId": "n_xxx", "toId": "n_xyy"},
@@ -76,15 +78,16 @@ node scripts/agui-client-test.mjs   # 需 agent 服务已启动；验证两轮�
 - 两轮工具调用闭环：建卡 → TOOL_CALL 事件 → ToolMessage 回传 → connect_nodes 续跑 ✓（`scripts/agui-client-test.mjs`）
 - 画布摘要 ground truth 注入（STATE_SNAPSHOT / RAW 事件确认）✓
 - Langflow 技能调用：list_langflow_skills / run_langflow_skill 端到端（含 404/参数错误优雅降级）✓
+- 画布体验 P0/P1（撤销重做/复制粘贴/粘贴图片、分镜卡、视口双向同步）：tsc + eslint + next build 全绿 ✓
 
 ## 已知边界
 
 - 设计系统移植自 juben（米黄纸感 / 砖红 accent / Fraunces + Noto Serif SC），暗色跟随系统或左下角手动切换
-- agent 会话记忆为进程内 MemorySaver，重启即失（后续可换 SqliteSaver）
-- 出图结果渲染进 image 节点、多画布、服务端持久化：待做
+- 撤销/重做与复制/粘贴为进程内快照栈（上限 50，刷新即清；项目切换时历史栈自动清空）
+- `set_viewport` 视口已双向同步（agent 可带用户看画布，用户平移回写供持久化）
 
 ## 后续规划
 
-1. 出图结果渲染（run_langflow_skill 返回图片路径 → image 卡片 + 生成中状态）
-2. 画布 ops 扩展（分组、批量布局、分镜卡类型）
-3. 会话持久化（SqliteSaver）+ 多技能意图路由
+1. 画布体验 P2：右键菜单（空白/节点/多选/边四态）、拖拽文件导入、分组框、网格吸附
+2. `@引用` token（提示词引用上游卡/参考图）→ 角色一致性管线（三视图 + 接力帧）
+3. 分镜卡批量生成画面；多技能意图路由

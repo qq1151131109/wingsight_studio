@@ -22,6 +22,9 @@ export type AddNodeOp = {
   position?: { x: number; y: number };
   /** 指定 id（幂等用）；已存在则报错 */
   id?: string;
+  /** storyboard 卡：景别与时长（建卡时可直接带上） */
+  shotSize?: string;
+  duration?: string;
 };
 
 export type UpdateNodeOp = {
@@ -141,6 +144,12 @@ export function applyOps(rawOps: unknown): OpResult {
               nodeType: op.nodeType,
               title: (op.title ?? NODE_META[op.nodeType].hint).slice(0, 80),
               body: op.body ?? "",
+              ...(op.shotSize !== undefined
+                ? { shotSize: op.shotSize.slice(0, 20) }
+                : {}),
+              ...(op.duration !== undefined
+                ? { duration: op.duration.slice(0, 20) }
+                : {}),
             },
           });
           createdIds.push(id);

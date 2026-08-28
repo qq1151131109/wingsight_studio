@@ -124,7 +124,7 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 - {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
 
 storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么、机位运动），
-update_node 可带 shotSize（远景/全景/中景/近景/特写）与 duration（如 3s）。
+add_node / update_node 可带 shotSize（远景/全景/中景/近景/特写）与 duration（如 3s）。
 用户要求分镜/故事板时为每个镜头建一张 storyboard 卡并按顺序连线。
 
 节点 id 形如 n_xxx_x，可以在「画布当前状态」里查到。新建后若要连线，先等工具结果返回新节点 id。
