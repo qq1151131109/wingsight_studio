@@ -29,6 +29,10 @@ export type UpdateNodeOp = {
   id: string;
   title?: string;
   body?: string;
+  /** image 卡生命周期状态（生成循环用） */
+  status?: "loading" | "error" | "ready";
+  imageUrl?: string;
+  errorMessage?: string;
 };
 
 export type DeleteNodesOp = {
@@ -148,7 +152,12 @@ export function applyOps(rawOps: unknown): OpResult {
           }
           store.updateNodeData(op.id, {
             ...(op.title !== undefined ? { title: op.title.slice(0, 80) } : {}),
-            ...(op.body !== undefined ? { body: op.body.slice(0, 4000) } : {}),
+            ...(op.body !== undefined ? { body: op.body.slice(0, 8000) } : {}),
+            ...(op.status !== undefined ? { status: op.status } : {}),
+            ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
+            ...(op.errorMessage !== undefined
+              ? { errorMessage: op.errorMessage.slice(0, 300) }
+              : {}),
           });
           applied += 1;
           break;

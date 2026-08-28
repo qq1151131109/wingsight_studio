@@ -11,7 +11,7 @@
 import os
 from typing import Any, Dict, List
 
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
@@ -95,17 +95,21 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 
 ## 剧本 → 资产工作流
 用户给出剧本并想要资产/设定图时，按以下次序：
-1. 调 decompose_script(剧本原文) 拆出资产清单
-2. 用一次 canvas_ops 批量建卡：角色→character 卡（name 做标题）；场景/道具→note 卡（标题带「场景：」「道具：」前缀，description 与 visual_notes 写进 body）
-3. 汇报拆解结果并请用户确认增删（用户补充/删除角色时直接用 canvas_ops 改画布，不要重新拆解）
-4. 出图能力暂未接入——用户要求出图时说明这一步即将上线，先完成卡片
+1. 先用 canvas_ops 建一张 script 卡：标题用片名（用户没提就叫「剧本」），body 放剧本原文全文（不要截断）
+2. 调 decompose_script(剧本原文) 拆出资产清单
+3. 用一次 canvas_ops 批量建资产卡，并把每张用 connect_nodes 连回剧本卡（fromId=剧本卡id）：
+   角色→character 卡（name 做标题）；场景/道具→note 卡（标题带「场景：」「道具：」前缀）；description 与 visual_notes 写进 body
+4. 汇报拆解结果并请用户确认增删。用户补充/删除角色时直接用 canvas_ops 改画布，不要重新拆解；
+   需要回看剧本原文时用 read_node(剧本卡id)
+5. 出图能力暂未接入——用户要求出图时说明这一步即将上线，先完成卡片
 
 ## 行为准则
 1. 用户要求增删改卡片时，必须调用 canvas_ops 实际执行，不要只口头描述；只做用户要求的操作，不要自作主张添加用户没提的节点。
-2. 执行后基于工具结果简短汇报，不要虚构操作结果。
-3. 用简体中文交流，简洁、专业，像一个懂影视创作的助手。
-4. 与画布/技能无关的问题，正常回答即可。
-5. 不要在单轮里重复调用同一个工具超过 5 次；批量操作尽量合并进一次 canvas_ops。"""
+2. 每轮只发起一次工具调用（一次只调一个工具）；不要在同一轮同时调用 canvas_ops 和 decompose_script 等后端工具。
+3. 执行后基于工具结果简短汇报，不要虚构操作结果。
+4. 用简体中文交流，简洁、专业，像一个懂影视创作的助手。
+5. 与画布/技能无关的问题，正常回答即可。
+6. 不要在单轮里重复调用同一个工具超过 5 次；批量操作尽量合并进一次 canvas_ops。"""
 
 
 # ---------- 节点 ----------
@@ -136,25 +140,78 @@ def _frontend_tools(state: AgentState) -> List[Any]:
     return result
 
 
-def _pending_frontend_call(messages: List[Any]) -> bool:
-    """最后一条 AI 消息里是否还有未回传的前端工具调用（等待浏览器执行）。"""
-    if not messages:
-        return False
-    last = messages[-1]
-    if not isinstance(last, AIMessage):
-        return False
-    for tc in getattr(last, "tool_calls", None) or []:
-        name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
-        if name and name not in backend_tool_names:
-            return True
+def _tool_call_info(tc: Any) -> tuple[str | None, str | None]:
+    if isinstance(tc, dict):
+        return tc.get("id"), tc.get("name")
+    return getattr(tc, "id", None), getattr(tc, "name", None)
+
+
+def _unanswered_frontend_calls(messages: List[Any]) -> bool:
+    """历史里是否存在没有 tool 响应的前端工具调用。
+
+    覆盖混合调用场景：模型把 canvas_ops（前端）和后端工具放在同一条
+    assistant 消息里，后端工具被 ToolNode 执行后前端调用仍无响应——
+    此时必须结束本轮，等浏览器执行前端工具并回传，否则模型侧 400。
+    """
+    answered = {
+        m.tool_call_id for m in messages if isinstance(m, ToolMessage)
+    }
+    for m in messages:
+        if not isinstance(m, AIMessage):
+            continue
+        for tc in getattr(m, "tool_calls", None) or []:
+            tc_id, name = _tool_call_info(tc)
+            if tc_id and name not in backend_tool_names and tc_id not in answered:
+                return True
     return False
+
+
+def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
+    """清洗历史，保证 assistant(tool_calls) ↔ tool 的合法交替：
+
+    - 孤儿 tool 消息（对应的 assistant tool_call 不在历史里）剔除
+    - assistant 的 tool_call 缺响应时补占位响应（模型侧 400 的根源）
+    """
+    result: List[Any] = []
+    pending: Dict[str, str] = {}
+    for m in messages:
+        if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
+            result.append(m)
+            for tc in m.tool_calls:
+                tc_id, name = _tool_call_info(tc)
+                if tc_id:
+                    pending[tc_id] = name or ""
+        elif isinstance(m, ToolMessage):
+            tc_id = getattr(m, "tool_call_id", None)
+            if tc_id and tc_id in pending:
+                result.append(m)
+                del pending[tc_id]
+            # 孤儿 tool 响应 → 跳过
+        else:
+            if pending:
+                for tc_id, name in list(pending.items()):
+                    result.append(
+                        ToolMessage(
+                            content=f"（工具 {name} 本轮未执行，已跳过）",
+                            tool_call_id=tc_id,
+                        )
+                    )
+                pending.clear()
+            result.append(m)
+    for tc_id, name in pending.items():
+        result.append(
+            ToolMessage(
+                content=f"（工具 {name} 本轮未执行，已跳过）", tool_call_id=tc_id
+            )
+        )
+    return result
 
 
 async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     messages = list(state.get("messages") or [])
 
-    # 前端工具调用的结果已回传则继续；还有未决的前端调用则等浏览器
-    if _pending_frontend_call(messages):
+    # 有未响应的前端工具调用（含混合调用场景）→ 等浏览器执行回传
+    if _unanswered_frontend_calls(messages):
         return Command(goto=END, update={})
 
     model = ChatOpenAI(
@@ -175,8 +232,9 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         content=SYSTEM_PROMPT.format(canvas_summary=canvas_summary),
     )
 
-    # 截断历史，末尾再放一次最新 ground truth，抑制状态漂移
-    trimmed = messages[-12:]
+    # 截断历史，末尾再放一次最新 ground truth，抑制状态漂移；
+    # 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400
+    trimmed = _sanitize_messages_for_model(messages[-14:])
     latest = SystemMessage(
         content=f"[最新画布状态]\n{canvas_summary}",
     )
@@ -185,16 +243,24 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     )
 
     tool_calls = getattr(response, "tool_calls", None) or []
-    has_backend_call = any(
+    call_names = [
         (tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None))
-        in backend_tool_names
         for tc in tool_calls
-    )
+    ]
+    has_frontend_call = any(n and n not in backend_tool_names for n in call_names)
+    has_backend_call = any(n in backend_tool_names for n in call_names)
+
+    # 前端工具调用优先：本轮立即结束交给浏览器执行。若同一消息还混着后端
+    # 调用，则后端调用本轮不执行（历史清洗会给它补占位响应，模型下一轮
+    # 重新发起）。绝不能把含前端调用的消息送进 ToolNode——它不认识前端
+    # 工具，会以"invalid tool"错误响应，破坏交替并误导模型。
+    if has_frontend_call:
+        return Command(goto=END, update={"messages": [response]})
 
     if has_backend_call:
         return Command(goto="tool_node", update={"messages": [response]})
 
-    # 前端工具调用（或纯文本回复）→ 本轮结束；前端执行后带 ToolMessage 开启下一轮
+    # 纯文本回复 → 结束
     return Command(goto=END, update={"messages": [response]})
 
 

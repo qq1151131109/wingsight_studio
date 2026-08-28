@@ -22,6 +22,9 @@ export interface WingNodeData {
   title: string;
   body: string;
   imageUrl?: string;
+  /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
+  status?: "loading" | "error" | "ready";
+  errorMessage?: string;
   [key: string]: unknown;
 }
 

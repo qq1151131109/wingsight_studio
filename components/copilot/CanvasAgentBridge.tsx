@@ -4,11 +4,13 @@ import { useEffect, useRef } from "react";
 import {
   useCoAgent,
   useCopilotAction,
+  useCopilotChatHeadless_c,
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
 import { applyOps, type OpResult } from "@/lib/canvas/ops";
+import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
 
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
 interface WingsightAgentState {
@@ -16,6 +18,13 @@ interface WingsightAgentState {
 }
 
 const EMPTY: WingsightAgentState = { canvasSummary: "（画布为空）" };
+
+const NODE_TYPE_LABEL: Record<string, string> = {
+  note: "便签",
+  script: "剧本",
+  character: "角色",
+  image: "图片",
+};
 
 /**
  * 画布 ↔ Agent 桥：
@@ -53,6 +62,49 @@ export default function CanvasAgentBridge() {
     description: "当前画布内容（节点 / 连线 / 选中项）",
     value: summary,
   });
+
+  // 读节点全文：摘要只有 40 字截断，agent 需要时（如回剧本找漏掉的角色）按需读
+  useCopilotAction({
+    name: "read_node",
+    description: "读取一张画布卡片的完整内容（标题与正文全文）。摘要被截断时用它。",
+    available: "remote",
+    parameters: [
+      { name: "id", type: "string", required: true, description: "节点 id" },
+    ],
+    handler: ({ id }: { id: string }) => {
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === id);
+      if (!node) return `节点 ${id} 不存在`;
+      const d = node.data;
+      const body = (d.body ?? "").slice(0, 6000);
+      return `【${NODE_TYPE_LABEL[d.nodeType] ?? d.nodeType}】${d.title ?? ""}\n\n${body}${
+        (d.body ?? "").length > 6000 ? "\n…（已截断）" : ""
+      }`;
+    },
+  });
+
+  // image 卡"点击重试" → 转成聊天指令让 agent 重新生成该资产
+  const { sendMessage } = useCopilotChatHeadless_c();
+  useEffect(() => {
+    const onRetry = (e: Event) => {
+      const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        status: "loading",
+        errorMessage: undefined,
+      });
+      void sendMessage(
+        {
+          id: `retry_${nodeId}_${Date.now()}`,
+          role: "user",
+          content: `重新生成「${node.data.title}」的设定图`,
+        },
+        { followUp: true },
+      );
+    };
+    window.addEventListener(RETRY_GENERATION_EVENT, onRetry);
+    return () => window.removeEventListener(RETRY_GENERATION_EVENT, onRetry);
+  }, [sendMessage]);
 
   useCopilotAction({
     name: "canvas_ops",

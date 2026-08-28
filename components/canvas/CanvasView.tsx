@@ -8,7 +8,6 @@ import {
   MiniMap,
   ReactFlow,
   useReactFlow,
-  type NodeMouseHandler,
 } from "@xyflow/react";
 import {
   Drama,
@@ -106,19 +105,6 @@ export default function CanvasView() {
     [addNode],
   );
 
-  const onNodeDoubleClick: NodeMouseHandler = useCallback(
-    (_event, node) => {
-      const current = (node.data as { title?: string }).title ?? "";
-      const title = window.prompt("修改标题", current);
-      if (title !== null && title.trim()) {
-        useCanvasStore
-          .getState()
-          .updateNodeData(node.id, { title: title.trim() });
-      }
-    },
-    [],
-  );
-
   return (
     <div className="relative h-full w-full">
       {nodes.length === 0 ? <EmptyState /> : null}
@@ -130,7 +116,6 @@ export default function CanvasView() {
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onDoubleClick={onDoubleClick}
-        onNodeDoubleClick={onNodeDoubleClick}
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
         fitView={nodes.length > 0}
         fitViewOptions={{ padding: 0.15 }}

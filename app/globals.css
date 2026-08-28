@@ -154,6 +154,21 @@ body {
     border-radius: 9999px;
 }
 
+/* 图片卡生成中的微光进度条 */
+@keyframes ws-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.ws-shimmer {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--color-accent-soft),
+    transparent
+  );
+  animation: ws-shimmer 1.6s ease-in-out infinite;
+}
+
 /* === React Flow 主题适配 === */
 
 .react-flow__handle {
