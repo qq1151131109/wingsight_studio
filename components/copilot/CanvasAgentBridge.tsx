@@ -123,6 +123,8 @@ export default function CanvasAgentBridge() {
         status: "loading",
         errorMessage: undefined,
         body: prompt || node.data.body,
+        // 引用关系落在卡上：选中生成卡时画布高亮这些引用卡（@一致性可视化）
+        refIds,
       });
       const refLines = refIds
         .map((rid) => st.nodes.find((n) => n.id === rid))

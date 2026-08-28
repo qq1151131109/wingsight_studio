@@ -98,8 +98,36 @@ interface CanvasState {
   redo: () => boolean;
   canUndo: () => boolean;
   canRedo: () => boolean;
+  /** 撤销/重做可用性（响应式，按钮禁用态用；随历史栈变化维护） */
+  canUndoNow: boolean;
+  canRedoNow: boolean;
   /** 在语义操作前调用：把当前状态压入撤销栈 */
   commitHistory: () => void;
+  /** 服务端保存状态（ProjectManager 写，画布上的保存指示器读） */
+  saveState: "idle" | "saving" | "saved" | "offline";
+  setSaveState: (s: CanvasState["saveState"]) => void;
+  /** @引用光环：选中生成卡时高亮它引用的卡片（瞬态，不入撤销栈） */
+  haloIds: string[];
+  setHaloIds: (ids: string[]) => void;
+  /** 拖动对齐辅助线（流坐标；瞬态） */
+  alignGuides: { x: number[]; y: number[] };
+  setAlignGuides: (g: { x: number[]; y: number[] }) => void;
+  /** 内部剪贴板是否有内容（右键"粘贴"菜单的禁用态） */
+  clipboardCount: number;
+  /** 方向键微调选中节点（连续按键合并为一次撤销单元） */
+  nudgeSelection: (dx: number, dy: number) => void;
+  clearSelection: () => void;
+  /** Z 序：置顶/置底 */
+  bringToFront: (ids: string[]) => void;
+  sendToBack: (ids: string[]) => void;
+  /** 重接线：拖动连线端点换到新节点 */
+  reconnectEdge: (edgeId: string, connection: { source: string; target: string }) => void;
+  /** 转换节点类型（保留数据与连线） */
+  convertNodeType: (id: string, type: WingNodeType) => void;
+  /** 折叠/展开分组：折叠时隐藏子卡并把组缩成胶囊（原尺寸存 data.prevSize） */
+  toggleGroupCollapse: (id: string) => void;
+  /** 拖动结束后重定父级：中心落入其他分组框 → 收编；完全拖出本组 → 提升回画布层 */
+  reparentAfterDrag: (ids: string[]) => void;
   /** 复制/粘贴（内部剪贴板：选中节点 + 连线 + 原点，粘贴时整体偏移） */
   copySelection: () => number;
   pasteClipboard: () => string[];
@@ -112,7 +140,6 @@ export function genNodeId(): string {
 }
 
 const HISTORY_LIMIT = 50;
-const PASTE_OFFSET = 32;
 
 /** 模块级撤销栈与内部剪贴板（跨项目共享，简单优先） */
 const history: { past: CanvasSnapshot[]; future: CanvasSnapshot[] } = {
@@ -124,6 +151,8 @@ let internalClipboard: CanvasSnapshot | null = null;
 let dragCommitted = false;
 /** flash 高亮的自动熄灭计时器 */
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
+/** 方向键微调的连击窗口（800ms 内算一次撤销单元） */
+let lastNudgeAt = 0;
 
 function snapshot(state: CanvasState): CanvasSnapshot {
   return {
@@ -155,7 +184,7 @@ export function absolutePosition(
 export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   note: { w: 256, h: 150 },
   script: { w: 352, h: 260 },
-  character: { w: 256, h: 150 },
+  character: { w: 256, h: 300 },
   image: { w: 256, h: 260 },
   video: { w: 320, h: 300 },
   storyboard: { w: 320, h: 220 },
@@ -171,7 +200,8 @@ function withDefaultWidth(n: WingNode): WingNode {
   };
 }
 
-/** 节点集合的占位盒（绝对坐标 + 分组偏移差；对齐/分布与多选工具条定位共用） */
+/** 节点集合的占位盒（绝对坐标 + 分组偏移差；对齐/分布与多选工具条定位共用）。
+ *  尺寸优先取用户 resize 后的 style，缺省回落到类型估算。 */
 export function selectionBoxes(nodes: WingNode[], ids: string[]) {
   return nodes
     .filter((n) => ids.includes(n.id))
@@ -182,12 +212,55 @@ export function selectionBoxes(nodes: WingNode[], ids: string[]) {
         id: n.id,
         x: abs.x,
         y: abs.y,
-        w: fp.w,
-        h: fp.h,
+        w: Number(n.style?.width) || fp.w,
+        h: Number(n.style?.height) || fp.h,
         dx: n.position.x - abs.x,
         dy: n.position.y - abs.y,
       };
     });
+}
+
+/** 粘贴/复制的落位偏移：默认 +32/+32，与现有卡片重叠时螺旋找空位（对标 S-Copilot） */
+function findPasteOffset(
+  clipNodes: WingNode[],
+  existing: WingNode[],
+): { x: number; y: number } {
+  const box = (n: WingNode) => {
+    const fp = NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
+    return {
+      x: n.position.x,
+      y: n.position.y,
+      w: Number(n.style?.width) || fp.w,
+      h: Number(n.style?.height) || fp.h,
+    };
+  };
+  const clips = clipNodes.map(box);
+  const occupied = existing.map(box);
+  const margin = 8;
+  const hit = (dx: number, dy: number) =>
+    occupied.some((o) =>
+      clips.some(
+        (c) =>
+          c.x + dx < o.x + o.w + margin &&
+          c.x + dx + c.w + margin > o.x &&
+          c.y + dy < o.y + o.h + margin &&
+          c.y + dy + c.h + margin > o.y,
+      ),
+    );
+  for (const [x, y] of [
+    [32, 32],
+    [64, 32],
+    [32, 64],
+    [64, 64],
+  ]) {
+    if (!hit(x, y)) return { x, y };
+  }
+  for (let step = 1; step <= 12; step++) {
+    const x = 24 + step * 26;
+    const y = 16 + step * 18;
+    if (!hit(x, y)) return { x, y };
+  }
+  return { x: 32, y: 32 };
 }
 
 /** 全选（快捷键与右键菜单共用；不走 action 以免挤占撤销栈） */
@@ -195,6 +268,30 @@ export function selectAllNodes() {
   useCanvasStore.setState((s) => ({
     nodes: s.nodes.map((n) => ({ ...n, selected: true })),
   }));
+}
+
+/** 拖动对齐吸附阈值（流坐标 px） */
+const SNAP_THRESHOLD = 6;
+
+/** 单轴吸附：节点的前缘/中心/后缘 vs 参考线，取最小偏差 */
+function axisSnap(
+  pos: number,
+  size: number,
+  refs: number[],
+): { delta: number; line: number } | null {
+  let best: { delta: number; line: number } | null = null;
+  for (const p of [pos, pos + size / 2, pos + size]) {
+    for (const r of refs) {
+      const d = r - p;
+      if (
+        Math.abs(d) <= SNAP_THRESHOLD &&
+        (!best || Math.abs(d) < Math.abs(best.delta))
+      ) {
+        best = { delta: d, line: r };
+      }
+    }
+  }
+  return best;
 }
 
 export const useCanvasStore = create<CanvasState>()(
@@ -205,6 +302,16 @@ export const useCanvasStore = create<CanvasState>()(
       projectId: null,
       projectName: "",
       hydrated: false,
+      canUndoNow: false,
+      canRedoNow: false,
+      saveState: "idle",
+      haloIds: [],
+      alignGuides: { x: [], y: [] },
+      clipboardCount: 0,
+
+      setSaveState: (saveState) => set({ saveState }),
+      setHaloIds: (ids) => set({ haloIds: ids }),
+      setAlignGuides: (g) => set({ alignGuides: g }),
 
       setProject: (id, name) =>
         set({ projectId: id, projectName: name, hydrated: false }),
@@ -219,6 +326,11 @@ export const useCanvasStore = create<CanvasState>()(
           viewport,
           hydrated: true,
           projectId: state.projectId,
+          canUndoNow: false,
+          canRedoNow: false,
+          saveState: "idle",
+          haloIds: [],
+          alignGuides: { x: [], y: [] },
         }));
       },
 
@@ -229,13 +341,19 @@ export const useCanvasStore = create<CanvasState>()(
         history.past.push(snap);
         if (history.past.length > HISTORY_LIMIT) history.past.shift();
         history.future = [];
+        set({ canUndoNow: true, canRedoNow: false });
       },
 
       undo: () => {
         const prev = history.past.pop();
         if (!prev) return false;
         history.future.push(snapshot(get()));
-        set({ nodes: prev.nodes, edges: prev.edges });
+        set({
+          nodes: prev.nodes,
+          edges: prev.edges,
+          canUndoNow: history.past.length > 0,
+          canRedoNow: true,
+        });
         return true;
       },
 
@@ -243,7 +361,12 @@ export const useCanvasStore = create<CanvasState>()(
         const next = history.future.pop();
         if (!next) return false;
         history.past.push(snapshot(get()));
-        set({ nodes: next.nodes, edges: next.edges });
+        set({
+          nodes: next.nodes,
+          edges: next.edges,
+          canUndoNow: true,
+          canRedoNow: history.future.length > 0,
+        });
         return true;
       },
 
@@ -261,12 +384,18 @@ export const useCanvasStore = create<CanvasState>()(
             (e) => ids.has(e.source) && ids.has(e.target),
           )),
         };
+        set({ clipboardCount: selected.length });
         return selected.length;
       },
 
       pasteClipboard: () => {
         if (!internalClipboard) return [];
         get().commitHistory();
+        // 与现有卡片重叠时螺旋找空位，避免贴在原卡上
+        const offset = findPasteOffset(
+          internalClipboard.nodes,
+          get().nodes,
+        );
         const idMap = new Map<string, string>();
         const newNodes = internalClipboard.nodes.map((n) => {
           const id = genNodeId();
@@ -275,7 +404,7 @@ export const useCanvasStore = create<CanvasState>()(
             ...structuredClone(n),
             id,
             selected: true,
-            position: { x: n.position.x + PASTE_OFFSET, y: n.position.y + PASTE_OFFSET },
+            position: { x: n.position.x + offset.x, y: n.position.y + offset.y },
           } as WingNode;
         });
         const newEdges = internalClipboard.edges.map((e) => ({
@@ -307,11 +436,18 @@ export const useCanvasStore = create<CanvasState>()(
 
       updateNodeData: (id, patch) => {
         get().commitHistory();
+        let readyFlip = false;
         set((state) => ({
-          nodes: state.nodes.map((n) =>
-            n.id === id ? { ...n, data: { ...n.data, ...patch } } : n,
-          ),
+          nodes: state.nodes.map((n) => {
+            if (n.id !== id) return n;
+            // 生成完成（loading→ready）闪一下，把注意力拉回这张卡
+            if (patch.status === "ready" && n.data.status === "loading") {
+              readyFlip = true;
+            }
+            return { ...n, data: { ...n.data, ...patch } };
+          }),
         }));
+        if (readyFlip) get().flashNodes([id]);
       },
 
       deleteNodes: (ids) => {
@@ -378,7 +514,8 @@ export const useCanvasStore = create<CanvasState>()(
                 ? ({
                     ...structuredClone(n),
                     parentId: groupId,
-                    extent: "parent",
+                    // 不设 extent:"parent"：夹死会让子卡拖不出框；
+                    // 拖出/拖入语义由 reparentAfterDrag 在拖动结束时判定
                     position: {
                       x: (absById.get(n.id)?.x ?? n.position.x) - groupNode.position.x,
                       y: (absById.get(n.id)?.y ?? n.position.y) - groupNode.position.y,
@@ -448,7 +585,76 @@ export const useCanvasStore = create<CanvasState>()(
           dragCommitted = true;
         }
         if (gestureEnded) dragCommitted = false;
-        set((state) => ({ nodes: applyNodeChanges(changes, state.nodes) }));
+
+        // 拖动对齐辅助线：单节点（顶层）拖动时吸附其他顶层卡的边/中心
+        let applied = changes;
+        let guides: { x: number[]; y: number[] } | null = null;
+        if (hasDrag) {
+          const drags = changes.filter(
+            (
+              c,
+            ): c is Extract<NodeChange<WingNode>, { type: "position" }> & {
+              position: { x: number; y: number };
+            } => c.type === "position" && c.dragging === true && !!c.position,
+          );
+          const state = get();
+          const self =
+            drags.length === 1
+              ? state.nodes.find((n) => n.id === drags[0].id)
+              : undefined;
+          if (self && !self.parentId) {
+            const others = state.nodes.filter(
+              (n) => n.id !== self.id && !n.parentId,
+            );
+            const refsX: number[] = [];
+            const refsY: number[] = [];
+            for (const o of selectionBoxes(
+              state.nodes,
+              others.map((o) => o.id),
+            )) {
+              refsX.push(o.x, o.x + o.w / 2, o.x + o.w);
+              refsY.push(o.y, o.y + o.h / 2, o.y + o.h);
+            }
+            const w = Number(self.style?.width) || NODE_FOOTPRINT[self.data.nodeType]?.w || 256;
+            const h = Number(self.style?.height) || NODE_FOOTPRINT[self.data.nodeType]?.h || 150;
+            const sx = axisSnap(drags[0].position.x, w, refsX);
+            const sy = axisSnap(drags[0].position.y, h, refsY);
+            guides = { x: sx ? [sx.line] : [], y: sy ? [sy.line] : [] };
+            if (sx || sy) {
+              applied = changes.map((c) => {
+                if (c.type !== "position" || c.id !== self.id) return c;
+                const p = (c as { position?: { x: number; y: number } }).position;
+                if (!p) return c;
+                return {
+                  ...c,
+                  position: {
+                    x: p.x + (sx?.delta ?? 0),
+                    y: p.y + (sy?.delta ?? 0),
+                  },
+                };
+              });
+            }
+          } else {
+            guides = { x: [], y: [] };
+          }
+        }
+        if (gestureEnded) guides = { x: [], y: [] };
+
+        set((state) => ({
+          nodes: applyNodeChanges(applied, state.nodes),
+          ...(guides ? { alignGuides: guides } : {}),
+        }));
+        // 拖动结束：判定拖入其他分组（收编）/ 拖出本组（提升）
+        if (gestureEnded) {
+          const endedIds = changes
+            .filter(
+              (c): c is Extract<NodeChange<WingNode>, { type: "position" }> =>
+                c.type === "position" && c.dragging === false,
+            )
+            .map((c) => c.id)
+            .filter((x): x is string => Boolean(x));
+          if (endedIds.length > 0) get().reparentAfterDrag(endedIds);
+        }
       },
 
       onEdgesChange: (changes) =>
@@ -536,6 +742,184 @@ export const useCanvasStore = create<CanvasState>()(
         return get().pasteClipboard();
       },
 
+      nudgeSelection: (dx, dy) => {
+        const state = get();
+        if (!state.nodes.some((n) => n.selected)) return;
+        // 800ms 内的连续按键合并为一次撤销单元
+        const now = Date.now();
+        if (now - lastNudgeAt > 800) get().commitHistory();
+        lastNudgeAt = now;
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.selected
+              ? { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } }
+              : n,
+          ),
+        }));
+      },
+
+      clearSelection: () =>
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.selected ? { ...n, selected: false } : n,
+          ),
+        })),
+
+      bringToFront: (ids) => {
+        const state = get();
+        const targets = state.nodes.filter((n) => ids.includes(n.id));
+        if (targets.length === 0) return;
+        const maxZ = Math.max(0, ...state.nodes.map((n) => n.zIndex ?? 0));
+        get().commitHistory();
+        const order = new Map(
+          targets.map((t, i) => [t.id, maxZ + 1 + i] as const),
+        );
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            order.has(n.id) ? { ...n, zIndex: order.get(n.id) } : n,
+          ),
+        }));
+      },
+
+      sendToBack: (ids) => {
+        const state = get();
+        const targets = state.nodes.filter((n) => ids.includes(n.id));
+        if (targets.length === 0) return;
+        const minZ = Math.min(0, ...state.nodes.map((n) => n.zIndex ?? 0));
+        get().commitHistory();
+        const order = new Map(
+          targets.map((t, i) => [t.id, minZ - (targets.length - i)] as const),
+        );
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            order.has(n.id) ? { ...n, zIndex: order.get(n.id) } : n,
+          ),
+        }));
+      },
+
+      reconnectEdge: (edgeId, connection) => {
+        get().commitHistory();
+        set((s) => ({
+          edges: s.edges.map((e) =>
+            e.id === edgeId
+              ? { ...e, source: connection.source, target: connection.target }
+              : e,
+          ),
+        }));
+      },
+
+      convertNodeType: (id, type) => {
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            n.id === id
+              ? { ...n, type, data: { ...n.data, nodeType: type } }
+              : n,
+          ),
+        }));
+      },
+
+      toggleGroupCollapse: (id) => {
+        const state = get();
+        const group = state.nodes.find(
+          (n) => n.id === id && n.data.nodeType === "group",
+        );
+        if (!group) return;
+        const collapsing = !group.data.collapsed;
+        const prev = group.data.prevSize as { w: number; h: number } | undefined;
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) => {
+            if (n.id === id) {
+              if (collapsing) {
+                return {
+                  ...n,
+                  style: { width: 172, height: 40 },
+                  data: {
+                    ...n.data,
+                    collapsed: true,
+                    prevSize: {
+                      w: Number(group.style?.width) || NODE_FOOTPRINT.group.w,
+                      h: Number(group.style?.height) || NODE_FOOTPRINT.group.h,
+                    },
+                  },
+                };
+              }
+              return {
+                ...n,
+                style: {
+                  width: prev?.w ?? (Number(group.style?.width) || NODE_FOOTPRINT.group.w),
+                  height: prev?.h ?? (Number(group.style?.height) || NODE_FOOTPRINT.group.h),
+                },
+                data: { ...n.data, collapsed: false, prevSize: undefined },
+              };
+            }
+            if (n.parentId === id) {
+              return { ...n, hidden: collapsing, selected: collapsing ? false : n.selected };
+            }
+            return n;
+          }),
+        }));
+      },
+
+      reparentAfterDrag: (ids) => {
+        const state = get();
+        const groups = state.nodes.filter((n) => n.data.nodeType === "group");
+        let changed = false;
+        const next = state.nodes.map((n) => ({ ...n }));
+        const byId = new Map(next.map((n) => [n.id, n] as const));
+        const fp = (n: WingNode) =>
+          NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
+        for (const id of ids) {
+          const n = byId.get(id);
+          if (!n || n.data.nodeType === "group") continue;
+          const parent = n.parentId ? byId.get(n.parentId) : undefined;
+          const absX = n.position.x + (parent?.position.x ?? 0);
+          const absY = n.position.y + (parent?.position.y ?? 0);
+          const w = Number(n.style?.width) || fp(n).w;
+          const h = Number(n.style?.height) || fp(n).h;
+          // 中心落入其他分组框 → 收编（Figma 式 frame 包含语义）
+          const cx = absX + w / 2;
+          const cy = absY + h / 2;
+          const target = groups.find((g) => {
+            if (g.id === n.parentId) return false;
+            const gw = Number(g.style?.width) || NODE_FOOTPRINT.group.w;
+            const gh = Number(g.style?.height) || NODE_FOOTPRINT.group.h;
+            return (
+              cx >= g.position.x &&
+              cx <= g.position.x + gw &&
+              cy >= g.position.y &&
+              cy <= g.position.y + gh
+            );
+          });
+          if (target && !target.data.collapsed) {
+            n.parentId = target.id;
+            n.extent = undefined;
+            n.position = { x: absX - target.position.x, y: absY - target.position.y };
+            changed = true;
+            continue;
+          }
+          // 完全拖出本组（留 24px 容差）→ 提升回画布层
+          if (parent) {
+            const pw = Number(parent.style?.width) || NODE_FOOTPRINT.group.w;
+            const ph = Number(parent.style?.height) || NODE_FOOTPRINT.group.h;
+            const margin = 24;
+            const out =
+              n.position.x + w < -margin ||
+              n.position.x > pw + margin ||
+              n.position.y + h < -margin ||
+              n.position.y > ph + margin;
+            if (out) {
+              n.parentId = undefined;
+              n.extent = undefined;
+              n.position = { x: absX, y: absY };
+              changed = true;
+            }
+          }
+        }
+        if (changed) set({ nodes: next });
+      },
+
     }));
 
 /** 节点类型的展示元数据（徽标名 / 徽标色） */
@@ -577,7 +961,7 @@ export function summarizeCanvas(
     const shot = shotFields.length > 0 ? `（${shotFields.join("·")}）` : "";
     const kids =
       n.data.nodeType === "group"
-        ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡）`
+        ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
         : "";
     const body = n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
     const sel = selectedIds.includes(n.id) ? " [选中]" : "";

@@ -4,14 +4,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
-  Controls,
+  MarkerType,
   MiniMap,
   ReactFlow,
   useReactFlow,
   type EdgeMouseHandler,
+  type IsValidConnection,
   type NodeMouseHandler,
   type OnConnectEnd,
   type OnMoveEnd,
+  type OnReconnect,
   type Viewport,
 } from "@xyflow/react";
 import {
@@ -19,8 +21,13 @@ import {
   Drama,
   Film,
   Image as ImageIcon,
+  Redo2,
   ScrollText,
+  Search,
   StickyNote,
+  Undo2,
+  ZoomIn as ZoomInIcon,
+  ZoomOut,
   Maximize,
 } from "lucide-react";
 import {
@@ -40,30 +47,72 @@ import CanvasShortcuts from "./CanvasShortcuts";
 const vpEq = (a: Viewport, b: Viewport) =>
   a.x === b.x && a.y === b.y && a.zoom === b.zoom;
 
-/** 右键菜单（空白 / 节点 / 多选 / 连线 四态） */
+/** 右键菜单（空白 / 节点 / 转换 / 多选 / 连线 五态） */
 type CtxMenu =
   | { kind: "pane"; x: number; y: number; fx: number; fy: number }
   | { kind: "node"; x: number; y: number; id: string }
+  | { kind: "convert"; x: number; y: number; id: string }
   | { kind: "selection"; x: number; y: number; ids: string[] }
   | { kind: "edge"; x: number; y: number; id: string };
+
+/** 边箭头（中性暖灰，明暗主题都成立；SVG 填充属性不支持 CSS 变量） */
+const DEFAULT_EDGE_OPTS = {
+  markerEnd: {
+    type: MarkerType.ArrowClosed,
+    width: 15,
+    height: 15,
+    color: "#9a948a",
+  },
+} as const;
+
+/** 关系语义标签：按两端节点类型自动推导（对标 AIGC 的边数据标签，域化为影视关系） */
+const AUTO_EDGE_LABELS: Record<string, string> = {
+  "script->storyboard": "拆解",
+  "script->character": "设定",
+  "script->note": "备注",
+  "character->storyboard": "出演",
+  "character->image": "定妆",
+  "character->video": "出演",
+  "storyboard->image": "出图",
+  "storyboard->video": "出视频",
+  "storyboard->storyboard": "转场",
+  "image->video": "动态化",
+  "image->image": "迭代",
+  "video->video": "拼接",
+  "note->storyboard": "参考",
+  "note->image": "参考",
+};
+
+/** 连接校验：禁自环与重复边（对标 osc 的 connection rules，取最常用两条） */
+const CONVERT_TYPES: WingNodeType[] = [
+  "note",
+  "script",
+  "character",
+  "image",
+  "video",
+  "storyboard",
+];
 
 function CtxItem({
   label,
   dot,
   danger,
+  disabled,
   onClick,
 }: {
   label: string;
   dot?: string;
   danger?: boolean;
+  disabled?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       className={`flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-2 ${
         danger ? "text-danger" : "text-text-2 hover:text-text"
-      }`}
+      } disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent`}
       onClick={onClick}
     >
       {dot ? (
@@ -143,6 +192,9 @@ async function importDroppedFiles(
   }
 }
 
+/** 工具条按钮拖到画布指定位置建卡（HTML5 拖拽，见 CanvasView onDrop） */
+export const PALETTE_DRAG_TYPE = "application/x-wingsight-node";
+
 function AddNodeToolbar() {
   const addNode = useCanvasStore((s) => s.addNode);
   const { screenToFlowPosition } = useReactFlow();
@@ -172,9 +224,14 @@ function AddNodeToolbar() {
         <button
           key={type}
           type="button"
-          title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）`}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+          draggable
+          title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
+          className="flex h-8 w-8 cursor-grab items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
           onClick={() => addAtCenter(type)}
+          onDragStart={(e) => {
+            e.dataTransfer.setData(PALETTE_DRAG_TYPE, type);
+            e.dataTransfer.effectAllowed = "copy";
+          }}
         >
           {icon}
         </button>
@@ -183,17 +240,192 @@ function AddNodeToolbar() {
   );
 }
 
-function FitViewButton() {
-  const { fitView } = useReactFlow();
+/** 节点搜索：标题/正文匹配，点击定位（选中 + 运镜） */
+function NodeSearch() {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const results = useMemo(() => {
+    const k = q.trim().toLowerCase();
+    if (!k) return [];
+    return nodes
+      .filter(
+        (n) =>
+          (n.data.title ?? "").toLowerCase().includes(k) ||
+          (n.data.body ?? "").slice(0, 120).toLowerCase().includes(k),
+      )
+      .slice(0, 8);
+  }, [q, nodes]);
+
+  const pick = (id: string) => {
+    useCanvasStore.getState().selectNodes([id]);
+    window.dispatchEvent(
+      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
+    );
+    setQ("");
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <div className="flex h-10 w-52 items-center gap-1.5 rounded-lg border border-hairline bg-surface-1 px-2 shadow-sm">
+        <Search className="h-3.5 w-3.5 shrink-0 text-text-4" />
+        <input
+          value={q}
+          placeholder="搜索画布卡片…"
+          className="w-full bg-transparent text-xs text-text outline-none placeholder:text-text-4"
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOpen(true);
+          }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setOpen(false)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && results.length > 0) pick(results[0].id);
+            if (e.key === "Escape") {
+              setQ("");
+              setOpen(false);
+              e.currentTarget.blur();
+            }
+          }}
+        />
+      </div>
+      {open && q.trim() && results.length > 0 ? (
+        <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+          {results.map((n) => (
+            <button
+              key={n.id}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+              onClick={() => pick(n.id)}
+            >
+              <span
+                className="ws-card-dot shrink-0"
+                style={{
+                  background:
+                    NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.dot,
+                }}
+              />
+              <span className="truncate">{n.data.title || "（无标题）"}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-text-4">
+                {NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.label}
+              </span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 底部坞：撤销/重做 + 缩放 + 保存状态（对标 novanova / AIGC 的顶底栏能力） */
+function BottomDock() {
+  const canUndo = useCanvasStore((s) => s.canUndoNow);
+  const canRedo = useCanvasStore((s) => s.canRedoNow);
+  const saveState = useCanvasStore((s) => s.saveState);
+  const zoom = useCanvasStore((s) => s.viewport.zoom);
+  const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
+  const saveLabel =
+    saveState === "saving"
+      ? "保存中…"
+      : saveState === "saved"
+        ? "已保存"
+        : saveState === "offline"
+          ? "离线 · 未保存"
+          : null;
+  return (
+    <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
+      <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
+        <Undo2 className="h-4 w-4" />
+      </DockBtn>
+      <DockBtn disabled={!canRedo} title="重做（⇧⌘Z）" onClick={() => useCanvasStore.getState().redo()}>
+        <Redo2 className="h-4 w-4" />
+      </DockBtn>
+      <span className="mx-0.5 h-5 w-px bg-hairline" />
+      <DockBtn title="缩小（⌘-）" onClick={() => void zoomOut({ duration: 150 })}>
+        <ZoomOut className="h-4 w-4" />
+      </DockBtn>
+      <button
+        type="button"
+        title="点击复位 100%（⌘0）"
+        className="min-w-11 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        onClick={() => void zoomTo(1, { duration: 250 })}
+      >
+        {Math.round(zoom * 100)}%
+      </button>
+      <DockBtn title="放大（⌘=）" onClick={() => void zoomIn({ duration: 150 })}>
+        <ZoomInIcon className="h-4 w-4" />
+      </DockBtn>
+      <DockBtn title="适应视图" onClick={() => void fitView({ duration: 300, padding: 0.15 })}>
+        <Maximize className="h-4 w-4" />
+      </DockBtn>
+      {saveLabel ? (
+        <>
+          <span className="mx-0.5 h-5 w-px bg-hairline" />
+          <span
+            className={`px-1.5 text-[10px] ${
+              saveState === "offline"
+                ? "text-danger"
+                : saveState === "saving"
+                  ? "text-text-3"
+                  : "text-good"
+            }`}
+          >
+            {saveLabel}
+          </span>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function DockBtn({
+  title,
+  disabled,
+  onClick,
+  children,
+}: {
+  title: string;
+  disabled?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
   return (
     <button
       type="button"
-      title="适应视图"
-      className="flex h-8 w-8 items-center justify-center rounded-md border border-hairline bg-surface-1 text-text-2 shadow-sm transition-colors hover:bg-surface-2 hover:text-text"
-      onClick={() => fitView({ duration: 300, padding: 0.15 })}
+      title={title}
+      disabled={disabled}
+      className="flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
+      onClick={onClick}
     >
-      <Maximize className="h-4 w-4" />
+      {children}
     </button>
+  );
+}
+
+/** 拖动对齐辅助线：流坐标 → 容器坐标渲染（数据来自 store.onNodesChange 的吸附计算） */
+function GuideOverlay() {
+  const guides = useCanvasStore((s) => s.alignGuides);
+  const vp = useCanvasStore((s) => s.viewport);
+  if (guides.x.length === 0 && guides.y.length === 0) return null;
+  return (
+    <div className="pointer-events-none absolute inset-0 z-[5] overflow-hidden">
+      {guides.x.map((x) => (
+        <div
+          key={`x${x}`}
+          className="absolute top-0 bottom-0 w-px bg-accent-2"
+          style={{ left: vp.x + x * vp.zoom }}
+        />
+      ))}
+      {guides.y.map((y) => (
+        <div
+          key={`y${y}`}
+          className="absolute left-0 right-0 h-px bg-accent-2"
+          style={{ top: vp.y + y * vp.zoom }}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -240,6 +472,13 @@ function SelectionToolbar() {
   // 订阅视口：平移缩放后重算锚点（画布坐标 → 容器坐标 = vp + flow*zoom）
   const vp = useCanvasStore((s) => s.viewport);
   const [alignOpen, setAlignOpen] = useState(false);
+  // 多选等比缩放（轻量版：宽度与水平间距等比；高度只在卡上已显式设置时跟随）
+  const scaleRef = useRef<{
+    startX: number;
+    baseW: number;
+    boxes: ReturnType<typeof selectionBoxes>;
+    anchor: { x: number; y: number };
+  } | null>(null);
   const sel = nodes.filter((n) => n.selected);
   if (sel.length < 2) return null;
   const ids = sel.map((n) => n.id);
@@ -247,46 +486,97 @@ function SelectionToolbar() {
   const minX = Math.min(...boxes.map((b) => b.x));
   const maxX = Math.max(...boxes.map((b) => b.x + b.w));
   const minY = Math.min(...boxes.map((b) => b.y));
+  const maxY = Math.max(...boxes.map((b) => b.y + b.h));
   const anchor = {
     x: vp.x + ((minX + maxX) / 2) * vp.zoom,
     y: vp.y + minY * vp.zoom,
   };
+  const seCorner = { x: vp.x + maxX * vp.zoom, y: vp.y + maxY * vp.zoom };
+
+  const onScaleStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    useCanvasStore.getState().commitHistory();
+    scaleRef.current = {
+      startX: e.clientX,
+      baseW: (maxX - minX) * vp.zoom,
+      boxes: selectionBoxes(useCanvasStore.getState().nodes, ids),
+      anchor: { x: minX, y: minY },
+    };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const onScaleMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const base = scaleRef.current;
+    if (!base) return;
+    const ratio = Math.min(3, Math.max(0.35, (base.baseW + e.clientX - base.startX) / base.baseW));
+    useCanvasStore.setState((s) => ({
+      nodes: s.nodes.map((n) => {
+        const b = base.boxes.find((x) => x.id === n.id);
+        if (!b) return n;
+        const w = Math.max(160, Math.round(b.w * ratio));
+        const absX = Math.round(base.anchor.x + (b.x - base.anchor.x) * ratio);
+        const absY = Math.round(base.anchor.y + (b.y - base.anchor.y) * ratio);
+        const h = n.style?.height
+          ? Math.max(120, Math.round((Number(n.style.height) || b.h) * ratio))
+          : undefined;
+        return {
+          ...n,
+          position: { x: absX - b.dx, y: absY - b.dy },
+          style: { ...n.style, width: w, ...(h !== undefined ? { height: h } : {}) },
+        };
+      }),
+    }));
+  };
+
   return (
-    <div
-      className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
-      style={{ left: anchor.x, top: anchor.y - 10 }}
-    >
-      <span className="px-1.5 text-[10px] text-text-4">已选 {sel.length}</span>
-      <SelBtn onClick={() => useCanvasStore.getState().copySelection()}>复制</SelBtn>
-      <div className="relative">
-        <SelBtn onClick={() => setAlignOpen((o) => !o)}>对齐 ▾</SelBtn>
-        {alignOpen ? (
-          <>
-            <div className="fixed inset-0 z-0" onClick={() => setAlignOpen(false)} />
-            <div className="absolute left-0 top-full z-10 mt-1 flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-              {ALIGN_MENU.map((a) => (
-                <button
-                  key={a.label}
-                  type="button"
-                  disabled={sel.length < a.min}
-                  className="rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
-                  onClick={() => {
-                    setAlignOpen(false);
-                    a.run(ids);
-                  }}
-                >
-                  {a.label}
-                </button>
-              ))}
-            </div>
-          </>
-        ) : null}
+    <>
+      <div
+        className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+        style={{ left: anchor.x, top: anchor.y - 10 }}
+      >
+        <span className="px-1.5 text-[10px] text-text-4">已选 {sel.length}</span>
+        <SelBtn onClick={() => useCanvasStore.getState().copySelection()}>复制</SelBtn>
+        <div className="relative">
+          <SelBtn onClick={() => setAlignOpen((o) => !o)}>对齐 ▾</SelBtn>
+          {alignOpen ? (
+            <>
+              <div className="fixed inset-0 z-0" onClick={() => setAlignOpen(false)} />
+              <div className="absolute left-0 top-full z-10 mt-1 flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+                {ALIGN_MENU.map((a) => (
+                  <button
+                    key={a.label}
+                    type="button"
+                    disabled={sel.length < a.min}
+                    className="rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
+                    onClick={() => {
+                      setAlignOpen(false);
+                      a.run(ids);
+                    }}
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </div>
+        <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
+        <SelBtn danger onClick={() => useCanvasStore.getState().deleteNodes(ids)}>
+          删除
+        </SelBtn>
       </div>
-      <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
-      <SelBtn danger onClick={() => useCanvasStore.getState().deleteNodes(ids)}>
-        删除
-      </SelBtn>
-    </div>
+      {/* 选区右下角：等比缩放手柄 */}
+      <div
+        title="拖动等比缩放选中卡片"
+        className="absolute z-10 h-3 w-3 cursor-nwse-resize rounded-sm border-[1.5px] border-accent bg-surface-1 shadow-sm"
+        style={{ left: seCorner.x - 6, top: seCorner.y - 6 }}
+        onPointerDown={onScaleStart}
+        onPointerMove={onScaleMove}
+        onPointerUp={() => {
+          scaleRef.current = null;
+        }}
+      />
+    </>
   );
 }
 
@@ -298,9 +588,11 @@ function EmptyState() {
           空白画布
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-text-3">
-          双击画布添加便签，从左上角工具条加入剧本、角色卡，
+          双击画布加便签；把图片 / 视频 / 文本文件直接拖进来；
           <br />
-          或者直接在右侧让助手帮你搭起故事板。
+          工具条（可拖拽落点）建卡，图片卡输入条 @ 引用角色直接生成，
+          <br />
+          或者让右侧助手帮你搭起故事板。
         </p>
       </div>
     </div>
@@ -315,6 +607,7 @@ export default function CanvasView() {
   const onConnect = useCanvasStore((s) => s.onConnect);
   const addNode = useCanvasStore((s) => s.addNode);
   const viewport = useCanvasStore((s) => s.viewport);
+  const clipboardCount = useCanvasStore((s) => s.clipboardCount);
 
   // 视口双向同步：agent 的 set_viewport / 项目装载 → 画布动画跟随；
   // 用户平移缩放 → 回写 store（供持久化与 agent 感知）。
@@ -333,7 +626,8 @@ export default function CanvasView() {
     useCanvasStore.getState().setViewport(vp);
   }, []);
 
-  // 生成中的连线流动动画：目标节点 loading 时给边标 animated（样式在 globals.css）
+  // 生成中的连线流动动画：目标节点 loading 时给边标 animated（样式在 globals.css）；
+  // 同时按两端节点类型推导关系语义标签（出演/出图/拆解…）
   const loadingKey = useCanvasStore((s) =>
     s.nodes
       .filter((n) => n.data.status === "loading")
@@ -341,12 +635,38 @@ export default function CanvasView() {
       .join(","),
   );
   const displayEdges = useMemo(() => {
-    if (!loadingKey) return edges;
-    const loading = new Set(loadingKey.split(","));
-    return edges.map((e) =>
-      loading.has(e.target) ? { ...e, animated: true } : e,
-    );
-  }, [edges, loadingKey]);
+    const loading = new Set(loadingKey ? loadingKey.split(",") : []);
+    const typeById = new Map(nodes.map((n) => [n.id, n.data.nodeType] as const));
+    return edges.map((e) => ({
+      ...e,
+      ...(loading.has(e.target) ? { animated: true } : {}),
+      label: AUTO_EDGE_LABELS[`${typeById.get(e.source)}->${typeById.get(e.target)}`],
+    }));
+  }, [edges, loadingKey, nodes]);
+
+  // 连接校验：自环与重复边直接拒绝
+  const isValidConnection = useCallback<IsValidConnection>((conn) => {
+    if (conn.source === conn.target) return false;
+    return !useCanvasStore
+      .getState()
+      .edges.some((e) => e.source === conn.source && e.target === conn.target);
+  }, []);
+
+  // 重接线：拖动已有连线端点换到新节点
+  const onReconnect = useCallback<OnReconnect>((oldEdge, newConnection) => {
+    useCanvasStore.getState().reconnectEdge(oldEdge.id, newConnection);
+  }, []);
+
+  // @引用光环：单选生成卡时高亮它引用的卡片（refIds 由 PromptBar 生成时写入）
+  useEffect(() => {
+    const sel = nodes.filter((n) => n.selected);
+    const refs =
+      sel.length === 1 && Array.isArray(sel[0].data.refIds)
+        ? (sel[0].data.refIds as string[])
+        : [];
+    if (refs.join(",") === useCanvasStore.getState().haloIds.join(",")) return;
+    useCanvasStore.getState().setHaloIds(refs);
+  }, [nodes]);
 
   const onDoubleClick = useCallback(
     (event: React.MouseEvent) => {
@@ -394,7 +714,9 @@ export default function CanvasView() {
   } | null>(null);
   const onConnectEnd: OnConnectEnd = useCallback(
     (event, connectionState) => {
-      if (connectionState.isValid) return; // 有效连线交给 onConnect
+      // 有效连线交给 onConnect；落在节点上的无效连接（自环/重复）静默取消，
+      // 只有落到空白处才弹"建卡并连线"菜单
+      if (connectionState.isValid || connectionState.toNode) return;
       const sourceId = connectionState.fromNode?.id;
       if (!sourceId) return;
       const pos =
@@ -532,9 +854,12 @@ export default function CanvasView() {
     }));
   }, []);
 
-  // ---------- 拖拽文件导入 ----------
+  // ---------- 拖拽文件导入 / 工具条拖入建卡 ----------
   const onDragOver = useCallback((event: React.DragEvent) => {
-    if (event.dataTransfer.types.includes("Files")) {
+    if (
+      event.dataTransfer.types.includes("Files") ||
+      event.dataTransfer.types.includes(PALETTE_DRAG_TYPE)
+    ) {
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
     }
@@ -542,6 +867,23 @@ export default function CanvasView() {
 
   const onDrop = useCallback(
     (event: React.DragEvent) => {
+      const paletteType = event.dataTransfer.getData(PALETTE_DRAG_TYPE);
+      if (paletteType) {
+        event.preventDefault();
+        const flow = screenToFlowPosition({
+          x: event.clientX,
+          y: event.clientY,
+        });
+        addNode({
+          position: { x: flow.x - 110, y: flow.y - 40 },
+          data: {
+            nodeType: paletteType as WingNodeType,
+            title: NODE_META[paletteType as WingNodeType]?.hint ?? "新卡片",
+            body: "",
+          },
+        });
+        return;
+      }
       if (!event.dataTransfer.files?.length) return;
       event.preventDefault();
       const flow = screenToFlowPosition({
@@ -550,21 +892,26 @@ export default function CanvasView() {
       });
       void importDroppedFiles([...event.dataTransfer.files], flow);
     },
-    [screenToFlowPosition],
+    [screenToFlowPosition, addNode],
   );
 
   return (
     <div className="relative h-full w-full">
       {nodes.length === 0 ? <EmptyState /> : null}
       <SelectionToolbar />
+      <GuideOverlay />
       <ReactFlow
         nodes={nodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
+        defaultEdgeOptions={DEFAULT_EDGE_OPTS}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={onConnectEnd}
+        isValidConnection={isValidConnection}
+        onReconnect={onReconnect}
+        edgesReconnectable
         onMoveEnd={onMoveEnd}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
@@ -576,8 +923,8 @@ export default function CanvasView() {
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
         fitView={nodes.length > 0}
         fitViewOptions={{ padding: 0.15 }}
-        minZoom={0.2}
-        maxZoom={2}
+        minZoom={0.1}
+        maxZoom={3}
         deleteKeyCode={["Backspace", "Delete"]}
         multiSelectionKeyCode={["Shift", "Meta"]}
         selectionOnDrag
@@ -585,6 +932,7 @@ export default function CanvasView() {
         zoomOnDoubleClick={false}
         snapToGrid
         snapGrid={[16, 16]}
+        onlyRenderVisibleElements
         className="bg-transparent"
       >
         <Background
@@ -593,17 +941,18 @@ export default function CanvasView() {
           size={1.4}
           color="var(--color-hairline)"
         />
-        <Controls position="bottom-left" showInteractive={false} />
         <MiniMap
           position="bottom-right"
           pannable
+          zoomable
           nodeColor={(n) => NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.dot ?? "var(--color-warm)"}
           nodeStrokeColor="var(--color-hairline)"
         />
         <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
           <AddNodeToolbar />
-          <FitViewButton />
+          <NodeSearch />
         </div>
+        <BottomDock />
         <CanvasShortcuts />
       </ReactFlow>
       {pendingLink ? (
@@ -618,7 +967,10 @@ export default function CanvasView() {
           />
           <div
             className="fixed z-30 flex flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
-            style={{ left: pendingLink.x + 8, top: pendingLink.y + 8 }}
+            style={{
+              left: Math.min(pendingLink.x + 8, window.innerWidth - 140),
+              top: Math.min(pendingLink.y + 8, window.innerHeight - 220),
+            }}
           >
             <p className="px-2 py-1 text-[10px] text-text-4">建卡并连线</p>
             {linkMenuTypes.map((t) => (
@@ -670,6 +1022,7 @@ export default function CanvasView() {
                 ))}
                 <CtxItem
                   label="粘贴"
+                  disabled={clipboardCount === 0}
                   onClick={() => {
                     useCanvasStore.getState().pasteClipboard();
                     closeCtx();
@@ -699,6 +1052,34 @@ export default function CanvasView() {
                     closeCtx();
                   }}
                 />
+                <CtxItem
+                  label="置顶"
+                  onClick={() => {
+                    useCanvasStore.getState().bringToFront([ctxMenu.id]);
+                    closeCtx();
+                  }}
+                />
+                <CtxItem
+                  label="置底"
+                  onClick={() => {
+                    useCanvasStore.getState().sendToBack([ctxMenu.id]);
+                    closeCtx();
+                  }}
+                />
+                {nodes.find((n) => n.id === ctxMenu.id)?.data.nodeType !==
+                "group" ? (
+                  <CtxItem
+                    label="转换为…"
+                    onClick={() =>
+                      setCtxMenu({
+                        kind: "convert",
+                        x: ctxMenu.x,
+                        y: ctxMenu.y,
+                        id: ctxMenu.id,
+                      })
+                    }
+                  />
+                ) : null}
                 {nodes.find((n) => n.id === ctxMenu.id)?.data.nodeType ===
                 "group" ? (
                   <CtxItem
@@ -718,6 +1099,25 @@ export default function CanvasView() {
                   }}
                 />
               </>
+            ) : ctxMenu.kind === "convert" ? (
+              <>
+                <p className="px-2 py-1 text-[10px] text-text-4">转换为（保留内容与连线）</p>
+                {CONVERT_TYPES.filter(
+                  (t) =>
+                    t !==
+                    nodes.find((n) => n.id === ctxMenu.id)?.data.nodeType,
+                ).map((t) => (
+                  <CtxItem
+                    key={t}
+                    label={NODE_META[t].label}
+                    dot={NODE_META[t].dot}
+                    onClick={() => {
+                      useCanvasStore.getState().convertNodeType(ctxMenu.id, t);
+                      closeCtx();
+                    }}
+                  />
+                ))}
+              </>
             ) : ctxMenu.kind === "selection" ? (
               <>
                 <CtxItem
@@ -731,6 +1131,20 @@ export default function CanvasView() {
                   label="打成一组"
                   onClick={() => {
                     useCanvasStore.getState().groupNodes(ctxMenu.ids);
+                    closeCtx();
+                  }}
+                />
+                <CtxItem
+                  label="置顶"
+                  onClick={() => {
+                    useCanvasStore.getState().bringToFront(ctxMenu.ids);
+                    closeCtx();
+                  }}
+                />
+                <CtxItem
+                  label="置底"
+                  onClick={() => {
+                    useCanvasStore.getState().sendToBack(ctxMenu.ids);
                     closeCtx();
                   }}
                 />

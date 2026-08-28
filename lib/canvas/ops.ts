@@ -12,6 +12,7 @@ import {
   useCanvasStore,
   type WingNodeType,
 } from "./store";
+import type { CSSProperties } from "react";
 
 export type AddNodeOp = {
   op: "add_node";
@@ -156,12 +157,19 @@ export function applyOps(rawOps: unknown): OpResult {
             break;
           }
           const pos = op.position ?? autoPosition();
+          // 批量建卡级联入场（对标影策 45ms 错峰；CSS 变量经节点 style 继承到卡片）
+          const stagger = Math.min(createdIds.length, 12) * 50;
           const id = store.addNode({
             id: op.id,
             position: pos,
             // agent 直接建空分组时给默认尺寸，否则零尺寸不可见
             ...(op.nodeType === "group"
               ? { style: { width: 480, height: 360 } }
+              : {}),
+            ...(stagger > 0
+              ? {
+                  style: { "--ws-stagger": `${stagger}ms` } as CSSProperties,
+                }
               : {}),
             data: {
               nodeType: op.nodeType,

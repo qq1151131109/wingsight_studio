@@ -106,7 +106,7 @@ export default function PromptBar({
   };
 
   return (
-    <div className="nodrag nowheel mt-1.5 rounded-md border border-hairline bg-surface-2/60 p-1.5">
+    <div className="ws-detail nodrag nowheel mt-1.5 rounded-md border border-hairline bg-surface-2/60 p-1.5">
       {refs.length > 0 ? (
         <div className="mb-1 flex flex-wrap gap-1">
           {refs.map((r) => (

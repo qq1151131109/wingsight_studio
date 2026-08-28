@@ -132,6 +132,13 @@ body {
     border-radius: 0.75rem;
     box-shadow: 0 1px 3px oklch(0 0 0 / 0.06);
     transition: border-color 150ms, box-shadow 150ms;
+    /* both：延迟入场（--ws-stagger）前保持隐藏 */
+    animation: ws-card-in 220ms ease-out both;
+    animation-delay: var(--ws-stagger, 0ms);
+}
+@keyframes ws-card-in {
+    from { opacity: 0; transform: scale(0.96); }
+    to { opacity: 1; transform: scale(1); }
 }
 .ws-card:hover {
     border-color: var(--color-hairline-strong);
@@ -139,6 +146,28 @@ body {
 .ws-card.selected {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-dim);
+}
+
+/* @引用光环：被选中生成卡引用的卡片点亮（虚线描边） */
+.ws-card.ws-ref-halo {
+    outline: 1.5px dashed var(--color-accent-2);
+    outline-offset: 3px;
+}
+
+/* LOD：低缩放（<0.5）只留徽标 + 标题，降噪 */
+.ws-card.is-tiny .ws-detail { display: none; }
+.ws-card.is-tiny .react-flow__handle { opacity: 0; }
+
+/* 卡片手柄：默认隐藏，hover/选中/连线时浮现（画布更安静） */
+.ws-card .react-flow__handle {
+    opacity: 0;
+    transition: opacity 120ms;
+}
+.ws-card:hover .react-flow__handle,
+.ws-card.selected .react-flow__handle,
+.react-flow__handle-connecting,
+.react-flow__handle.connectionindicator:hover {
+    opacity: 1;
 }
 
 /* agent 建卡后的瞬时高亮：强调环闪两下 */
@@ -167,19 +196,11 @@ body {
     border-radius: 9999px;
 }
 
-/* 图片卡生成中的微光进度条 */
-@keyframes ws-shimmer {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
-}
-.ws-shimmer {
-  background: linear-gradient(
-    90deg,
-    transparent,
-    var(--color-accent-soft),
-    transparent
-  );
-  animation: ws-shimmer 1.6s ease-in-out infinite;
+/* 就绪媒体淡入：loading→ready 的硬切换变柔和 */
+.ws-media-in { animation: ws-fade-in 360ms ease-out; }
+@keyframes ws-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
 }
 
 /* === React Flow 主题适配 === */
@@ -196,6 +217,9 @@ body {
 .react-flow__edge-path {
     stroke: var(--color-hairline-strong);
     stroke-width: 1.5;
+}
+.react-flow__edge:hover .react-flow__edge-path {
+    stroke: var(--color-text-4);
 }
 .react-flow__edge.selected .react-flow__edge-path {
     stroke: var(--color-accent);
@@ -215,6 +239,10 @@ body {
 .react-flow__edge-text {
     fill: var(--color-text-3);
     font-size: 0.65rem;
+    /* 描边光环：标签压在线上也读得清 */
+    paint-order: stroke;
+    stroke: var(--color-bg);
+    stroke-width: 3px;
 }
 
 .react-flow__controls {

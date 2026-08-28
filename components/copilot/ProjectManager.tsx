@@ -58,6 +58,7 @@ export default function ProjectManager() {
         await activateProject(target);
       } catch {
         // agent 服务不可达：降级用旧缓存（若有），页面仍可用
+        useCanvasStore.getState().setSaveState("offline");
         const legacy = readLegacyCanvas();
         if (legacy) {
           useCanvasStore.getState().replaceCanvas(
@@ -144,11 +145,12 @@ export default function ProjectManager() {
   return null;
 }
 
-/** 服务端 + 本地缓存双写 */
+/** 服务端 + 本地缓存双写（结果写入画布的保存状态指示器） */
 async function persist(
   pid: string,
   payload: { nodes: unknown[]; edges: unknown[]; viewport: unknown },
 ) {
+  useCanvasStore.getState().setSaveState("saving");
   try {
     localStorage.setItem(
       cacheKey(pid),
@@ -157,7 +159,17 @@ async function persist(
   } catch {
     /* 隐私模式等忽略 */
   }
-  await saveCanvas(pid, payload).catch(() => undefined);
+  try {
+    await saveCanvas(pid, payload);
+    // 仅当仍在本项目时更新状态（快速切换项目不被旧请求覆盖）
+    if (useCanvasStore.getState().projectId === pid) {
+      useCanvasStore.getState().setSaveState("saved");
+    }
+  } catch {
+    if (useCanvasStore.getState().projectId === pid) {
+      useCanvasStore.getState().setSaveState("offline");
+    }
+  }
 }
 
 async function activateProject(p: ProjectMeta) {
