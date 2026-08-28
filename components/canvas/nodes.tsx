@@ -336,10 +336,38 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
   );
 }
 
+/** 分组框：虚线容器（子节点由 React Flow parentId 机制跟随移动，坐标相对本组） */
+function GroupCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const update = makeUpdater(id);
+  if (!d || typeof d.nodeType !== "string") return null;
+  return (
+    <div
+      className={`h-full w-full rounded-xl border border-dashed bg-surface-1/30 ${
+        selected ? "border-accent" : "border-hairline"
+      }`}
+    >
+      <div className="flex items-center gap-1.5 px-2.5 py-1.5">
+        <span
+          className="ws-card-dot"
+          style={{ background: NODE_META.group.dot }}
+        />
+        <Editable
+          value={d.title}
+          onSave={(title) => update({ title })}
+          className="text-xs font-medium text-text-3"
+          placeholder="分组名"
+        />
+      </div>
+    </div>
+  );
+}
+
 export const nodeTypes = {
   note: memo(NoteCard),
   script: memo(ScriptCard),
   character: memo(CharacterCard),
   image: memo(ImageCard),
   storyboard: memo(StoryboardCard),
+  group: memo(GroupCard),
 };

@@ -121,6 +121,7 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 - {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
 - {{"op":"delete_nodes","ids":["节点id",...]}}  删除卡片
 - {{"op":"connect_nodes","fromId":"节点id","toId":"节点id"}}  连线（方向：from → to）
+- {{"op":"group_nodes","ids":["节点id",...],"title":"分组名"}}  把多张卡收进一个分组框（如整场戏的分镜归拢）
 - {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
 
 storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么、机位运动），

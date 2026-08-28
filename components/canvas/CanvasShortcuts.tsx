@@ -10,7 +10,8 @@
 
 import { useEffect } from "react";
 import { useReactFlow } from "@xyflow/react";
-import { useCanvasStore } from "@/lib/canvas/store";
+import { selectAllNodes, useCanvasStore } from "@/lib/canvas/store";
+import { uploadAsset } from "@/lib/projects";
 
 function isTyping(e: KeyboardEvent): boolean {
   const el = e.target as HTMLElement | null;
@@ -45,6 +46,9 @@ export default function CanvasShortcuts() {
       } else if (mod && e.key.toLowerCase() === "v") {
         // 内部剪贴板粘贴；系统剪贴板的图片走下方 paste 事件
         store.pasteClipboard();
+      } else if (mod && e.key.toLowerCase() === "a") {
+        e.preventDefault();
+        selectAllNodes();
       }
     };
 
@@ -59,14 +63,8 @@ export default function CanvasShortcuts() {
       if (!file) return;
       void (async () => {
         try {
-          const buf = await file.arrayBuffer();
-          const r = await fetch("/agent-service/assets", {
-            method: "POST",
-            headers: { "Content-Type": file.type || "image/png" },
-            body: buf,
-          });
-          if (!r.ok) return;
-          const { url } = (await r.json()) as { url: string };
+          const url = await uploadAsset(file);
+          if (!url) return;
           const center = screenToFlowPosition({
             x: window.innerWidth / 2,
             y: window.innerHeight / 2,

@@ -34,9 +34,11 @@ cd agent && uv sync
 uv run uvicorn main:app --port 8123 --host 127.0.0.1
 ```
 
-打开 http://localhost:8002 ：双击画布加便签 / 工具条加卡片 / 连线拖到空白处快速建卡 / 右侧聊天让助手建卡连线、调技能。
+打开 http://localhost:8002 ：双击画布加便签 / 工具条加卡片 / 连线拖到空白处快速建卡 / 右键呼出四态菜单（空白：加卡/粘贴/全选；节点与多选：复制/打成一组/删除；连线：删除）/ 右侧聊天让助手建卡连线、调技能。
 
-画布快捷键：`Cmd/Ctrl+Z` 撤销、`Shift+Cmd/Ctrl+Z` 或 `Ctrl+Y` 重做、`Cmd/Ctrl+C/V` 复制粘贴选中卡（连线随行）、粘贴系统剪贴板图片直接落成图片卡（经 `/agent-service/assets` 上传）。文本编辑中不拦截。
+画布快捷键：`Cmd/Ctrl+Z` 撤销、`Shift+Cmd/Ctrl+Z` 或 `Ctrl+Y` 重做、`Cmd/Ctrl+C/V` 复制粘贴选中卡（连线随行）、`Cmd/Ctrl+A` 全选、粘贴系统剪贴板图片直接落成图片卡（经 `/agent-service/assets` 上传）。文本编辑中不拦截。
+
+其他画布能力：拖拽图片或 `.txt`/`.md` 文件进画布直接建卡（图片走上传、md 当剧本、txt 当便签）；框选多卡后可打成分组框（子卡跟随移动，删除分组自动解散并保留子卡）；节点拖拽带 16px 网格吸附。
 
 ### .env.local 配置
 
@@ -61,7 +63,8 @@ Agent 走同源代理 `/agent-service`，隧道访问无需为 8123 单独开隧
   {"op": "update_node", "id": "n_xxx", "title": "…", "body": "…"},
   {"op": "delete_nodes", "ids": ["n_xxx"]},
   {"op": "connect_nodes", "fromId": "n_xxx", "toId": "n_xyy"},
-  {"op": "set_viewport", "x": 0, "y": 0, "zoom": 1}
+  {"op": "set_viewport", "x": 0, "y": 0, "zoom": 1},
+  {"op": "group_nodes", "ids": ["n_xxx", "n_xyy"], "title": "分组名"}  // 把多张卡收进分组框
 ]
 ```
 
@@ -79,6 +82,7 @@ node scripts/agui-client-test.mjs   # 需 agent 服务已启动；验证两轮�
 - 画布摘要 ground truth 注入（STATE_SNAPSHOT / RAW 事件确认）✓
 - Langflow 技能调用：list_langflow_skills / run_langflow_skill 端到端（含 404/参数错误优雅降级）✓
 - 画布体验 P0/P1（撤销重做/复制粘贴/粘贴图片、分镜卡、视口双向同步）：tsc + eslint + next build 全绿 ✓
+- 画布体验 P2（右键菜单四态、拖拽文件导入、分组框、网格吸附、Cmd+A）：tsc + eslint + next build 全绿 ✓（自动化浏览器后端不可用，交互细节待人工冒烟）
 
 ## 已知边界
 
@@ -88,6 +92,6 @@ node scripts/agui-client-test.mjs   # 需 agent 服务已启动；验证两轮�
 
 ## 后续规划
 
-1. 画布体验 P2：右键菜单（空白/节点/多选/边四态）、拖拽文件导入、分组框、网格吸附
+1. 画布体验余项：对齐辅助线、悬停工具条、撤销/重做的工具条按钮
 2. `@引用` token（提示词引用上游卡/参考图）→ 角色一致性管线（三视图 + 接力帧）
 3. 分镜卡批量生成画面；多技能意图路由

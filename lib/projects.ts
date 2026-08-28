@@ -46,3 +46,19 @@ export async function saveCanvas(
   });
   return r.ok;
 }
+
+/** 上传图片资产（粘贴/拖拽导入共用），返回同源可访问的图片 URL；失败返回 null */
+export async function uploadAsset(
+  file: Blob,
+  contentType?: string,
+): Promise<string | null> {
+  const buf = await file.arrayBuffer();
+  const r = await fetch("/agent-service/assets", {
+    method: "POST",
+    headers: { "Content-Type": contentType || file.type || "image/png" },
+    body: buf,
+  });
+  if (!r.ok) return null;
+  const { url } = (await r.json()) as { url: string };
+  return url;
+}

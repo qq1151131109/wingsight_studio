@@ -59,12 +59,20 @@ export type SetViewportOp = {
   zoom?: number;
 };
 
+export type GroupNodesOp = {
+  op: "group_nodes";
+  /** 要收进分组的节点 id 列表 */
+  ids: string[];
+  title?: string;
+};
+
 export type CanvasOp =
   | AddNodeOp
   | UpdateNodeOp
   | DeleteNodesOp
   | ConnectNodesOp
-  | SetViewportOp;
+  | SetViewportOp
+  | GroupNodesOp;
 
 export interface OpResult {
   applied: number;
@@ -140,6 +148,10 @@ export function applyOps(rawOps: unknown): OpResult {
           const id = store.addNode({
             id: op.id,
             position: pos,
+            // agent 直接建空分组时给默认尺寸，否则零尺寸不可见
+            ...(op.nodeType === "group"
+              ? { style: { width: 480, height: 360 } }
+              : {}),
             data: {
               nodeType: op.nodeType,
               title: (op.title ?? NODE_META[op.nodeType].hint).slice(0, 80),
@@ -231,6 +243,25 @@ export function applyOps(rawOps: unknown): OpResult {
                 : store.viewport.zoom,
           });
           applied += 1;
+          break;
+        }
+        case "group_nodes": {
+          if (!Array.isArray(op.ids) || op.ids.length === 0) {
+            errors.push("group_nodes: ids 不能为空");
+            break;
+          }
+          const known = op.ids.filter((id) =>
+            store.nodes.some((n) => n.id === id),
+          );
+          if (known.length < 2) {
+            errors.push("group_nodes: 至少需要 2 个存在的节点");
+            break;
+          }
+          const gid = store.groupNodes(known, op.title?.slice(0, 40));
+          if (gid) {
+            createdIds.push(gid);
+            applied += 1;
+          }
           break;
         }
         default:

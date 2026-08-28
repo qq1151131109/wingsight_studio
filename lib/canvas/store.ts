@@ -13,8 +13,14 @@ import {
   type Viewport,
 } from "@xyflow/react";
 
-/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 / 分镜 */
-export type WingNodeType = "note" | "script" | "character" | "image" | "storyboard";
+/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 / 分镜 / 分组框 */
+export type WingNodeType =
+  | "note"
+  | "script"
+  | "character"
+  | "image"
+  | "storyboard"
+  | "group";
 
 export interface WingNodeData {
   nodeType: WingNodeType;
@@ -63,6 +69,10 @@ interface CanvasState {
   onEdgesChange: (changes: EdgeChange<WingEdge>[]) => void;
   onConnect: (connection: Connection) => void;
   setViewport: (viewport: Viewport) => void;
+  /** 打组：把 ids 收进新建分组框（parentId+extent，坐标转相对），返回组 id */
+  groupNodes: (ids: string[], title?: string) => string | null;
+  /** 解组：解散分组框删除组节点，子节点回画布层（坐标转绝对），返回子节点数 */
+  ungroupNode: (id: string) => number;
   /** 撤销/重做（快照栈，上限 50） */
   undo: () => boolean;
   redo: () => boolean;
@@ -98,6 +108,42 @@ function snapshot(state: CanvasState): CanvasSnapshot {
     nodes: structuredClone(state.nodes),
     edges: structuredClone(state.edges),
   };
+}
+
+/** 节点绝对画布坐标（沿 parentId 链累加；分组子节点坐标是相对父组的） */
+function absolutePosition(
+  nodes: WingNode[],
+  node: WingNode,
+): { x: number; y: number } {
+  const byId = new Map(nodes.map((n) => [n.id, n] as const));
+  let x = node.position.x;
+  let y = node.position.y;
+  let cur: WingNode | undefined = node;
+  while (cur?.parentId) {
+    const parent = byId.get(cur.parentId);
+    if (!parent) break;
+    x += parent.position.x;
+    y += parent.position.y;
+    cur = parent;
+  }
+  return { x, y };
+}
+
+/** 估算卡片占位（打组算包围盒用；与渲染宽度近似即可） */
+const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
+  note: { w: 256, h: 150 },
+  script: { w: 352, h: 260 },
+  character: { w: 256, h: 150 },
+  image: { w: 256, h: 260 },
+  storyboard: { w: 320, h: 220 },
+  group: { w: 480, h: 360 },
+};
+
+/** 全选（快捷键与右键菜单共用；不走 action 以免挤占撤销栈） */
+export function selectAllNodes() {
+  useCanvasStore.setState((s) => ({
+    nodes: s.nodes.map((n) => ({ ...n, selected: true })),
+  }));
 }
 
 export const useCanvasStore = create<CanvasState>()(
@@ -220,12 +266,103 @@ export const useCanvasStore = create<CanvasState>()(
       deleteNodes: (ids) => {
         const idSet = new Set(ids);
         get().commitHistory();
-        set((state) => ({
-          nodes: state.nodes.filter((n) => !idSet.has(n.id)),
-          edges: state.edges.filter(
-            (e) => !idSet.has(e.source) && !idSet.has(e.target),
-          ),
+        set((state) => {
+          // 删除分组框时提升存活子节点到画布层（坐标转绝对），避免孤儿 parentId
+          const promoted = state.nodes.flatMap((g) => {
+            if (!idSet.has(g.id) || g.data.nodeType !== "group") return [];
+            return state.nodes
+              .filter((c) => c.parentId === g.id && !idSet.has(c.id))
+              .map((c) => ({
+                ...structuredClone(c),
+                parentId: undefined,
+                extent: undefined,
+                position: { x: g.position.x + c.position.x, y: g.position.y + c.position.y },
+              })) as WingNode[];
+          });
+          const promotedIds = new Set(promoted.map((p) => p.id));
+          return {
+            nodes: [
+              ...state.nodes.filter((n) => !idSet.has(n.id) && !promotedIds.has(n.id)),
+              ...promoted,
+            ],
+            edges: state.edges.filter(
+              (e) => !idSet.has(e.source) && !idSet.has(e.target),
+            ),
+          };
+        });
+      },
+
+      groupNodes: (ids, title) => {
+        const state = get();
+        const targets = state.nodes.filter((n) => ids.includes(n.id));
+        if (targets.length === 0) return null;
+        // 绝对坐标算包围盒（混入已分组节点时按绝对坐标展开）
+        const absById = new Map(
+          targets.map((t) => [t.id, absolutePosition(state.nodes, t)] as const),
+        );
+        const boxes = targets.map((n) => {
+          const abs = absById.get(n.id)!;
+          const fp = NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
+          return { x: abs.x, y: abs.y, w: fp.w, h: fp.h };
+        });
+        const minX = Math.min(...boxes.map((b) => b.x));
+        const minY = Math.min(...boxes.map((b) => b.y));
+        const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+        const maxY = Math.max(...boxes.map((b) => b.y + b.h));
+        const pad = 36;
+        const groupId = genNodeId();
+        const groupNode: WingNode = {
+          id: groupId,
+          type: "group",
+          position: { x: minX - pad, y: minY - pad - 22 },
+          style: { width: maxX - minX + pad * 2, height: maxY - minY + pad * 2 + 22 },
+          data: { nodeType: "group", title: title ?? "分组", body: "" },
+        };
+        const targetIds = new Set(targets.map((t) => t.id));
+        get().commitHistory();
+        set((s) => ({
+          nodes: [
+            ...s.nodes.map((n) =>
+              targetIds.has(n.id)
+                ? ({
+                    ...structuredClone(n),
+                    parentId: groupId,
+                    extent: "parent",
+                    position: {
+                      x: (absById.get(n.id)?.x ?? n.position.x) - groupNode.position.x,
+                      y: (absById.get(n.id)?.y ?? n.position.y) - groupNode.position.y,
+                    },
+                  } as WingNode)
+                : n,
+            ),
+            groupNode,
+          ],
         }));
+        return groupId;
+      },
+
+      ungroupNode: (id) => {
+        const state = get();
+        const group = state.nodes.find(
+          (n) => n.id === id && n.data.nodeType === "group",
+        );
+        if (!group) return 0;
+        const children = state.nodes.filter((n) => n.parentId === id);
+        if (children.length === 0) return 0;
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.flatMap((n) => {
+            if (n.id === id) return [];
+            if (n.parentId !== id) return [n];
+            return [{
+              ...structuredClone(n),
+              parentId: undefined,
+              extent: undefined,
+              position: { x: group.position.x + n.position.x, y: group.position.y + n.position.y },
+            } as WingNode];
+          }),
+        }));
+        return children.length;
       },
 
       connect: (connection) => {
@@ -276,6 +413,7 @@ export const NODE_META: Record<
   character: { label: "角色", dot: "var(--color-good)", hint: "角色设定卡" },
   image: { label: "图片", dot: "var(--color-warn)", hint: "设定图 / 参考图占位" },
   storyboard: { label: "分镜", dot: "var(--color-accent-2)", hint: "镜头画面描述" },
+  group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
 };
 
 /** 画布摘要（给 agent 的读通道，压缩到预算内） */
@@ -295,9 +433,13 @@ export function summarizeCanvas(
       n.data.nodeType === "storyboard" && (n.data.shotSize || n.data.duration)
         ? `（${[n.data.shotSize, n.data.duration].filter(Boolean).join("·")}）`
         : "";
+    const kids =
+      n.data.nodeType === "group"
+        ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡）`
+        : "";
     const body = n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
     const sel = selectedIds.includes(n.id) ? " [选中]" : "";
-    lines.push(`- ${n.id} [${meta.label}] ${title}${shot}${body}${sel}`);
+    lines.push(`- ${n.id} [${meta.label}] ${title}${shot}${kids}${body}${sel}`);
   }
   for (const e of edges) {
     lines.push(`- 连线 ${e.source} → ${e.target}`);
