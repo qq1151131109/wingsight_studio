@@ -34,7 +34,8 @@ cd agent && uv sync
 uv run uvicorn main:app --port 8123 --host 127.0.0.1
 ```
 
-打开 http://localhost:8002 ：双击画布加便签 / 工具条加卡片 / 连线拖到空白处快速建卡 / 右键呼出四态菜单（空白：加卡/粘贴/全选；节点与多选：复制/打成一组/删除；连线：删除）/ 右侧聊天让助手建卡连线、调技能。
+打开 http://localhost:8002 ：首页项目仪表盘（新建/搜索/协作者/删改）→ 点击项目卡进入画布：
+双击画布加便签 / 工具条加卡片 / 连线拖到空白处快速建卡 / 右键呼出四态菜单（空白：加卡/粘贴/全选；节点与多选：复制/打成一组/删除；连线：删除）/ 右侧聊天让助手建卡连线、调技能。左侧栏房子图标回首页。
 
 画布快捷键：`Cmd/Ctrl+Z` 撤销、`Shift+Cmd/Ctrl+Z` 或 `Ctrl+Y` 重做、`Cmd/Ctrl+C/V` 复制粘贴选中卡（连线随行）、`Cmd/Ctrl+A` 全选、粘贴系统剪贴板图片直接落成图片卡（经 `/agent-service/assets` 上传）。文本编辑中不拦截。
 
@@ -99,8 +100,9 @@ node scripts/agui-client-test.mjs   # 需 agent 服务已启动；验证两轮�
 - 用户管理：`/api/v1/admin/users`（不能停用自己 / 不能降级最后一个 admin）
 - 自助注册默认关闭（`AUTH_REGISTER_OPEN=true` 开放）
 
-前端：`/login` `/register` 页 + AuthGate 守卫（关闭认证时自动跳过）；
-API 调用统一走 `apiFetch`（自动 Bearer、401 回登录）；Agent 请求带 Bearer header。
+前端：`/` 项目仪表盘首页（搜索/排序/建删改名/协作者管理，进入 `/project/[pid]` 画布）；
+`/admin` 管理后台（用户管理 + API Key，仅 admin 可见入口）；`/login` `/register` + AuthGate 守卫
+（关闭认证时自动跳过）；API 调用统一走 `apiFetch`（自动 Bearer、401 回登录）；Agent 请求带 Bearer header。
 
 已知边界：AG-UI 根端点与 `/assets` 静态文件未鉴权（资源名为随机 hex，
 等价 capability URL）。后端冒烟测试：`cd agent && uv run python ../scripts/auth-smoke-test.py`（34 项）。
@@ -113,7 +115,7 @@ API 调用统一走 `apiFetch`（自动 Bearer、401 回登录）；Agent 请求
 
 ## 后续规划
 
-1. 平台余项：用户/API Key/协作者管理界面（目前只有 API）、项目 ZIP 导入导出（juben 有实现可搬）、公开只读分享链接（juben 也没有，需自建）
+1. 平台余项：项目 ZIP 导入导出（juben 有实现可搬）、公开只读分享链接（juben 也没有，需自建）、用量统计页
 2. 画布体验余项：对齐辅助线、悬停工具条、撤销/重做的工具条按钮
 3. `@引用` token（提示词引用上游卡/参考图）→ 角色一致性管线（三视图 + 接力帧）
 4. 分镜卡批量生成画面；多技能意图路由

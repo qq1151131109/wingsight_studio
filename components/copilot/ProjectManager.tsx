@@ -2,12 +2,15 @@
 
 /**
  * 项目管理桥：
+ *  - 路由激活：按 /project/[pid] 路由参数激活项目；无效则回退到列表第一个
  *  - 初始化：拉项目列表；无项目则建「默认项目」并迁移旧 localStorage 画布
  *  - 同步：画布变化 debounce 1.2s → PUT 服务端；同时写本地缓存（离线降级）
+ *  - 离开工作台（组件卸载）时冲刷未落盘的 debounce 保存
  *  - localStorage 仅作每项目缓存（键含 projectId），服务端是唯一事实源
  */
 
 import { useCallback, useEffect, useRef } from "react";
+import { useParams } from "next/navigation";
 import { useCanvasStore } from "@/lib/canvas/store";
 import {
   createProject,
@@ -23,8 +26,10 @@ const SYNC_DEBOUNCE_MS = 1200;
 
 export default function ProjectManager() {
   const projectId = useCanvasStore((s) => s.projectId);
+  const params = useParams<{ pid?: string }>();
+  const urlPid = params?.pid;
 
-  // ---------- 初始化 / 迁移 ----------
+  // ---------- 初始化 / 迁移 / 按 URL 激活 ----------
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -47,7 +52,10 @@ export default function ProjectManager() {
           if (cancelled) return;
         }
 
-        await activateProject(projects[0]);
+        // URL 指定的项目优先（首页点进来的）；不存在则回退第一个
+        const target =
+          (urlPid && projects.find((p) => p.id === urlPid)) || projects[0];
+        await activateProject(target);
       } catch {
         // agent 服务不可达：降级用旧缓存（若有），页面仍可用
         const legacy = readLegacyCanvas();
@@ -69,10 +77,11 @@ export default function ProjectManager() {
     return () => {
       cancelled = true;
     };
-     
+    // 仅初始激活一次；项目内切换走 switch-project 事件
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ---------- 项目切换 ----------
+  // ---------- 项目切换（ActivityBar 快捷切换器） ----------
   const switchProject = useCallback(async (pid: string) => {
     const store = useCanvasStore.getState();
     // 先落盘当前项目
@@ -106,24 +115,49 @@ export default function ProjectManager() {
     timer.current = setTimeout(() => {
       const s = useCanvasStore.getState();
       if (!s.projectId || !s.hydrated) return;
-      const payload = { nodes: s.nodes, edges: s.edges, viewport: s.viewport };
-      // 本地缓存（离线降级用）
-      try {
-        localStorage.setItem(
-          cacheKey(s.projectId),
-          JSON.stringify({ state: payload, version: 0 }),
-        );
-      } catch {
-        /* 隐私模式等忽略 */
-      }
-      void saveCanvas(s.projectId, payload).catch(() => undefined);
+      void persist(s.projectId, {
+        nodes: s.nodes,
+        edges: s.edges,
+        viewport: s.viewport,
+      });
     }, SYNC_DEBOUNCE_MS);
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
   }, [projectId, nodes, edges, viewport]);
 
+  // ---------- 离开工作台：冲刷未落盘的修改 ----------
+  useEffect(() => {
+    return () => {
+      if (!timer.current) return;
+      const s = useCanvasStore.getState();
+      if (s.projectId && s.hydrated) {
+        void persist(s.projectId, {
+          nodes: s.nodes,
+          edges: s.edges,
+          viewport: s.viewport,
+        });
+      }
+    };
+  }, []);
+
   return null;
+}
+
+/** 服务端 + 本地缓存双写 */
+async function persist(
+  pid: string,
+  payload: { nodes: unknown[]; edges: unknown[]; viewport: unknown },
+) {
+  try {
+    localStorage.setItem(
+      cacheKey(pid),
+      JSON.stringify({ state: payload, version: 0 }),
+    );
+  } catch {
+    /* 隐私模式等忽略 */
+  }
+  await saveCanvas(pid, payload).catch(() => undefined);
 }
 
 async function activateProject(p: ProjectMeta) {

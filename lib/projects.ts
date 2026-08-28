@@ -8,6 +8,9 @@ export interface ProjectMeta {
   id: string;
   name: string;
   updated_at: string;
+  /** 归属与协作者（多人模式下由后端返回） */
+  owner_id?: string;
+  collaborators?: string[];
 }
 
 const BASE = "/agent-service/projects";
@@ -26,6 +29,20 @@ export async function createProject(name: string): Promise<ProjectMeta> {
   });
   if (!r.ok) throw new Error(`新建项目失败：${r.status}`);
   return r.json();
+}
+
+export async function renameProject(pid: string, name: string): Promise<boolean> {
+  const r = await apiFetch(`${BASE}/${pid}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return r.ok;
+}
+
+export async function deleteProject(pid: string): Promise<boolean> {
+  const r = await apiFetch(`${BASE}/${pid}`, { method: "DELETE" });
+  return r.ok;
 }
 
 export async function loadCanvas(

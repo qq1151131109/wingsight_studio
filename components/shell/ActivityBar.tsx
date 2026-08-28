@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   Drama,
   FolderPlus,
+  House,
   LayoutGrid,
   LogOut,
   Moon,
@@ -11,6 +12,7 @@ import {
   Settings,
   Sun,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { createProject, listProjects, type ProjectMeta } from "@/lib/projects";
 import { clearToken, getToken } from "@/lib/auth";
@@ -40,6 +42,7 @@ const ITEMS = [
 ] as const;
 
 export default function ActivityBar() {
+  const router = useRouter();
   const dark = useThemeIsDark();
   const projectId = useCanvasStore((s) => s.projectId);
   const projectName = useCanvasStore((s) => s.projectName);
@@ -104,7 +107,15 @@ export default function ActivityBar() {
       >
         翼
       </div>
-      {/* 项目切换器 */}
+      {/* 首页 + 项目切换器 */}
+      <button
+        type="button"
+        title="项目首页"
+        onClick={() => router.push("/")}
+        className="mb-1 flex h-8 w-8 items-center justify-center rounded-lg text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+      >
+        <House className="h-4 w-4" />
+      </button>
       <div className="mb-3 flex w-12 flex-col items-center gap-1">
         <select
           title={projectName || "切换项目"}
