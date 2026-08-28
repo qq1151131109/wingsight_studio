@@ -30,14 +30,21 @@ export interface WingNodeData {
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
-  /** storyboard 卡：景别（远景/全景/中景/近景/特写）与时长（如 3s） */
+  /** storyboard 卡：镜号（如 01）/ 景别（远景/全景/中景/近景/特写）/ 运镜（如 推、摇、跟）/ 时长（如 3s） */
+  shotNumber?: string;
   shotSize?: string;
+  cameraMove?: string;
   duration?: string;
+  /** storyboard 卡：台词 / 旁白 */
+  dialogue?: string;
   [key: string]: unknown;
 }
 
 export type WingNode = Node<WingNodeData>;
 export type WingEdge = Edge;
+
+/** 对齐模式：水平三档 / 垂直三档 */
+export type AlignMode = "left" | "hcenter" | "right" | "top" | "vcenter" | "bottom";
 
 /** 一份可撤销的画布快照（不含 viewport——视图位置不入栈） */
 interface CanvasSnapshot {
@@ -69,6 +76,16 @@ interface CanvasState {
   onEdgesChange: (changes: EdgeChange<WingEdge>[]) => void;
   onConnect: (connection: Connection) => void;
   setViewport: (viewport: Viewport) => void;
+  /** 选中指定节点（单选语义：清掉其余选中；选中不入撤销栈） */
+  selectNodes: (ids: string[]) => void;
+  /** agent 建卡后的瞬时高亮（不入撤销栈、不持久化，超时自动熄灭） */
+  flashIds: string[];
+  flashNodes: (ids: string[]) => void;
+  /** 多选对齐（按选择包围盒的左/中/右/顶/中/底）与等距分布 */
+  alignNodes: (ids: string[], mode: AlignMode) => void;
+  distributeNodes: (ids: string[], axis: "h" | "v") => void;
+  /** 原地复制一份选中节点（Cmd+D） */
+  duplicateSelection: () => string[];
   /** 打组：把 ids 收进新建分组框（parentId+extent，坐标转相对），返回组 id */
   groupNodes: (ids: string[], title?: string) => string | null;
   /** 解组：解散分组框删除组节点，子节点回画布层（坐标转绝对），返回子节点数 */
@@ -102,6 +119,8 @@ const history: { past: CanvasSnapshot[]; future: CanvasSnapshot[] } = {
 let internalClipboard: CanvasSnapshot | null = null;
 /** 拖拽会话防重入（一次拖动只 commit 一份"拖动前"快照） */
 let dragCommitted = false;
+/** flash 高亮的自动熄灭计时器 */
+let flashTimer: ReturnType<typeof setTimeout> | null = null;
 
 function snapshot(state: CanvasState): CanvasSnapshot {
   return {
@@ -111,7 +130,7 @@ function snapshot(state: CanvasState): CanvasSnapshot {
 }
 
 /** 节点绝对画布坐标（沿 parentId 链累加；分组子节点坐标是相对父组的） */
-function absolutePosition(
+export function absolutePosition(
   nodes: WingNode[],
   node: WingNode,
 ): { x: number; y: number } {
@@ -130,7 +149,7 @@ function absolutePosition(
 }
 
 /** 估算卡片占位（打组算包围盒用；与渲染宽度近似即可） */
-const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
+export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   note: { w: 256, h: 150 },
   script: { w: 352, h: 260 },
   character: { w: 256, h: 150 },
@@ -138,6 +157,25 @@ const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   storyboard: { w: 320, h: 220 },
   group: { w: 480, h: 360 },
 };
+
+/** 节点集合的占位盒（绝对坐标 + 分组偏移差；对齐/分布与多选工具条定位共用） */
+export function selectionBoxes(nodes: WingNode[], ids: string[]) {
+  return nodes
+    .filter((n) => ids.includes(n.id))
+    .map((n) => {
+      const abs = absolutePosition(nodes, n);
+      const fp = NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
+      return {
+        id: n.id,
+        x: abs.x,
+        y: abs.y,
+        w: fp.w,
+        h: fp.h,
+        dx: n.position.x - abs.x,
+        dy: n.position.y - abs.y,
+      };
+    });
+}
 
 /** 全选（快捷键与右键菜单共用；不走 action 以免挤占撤销栈） */
 export function selectAllNodes() {
@@ -401,6 +439,85 @@ export const useCanvasStore = create<CanvasState>()(
       onConnect: (connection) => get().connect(connection),
 
       setViewport: (viewport) => set({ viewport }),
+
+      selectNodes: (ids) => {
+        const idSet = new Set(ids);
+        set((s) => ({
+          nodes: s.nodes.map((n) => ({ ...n, selected: idSet.has(n.id) })),
+        }));
+      },
+
+      flashIds: [],
+      flashNodes: (ids) => {
+        set({ flashIds: ids });
+        if (flashTimer) clearTimeout(flashTimer);
+        flashTimer = setTimeout(() => set({ flashIds: [] }), 3200);
+      },
+
+      alignNodes: (ids, mode) => {
+        const state = get();
+        const targets = state.nodes.filter((n) => ids.includes(n.id));
+        if (targets.length < 2) return;
+        const boxes = selectionBoxes(state.nodes, targets.map((t) => t.id));
+        const minX = Math.min(...boxes.map((b) => b.x));
+        const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+        const minY = Math.min(...boxes.map((b) => b.y));
+        const maxY = Math.max(...boxes.map((b) => b.y + b.h));
+        const isH = mode === "left" || mode === "hcenter" || mode === "right";
+        const targetX = (b: (typeof boxes)[number]) =>
+          mode === "left" ? minX : mode === "right" ? maxX - b.w : (minX + maxX) / 2 - b.w / 2;
+        const targetY = (b: (typeof boxes)[number]) =>
+          mode === "top" ? minY : mode === "bottom" ? maxY - b.h : (minY + maxY) / 2 - b.h / 2;
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) => {
+            const b = boxes.find((x) => x.id === n.id);
+            if (!b) return n;
+            // 分组子节点坐标是相对父组的：绝对目标值减回父组偏移（dx/dy 记录了 pos-abs 差）
+            return {
+              ...n,
+              position: {
+                x: isH ? targetX(b) - b.dx : n.position.x,
+                y: !isH ? targetY(b) - b.dy : n.position.y,
+              },
+            };
+          }),
+        }));
+      },
+
+      distributeNodes: (ids, axis) => {
+        const state = get();
+        const targets = state.nodes.filter((n) => ids.includes(n.id));
+        if (targets.length < 3) return;
+        const boxes = selectionBoxes(state.nodes, targets.map((t) => t.id));
+        const key = axis === "h" ? "x" : "y";
+        const sorted = [...boxes].sort((a, b) => a[key] - b[key]);
+        const lead = sorted[0];
+        const tail = sorted[sorted.length - 1];
+        const leadC = lead[key] + lead.w / 2;
+        const step = (tail[key] + tail.w / 2 - leadC) / (sorted.length - 1);
+        const byId = new Map(sorted.map((b, i) => [b.id, i] as const));
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) => {
+            const i = byId.get(n.id);
+            if (i === undefined) return n;
+            const b = sorted[i];
+            if (axis === "h") {
+              const center = leadC + step * i;
+              return { ...n, position: { x: center - b.w / 2 - b.dx, y: n.position.y } };
+            }
+            const center = leadC + step * i;
+            return { ...n, position: { x: n.position.x, y: center - b.h / 2 - b.dy } };
+          }),
+        }));
+      },
+
+      duplicateSelection: () => {
+        if (get().copySelection() === 0) return [];
+        return get().pasteClipboard();
+      },
+
     }));
 
 /** 节点类型的展示元数据（徽标名 / 徽标色） */
@@ -429,10 +546,16 @@ export function summarizeCanvas(
   for (const n of nodes) {
     const meta = NODE_META[n.data.nodeType];
     const title = n.data.title.slice(0, 30) || "（无标题）";
-    const shot =
-      n.data.nodeType === "storyboard" && (n.data.shotSize || n.data.duration)
-        ? `（${[n.data.shotSize, n.data.duration].filter(Boolean).join("·")}）`
-        : "";
+    const shotFields =
+      n.data.nodeType === "storyboard"
+        ? [
+            n.data.shotNumber ? `#${n.data.shotNumber}` : "",
+            n.data.shotSize ?? "",
+            n.data.cameraMove ?? "",
+            n.data.duration ?? "",
+          ].filter(Boolean)
+        : [];
+    const shot = shotFields.length > 0 ? `（${shotFields.join("·")}）` : "";
     const kids =
       n.data.nodeType === "group"
         ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡）`

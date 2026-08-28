@@ -24,11 +24,13 @@ import {
 } from "lucide-react";
 import {
   selectAllNodes,
+  selectionBoxes,
   NODE_META,
   useCanvasStore,
   type WingNode,
   type WingNodeType,
 } from "@/lib/canvas/store";
+import { FOCUS_NODES_EVENT, type FocusNodesDetail } from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
 import { nodeTypes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
@@ -124,6 +126,7 @@ async function importDroppedFiles(
 
 function AddNodeToolbar() {
   const addNode = useCanvasStore((s) => s.addNode);
+  const { screenToFlowPosition } = useReactFlow();
   const items: { type: WingNodeType; icon: React.ReactNode }[] = [
     { type: "note", icon: <StickyNote className="h-4 w-4" /> },
     { type: "script", icon: <ScrollText className="h-4 w-4" /> },
@@ -131,6 +134,18 @@ function AddNodeToolbar() {
     { type: "storyboard", icon: <Clapperboard className="h-4 w-4" /> },
     { type: "image", icon: <ImageIcon className="h-4 w-4" /> },
   ];
+  // 建卡落在画布可视区中心（而非随机坐标）
+  const addAtCenter = (type: WingNodeType) => {
+    const rect = document.querySelector(".react-flow")?.getBoundingClientRect();
+    const center = screenToFlowPosition({
+      x: (rect?.left ?? 0) + (rect?.width ?? window.innerWidth) / 2,
+      y: (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2,
+    });
+    addNode({
+      position: { x: Math.round(center.x - 128), y: Math.round(center.y - 90) },
+      data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+    });
+  };
   return (
     <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
       {items.map(({ type, icon }) => (
@@ -139,19 +154,7 @@ function AddNodeToolbar() {
           type="button"
           title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）`}
           className="flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-          onClick={() =>
-            addNode({
-              position: {
-                x: Math.round((Math.random() - 0.3) * 400),
-                y: Math.round((Math.random() - 0.3) * 300),
-              },
-              data: {
-                nodeType: type,
-                title: NODE_META[type].hint,
-                body: "",
-              },
-            })
-          }
+          onClick={() => addAtCenter(type)}
         >
           {icon}
         </button>
@@ -171,6 +174,99 @@ function FitViewButton() {
     >
       <Maximize className="h-4 w-4" />
     </button>
+  );
+}
+
+/** 多选浮动工具条：跟随选区包围盒顶部居中（对标 novanova / 影策的 selection toolbar） */
+const ALIGN_MENU: {
+  label: string;
+  min: number;
+  run: (ids: string[]) => void;
+}[] = [
+  { label: "左对齐", min: 2, run: (ids) => useCanvasStore.getState().alignNodes(ids, "left") },
+  { label: "水平居中", min: 2, run: (ids) => useCanvasStore.getState().alignNodes(ids, "hcenter") },
+  { label: "右对齐", min: 2, run: (ids) => useCanvasStore.getState().alignNodes(ids, "right") },
+  { label: "顶对齐", min: 2, run: (ids) => useCanvasStore.getState().alignNodes(ids, "top") },
+  { label: "垂直居中", min: 2, run: (ids) => useCanvasStore.getState().alignNodes(ids, "vcenter") },
+  { label: "底对齐", min: 2, run: (ids) => useCanvasStore.getState().alignNodes(ids, "bottom") },
+  { label: "水平等距", min: 3, run: (ids) => useCanvasStore.getState().distributeNodes(ids, "h") },
+  { label: "垂直等距", min: 3, run: (ids) => useCanvasStore.getState().distributeNodes(ids, "v") },
+];
+
+function SelBtn({
+  danger,
+  onClick,
+  children,
+}: {
+  danger?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      className={`nodrag rounded-md px-2 py-1 text-xs transition-colors ${
+        danger ? "text-danger hover:bg-danger/10" : "text-text-2 hover:bg-surface-2 hover:text-text"
+      }`}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function SelectionToolbar() {
+  const nodes = useCanvasStore((s) => s.nodes);
+  // 订阅视口：平移缩放后重算锚点（画布坐标 → 容器坐标 = vp + flow*zoom）
+  const vp = useCanvasStore((s) => s.viewport);
+  const [alignOpen, setAlignOpen] = useState(false);
+  const sel = nodes.filter((n) => n.selected);
+  if (sel.length < 2) return null;
+  const ids = sel.map((n) => n.id);
+  const boxes = selectionBoxes(nodes, ids);
+  const minX = Math.min(...boxes.map((b) => b.x));
+  const maxX = Math.max(...boxes.map((b) => b.x + b.w));
+  const minY = Math.min(...boxes.map((b) => b.y));
+  const anchor = {
+    x: vp.x + ((minX + maxX) / 2) * vp.zoom,
+    y: vp.y + minY * vp.zoom,
+  };
+  return (
+    <div
+      className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+      style={{ left: anchor.x, top: anchor.y - 10 }}
+    >
+      <span className="px-1.5 text-[10px] text-text-4">已选 {sel.length}</span>
+      <SelBtn onClick={() => useCanvasStore.getState().copySelection()}>复制</SelBtn>
+      <div className="relative">
+        <SelBtn onClick={() => setAlignOpen((o) => !o)}>对齐 ▾</SelBtn>
+        {alignOpen ? (
+          <>
+            <div className="fixed inset-0 z-0" onClick={() => setAlignOpen(false)} />
+            <div className="absolute left-0 top-full z-10 mt-1 flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+              {ALIGN_MENU.map((a) => (
+                <button
+                  key={a.label}
+                  type="button"
+                  disabled={sel.length < a.min}
+                  className="rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
+                  onClick={() => {
+                    setAlignOpen(false);
+                    a.run(ids);
+                  }}
+                >
+                  {a.label}
+                </button>
+              ))}
+            </div>
+          </>
+        ) : null}
+      </div>
+      <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
+      <SelBtn danger onClick={() => useCanvasStore.getState().deleteNodes(ids)}>
+        删除
+      </SelBtn>
+    </div>
   );
 }
 
@@ -219,13 +315,41 @@ export default function CanvasView() {
 
   const onDoubleClick = useCallback(
     (event: React.MouseEvent) => {
+      // 用 screenToFlowPosition 换算落点（原先按 clientX 硬编码偏移，平移/缩放后会飘）
+      const flow = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
       addNode({
-        position: { x: event.clientX - 280, y: event.clientY - 60 },
+        position: { x: flow.x - 110, y: flow.y - 40 },
         data: { nodeType: "note", title: "新便签", body: "" },
       });
     },
-    [addNode],
+    [addNode, screenToFlowPosition],
   );
+
+  // agent 建卡 / "+" 建下游卡 → 视口聚焦到新节点（平移+缩放到可见）
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onFocusNodes = (e: Event) => {
+      const ids = (e as CustomEvent<FocusNodesDetail>).detail?.ids ?? [];
+      if (ids.length === 0) return;
+      // 等新节点渲染进 React Flow 后再运镜
+      timer = setTimeout(() => {
+        void fitView({
+          nodes: ids.map((id) => ({ id })),
+          duration: 450,
+          padding: 0.25,
+          maxZoom: 1,
+        });
+      }, 60);
+    };
+    window.addEventListener(FOCUS_NODES_EVENT, onFocusNodes);
+    return () => {
+      window.removeEventListener(FOCUS_NODES_EVENT, onFocusNodes);
+      if (timer) clearTimeout(timer);
+    };
+  }, [fitView]);
 
   // 连线拖到空白处 → 弹建卡菜单（选中类型后建卡并自动连线）
   const [pendingLink, setPendingLink] = useState<{
@@ -278,13 +402,15 @@ export default function CanvasView() {
   const closeCtx = useCallback(() => setCtxMenu(null), []);
 
   useEffect(() => {
-    if (!ctxMenu) return;
+    if (!ctxMenu && !pendingLink) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeCtx();
+      if (e.key !== "Escape") return;
+      closeCtx();
+      setPendingLink(null);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ctxMenu, closeCtx]);
+  }, [ctxMenu, closeCtx, pendingLink]);
 
   const onPaneContextMenu = useCallback(
     (event: React.MouseEvent<Element> | MouseEvent) => {
@@ -394,6 +520,7 @@ export default function CanvasView() {
   return (
     <div className="relative h-full w-full">
       {nodes.length === 0 ? <EmptyState /> : null}
+      <SelectionToolbar />
       <ReactFlow
         nodes={nodes}
         edges={edges}

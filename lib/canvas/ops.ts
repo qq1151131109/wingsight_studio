@@ -22,9 +22,13 @@ export type AddNodeOp = {
   position?: { x: number; y: number };
   /** 指定 id（幂等用）；已存在则报错 */
   id?: string;
-  /** storyboard 卡：景别与时长（建卡时可直接带上） */
+  /** storyboard 卡：镜号 / 景别 / 运镜 / 时长（建卡时可直接带上） */
+  shotNumber?: string;
   shotSize?: string;
+  cameraMove?: string;
   duration?: string;
+  /** storyboard 卡：台词 / 旁白 */
+  dialogue?: string;
 };
 
 export type UpdateNodeOp = {
@@ -36,9 +40,12 @@ export type UpdateNodeOp = {
   status?: "loading" | "error" | "ready";
   imageUrl?: string;
   errorMessage?: string;
-  /** storyboard 卡：景别与时长 */
+  /** storyboard 卡：镜号 / 景别 / 运镜 / 时长 / 台词 */
+  shotNumber?: string;
   shotSize?: string;
+  cameraMove?: string;
   duration?: string;
+  dialogue?: string;
 };
 
 export type DeleteNodesOp = {
@@ -156,11 +163,20 @@ export function applyOps(rawOps: unknown): OpResult {
               nodeType: op.nodeType,
               title: (op.title ?? NODE_META[op.nodeType].hint).slice(0, 80),
               body: op.body ?? "",
+              ...(op.shotNumber !== undefined
+                ? { shotNumber: op.shotNumber.slice(0, 8) }
+                : {}),
               ...(op.shotSize !== undefined
                 ? { shotSize: op.shotSize.slice(0, 20) }
                 : {}),
+              ...(op.cameraMove !== undefined
+                ? { cameraMove: op.cameraMove.slice(0, 20) }
+                : {}),
               ...(op.duration !== undefined
                 ? { duration: op.duration.slice(0, 20) }
+                : {}),
+              ...(op.dialogue !== undefined
+                ? { dialogue: op.dialogue.slice(0, 500) }
                 : {}),
             },
           });
@@ -182,11 +198,20 @@ export function applyOps(rawOps: unknown): OpResult {
             ...(op.errorMessage !== undefined
               ? { errorMessage: op.errorMessage.slice(0, 300) }
               : {}),
+            ...(op.shotNumber !== undefined
+              ? { shotNumber: op.shotNumber.slice(0, 8) }
+              : {}),
             ...(op.shotSize !== undefined
               ? { shotSize: op.shotSize.slice(0, 20) }
               : {}),
+            ...(op.cameraMove !== undefined
+              ? { cameraMove: op.cameraMove.slice(0, 20) }
+              : {}),
             ...(op.duration !== undefined
               ? { duration: op.duration.slice(0, 20) }
+              : {}),
+            ...(op.dialogue !== undefined
+              ? { dialogue: op.dialogue.slice(0, 500) }
               : {}),
           });
           applied += 1;

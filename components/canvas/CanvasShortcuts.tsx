@@ -49,6 +49,9 @@ export default function CanvasShortcuts() {
       } else if (mod && e.key.toLowerCase() === "a") {
         e.preventDefault();
         selectAllNodes();
+      } else if (mod && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        store.duplicateSelection();
       }
     };
 

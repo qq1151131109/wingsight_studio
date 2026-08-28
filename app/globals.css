@@ -139,6 +139,17 @@ body {
     box-shadow: 0 0 0 3px var(--color-accent-dim);
 }
 
+/* agent 建卡后的瞬时高亮：强调环闪两下 */
+@keyframes ws-flash {
+    0%   { box-shadow: 0 0 0 0 var(--color-accent-glow); }
+    50%  { box-shadow: 0 0 0 6px var(--color-accent-dim); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+}
+.ws-card.ws-flash {
+    border-color: var(--color-accent);
+    animation: ws-flash 1.4s ease-out 2;
+}
+
 .ws-card-badge {
     display: inline-flex;
     align-items: center;

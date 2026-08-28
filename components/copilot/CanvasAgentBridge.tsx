@@ -11,6 +11,7 @@ import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
 import { applyOps, type OpResult } from "@/lib/canvas/ops";
 import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
+import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
 interface WingsightAgentState {
@@ -112,7 +113,7 @@ export default function CanvasAgentBridge() {
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|image|storyboard",title,body,position:{x,y}}（分镜卡可带 shotSize/duration）/ ' +
+      '{op:"add_node",nodeType:"note|script|character|image|storyboard",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue）/ ' +
       '{op:"update_node",id,title,body} / {op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
@@ -136,7 +137,21 @@ export default function CanvasAgentBridge() {
             : ops && typeof ops === "object"
               ? ops
               : [];
-      return applyOps(raw) as unknown as string;
+      const result = applyOps(raw);
+      // 可见性：新建的节点自动选中 + 高亮闪烁；agent 没显式 set_viewport 时镜头跟过去
+      if (result.createdIds.length > 0) {
+        const store = useCanvasStore.getState();
+        store.selectNodes(result.createdIds);
+        store.flashNodes(result.createdIds);
+        if (!hasViewportOp(raw)) {
+          window.dispatchEvent(
+            new CustomEvent(FOCUS_NODES_EVENT, {
+              detail: { ids: result.createdIds },
+            }),
+          );
+        }
+      }
+      return result as unknown as string;
     },
     render: ({ status, result }) => {
       if (status !== "complete" || !result) {
@@ -186,4 +201,14 @@ function safeParse(text: string): unknown {
   } catch {
     return [];
   }
+}
+
+/** agent 是否在本批里显式运过镜（显式 set_viewport 时不自动聚焦，尊重 agent 的镜头） */
+function hasViewportOp(raw: unknown): boolean {
+  const list = Array.isArray(raw)
+    ? raw
+    : raw && typeof raw === "object" && Array.isArray((raw as { ops?: unknown[] }).ops)
+      ? (raw as { ops: unknown[] }).ops
+      : [];
+  return list.some((o) => (o as { op?: string } | null)?.op === "set_viewport");
 }

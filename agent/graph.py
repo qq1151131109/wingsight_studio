@@ -124,9 +124,10 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 - {{"op":"group_nodes","ids":["节点id",...],"title":"分组名"}}  把多张卡收进一个分组框（如整场戏的分镜归拢）
 - {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
 
-storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么、机位运动），
-add_node / update_node 可带 shotSize（远景/全景/中景/近景/特写）与 duration（如 3s）。
-用户要求分镜/故事板时为每个镜头建一张 storyboard 卡并按顺序连线。
+storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么），
+add_node / update_node 可带 shotNumber（镜号，如 01）、shotSize（远景/全景/中景/近景/特写）、
+cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s）、dialogue（台词/旁白）。
+用户要求分镜/故事板时为每个镜头建一张 storyboard 卡并按顺序连线（镜号从 01 递增）。
 
 节点 id 形如 n_xxx_x，可以在「画布当前状态」里查到。新建后若要连线，先等工具结果返回新节点 id。
 

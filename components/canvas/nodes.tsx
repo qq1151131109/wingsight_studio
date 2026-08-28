@@ -1,29 +1,160 @@
 "use client";
 
 import { memo, useEffect, useRef, useState } from "react";
-import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { CircleAlert, X, ZoomIn } from "lucide-react";
-import { NODE_META, useCanvasStore, type WingNodeData } from "@/lib/canvas/store";
+import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
+import { CircleAlert, Copy, Plus, Trash2, X, ZoomIn } from "lucide-react";
+import {
+  NODE_FOOTPRINT,
+  NODE_META,
+  absolutePosition,
+  useCanvasStore,
+  type WingNodeData,
+  type WingNodeType,
+} from "@/lib/canvas/store";
+import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
 
+/** 工具条上"复制/删除"的语义：节点在多选内则作用于整个选区，否则只作用本卡 */
+function selectionIdsOr(id: string): string[] {
+  const sel = useCanvasStore
+    .getState()
+    .nodes.filter((n) => n.selected)
+    .map((n) => n.id);
+  return sel.includes(id) && sel.length > 1 ? sel : [id];
+}
+
+/** 从一张卡右侧建下游卡并自动连线（AIGCCanvasFlow 的 hover "+" 模式） */
+function createConnectedNode(sourceId: string, type: WingNodeType) {
+  const st = useCanvasStore.getState();
+  const src = st.nodes.find((n) => n.id === sourceId);
+  if (!src) return;
+  const abs = absolutePosition(st.nodes, src);
+  const fp = NODE_FOOTPRINT[src.data.nodeType] ?? NODE_FOOTPRINT.note;
+  const id = st.addNode({
+    position: { x: abs.x + fp.w + 60, y: abs.y },
+    data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+  });
+  st.connect({ source: sourceId, target: id });
+  useCanvasStore.getState().selectNodes([id]);
+  window.dispatchEvent(
+    new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
+  );
+}
+
+const PLUS_MENU_TYPES: WingNodeType[] = ["note", "character", "storyboard", "image"];
+
+function ToolButton({
+  title,
+  danger,
+  onClick,
+  children,
+}: {
+  title: string;
+  danger?: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      className={`nodrag nowheel flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
+        danger ? "text-danger hover:bg-danger/10" : "text-text-2 hover:bg-surface-2 hover:text-text"
+      }`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function CardShell({
+  id,
   children,
   selected,
   width,
 }: {
+  id: string;
   children: React.ReactNode;
   selected: boolean;
   width?: string;
 }) {
+  const [hovered, setHovered] = useState(false);
+  const [plusOpen, setPlusOpen] = useState(false);
+  // agent 建卡后的瞬时高亮（选择器返回布尔，未命中的卡不重渲）
+  const flashing = useCanvasStore((s) => s.flashIds.includes(id));
   return (
     <div
-      className={`ws-card p-3 ${selected ? "selected" : ""} ${width ?? "w-64"}`}
+      className={`ws-card group relative p-3 ${selected ? "selected" : ""} ${flashing ? "ws-flash" : ""} ${width ?? "w-64"}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => {
+        setHovered(false);
+        setPlusOpen(false);
+      }}
     >
       <Handle type="target" position={Position.Top} />
+      <NodeToolbar isVisible={selected || hovered} position={Position.Top} offset={6}>
+        <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+          <ToolButton
+            title="复制"
+            onClick={() => {
+              const ids = selectionIdsOr(id);
+              useCanvasStore.setState((s) => ({
+                nodes: s.nodes.map((n) => ({ ...n, selected: ids.includes(n.id) })),
+              }));
+              useCanvasStore.getState().copySelection();
+            }}
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </ToolButton>
+          <ToolButton
+            title="删除"
+            danger
+            onClick={() => useCanvasStore.getState().deleteNodes(selectionIdsOr(id))}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </ToolButton>
+        </div>
+      </NodeToolbar>
       {children}
       <Handle type="source" position={Position.Bottom} />
+      {/* hover 出现的"+"：一键建下游卡并连线 */}
+      <button
+        type="button"
+        title="建下游卡并连线"
+        className="nodrag absolute -right-3 top-1/2 z-10 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full border border-hairline bg-surface-1 text-text-3 opacity-0 shadow-sm transition-opacity hover:border-accent hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
+        onClick={(e) => {
+          e.stopPropagation();
+          setPlusOpen((o) => !o);
+        }}
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+      {plusOpen ? (
+        <div className="absolute left-full top-0 z-10 ml-2 flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+          <p className="px-2 py-0.5 text-[10px] text-text-4">建下游卡</p>
+          {PLUS_MENU_TYPES.map((t) => (
+            <button
+              key={t}
+              type="button"
+              className="nodrag nowheel flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+              onClick={(e) => {
+                e.stopPropagation();
+                setPlusOpen(false);
+                createConnectedNode(id, t);
+              }}
+            >
+              <span className="ws-card-dot" style={{ background: NODE_META[t].dot }} />
+              {NODE_META[t].label}
+            </button>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -131,7 +262,7 @@ function TextCard({
   if (!data || typeof data.nodeType !== "string") return null;
   const update = makeUpdater(id);
   return (
-    <CardShell selected={selected} width={wide ? "w-[22rem]" : undefined}>
+    <CardShell id={id} selected={selected} width={wide ? "w-[22rem]" : undefined}>
       <Badge nodeType={data.nodeType} />
       <Editable
         value={data.title}
@@ -224,7 +355,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
   if (!d || typeof d.nodeType !== "string") return null;
 
   return (
-    <CardShell selected={selected}>
+    <CardShell id={id} selected={selected}>
       <Badge nodeType="image" />
       <div className="mt-1.5 flex h-36 w-full items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
         {d.status === "loading" ? (
@@ -297,27 +428,44 @@ function ImageCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 分镜卡：宽卡 + 景别/时长徽标行 + 衬线编辑风 */
+/** 分镜卡字段 chip：双击就地编辑（镜号 / 景别 / 运镜 / 时长共用） */
+function ShotChip({
+  label,
+  value,
+  onSave,
+}: {
+  label: string;
+  value: string;
+  onSave: (v: string) => void;
+}) {
+  return (
+    <span className="inline-flex min-w-11 items-center gap-1 rounded border border-hairline bg-surface-2 px-1 text-[10px] leading-4 text-text-3">
+      <span className="text-text-4">{label}</span>
+      <Editable
+        value={value}
+        onSave={onSave}
+        placeholder="—"
+        className="min-w-6 text-text-2"
+      />
+    </span>
+  );
+}
+
+/** 分镜卡：宽卡 + 镜号/景别/运镜/时长字段行 + 台词 + 衬线编辑风 */
 function StoryboardCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
   if (!d || typeof d.nodeType !== "string") return null;
   return (
-    <CardShell selected={selected} width="w-[20rem]">
+    <CardShell id={id} selected={selected} width="w-[20rem]">
       <div className="flex items-center justify-between gap-2">
         <Badge nodeType="storyboard" />
-        <div className="flex gap-1">
-          {(["shotSize", "duration"] as const).map((key) =>
-            d[key] ? (
-              <span
-                key={key}
-                className="rounded border border-hairline bg-surface-2 px-1 text-[10px] text-text-3"
-              >
-                {d[key]}
-              </span>
-            ) : null,
-          )}
-        </div>
+      </div>
+      <div className="mt-1.5 flex flex-wrap gap-1">
+        <ShotChip label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
+        <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize) => update({ shotSize })} />
+        <ShotChip label="运镜" value={d.cameraMove ?? ""} onSave={(cameraMove) => update({ cameraMove })} />
+        <ShotChip label="时长" value={d.duration ?? ""} onSave={(duration) => update({ duration })} />
       </div>
       <Editable
         value={d.title}
@@ -329,8 +477,15 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
         value={d.body}
         onSave={(body) => update({ body })}
         multiline
-        placeholder="画面描述（谁、在哪、做什么、机位运动）"
-        className="nowheel mt-1.5 max-h-36 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+        placeholder="画面描述（谁、在哪、做什么）"
+        className="nowheel mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+      />
+      <Editable
+        value={d.dialogue ?? ""}
+        onSave={(dialogue) => update({ dialogue })}
+        multiline
+        placeholder="台词 / 旁白"
+        className="mt-1.5 line-clamp-2 border-l-2 border-hairline pl-1.5 text-xs italic leading-relaxed text-text-3"
       />
     </CardShell>
   );
