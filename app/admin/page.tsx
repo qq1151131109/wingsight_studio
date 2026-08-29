@@ -14,11 +14,11 @@ import {
 } from "lucide-react";
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
+import { getAuthSession, peekAuthSession } from "@/lib/auth-session";
 import {
   createAdminUser,
   createApiKey,
   deleteApiKey,
-  fetchVerify,
   listAdminUsers,
   listApiKeys,
   patchAdminUser,
@@ -39,10 +39,13 @@ type Tab = "users" | "apikeys";
 function AdminInner() {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>("users");
-  const [role, setRole] = useState<string | null>(null);
+  const [role, setRole] = useState<string | null>(
+    // 会话已缓存（从首页点进来）时直接拿角色，零等待渲染
+    () => peekAuthSession()?.role ?? null,
+  );
 
   useEffect(() => {
-    void fetchVerify().then((v) => setRole(v?.role ?? "none"));
+    void getAuthSession().then((s) => setRole(s.role ?? "none"));
   }, []);
 
   if (role === null) {

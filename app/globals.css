@@ -270,6 +270,22 @@ body {
 }
 .react-flow__attribution { display: none; }
 
+/* 框选矩形/多选包围盒：默认蓝 → 砖红主题。xyflow 在 style.css 里读
+   var(--xy-selection-background-color, …default)，此处置外层变量，
+   不受两份样式表的加载顺序影响 */
+.react-flow {
+    --xy-selection-background-color: var(--color-accent-dim);
+    --xy-selection-border: 1px dotted var(--color-accent);
+}
+
+/* 多选包围盒 ≠ 框选拉框：前者是持续状态（选中指示 + 拖动整组的把手），
+   后者是活动手势反馈。xyflow 让两者共用同一组变量 → 松手后包围盒留在
+   原地，观感就像"框选没结束"。包围盒单独改中性细线无填充，与拉框区分 */
+.react-flow .react-flow__nodesselection-rect {
+    background: transparent;
+    border: 1px solid var(--color-hairline-strong);
+}
+
 /* NodeResizer 主题：强调色细线 + 纸面手柄（xyflow 样式在 globals 之后引入，需 !important 覆盖） */
 .react-flow__resize-control.line {
     border-color: var(--color-accent) !important;

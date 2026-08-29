@@ -1,8 +1,5 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import "@copilotkit/react-ui/styles.css";
-import "@xyflow/react/dist/style.css";
-import { AgentProvider } from "./agent-provider";
 
 export const metadata: Metadata = {
   title: "Wingsight Studio",
@@ -24,9 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="h-full overflow-hidden">
-        <AgentProvider>{children}</AgentProvider>
-      </body>
+      <body className="h-full overflow-hidden">{children}</body>
     </html>
   );
 }

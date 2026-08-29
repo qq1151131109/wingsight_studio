@@ -7,16 +7,21 @@ import {
   MarkerType,
   MiniMap,
   ReactFlow,
+  SelectionMode,
   useReactFlow,
+  useStoreApi,
   type EdgeMouseHandler,
   type IsValidConnection,
   type NodeMouseHandler,
+  type OnBeforeDelete,
   type OnConnectEnd,
   type OnMoveEnd,
+  type OnNodeDrag,
   type OnReconnect,
   type Viewport,
 } from "@xyflow/react";
 import {
+  ChevronRight,
   Clapperboard,
   Drama,
   Film,
@@ -31,10 +36,10 @@ import {
   Maximize,
 } from "lucide-react";
 import {
-  selectAllNodes,
   selectionBoxes,
   NODE_META,
   useCanvasStore,
+  type WingEdge,
   type WingNode,
   type WingNodeType,
 } from "@/lib/canvas/store";
@@ -47,9 +52,20 @@ import CanvasShortcuts from "./CanvasShortcuts";
 const vpEq = (a: Viewport, b: Viewport) =>
   a.x === b.x && a.y === b.y && a.zoom === b.zoom;
 
-/** 右键菜单（空白 / 节点 / 转换 / 多选 / 连线 五态） */
+/**
+ * 右键/双击菜单（六态）：pane=空白右键（sub="add" 时原位切换成节点类型列表，
+ * 对标 reference 产品的二级展开）；add=双击空白的"添加节点"选择器。
+ */
 type CtxMenu =
-  | { kind: "pane"; x: number; y: number; fx: number; fy: number }
+  | {
+      kind: "pane";
+      x: number;
+      y: number;
+      fx: number;
+      fy: number;
+      sub: null | "add";
+    }
+  | { kind: "add"; x: number; y: number; fx: number; fy: number }
   | { kind: "node"; x: number; y: number; id: string }
   | { kind: "convert"; x: number; y: number; id: string }
   | { kind: "selection"; x: number; y: number; ids: string[] }
@@ -96,15 +112,21 @@ const CONVERT_TYPES: WingNodeType[] = [
 function CtxItem({
   label,
   dot,
+  icon,
+  shortcut,
+  chevron,
   danger,
   disabled,
   onClick,
 }: {
   label: string;
   dot?: string;
+  icon?: React.ReactNode;
+  shortcut?: string;
+  chevron?: boolean;
   danger?: boolean;
   disabled?: boolean;
-  onClick: () => void;
+  onClick?: () => void;
 }) {
   return (
     <button
@@ -117,11 +139,61 @@ function CtxItem({
     >
       {dot ? (
         <span className="ws-card-dot" style={{ background: dot }} />
+      ) : icon ? (
+        <span className="flex h-4 w-4 shrink-0 items-center justify-center">
+          {icon}
+        </span>
       ) : null}
       {label}
+      <span className="ml-auto" />
+      {shortcut ? (
+        <span className="ml-3 text-[10px] tabular-nums text-text-4">
+          {shortcut}
+        </span>
+      ) : null}
+      {chevron ? (
+        <ChevronRight className="ml-3 h-3 w-3 shrink-0 text-text-4" />
+      ) : null}
     </button>
   );
 }
+
+const CtxSep = () => <div className="mx-1 my-1 h-px bg-hairline" />;
+
+/** "添加节点"类型列表：双击选择器与右键二级展开共用 */
+function NodeAddMenu({ onPick }: { onPick: (t: WingNodeType) => void }) {
+  return (
+    <div className="flex min-w-[140px] flex-col">
+      <p className="px-2 py-1 text-[10px] text-text-4">添加节点</p>
+      {NODE_TYPE_ITEMS.map(({ type, icon, key }) => (
+        <CtxItem
+          key={key}
+          label={NODE_META[type].label}
+          icon={icon}
+          onClick={() => onPick(type)}
+        />
+      ))}
+    </div>
+  );
+}
+
+/** 节点类型清单：工具条 / 双击选择器 / 右键"添加节点"三处共用 */
+const NODE_TYPE_ITEMS: {
+  type: WingNodeType;
+  icon: React.ReactNode;
+  key: string;
+}[] = [
+  { type: "note", icon: <StickyNote className="h-4 w-4" />, key: "i-note" },
+  { type: "script", icon: <ScrollText className="h-4 w-4" />, key: "i-script" },
+  { type: "character", icon: <Drama className="h-4 w-4" />, key: "i-char" },
+  {
+    type: "storyboard",
+    icon: <Clapperboard className="h-4 w-4" />,
+    key: "i-story",
+  },
+  { type: "image", icon: <ImageIcon className="h-4 w-4" />, key: "i-image" },
+  { type: "video", icon: <Film className="h-4 w-4" />, key: "i-video" },
+];
 
 /** 拖拽导入：图片→上传建 image 卡；.txt/.md→文本卡（md 当剧本、txt 当便签） */
 async function importDroppedFiles(
@@ -198,14 +270,6 @@ export const PALETTE_DRAG_TYPE = "application/x-wingsight-node";
 function AddNodeToolbar() {
   const addNode = useCanvasStore((s) => s.addNode);
   const { screenToFlowPosition } = useReactFlow();
-  const items: { type: WingNodeType; icon: React.ReactNode }[] = [
-    { type: "note", icon: <StickyNote className="h-4 w-4" /> },
-    { type: "script", icon: <ScrollText className="h-4 w-4" /> },
-    { type: "character", icon: <Drama className="h-4 w-4" /> },
-    { type: "storyboard", icon: <Clapperboard className="h-4 w-4" /> },
-    { type: "image", icon: <ImageIcon className="h-4 w-4" /> },
-    { type: "video", icon: <Film className="h-4 w-4" /> },
-  ];
   // 建卡落在画布可视区中心（而非随机坐标）
   const addAtCenter = (type: WingNodeType) => {
     const rect = document.querySelector(".react-flow")?.getBoundingClientRect();
@@ -220,9 +284,9 @@ function AddNodeToolbar() {
   };
   return (
     <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
-      {items.map(({ type, icon }) => (
+      {NODE_TYPE_ITEMS.map(({ type, icon, key }) => (
         <button
-          key={type}
+          key={key}
           type="button"
           draggable
           title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
@@ -402,6 +466,44 @@ function DockBtn({
       {children}
     </button>
   );
+}
+
+/**
+ * 框选安全网：RF 的 onPointerCancel 只释放指针捕获、不清 userSelectionRect
+ * （12.11.5 仍如此，上游未修）——浏览器把按压手势转成 pointercancel 或
+ * pointerup 被漏掉时，选框会永久卡住（矩形跟手走、点击清不掉）。
+ * 复位必须延迟到事件落定之后：RF 自己的 onPointerUp 是同步清理，且其中
+ * "简单点击 → 清空选中"的分支依赖 rect 仍存在——抢先清掉会把点空白取消
+ * 选中弄坏。setTimeout(0) 后 rect 仍在 = RF 没接住 = 真卡死，才复位。
+ */
+function SelectionGuard() {
+  const store = useStoreApi();
+  useEffect(() => {
+    const resetIfStuck = () => {
+      if (store.getState().userSelectionRect) {
+        store.setState({ userSelectionActive: false, userSelectionRect: null });
+      }
+    };
+    const deferredReset = () => {
+      setTimeout(resetIfStuck, 0);
+    };
+    const onUp = (e: PointerEvent | MouseEvent) => {
+      if (e.type === "pointercancel" || e.button === 0) deferredReset();
+    };
+    // mouseup 兜底：三指拖移等合成手势可能只发 mouse 系事件
+    window.addEventListener("pointerup", onUp, true);
+    window.addEventListener("mouseup", onUp, true);
+    window.addEventListener("pointercancel", onUp, true);
+    // 失焦没有后续事件，立即复位
+    window.addEventListener("blur", resetIfStuck);
+    return () => {
+      window.removeEventListener("pointerup", onUp, true);
+      window.removeEventListener("mouseup", onUp, true);
+      window.removeEventListener("pointercancel", onUp, true);
+      window.removeEventListener("blur", resetIfStuck);
+    };
+  }, [store]);
+  return null;
 }
 
 /** 拖动对齐辅助线：流坐标 → 容器坐标渲染（数据来自 store.onNodesChange 的吸附计算） */
@@ -588,7 +690,7 @@ function EmptyState() {
           空白画布
         </h2>
         <p className="mt-2 text-sm leading-relaxed text-text-3">
-          双击画布加便签；把图片 / 视频 / 文本文件直接拖进来；
+          双击空白弹出「添加节点」菜单；把图片 / 视频 / 文本文件直接拖进来；
           <br />
           工具条（可拖拽落点）建卡，图片卡输入条 @ 引用角色直接生成，
           <br />
@@ -608,6 +710,8 @@ export default function CanvasView() {
   const addNode = useCanvasStore((s) => s.addNode);
   const viewport = useCanvasStore((s) => s.viewport);
   const clipboardCount = useCanvasStore((s) => s.clipboardCount);
+  const canUndo = useCanvasStore((s) => s.canUndoNow);
+  const canRedo = useCanvasStore((s) => s.canRedoNow);
 
   // 视口双向同步：agent 的 set_viewport / 项目装载 → 画布动画跟随；
   // 用户平移缩放 → 回写 store（供持久化与 agent 感知）。
@@ -624,6 +728,56 @@ export default function CanvasView() {
     if (vpEq(vp, lastSyncedVp.current)) return;
     lastSyncedVp.current = vp;
     useCanvasStore.getState().setViewport(vp);
+  }, []);
+
+  // fitView prop 在 12.11 不是"只看挂载一次"：StoreUpdater 监听它，prop 值
+  // 一旦翻转就 fitViewQueued=true 重新执行 fit——空画布建第一张卡时 false→true
+  // 会把单卡怼满视口、放大顶到 maxZoom（400%）。所以挂载时取值后冻结，
+  // 运行期节点数变化不再触碰这个 prop
+  const [fitOnMount] = useState(nodes.length > 0);
+
+  // 滚轮设备启发式（对标 open-ai-canvas）：外接鼠标滚轮是离散步进（≈100/120
+  // 的整数倍），触控板双指是连续小步进。鼠标轮=缩放、双指=平移，动态切换
+  // panOnScroll/zoomOnScroll；捏合与 ⌘+滚在两种模式下都是缩放，不参与判定。
+  const [wheelMode, setWheelMode] = useState<"trackpad" | "mouse">("trackpad");
+  const onWheelCapture = useCallback(
+    (e: React.WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) return;
+      const dy = Math.abs(e.deltaY);
+      const m = dy % 100;
+      const looksMouse =
+        e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
+        (dy >= 80 && (m <= 20 || m >= 80));
+      const next: "mouse" | "trackpad" = looksMouse ? "mouse" : "trackpad";
+      if (next === wheelMode) return;
+      setWheelMode(next);
+      // 切换后的首个事件仍挂在旧配置的 d3 处理器上，丢弃以免误平移/误缩放
+      e.stopPropagation();
+    },
+    [wheelMode],
+  );
+
+  // Alt+拖拽复制（Figma 手势）：拖动开始时原位克隆选区，后续拖动帧在 store
+  // 里改道到副本——原件留在原地，副本跟随指针走
+  const onNodeDragStart = useCallback<OnNodeDrag<WingNode>>((event, node) => {
+    if (event.altKey) {
+      useCanvasStore.getState().beginAltDragClone(node.id);
+    }
+  }, []);
+  const onNodeDragStop = useCallback(() => {
+    useCanvasStore.getState().endAltDrag();
+  }, []);
+
+  // 键盘删除（deleteKeyCode）走 RF 的 deleteElements：在 remove 变更发出前
+  // 提交快照，让 Backspace 删卡/删边也可撤销（右键菜单删除走 store.deleteNodes
+  // 自带快照；节点+边同删时这里只进一次撤销步）
+  const onBeforeDelete = useCallback<
+    OnBeforeDelete<WingNode, WingEdge>
+  >(async ({ nodes: delNodes, edges: delEdges }) => {
+    if (delNodes.length > 0 || delEdges.length > 0) {
+      useCanvasStore.getState().commitHistory();
+    }
+    return true;
   }, []);
 
   // 生成中的连线流动动画：目标节点 loading 时给边标 animated（样式在 globals.css）；
@@ -667,21 +821,6 @@ export default function CanvasView() {
     if (refs.join(",") === useCanvasStore.getState().haloIds.join(",")) return;
     useCanvasStore.getState().setHaloIds(refs);
   }, [nodes]);
-
-  const onDoubleClick = useCallback(
-    (event: React.MouseEvent) => {
-      // 用 screenToFlowPosition 换算落点（原先按 clientX 硬编码偏移，平移/缩放后会飘）
-      const flow = screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-      addNode({
-        position: { x: flow.x - 110, y: flow.y - 40 },
-        data: { nodeType: "note", title: "新便签", body: "" },
-      });
-    },
-    [addNode, screenToFlowPosition],
-  );
 
   // agent 建卡 / "+" 建下游卡 → 视口聚焦到新节点（平移+缩放到可见）
   useEffect(() => {
@@ -783,6 +922,36 @@ export default function CanvasView() {
         y: event.clientY,
         fx: flow.x,
         fy: flow.y,
+        sub: null,
+      });
+    },
+    [screenToFlowPosition],
+  );
+
+  // 双击空白 → "添加节点"选择器（不预判用户要建哪种卡，对标 reference 的
+  // 双击菜单）。这个 prop 落在 wrapper div 上，卡片留白/小地图/底部坞/输入条
+  // 选词等双击都会冒泡上来，正向判定：目标必须在 pane 内且不在可交互元素上。
+  const onDoubleClick = useCallback(
+    (event: React.MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest(".react-flow__pane")) return;
+      if (
+        target.closest(
+          ".react-flow__node, .react-flow__minimap, .react-flow__edge, .react-flow__controls, button, input, textarea, select, [contenteditable]",
+        )
+      ) {
+        return;
+      }
+      const flow = screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      setCtxMenu({
+        kind: "add",
+        x: event.clientX,
+        y: event.clientY,
+        fx: flow.x,
+        fy: flow.y,
       });
     },
     [screenToFlowPosition],
@@ -827,9 +996,11 @@ export default function CanvasView() {
     [],
   );
 
+  /** 双击选择器 / 右键"添加节点"共用：在菜单落点建卡 */
   const addAtCtx = useCallback(
     (type: WingNodeType) => {
-      if (ctxMenu?.kind !== "pane") return;
+      if (!ctxMenu || (ctxMenu.kind !== "pane" && ctxMenu.kind !== "add"))
+        return;
       addNode({
         position: { x: ctxMenu.fx - 110, y: ctxMenu.fy - 40 },
         data: { nodeType: type, title: NODE_META[type].hint, body: "" },
@@ -837,6 +1008,26 @@ export default function CanvasView() {
       setCtxMenu(null);
     },
     [ctxMenu, addNode],
+  );
+
+  // 右键"上传"：隐藏 input 触发系统选文件；落点先存 ref（系统对话框异步
+  // 返回时菜单早已关闭，state 拿不到）
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadAtRef = useRef({ x: 0, y: 0 });
+  const openUploadPicker = useCallback(() => {
+    if (ctxMenu?.kind !== "pane") return;
+    uploadAtRef.current = { x: ctxMenu.fx, y: ctxMenu.fy };
+    setCtxMenu(null);
+    fileInputRef.current?.click();
+  }, [ctxMenu]);
+  const onUploadPicked = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = [...(e.target.files ?? [])];
+      e.target.value = "";
+      if (files.length === 0) return;
+      void importDroppedFiles(files, uploadAtRef.current);
+    },
+    [],
   );
 
   /** 复制指定节点：右键的节点可能不在选区内，先选中再复制 */
@@ -896,7 +1087,15 @@ export default function CanvasView() {
   );
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" onWheelCapture={onWheelCapture}>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/*,video/*,.txt,.md,.markdown"
+        className="hidden"
+        onChange={onUploadPicked}
+      />
       {nodes.length === 0 ? <EmptyState /> : null}
       <SelectionToolbar />
       <GuideOverlay />
@@ -913,6 +1112,9 @@ export default function CanvasView() {
         onReconnect={onReconnect}
         edgesReconnectable
         onMoveEnd={onMoveEnd}
+        onNodeDragStart={onNodeDragStart}
+        onNodeDragStop={onNodeDragStop}
+        onBeforeDelete={onBeforeDelete}
         onPaneContextMenu={onPaneContextMenu}
         onNodeContextMenu={onNodeContextMenu}
         onSelectionContextMenu={onSelectionContextMenu}
@@ -920,15 +1122,30 @@ export default function CanvasView() {
         onDragOver={onDragOver}
         onDrop={onDrop}
         onDoubleClick={onDoubleClick}
+        // fitOnMount 挂载时取值后冻结（声明处有说明）：挂载时画布已有内容
+        // （重挂载/热更新）则适配视图，否则走 defaultViewport；装载项目后的
+        // 视口由 store.viewport 同步效应接管
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
-        fitView={nodes.length > 0}
+        fitView={fitOnMount}
         fitViewOptions={{ padding: 0.15 }}
         minZoom={0.1}
-        maxZoom={3}
+        maxZoom={4}
         deleteKeyCode={["Backspace", "Delete"]}
         multiSelectionKeyCode={["Shift", "Meta"]}
+        // 拖边端点重接线的命中半径（默认 10 太小不好抓）
+        reconnectRadius={24}
+        // 选中的边抬升到卡片之上：交叉密集时好点好拖
+        elevateEdgesOnSelect
+        // 左拖=框选的前提：panOnDrag 必须非 true（xyflow 12.11 守卫），中键=平移；
+        // 右键拖不启用——macOS 的 contextmenu 在 mousedown 即触发，右拖平移会和
+        // 右键菜单打架。平移途径：双指滚动 / Space+拖 / 中键拖。
+        panOnDrag={[1]}
         selectionOnDrag
-        panOnScroll
+        selectionMode={SelectionMode.Partial}
+        // 1px 阈值区分点击与拖动，避免单击手抖污染撤销历史
+        nodeDragThreshold={1}
+        zoomOnScroll={wheelMode === "mouse"}
+        panOnScroll={wheelMode === "trackpad"}
         zoomOnDoubleClick={false}
         snapToGrid
         snapGrid={[16, 16]}
@@ -953,6 +1170,7 @@ export default function CanvasView() {
           <NodeSearch />
         </div>
         <BottomDock />
+        <SelectionGuard />
         <CanvasShortcuts />
       </ReactFlow>
       {pendingLink ? (
@@ -1007,38 +1225,46 @@ export default function CanvasView() {
               top: Math.min(ctxMenu.y + 8, window.innerHeight - 300),
             }}
           >
-            {ctxMenu.kind === "pane" ? (
+            {ctxMenu.kind === "add" ? (
+              <NodeAddMenu onPick={addAtCtx} />
+            ) : ctxMenu.kind === "pane" && ctxMenu.sub === "add" ? (
+              <NodeAddMenu onPick={addAtCtx} />
+            ) : ctxMenu.kind === "pane" ? (
               <>
-                <p className="px-2 py-1 text-[10px] text-text-4">在此处添加</p>
-                {(
-                  ["note", "script", "character", "storyboard", "image", "video"] as WingNodeType[]
-                ).map((t) => (
-                  <CtxItem
-                    key={t}
-                    label={NODE_META[t].label}
-                    dot={NODE_META[t].dot}
-                    onClick={() => addAtCtx(t)}
-                  />
-                ))}
+                <CtxItem label="上传" onClick={openUploadPicker} />
+                {/* 资产库尚未接入，对标 reference 先占位禁用 */}
+                <CtxItem label="保存到我的资产" disabled />
+                <CtxItem
+                  label="添加节点"
+                  chevron
+                  onClick={() => setCtxMenu({ ...ctxMenu, sub: "add" })}
+                />
+                <CtxSep />
+                <CtxItem
+                  label="撤销"
+                  shortcut="⌘Z"
+                  disabled={!canUndo}
+                  onClick={() => {
+                    useCanvasStore.getState().undo();
+                    closeCtx();
+                  }}
+                />
+                <CtxItem
+                  label="重做"
+                  shortcut="⇧⌘Z"
+                  disabled={!canRedo}
+                  onClick={() => {
+                    useCanvasStore.getState().redo();
+                    closeCtx();
+                  }}
+                />
+                <CtxSep />
                 <CtxItem
                   label="粘贴"
+                  shortcut="⌘V"
                   disabled={clipboardCount === 0}
                   onClick={() => {
                     useCanvasStore.getState().pasteClipboard();
-                    closeCtx();
-                  }}
-                />
-                <CtxItem
-                  label="全选"
-                  onClick={() => {
-                    selectAllNodes();
-                    closeCtx();
-                  }}
-                />
-                <CtxItem
-                  label="适应视图"
-                  onClick={() => {
-                    void fitView({ duration: 300, padding: 0.15 });
                     closeCtx();
                   }}
                 />

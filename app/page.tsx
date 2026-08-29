@@ -16,7 +16,7 @@ import {
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import CollaboratorsDialog from "@/components/home/CollaboratorsDialog";
-import { fetchVerify } from "@/lib/admin";
+import { getAuthSession } from "@/lib/auth-session";
 import {
   createProject,
   deleteProject,
@@ -89,8 +89,8 @@ function HomeInner() {
         }
       }
     })();
-    void fetchVerify().then((v) => {
-      if (alive) setIsAdmin(v?.role === "admin");
+    void getAuthSession().then((s) => {
+      if (alive) setIsAdmin(s.role === "admin");
     });
     return () => {
       alive = false;

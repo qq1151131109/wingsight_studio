@@ -128,6 +128,11 @@ interface CanvasState {
   toggleGroupCollapse: (id: string) => void;
   /** 拖动结束后重定父级：中心落入其他分组框 → 收编；完全拖出本组 → 提升回画布层 */
   reparentAfterDrag: (ids: string[]) => void;
+  /** Alt+拖拽复制（Figma 手势）：拖动开始时原位克隆选区并选中副本，
+      之后本组件的拖动帧经 onNodesChange 改道到副本，原件留在原地 */
+  beginAltDragClone: (draggedId: string) => void;
+  /** 结束 Alt 拖拽手势（清掉原→副本改道表；正常路径拖动结束帧也会清） */
+  endAltDrag: () => void;
   /** 复制/粘贴（内部剪贴板：选中节点 + 连线 + 原点，粘贴时整体偏移） */
   copySelection: () => number;
   pasteClipboard: () => string[];
@@ -149,6 +154,8 @@ const history: { past: CanvasSnapshot[]; future: CanvasSnapshot[] } = {
 let internalClipboard: CanvasSnapshot | null = null;
 /** 拖拽会话防重入（一次拖动只 commit 一份"拖动前"快照） */
 let dragCommitted = false;
+/** Alt 拖拽复制会话：原件 id → 副本 id（拖动期间把原件的 position 帧改道到副本） */
+let altDragClone: Map<string, string> | null = null;
 /** flash 高亮的自动熄灭计时器 */
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 /** 方向键微调的连击窗口（800ms 内算一次撤销单元） */
@@ -396,13 +403,20 @@ export const useCanvasStore = create<CanvasState>()(
           internalClipboard.nodes,
           get().nodes,
         );
-        const idMap = new Map<string, string>();
+        // 先建全量 id 映射再粘贴：选区内含"分组+子卡"时，子卡副本 parentId
+        // 改指向组副本（同 beginAltDragClone 的处理）
+        const idMap = new Map(
+          internalClipboard.nodes.map((n) => [n.id, genNodeId()] as const),
+        );
         const newNodes = internalClipboard.nodes.map((n) => {
-          const id = genNodeId();
-          idMap.set(n.id, id);
+          const parentId =
+            n.parentId && idMap.has(n.parentId)
+              ? idMap.get(n.parentId)
+              : n.parentId;
           return {
             ...structuredClone(n),
-            id,
+            id: idMap.get(n.id)!,
+            parentId,
             selected: true,
             position: { x: n.position.x + offset.x, y: n.position.y + offset.y },
           } as WingNode;
@@ -584,13 +598,29 @@ export const useCanvasStore = create<CanvasState>()(
           get().commitHistory();
           dragCommitted = true;
         }
-        if (gestureEnded) dragCommitted = false;
+
+        // Alt 拖拽复制期间：原件的拖动/缩放帧改道到副本。注意顺序——RF 在拖动
+        // 结束帧（dragging:false）仍会带原件 id 和最终落点位置，必须先改道、
+        // 后清表，否则原件会被瞬间拽到落点
+        let applied = altDragClone
+          ? changes.map((c) =>
+              (c.type === "position" || c.type === "dimensions") &&
+              altDragClone!.has(c.id)
+                ? ({ ...c, id: altDragClone!.get(c.id)! } as NodeChange<WingNode>)
+                : c,
+            )
+          : changes;
+
+        if (gestureEnded) {
+          dragCommitted = false;
+          // Alt 拖拽手势结束：本批已改道完毕，停用改道表
+          if (altDragClone) altDragClone = null;
+        }
 
         // 拖动对齐辅助线：单节点（顶层）拖动时吸附其他顶层卡的边/中心
-        let applied = changes;
         let guides: { x: number[]; y: number[] } | null = null;
         if (hasDrag) {
-          const drags = changes.filter(
+          const drags = applied.filter(
             (
               c,
             ): c is Extract<NodeChange<WingNode>, { type: "position" }> & {
@@ -621,7 +651,7 @@ export const useCanvasStore = create<CanvasState>()(
             const sy = axisSnap(drags[0].position.y, h, refsY);
             guides = { x: sx ? [sx.line] : [], y: sy ? [sy.line] : [] };
             if (sx || sy) {
-              applied = changes.map((c) => {
+              applied = applied.map((c) => {
                 if (c.type !== "position" || c.id !== self.id) return c;
                 const p = (c as { position?: { x: number; y: number } }).position;
                 if (!p) return c;
@@ -646,7 +676,7 @@ export const useCanvasStore = create<CanvasState>()(
         }));
         // 拖动结束：判定拖入其他分组（收编）/ 拖出本组（提升）
         if (gestureEnded) {
-          const endedIds = changes
+          const endedIds = applied
             .filter(
               (c): c is Extract<NodeChange<WingNode>, { type: "position" }> =>
                 c.type === "position" && c.dragging === false,
@@ -740,6 +770,60 @@ export const useCanvasStore = create<CanvasState>()(
       duplicateSelection: () => {
         if (get().copySelection() === 0) return [];
         return get().pasteClipboard();
+      },
+
+      beginAltDragClone: (draggedId) => {
+        const state = get();
+        const dragged = state.nodes.find((n) => n.id === draggedId);
+        if (!dragged) return;
+        // 拖动卡在选区内 → 克隆整个选区（含内部连线）；否则只克隆这张卡
+        const ids = new Set(
+          dragged.selected
+            ? state.nodes.filter((n) => n.selected).map((n) => n.id)
+            : [draggedId],
+        );
+        const originals = state.nodes.filter((x) => ids.has(x.id));
+        // 先建全量 id 映射再克隆：父分组也在选区内时，子卡副本的 parentId
+        // 要改指向组副本（否则拖走的是空组、子卡散落提升出原组）
+        const idMap = new Map(originals.map((n) => [n.id, genNodeId()] as const));
+        const copies: WingNode[] = originals.map((n) => {
+          const cloned = structuredClone(n);
+          const parentId =
+            cloned.parentId && idMap.has(cloned.parentId)
+              ? idMap.get(cloned.parentId)
+              : cloned.parentId;
+          // 副本原位生成，随后的拖动帧带着它们走；parentId 一并处理（组内克隆仍回组内）
+          return {
+            ...cloned,
+            id: idMap.get(cloned.id)!,
+            parentId,
+            selected: true,
+            dragging: true,
+          };
+        });
+        const newEdges = state.edges
+          .filter((e) => ids.has(e.source) && ids.has(e.target))
+          .map((e) => ({
+            ...structuredClone(e),
+            id: `e_${genNodeId()}`,
+            source: idMap.get(e.source) ?? e.source,
+            target: idMap.get(e.target) ?? e.target,
+          }));
+        altDragClone = idMap;
+        // 克隆+移动合并为一次撤销：克隆前提交快照，并拦掉拖动首帧的重复提交
+        get().commitHistory();
+        dragCommitted = true;
+        set((s) => ({
+          nodes: [
+            ...s.nodes.map((n) => ({ ...n, selected: false, dragging: false })),
+            ...copies,
+          ],
+          edges: [...s.edges, ...newEdges],
+        }));
+      },
+
+      endAltDrag: () => {
+        altDragClone = null;
       },
 
       nudgeSelection: (dx, dy) => {

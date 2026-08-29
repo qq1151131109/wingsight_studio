@@ -42,8 +42,10 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 
 ## 已知坑
 
+- 画布基础交互（对标 Figma）：左拖空白=框选（`panOnDrag={[1]}` 是前提，另配 `selectionMode=Partial`）、中键/Space+拖/双指滚动=平移、⌘+滚/捏合=缩放、Alt+拖卡=原位克隆（store 的 `altDragClone` 改道拖动帧，注意"先改道后清表"）、双击空白=「添加节点」选择器、右键空白=上传/添加节点/撤销/重做/粘贴菜单（reference 产品范式）。滚轮语义按设备启发式切换（`CanvasView` 的 `onWheelCapture`：鼠标轮离散步进=缩放、触控板连续小步进=平移）。右键拖不做平移（macOS contextmenu 在 mousedown 即触发，会和右键菜单打架）。库级陷阱 2：RF 的 `onPointerCancel` 不清 `userSelectionRect`，pointercancel/漏 pointerup 会卡死框选——`CanvasView` 的 `SelectionGuard` 窗口级兜底，勿删
 - Langflow 的 SSRF 白名单在 `~/Desktop/langflow/.env` 的 `LANGFLOW_SSRF_ALLOWED_HOSTS`（含 dmxapi/amazonaws/deepseek 等）——出图报 Broken pipe / blocked IP 时先查这里，改后需重启 langflow
 - `references/` 是外部参考项目（已 tsconfig exclude + gitignore，勿编译勿提交）；`agent/data/`、`agent/static/assets/`、`logs/` 均为运行时产物
 - 远程访问经隧道（bore/ddnsto），`allowedDevOrigins` 已放行，改访问域名需同步 next.config.ts
+- xyflow 12.11 的 `fitView` prop **不是只在挂载时生效**：StoreUpdater 监听它，prop 值一旦翻转就置 `fitViewQueued` 重新 fit（空画布建第一卡会怼到 maxZoom）。要"只挂载时 fit"就用 `useState` 初值冻结（`CanvasView` 的 `fitOnMount`），勿写回随状态变化的表达式
 - 改 `agent/graph.py` 系统提示后必须重启 agent（uvicorn 无 --reload）；改 langflow 自定义组件源码后须重启 langflow（模块缓存）
 

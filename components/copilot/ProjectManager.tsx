@@ -150,17 +150,26 @@ async function persist(
   pid: string,
   payload: { nodes: unknown[]; edges: unknown[]; viewport: unknown },
 ) {
+  // 会话瞬态（选中/拖拽中）不落盘：否则重载项目会恢复上次的旧选区
+  const nodes = payload.nodes.map((n) => {
+    if (!n || typeof n !== "object") return n;
+    const rest = { ...(n as Record<string, unknown>) };
+    delete rest.selected;
+    delete rest.dragging;
+    return rest;
+  });
+  const clean = { ...payload, nodes };
   useCanvasStore.getState().setSaveState("saving");
   try {
     localStorage.setItem(
       cacheKey(pid),
-      JSON.stringify({ state: payload, version: 0 }),
+      JSON.stringify({ state: clean, version: 0 }),
     );
   } catch {
     /* 隐私模式等忽略 */
   }
   try {
-    await saveCanvas(pid, payload);
+    await saveCanvas(pid, clean);
     // 仅当仍在本项目时更新状态（快速切换项目不被旧请求覆盖）
     if (useCanvasStore.getState().projectId === pid) {
       useCanvasStore.getState().setSaveState("saved");
