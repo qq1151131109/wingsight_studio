@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
-import WelcomeModal from "@/components/shell/WelcomeModal";
 import {
   WorkspaceErrorState,
   WorkspaceLoadingState,
@@ -360,7 +359,6 @@ export default function Home() {
   return (
     <AuthGate>
       <HomeInner />
-      <WelcomeModal />
     </AuthGate>
   );
 }
