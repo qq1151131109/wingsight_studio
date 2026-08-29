@@ -1,38 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Drama,
   FolderPlus,
   House,
   LayoutGrid,
   LogOut,
-  Moon,
   ScrollText,
   Settings,
-  Sun,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { createProject, listProjects, type ProjectMeta } from "@/lib/projects";
 import { clearToken, getToken } from "@/lib/auth";
-
-/** 订阅 <html> 的 dark class（主题脚本/本组件都可能改它） */
-function useThemeIsDark() {
-  const subscribe = useCallback((onChange: () => void) => {
-    const observer = new MutationObserver(onChange);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
-  return useSyncExternalStore(
-    subscribe,
-    () => document.documentElement.classList.contains("dark"),
-    () => false,
-  );
-}
 
 const ITEMS = [
   { id: "canvas", label: "画布", icon: LayoutGrid, enabled: true },
@@ -43,7 +24,6 @@ const ITEMS = [
 
 export default function ActivityBar() {
   const router = useRouter();
-  const dark = useThemeIsDark();
   const projectId = useCanvasStore((s) => s.projectId);
   const projectName = useCanvasStore((s) => s.projectName);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
@@ -86,16 +66,6 @@ export default function ActivityBar() {
       switchTo(created.id);
     } catch {
       /* 服务不可达 */
-    }
-  };
-
-  const toggleTheme = () => {
-    const next = !document.documentElement.classList.contains("dark");
-    document.documentElement.classList.toggle("dark", next);
-    try {
-      localStorage.setItem("wingsight-theme", next ? "dark" : "light");
-    } catch {
-      /* 忽略隐私模式下的存储异常 */
     }
   };
 
@@ -157,14 +127,6 @@ export default function ActivityBar() {
           </button>
         ))}
       </nav>
-      <button
-        type="button"
-        title={dark ? "切到浅色" : "切到深色"}
-        onClick={toggleTheme}
-        className="flex h-9 w-9 items-center justify-center rounded-lg text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-      >
-        {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-      </button>
       {hasToken ? (
         <button
           type="button"

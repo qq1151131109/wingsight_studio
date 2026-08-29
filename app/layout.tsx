@@ -20,19 +20,23 @@ try {
   var S = 20, E = 8;
   var mode = "auto";
   try {
+    // URL 带 ?theme=reset：清掉手动覆盖，恢复跟随时间（一次性诊断入口）
+    if (location.search.indexOf("theme=reset") !== -1) {
+      localStorage.removeItem(K);
+      localStorage.removeItem(O);
+      localStorage.removeItem("wingsight-theme");
+    }
     var m = localStorage.getItem(K);
-    var legacy = localStorage.getItem("wingsight-theme");
+    // 旧 key "wingsight-theme" 是历史遗留（旧按钮直接写它，且会经迁移逻辑
+    // 变成长期覆盖反复作祟）——直接清理，不再迁移
+    localStorage.removeItem("wingsight-theme");
     if (m === "light" || m === "dark") {
       var until = Number(localStorage.getItem(O));
       if (Number.isFinite(until) && until > Date.now()) mode = m;
       else { localStorage.setItem(K, "auto"); localStorage.removeItem(O); }
-    } else if (legacy === "light" || legacy === "dark") {
-      mode = legacy;
-      localStorage.setItem(K, mode);
-      localStorage.setItem(O, String(Date.now() + 12 * 3600 * 1000));
     }
   } catch (e) {}
-  var h = new Date().getHours();
+  var h = Math.floor(Date.now() / 36e5 + 8) % 24;
   var dark = mode === "dark" || (mode === "auto" && (h >= S || h < E));
   if (dark) document.documentElement.classList.add("dark");
   document.documentElement.dataset.themeMode = mode;

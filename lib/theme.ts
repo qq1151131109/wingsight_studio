@@ -23,8 +23,9 @@ const DARK_END_HOUR = 8;
 interface ThemeState {
   mode: ThemeMode;
   resolvedTheme: ResolvedTheme;
-  /** 循环切换：auto → light → dark → auto */
-  cycleTheme: () => void;
+  /** 切到当前反色（juben 语义）：日间点一下进夜间、夜间点一下回日间；
+   *  写入手动覆盖，到下个时间边界自动回落 auto */
+  toggleTheme: () => void;
 }
 
 function isThemeMode(value: string | null): value is ThemeMode {
@@ -51,25 +52,30 @@ export function readStoredThemeMode(now = new Date()): ThemeMode {
   }
 }
 
+/** 当前北京小时（0-23）——时间规则固定按东八区判定，不随访问设备的时区漂移 */
+function beijingHour(now = new Date()): number {
+  return Math.floor((now.getTime() / 3600000 + 8) % 24);
+}
+
 export function resolveTheme(mode: ThemeMode, now = new Date()): ResolvedTheme {
   if (mode !== "auto") return mode;
-  const hour = now.getHours();
+  const hour = beijingHour(now);
   return hour >= DARK_START_HOUR || hour < DARK_END_HOUR ? "dark" : "light";
 }
 
-/** 距下一个 auto 切换边界（8:00 / 20:00）的毫秒数 */
+/** 距下一个 auto 切换边界（北京 8:00 / 20:00）的毫秒数 */
 export function millisecondsUntilNextThemeBoundary(now = new Date()): number {
-  const next = new Date(now);
-  const hour = now.getHours();
-  if (hour < DARK_END_HOUR) {
-    next.setHours(DARK_END_HOUR, 0, 0, 0);
-  } else if (hour < DARK_START_HOUR) {
-    next.setHours(DARK_START_HOUR, 0, 0, 0);
-  } else {
-    next.setDate(next.getDate() + 1);
-    next.setHours(DARK_END_HOUR, 0, 0, 0);
-  }
-  return Math.max(1, next.getTime() - now.getTime());
+  const hour = beijingHour(now);
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth();
+  const d = now.getUTCDate();
+  // 北京 08:00 = UTC 00:00，北京 20:00 = UTC 12:00（d+1 进位由 Date.UTC 处理）
+  const today08 = Date.UTC(y, m, d, 0);
+  const today20 = Date.UTC(y, m, d, 12);
+  const tomorrow08 = Date.UTC(y, m, d + 1, 0);
+  const target =
+    hour < DARK_END_HOUR ? today08 : hour < DARK_START_HOUR ? today20 : tomorrow08;
+  return Math.max(1, target - now.getTime());
 }
 
 function applyTheme(mode: ThemeMode, resolvedTheme: ResolvedTheme) {
@@ -101,9 +107,10 @@ const initialMode = typeof window === "undefined" ? "auto" : readStoredThemeMode
 export const useThemeStore = create<ThemeState>()((set, get) => ({
   mode: initialMode,
   resolvedTheme: resolveTheme(initialMode),
-  cycleTheme: () => {
-    const order: ThemeMode[] = ["auto", "light", "dark"];
-    const mode = order[(order.indexOf(get().mode) + 1) % 3];
+  toggleTheme: () => {
+    // 语义按"看到的颜色"取反：夜间点一下回日间、日间点一下进夜间——
+    // 无论 mode 处于 auto 还是某种覆盖，一次点击必达用户想要的那个
+    const mode: ThemeMode = get().resolvedTheme === "dark" ? "light" : "dark";
     const resolvedTheme = resolveTheme(mode);
     persistThemeMode(mode, new Date());
     applyTheme(mode, resolvedTheme);

@@ -7,9 +7,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Pencil, Moon, Sun, SunMoon, UserPlus } from "lucide-react";
+import { Pencil, Moon, Sun, UserPlus } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
-import { useThemeStore, type ThemeMode } from "@/lib/theme";
+import { useThemeStore } from "@/lib/theme";
 import { renameProject } from "@/lib/projects";
 import { listCollaborators } from "@/lib/admin";
 import CollaboratorsDialog from "@/components/home/CollaboratorsDialog";
@@ -25,30 +25,8 @@ function avatarColor(name: string): string {
 export default function WorkbenchTopbar() {
   const projectId = useCanvasStore((s) => s.projectId);
   const projectName = useCanvasStore((s) => s.projectName);
-  const themeMode = useThemeStore((s) => s.mode);
-  const cycleTheme = useThemeStore((s) => s.cycleTheme);
-
-  // 三态循环 auto → light → dark；auto 按 20:00–次日 8:00 自动夜间
-  const THEME_UI: Record<
-    ThemeMode,
-    { icon: React.ReactNode; title: string; next: string }
-  > = {
-    auto: {
-      icon: <SunMoon className="h-4 w-4" />,
-      title: "主题：跟随时间（20:00–次日 8:00 自动夜间）· 点击改为始终日间",
-      next: "始终日间",
-    },
-    light: {
-      icon: <Sun className="h-4 w-4" />,
-      title: "主题：始终日间（覆盖中，到下个时间边界回落自动）· 点击改为始终夜间",
-      next: "始终夜间",
-    },
-    dark: {
-      icon: <Moon className="h-4 w-4" />,
-      title: "主题：始终夜间（覆盖中，到下个时间边界回落自动）· 点击恢复跟随时间",
-      next: "跟随时间",
-    },
-  };
+  const resolvedTheme = useThemeStore((s) => s.resolvedTheme);
+  const toggleTheme = useThemeStore((s) => s.toggleTheme);
 
   const [collabs, setCollabs] = useState<string[]>([]);
   const [editing, setEditing] = useState(false);
@@ -144,16 +122,23 @@ export default function WorkbenchTopbar() {
         ) : null}
       </div>
 
-      {/* 主题三态循环：跟随时间（auto 20:00–8:00 夜间）→ 始终日间 → 始终夜间 */}
+      {/* 主题切换：点一下切到反色（日间↔夜间），覆盖到下个时间边界后恢复 juben
+          时间规则（20:00–次日 8:00 自动夜间）。图标显示点击后将到达的主题 */}
       <button
         type="button"
-        title={THEME_UI[themeMode].title + `（点击：${THEME_UI[themeMode].next}）`}
-        onClick={() => cycleTheme()}
-        className={`grid h-8 w-8 place-items-center rounded-md transition-colors hover:bg-surface-2 ${
-          themeMode === "auto" ? "text-text-3 hover:text-text" : "text-text"
-        }`}
+        title={
+          resolvedTheme === "dark"
+            ? "切换为日间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"
+            : "切换为夜间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"
+        }
+        onClick={() => toggleTheme()}
+        className="grid h-8 w-8 place-items-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
       >
-        {THEME_UI[themeMode].icon}
+        {resolvedTheme === "dark" ? (
+          <Sun className="h-4 w-4" />
+        ) : (
+          <Moon className="h-4 w-4" />
+        )}
       </button>
 
       <button

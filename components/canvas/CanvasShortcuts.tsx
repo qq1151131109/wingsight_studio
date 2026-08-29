@@ -13,6 +13,7 @@
 import { useEffect } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { selectAllNodes, useCanvasStore } from "@/lib/canvas/store";
+import { dispatchFocusEdit } from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
 
 function isTyping(e: KeyboardEvent): boolean {
@@ -100,7 +101,7 @@ export default function CanvasShortcuts() {
           x: window.innerWidth / 2,
           y: window.innerHeight / 2,
         });
-        useCanvasStore.getState().addNode({
+        const id = useCanvasStore.getState().addNode({
           position: { x: center.x - 140, y: center.y - 85 },
           data: {
             nodeType: "note",
@@ -108,6 +109,7 @@ export default function CanvasShortcuts() {
             body: text.slice(0, 4000),
           },
         });
+        dispatchFocusEdit(id);
         return;
       }
       e.preventDefault();

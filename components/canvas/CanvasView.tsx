@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
-  MarkerType,
   MiniMap,
   ReactFlow,
   SelectionMode,
@@ -46,7 +45,13 @@ import {
   type WingNodeType,
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
-import { FOCUS_NODES_EVENT, type FocusNodesDetail } from "@/lib/canvas/events";
+import {
+  dispatchFocusEdit,
+  FOCUS_NODES_EVENT,
+  NODE_INFO_EVENT,
+  type FocusNodesDetail,
+  type NodeInfoDetail,
+} from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
 import { nodeTypes, NodeInfoModal, splitShotlistToNodes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
@@ -102,44 +107,6 @@ type CtxMenu =
   | { kind: "convert"; x: number; y: number; id: string }
   | { kind: "selection"; x: number; y: number; ids: string[] }
   | { kind: "edge"; x: number; y: number; id: string };
-
-/** 边箭头（中性暖灰，明暗主题都成立；SVG 填充属性不支持 CSS 变量） */
-const DEFAULT_EDGE_OPTS = {
-  markerEnd: {
-    type: MarkerType.ArrowClosed,
-    width: 15,
-    height: 15,
-    color: "#9a948a",
-  },
-} as const;
-
-/** 关系语义标签：按两端节点类型自动推导（对标 AIGC 的边数据标签，域化为影视关系） */
-const AUTO_EDGE_LABELS: Record<string, string> = {
-  "script->storyboard": "拆解",
-  "script->character": "设定",
-  "script->note": "备注",
-  "script->audio": "配音",
-  "character->storyboard": "出演",
-  "character->image": "定妆",
-  "character->video": "出演",
-  "character->audio": "台词",
-  "storyboard->image": "出图",
-  "storyboard->video": "出视频",
-  "storyboard->audio": "音效",
-  "storyboard->storyboard": "转场",
-  "image->video": "动态化",
-  "image->image": "迭代",
-  "video->video": "拼接",
-  "video->compose": "片段",
-  "compose->compose": "片段",
-  "compose->video": "成片",
-  "audio->video": "配乐",
-  "audio->audio": "混音",
-  "audio->image": "参考",
-  "note->storyboard": "参考",
-  "note->image": "参考",
-  "note->audio": "参考",
-};
 
 /** 连接校验：禁自环与重复边（对标 osc 的 connection rules，取最常用两条） */
 const CONVERT_TYPES: WingNodeType[] = [
@@ -860,6 +827,29 @@ export default function CanvasView() {
   const [wheelMode, setWheelMode] = useState<"trackpad" | "mouse">("trackpad");
   const onWheelCapture = useCallback(
     (e: React.WheelEvent) => {
+      // nowheel 动态化：xyflow 对 .nowheel 元素整体跳过滚轮，但我们把它贴在
+      // 大量未必可滚动的容器上（文本区/行列表/选择器），导致节点上无法缩放。
+      // 这里在 capture 阶段先行判定——目标链上有任一 nowheel 元素「真的可
+      // 滚动」才滚内容；否则现场摘类（setTimeout 还原），赶在 xyflow 的
+      // closest('.nowheel') 判定之前放行缩放
+      let el = e.target as HTMLElement | null;
+      const nws: HTMLElement[] = [];
+      while (el && !el.classList.contains("react-flow")) {
+        if (el.classList.contains("nowheel")) nws.push(el);
+        el = el.parentElement;
+      }
+      if (nws.length > 0) {
+        const anyScrollable = nws.some(
+          (nw) =>
+            nw.scrollHeight > nw.clientHeight ||
+            nw.scrollWidth > nw.clientWidth,
+        );
+        if (anyScrollable) return;
+        for (const nw of nws) {
+          nw.classList.remove("nowheel");
+          setTimeout(() => nw.classList.add("nowheel"), 0);
+        }
+      }
       if (e.ctrlKey || e.metaKey) return;
       const dy = Math.abs(e.deltaY);
       const m = dy % 100;
@@ -924,7 +914,6 @@ export default function CanvasView() {
 
   const displayEdges = useMemo(() => {
     const loading = new Set(loadingKey ? loadingKey.split(",") : []);
-    const typeById = new Map(nodes.map((n) => [n.id, n.data.nodeType] as const));
     // 折叠分组的边重接（对标 open-ai-canvas frame 折叠）：隐藏子卡的连线
     // 显示层改挂到组节点，展开自动还原（纯显示转换，不动数据）
     const hiddenToGroup = new Map<string, string>();
@@ -942,10 +931,6 @@ export default function CanvasView() {
         source: src,
         target: tgt,
         ...(loading.has(e.target) ? { animated: true } : {}),
-        label:
-          AUTO_EDGE_LABELS[
-            `${typeById.get(e.source)}->${typeById.get(e.target)}`
-          ],
         ...(related
           ? src === related || tgt === related
             ? { className: "ws-edge-related" }
@@ -1063,10 +1048,10 @@ export default function CanvasView() {
 
   const linkMenuTypes: WingNodeType[] = [
     "note",
-    "character",
-    "storyboard",
     "image",
     "video",
+    "storyboard",
+    "character",
   ];
 
   // ---------- 右键菜单（空白 / 节点 / 多选 / 连线） ----------
@@ -1080,6 +1065,16 @@ export default function CanvasView() {
   // 右键菜单触发的导演台 / 节点信息弹窗
   const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   const [infoNode, setInfoNode] = useState<WingNode | null>(null);
+  // 卡片悬浮工具条「节点信息」→ 打开信息弹窗（工具条在 nodes.tsx，经事件总线）
+  useEffect(() => {
+    const onNodeInfo = (e: Event) => {
+      const nid = (e as CustomEvent<NodeInfoDetail>).detail?.nodeId;
+      const n = useCanvasStore.getState().nodes.find((x) => x.id === nid);
+      if (n) setInfoNode(n);
+    };
+    window.addEventListener(NODE_INFO_EVENT, onNodeInfo);
+    return () => window.removeEventListener(NODE_INFO_EVENT, onNodeInfo);
+  }, []);
 
   useEffect(() => {
     if (!ctxMenu && !pendingLink) return;
@@ -1184,11 +1179,13 @@ export default function CanvasView() {
     (type: WingNodeType) => {
       if (!ctxMenu || (ctxMenu.kind !== "pane" && ctxMenu.kind !== "add"))
         return;
-      addNode({
+      const id = addNode({
         position: { x: ctxMenu.fx - 110, y: ctxMenu.fy - 40 },
         data: { nodeType: type, title: NODE_META[type].hint, body: "" },
       });
       setCtxMenu(null);
+      // 常驻编辑卡：建卡即把光标送入正文（文档型卡片零门槛开写）
+      dispatchFocusEdit(id);
     },
     [ctxMenu, addNode],
   );
@@ -1314,7 +1311,6 @@ export default function CanvasView() {
         nodes={displayNodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
-        defaultEdgeOptions={DEFAULT_EDGE_OPTS}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}

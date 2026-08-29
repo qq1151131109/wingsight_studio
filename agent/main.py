@@ -8,6 +8,7 @@
 等价 capability URL）；后续可给 CopilotKit HttpAgent 加 headers 收紧。
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -283,6 +284,72 @@ def api_compose(pid: str, req: dict, user: auth.CurrentUser):
     except Exception as exc:  # ffmpeg 失败等
         return Response(status_code=500, content=str(exc), media_type="text/plain")
     return {"url": url}
+
+
+# ---------- 分镜表生成（shotlist 卡按钮直连 langflow；剧本→rows）----------
+
+
+def _parse_shot_rows(text: str) -> list[dict]:
+    """从 flow 输出文本中解析分镜 JSON 数组（容错：剥围栏、截取首尾括号）。"""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`").lstrip()
+        if t.startswith("json"):
+            t = t[4:].lstrip()
+    start, end = t.find("["), t.rfind("]")
+    if start == -1 or end <= start:
+        raise ValueError("输出里没有 JSON 数组")
+    arr = json.loads(t[start : end + 1])
+    rows = []
+    for i, it in enumerate(arr):
+        if not isinstance(it, dict):
+            continue
+        rows.append(
+            {
+                "rid": f"r{i + 1}",
+                "shotSize": str(it.get("shotSize") or ""),
+                "cameraMove": str(it.get("cameraMove") or ""),
+                "duration": str(it.get("duration") or ""),
+                "action": str(it.get("action") or ""),
+                "lighting": str(it.get("lighting") or ""),
+                "sound": str(it.get("sound") or ""),
+                "dialogue": str(it.get("dialogue") or ""),
+            }
+        )
+    return rows
+
+
+@app.post("/storyboard/generate")
+async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
+    script = str(req.get("script") or "").strip()
+    if not script:
+        return Response(status_code=400, content="剧本内容为空", media_type="text/plain")
+    flow_id = os.environ.get("LANGFLOW_SHOTLIST_FLOW_ID", "")
+    if not flow_id:
+        return Response(
+            status_code=503,
+            content="未配置 LANGFLOW_SHOTLIST_FLOW_ID（flow 见 agent/flows/shotlist-generate.json）",
+            media_type="text/plain",
+        )
+    parts = []
+    if req.get("shotCount"):
+        parts.append(f"镜头数：{int(req['shotCount'])}")
+    if req.get("durationSeconds"):
+        parts.append(f"单镜时长：{int(req['durationSeconds'])} 秒")
+    parts.append("剧本：")
+    parts.append(script)
+    text = await skills.run_flow_blocking(flow_id, input_value="\n".join(parts))
+    try:
+        rows = _parse_shot_rows(text)
+    except (ValueError, json.JSONDecodeError) as exc:
+        return Response(
+            status_code=502,
+            content=f"分镜解析失败（{exc}）：{text[:200]}",
+            media_type="text/plain",
+        )
+    if not rows:
+        return Response(status_code=502, content="分镜解析为空", media_type="text/plain")
+    return {"rows": rows}
 
 
 # ---------- 协作者（owner/admin 管理；协作者与 owner 同权编辑）----------

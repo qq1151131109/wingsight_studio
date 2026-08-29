@@ -24,6 +24,30 @@ export type RowGenerateDetail = {
   refIds: string[];
 };
 
+/** 远程聚焦编辑：让指定文本卡正文进入编辑态（novanova 的 onEditText
+ *  通道——agent 建卡后命令浏览器聚焦，未来任何外部触发都可复用）。
+ *  常驻编辑（Editable always）下语义 = 把光标移入新卡正文 */
+export const FOCUS_EDIT_EVENT = "wingsight:focus-edit";
+
+export type FocusEditDetail = { nodeId: string };
+
+export const dispatchFocusEdit = (nodeId: string) => {
+  // 必须等一拍：建卡路径里本函数在 React 提交新节点前被调用，卡上的
+  // FOCUS_EDIT 监听器尚未挂载，同步发事件会丢
+  window.setTimeout(() => {
+    window.dispatchEvent(
+      new CustomEvent<FocusEditDetail>(FOCUS_EDIT_EVENT, {
+        detail: { nodeId },
+      }),
+    );
+  }, 0);
+};
+
+/** 请求打开节点信息弹窗（卡片悬浮工具条 → CanvasView 的 infoNode 状态） */
+export const NODE_INFO_EVENT = "wingsight:node-info";
+
+export type NodeInfoDetail = { nodeId: string };
+
 /** 拖媒体到生成输入面板=设为引用（PromptBar 监听） */
 export const ADD_REF_EVENT = "wingsight:add-ref";
 

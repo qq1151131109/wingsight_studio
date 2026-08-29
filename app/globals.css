@@ -165,15 +165,44 @@ body {
 
 /* LOD：低缩放（<0.5）只留标题，降噪 */
 .ws-node.is-tiny .ws-detail { display: none; }
-.ws-node.is-tiny .react-flow__handle { opacity: 0 !important; }
+.ws-node.is-tiny .react-flow__handle,
+.ws-node.is-tiny .ws-plus { opacity: 0 !important; }
 
-/* 卡片手柄即"加号"圆钮：默认隐藏，hover/选中/连线时浮现（对标 libtv 选中态）。
-   点击=弹建卡菜单，拖拽=发起连线（点击与拖拽由 nodes.tsx 按位移区分）；
-   z-index 必须高于 .ws-card（DOM 在前会被卡片背景盖住内半边）；
-   磁性放大由内联 transform 驱动，::before 扩大命中半径（悬停容错） */
+/* 连线锚点（不可见）：固定在卡缘、零动效。xyflow 用 getBoundingClientRect
+   快照手柄位置算连线端点——锚点一旦参与动画/外移，线就够不着卡片。
+   视觉上的 + 圆钮是 CardShell 里的独立浮层（.ws-plus），可自由悬在卡外；
+   点击/拖拽事件穿透浮层落在此锚点上（::before 扩大命中半径） */
 .ws-node .react-flow__handle {
-    opacity: 0;
+    opacity: 0 !important;
     z-index: 10;
+    width: 1.375rem;
+    height: 1.375rem;
+    cursor: crosshair;
+}
+.ws-node .react-flow__handle::before {
+    content: "";
+    position: absolute;
+    inset: -10px;
+    border-radius: 9999px;
+}
+.ws-node .react-flow__handle-left {
+    left: 0;
+    top: calc(50% + 12px);
+    transform: translate(-50%, -50%);
+}
+.ws-node .react-flow__handle-right {
+    right: 0;
+    left: auto;
+    top: calc(50% + 12px);
+    transform: translate(50%, -50%);
+}
+
+/* + 圆钮（纯视觉浮层，pointer-events:none）：悬停节点时浮现，完全悬在
+   卡外 6px；磁性追踪/放大由内联 transform 驱动（只动皮，不动锚点） */
+.ws-plus {
+    position: absolute;
+    top: calc(50% + 12px);
+    z-index: 11;
     width: 1.375rem;
     height: 1.375rem;
     border-radius: 9999px;
@@ -182,24 +211,13 @@ body {
     color: var(--color-text-3);
     display: grid;
     place-items: center;
-    font-size: 0;
+    pointer-events: none;
+    opacity: 0;
     will-change: transform;
 }
-.ws-node .react-flow__handle::before {
-    content: "";
-    position: absolute;
-    inset: -10px;
-    border-radius: 9999px;
-}
-.ws-node:hover .react-flow__handle,
-.ws-node.is-selected .react-flow__handle,
-.react-flow__handle-connecting,
-.react-flow__handle.connectionindicator:hover {
+.ws-node:hover .ws-plus,
+.ws-node.is-selected .ws-plus {
     opacity: 1;
-}
-.ws-node .react-flow__handle:hover {
-    border-color: var(--color-accent);
-    color: var(--color-accent);
 }
 
 /* agent 建卡后的瞬时高亮：强调环闪两下 */
@@ -482,6 +500,12 @@ cpk-web-inspector {
     font-size: 0.875rem;
     line-height: 1.6;
 }
+
+/* ---------- 常驻编辑输入框自适应（Editable always） ----------
+   field-sizing: content 让 textarea 尺寸随内容走：配合 w-full 得"宽随容器、
+   高随内容"（行字段），配合默认 w-auto 得"宽高都随内容"（镜号/运镜等小
+   字段芯片）。不支持的浏览器回落到 rows 兜底行数 */
+.ws-autota { field-sizing: content; }
 
 /* ---------- Markdown 正文渲染（.ws-md，文本/剧本卡非编辑态） ----------
    尺寸随卡片字号（text-xs）相对缩放（em），米黄纸感 token 配色。

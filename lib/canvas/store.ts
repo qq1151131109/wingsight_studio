@@ -34,9 +34,41 @@ export interface ShotRow {
   duration?: string;
   action?: string;
   dialogue?: string;
+  /** 光影氛围（时段/光源/明暗与色调） */
+  lighting?: string;
+  /** 音效（环境声/动效） */
+  sound?: string;
+  /** 最终提示词（行内合成或手写，出图时优先使用） */
+  finalPrompt?: string;
   /** 该镜头的出图结果（镜头级生成回填） */
   imageUrl?: string;
 }
+
+/** 景别枚举（搬 novanova 十大景别，前后端/flow 提示词共用同一集合） */
+export const SHOT_SIZES = [
+  "大特写",
+  "特写",
+  "近景",
+  "头肩景",
+  "中景",
+  "中远景",
+  "全景",
+  "远景",
+  "大远景",
+  "大全景",
+] as const;
+
+/** 运镜常用值（自由文本，下拉给常用项，自定义值兜底显示） */
+export const CAMERA_MOVES = [
+  "固定",
+  "推",
+  "拉",
+  "摇",
+  "移",
+  "跟",
+  "升降",
+  "手持",
+] as const;
 
 export interface WingNodeData {
   nodeType: WingNodeType;
@@ -271,6 +303,45 @@ export function selectionBoxes(nodes: WingNode[], ids: string[]) {
         dy: n.position.y - abs.y,
       };
     });
+}
+
+/** 建卡找空位（AIGCCanvasFlow 的向下扫描式，对标竞品 auto-placement）：
+ *  从锚点起测试新卡矩形，被占则跳到「障碍物最低底边 + gap」再试，最多 30 次。
+ *  障碍物一律用实际尺寸（nodeSize，外扩 12px 判定边距），隐藏卡与分组框不算；
+ *  连点 + 号 / 生成多张时天然向纵向级联，不会叠卡。 */
+export function findFreePosition(
+  nodes: WingNode[],
+  anchor: { x: number; y: number },
+  size: { w: number; h: number },
+  gap = 32,
+): { x: number; y: number } {
+  const obstacles = nodes
+    .filter((n) => !n.hidden && n.data.nodeType !== "group")
+    .map((n) => {
+      const abs = absolutePosition(nodes, n);
+      const s = nodeSize(n);
+      return {
+        x: abs.x - 12,
+        y: abs.y - 12,
+        w: s.w + 24,
+        h: s.h + 24,
+      };
+    });
+  const blocked = (y: number) =>
+    obstacles.filter(
+      (o) =>
+        anchor.x < o.x + o.w &&
+        anchor.x + size.w > o.x &&
+        y < o.y + o.h &&
+        y + size.h > o.y,
+    );
+  let y = anchor.y;
+  for (let i = 0; i < 30; i++) {
+    const hit = blocked(y);
+    if (hit.length === 0) break;
+    y = Math.max(...hit.map((o) => o.y + o.h)) + gap;
+  }
+  return { x: Math.round(anchor.x), y: Math.round(y) };
 }
 
 /** 粘贴/复制的落位偏移：默认 +32/+32，与现有卡片重叠时螺旋找空位（对标 S-Copilot） */

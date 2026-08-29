@@ -36,9 +36,18 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 
 - 前端与 agent 间一切流量走**同源代理**（`next.config.ts` rewrites：`/agent-service*`、`/api/v1/*` → 127.0.0.1:8123）。密钥（AGENT/LANGFLOW/DMX key）只存在根目录 `.env.local`（agent 经 dotenv 读取），**绝不下发浏览器、绝不提交**
 - 主 Agent 是**瘦编排者**：系统提示只放"宪法"（`graph.py` SYSTEM_PROMPT），任务知识一律放 Langflow 技能或工具 docstring。新增能力 = 新工具/技能，不是加提示词
-- Langflow 拆解/出图 flow 是纯链式（非 Agent 组件），只经 **v1 阻塞 API** 调用（agui 流不产 TEXT_MESSAGE）。参数用 tweaks 按**节点 id**注入；Prompt 模板变量字段只收**字符串**（传 int 会 500）
+- **LLM 生成类能力一律走 Langflow**（做成 flow，不在 agent 代码里直调模型/写死提示词）；唯一例外是聊天主循环本身（`graph.py` LangGraph 直连 DeepSeek）。约定与清单见下节「Langflow 工作流」
 - **前端工具调用优先路由**：模型消息里混有前端/后端工具调用时必须 END 等浏览器执行（含后端调用的消息进 ToolNode 会返回 invalid tool 破坏交替）；`graph.py` 的 `_unanswered_frontend_calls` 与 `_sanitize_messages_for_model` 是历史交替守卫，勿删
 - @ag-ui/client 0.0.57：公共 API 是 `runAgent()`（自动带 runId/管理 agent.messages），误用 `run()` 会 422；nodeType 字段驱动 React Flow 渲染器选择
+
+## Langflow 工作流（LLM 生成能力全走这里）
+
+业务 flow 是**纯链式**（非 Agent 组件），只经 **v1 阻塞 API** 调用（agui 流不产 TEXT_MESSAGE）。
+
+- **版本化源在本项目 `agent/flows/`**（README 有 flow 清单 / flow id / tweaks 节点对照表）；langflow 自己的 SQLite 只是运行时存储，`~/Desktop/langflow` 是上游源码仓库，不放业务资产
+- **调用**：`skills.run_flow_blocking`（`POST /api/v1/run/{flow_id}`，超时 300s）；flow id 存根目录 `.env.local` 的 `LANGFLOW_*_FLOW_ID`。参数两种注法——tweaks 按**节点 id** 注入（Prompt 模板变量只收**字符串**，传 int 会 500），或拼进 `input_value` 文本头（分镜表生成即此式，不怕节点重建换 id）
+- **改 flow**：UI（localhost:7860）里改并**保存** → 下一次调用立即生效（运行时现读 DB，无需重启）；然后 `cd agent/flows && ./export.sh <flow_id> <文件>.json` 回写本目录保持一致。注意：删节点重建会换节点 id，代码里按 id 注参的（宣发文案 `PromptTemplate-Writer`、出图 `BatchAssetSheet-img02`）要同步；改自定义组件源码需重启 langflow（模块缓存）
+- **新建能力**：UI 画 flow → 调试 → `export.sh` 收进 `agent/flows/` → flow id 记入 `.env.local` → agent 加薄端点/技能包装（参考 `POST /storyboard/generate`）
 
 ## 已知坑
 
@@ -47,5 +56,6 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 - `references/` 是外部参考项目（已 tsconfig exclude + gitignore，勿编译勿提交）；`agent/data/`、`agent/static/assets/`、`logs/` 均为运行时产物
 - 远程访问经隧道（bore/ddnsto），`allowedDevOrigins` 已放行，改访问域名需同步 next.config.ts
 - xyflow 12.11 的 `fitView` prop **不是只在挂载时生效**：StoreUpdater 监听它，prop 值一旦翻转就置 `fitViewQueued` 重新 fit（空画布建第一卡会怼到 maxZoom）。要"只挂载时 fit"就用 `useState` 初值冻结（`CanvasView` 的 `fitOnMount`），勿写回随状态变化的表达式
+- xyflow 新节点首帧带 **`visibility: hidden`**（等 ResizeObserver 测量出尺寸才翻 visible），此窗口内对节点内元素调 `focus()` **静默失败**（无报错无焦点事件）。要"建卡即输入"必须逐帧重试到 `document.activeElement` 落位（`nodes.tsx` 的 `focusWhenVisible`），裸 `autoFocus`/mount effect 一次 focus 都会丢
 - 改 `agent/graph.py` 系统提示后必须重启 agent（uvicorn 无 --reload）；改 langflow 自定义组件源码后须重启 langflow（模块缓存）
 

@@ -19,6 +19,7 @@ import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import {
+  FOCUS_EDIT_EVENT,
   FOCUS_NODES_EVENT,
   FRAME_ANALYSIS_EVENT,
   MASK_REDRAW_EVENT,
@@ -455,6 +456,19 @@ export default function CanvasAgentBridge() {
               detail: { ids: result.createdIds },
             }),
           );
+        }
+        // agent 建的文本卡自动进入编辑态（novanova 的 onEditText 通道）：
+        // 镜头跟过去光标已在文末，用户接着写
+        for (const nid of result.createdIds) {
+          const n = store.nodes.find((x) => x.id === nid);
+          if (
+            n &&
+            (n.data.nodeType === "note" || n.data.nodeType === "script")
+          ) {
+            window.dispatchEvent(
+              new CustomEvent(FOCUS_EDIT_EVENT, { detail: { nodeId: nid } }),
+            );
+          }
         }
       }
       return {
