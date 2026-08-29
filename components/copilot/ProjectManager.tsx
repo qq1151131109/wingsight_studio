@@ -145,40 +145,46 @@ export default function ProjectManager() {
   return null;
 }
 
-/** 服务端 + 本地缓存双写（结果写入画布的保存状态指示器） */
+/** 服务端 + 本地缓存双写（结果写入画布的保存状态指示器）。
+ *  同文档保存串行化（对标 novanova save-scheduler）：链式排队防并发写竞态 */
+let saveChain: Promise<unknown> = Promise.resolve();
 async function persist(
   pid: string,
   payload: { nodes: unknown[]; edges: unknown[]; viewport: unknown },
 ) {
-  // 会话瞬态（选中/拖拽中）不落盘：否则重载项目会恢复上次的旧选区
-  const nodes = payload.nodes.map((n) => {
-    if (!n || typeof n !== "object") return n;
-    const rest = { ...(n as Record<string, unknown>) };
-    delete rest.selected;
-    delete rest.dragging;
-    return rest;
+  const run = saveChain.then(async () => {
+    // 会话瞬态（选中/拖拽中）不落盘：否则重载项目会恢复上次的旧选区
+    const nodes = payload.nodes.map((n) => {
+      if (!n || typeof n !== "object") return n;
+      const rest = { ...(n as Record<string, unknown>) };
+      delete rest.selected;
+      delete rest.dragging;
+      return rest;
+    });
+    const clean = { ...payload, nodes };
+    useCanvasStore.getState().setSaveState("saving");
+    try {
+      localStorage.setItem(
+        cacheKey(pid),
+        JSON.stringify({ state: clean, version: 0 }),
+      );
+    } catch {
+      /* 隐私模式等忽略 */
+    }
+    try {
+      await saveCanvas(pid, clean);
+      // 仅当仍在本项目时更新状态（快速切换项目不被旧请求覆盖）
+      if (useCanvasStore.getState().projectId === pid) {
+        useCanvasStore.getState().setSaveState("saved");
+      }
+    } catch {
+      if (useCanvasStore.getState().projectId === pid) {
+        useCanvasStore.getState().setSaveState("offline");
+      }
+    }
   });
-  const clean = { ...payload, nodes };
-  useCanvasStore.getState().setSaveState("saving");
-  try {
-    localStorage.setItem(
-      cacheKey(pid),
-      JSON.stringify({ state: clean, version: 0 }),
-    );
-  } catch {
-    /* 隐私模式等忽略 */
-  }
-  try {
-    await saveCanvas(pid, clean);
-    // 仅当仍在本项目时更新状态（快速切换项目不被旧请求覆盖）
-    if (useCanvasStore.getState().projectId === pid) {
-      useCanvasStore.getState().setSaveState("saved");
-    }
-  } catch {
-    if (useCanvasStore.getState().projectId === pid) {
-      useCanvasStore.getState().setSaveState("offline");
-    }
-  }
+  saveChain = run.catch(() => undefined);
+  return run;
 }
 
 async function activateProject(p: ProjectMeta) {

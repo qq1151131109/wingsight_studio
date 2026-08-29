@@ -122,7 +122,26 @@ export default function CanvasAgentBridge() {
   });
 
   // image 卡"点击重试" → 转成聊天指令让 agent 重新生成该资产
-  const { sendMessage } = useCopilotChatHeadless_c();
+  const { sendMessage, isLoading } = useCopilotChatHeadless_c();
+
+  // 生成中断恢复（对标 viedeo-workflow useGenerationRecovery）：刷新页面会杀掉
+  // agent 运行。挂载后聊天空闲时，把仍在 loading 的卡标记为"生成中断"，
+  // 用户点卡上的重试即可重发；聊天运行中则跳过（生成还在进行）。
+  useEffect(() => {
+    if (isLoading) return;
+    const t = setTimeout(() => {
+      const st = useCanvasStore.getState();
+      if (!st.hydrated) return;
+      const stuck = st.nodes.filter((n) => n.data.status === "loading");
+      for (const n of stuck) {
+        st.updateNodeData(n.id, {
+          status: "error",
+          errorMessage: "生成中断（页面刷新导致），点击重试",
+        });
+      }
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [isLoading]);
   useEffect(() => {
     const onRetry = (e: Event) => {
       const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;

@@ -23,6 +23,7 @@ import {
 import {
   ChevronRight,
   Library,
+  ListTree,
   Redo2,
   Search,
   Undo2,
@@ -47,6 +48,30 @@ import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
 import NodeInputPanel from "./NodeInputPanel";
 import PromptLibraryPanel from "./PromptLibraryPanel";
+import ShortcutsModal from "./ShortcutsModal";
+import ServiceBanner from "./ServiceBanner";
+import OutlinePanel from "./OutlinePanel";
+
+/** 离线指示：断网时顶部常驻小条（保存走 saveState "offline" 文案，这里补全局感知） */
+function OfflineIndicator() {
+  const [offline, setOffline] = useState(false);
+  useEffect(() => {
+    const sync = () => setOffline(!navigator.onLine);
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+  if (!offline) return null;
+  return (
+    <div className="absolute left-1/2 top-2 z-20 -translate-x-1/2 rounded-lg border border-warn/50 bg-warn/10 px-3 py-1.5 text-xs text-warn shadow">
+      离线中 · 变更暂存本地，联网后自动同步
+    </div>
+  );
+}
 
 /** 视口相等判断（按值比较，防程序化 setViewport 与 store 回写互触发） */
 const vpEq = (a: Viewport, b: Viewport) =>
@@ -418,9 +443,11 @@ function NodeSearch() {
 function BottomDock({
   onOpenAssets,
   onOpenPrompts,
+  onOpenOutline,
 }: {
   onOpenAssets: () => void;
   onOpenPrompts: () => void;
+  onOpenOutline: () => void;
 }) {
   const canUndo = useCanvasStore((s) => s.canUndoNow);
   const canRedo = useCanvasStore((s) => s.canRedoNow);
@@ -457,12 +484,12 @@ function BottomDock({
       </button>
       <button
         type="button"
-        title="提示词库（点击追加到生成输入区）"
+        title="画布大纲（按类型浏览节点，点击定位）"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-        onClick={onOpenPrompts}
+        onClick={onOpenOutline}
       >
-        <WandSparkles className="h-4 w-4" />
-        提示词
+        <ListTree className="h-4 w-4" />
+        大纲
       </button>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
@@ -1020,9 +1047,10 @@ export default function CanvasView() {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const closeCtx = useCallback(() => setCtxMenu(null), []);
 
-  // 素材库 / 提示词库面板（底部坞 / 右键空白 打开，二者互斥）
+  // 素材库 / 提示词库 / 大纲面板（底部坞 / 右键空白 打开，三者互斥）
   const [trayOpen, setTrayOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
+  const [outlineOpen, setOutlineOpen] = useState(false);
 
   useEffect(() => {
     if (!ctxMenu && !pendingLink) return;
@@ -1337,18 +1365,29 @@ export default function CanvasView() {
           onOpenAssets={() => {
             setTrayOpen(true);
             setPromptsOpen(false);
+            setOutlineOpen(false);
           }}
           onOpenPrompts={() => {
             setPromptsOpen(true);
             setTrayOpen(false);
+            setOutlineOpen(false);
+          }}
+          onOpenOutline={() => {
+            setOutlineOpen(true);
+            setTrayOpen(false);
+            setPromptsOpen(false);
           }}
         />
         <SelectionGuard />
         <CanvasShortcuts />
+        <ShortcutsModal />
+        <ServiceBanner />
+        <OfflineIndicator />
         <AssetAutoRecorder />
       </ReactFlow>
       {trayOpen ? <AssetTray onClose={() => setTrayOpen(false)} /> : null}
       {promptsOpen ? <PromptLibraryPanel onClose={() => setPromptsOpen(false)} /> : null}
+      {outlineOpen ? <OutlinePanel onClose={() => setOutlineOpen(false)} /> : null}
       {pendingLink ? (
         <>
           <div

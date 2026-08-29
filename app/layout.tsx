@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import GlobalErrorDialog from "@/components/shell/GlobalErrorDialog";
 
 export const metadata: Metadata = {
   title: "Wingsight Studio",
@@ -21,7 +22,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className="h-full overflow-hidden">{children}</body>
+      <body className="h-full overflow-hidden">
+        {children}
+        <GlobalErrorDialog />
+      </body>
     </html>
   );
 }

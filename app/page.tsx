@@ -15,6 +15,12 @@ import {
 } from "lucide-react";
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
+import WelcomeModal from "@/components/shell/WelcomeModal";
+import {
+  WorkspaceErrorState,
+  WorkspaceLoadingState,
+  WorkspaceState,
+} from "@/components/shell/WorkspaceState";
 import CollaboratorsDialog from "@/components/home/CollaboratorsDialog";
 import { getAuthSession } from "@/lib/auth-session";
 import {
@@ -209,21 +215,25 @@ function HomeInner() {
 
         {/* 卡片网格 */}
         {projects === null ? (
-          <div className="flex items-center justify-center py-24 text-sm text-text-3">
-            <Loader2 className="mr-2 h-4 w-4 motion-safe:animate-spin" /> 加载中…
-          </div>
+          <WorkspaceLoadingState label="加载项目…" />
         ) : shown.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <LayoutGrid className="mb-3 h-8 w-8 text-text-4" />
-            <p className="font-editorial text-lg font-medium text-text-2">
-              {q.trim() ? "没有匹配的项目" : "从这里开始你的第一部片子"}
-            </p>
-            <p className="mt-1.5 text-xs leading-relaxed text-text-3">
-              {q.trim()
-                ? "换个关键词试试"
-                : "新建项目进入画布：放剧本、建角色卡、拆分镜，让助手帮你搭故事板。"}
-            </p>
-          </div>
+          error ? (
+            <WorkspaceErrorState
+              title="项目列表加载失败"
+              description="服务可能未启动，当前内容不会被覆盖。"
+              onRetry={() => void refresh()}
+            />
+          ) : (
+            <WorkspaceState
+              icon={<LayoutGrid className="mb-3 h-8 w-8 text-text-4" />}
+              title={q.trim() ? "没有匹配的项目" : "从这里开始你的第一部片子"}
+              description={
+                q.trim()
+                  ? "换个关键词试试"
+                  : "新建项目进入画布：放剧本、建角色卡、拆分镜，让助手帮你搭故事板。"
+              }
+            />
+          )
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {shown.map((p) => (
@@ -350,6 +360,7 @@ export default function Home() {
   return (
     <AuthGate>
       <HomeInner />
+      <WelcomeModal />
     </AuthGate>
   );
 }
