@@ -13,13 +13,15 @@ import {
   type Viewport,
 } from "@xyflow/react";
 
-/** 画布节点类型：便签 / 剧本 / 角色 / 图片占位 / 视频 / 分镜 / 分组框 */
+/** 画布节点类型：便签 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分组框 */
 export type WingNodeType =
   | "note"
   | "script"
   | "character"
   | "image"
   | "video"
+  | "audio"
+  | "compose"
   | "storyboard"
   | "group";
 
@@ -30,6 +32,10 @@ export interface WingNodeData {
   imageUrl?: string;
   /** video 卡：视频源（生成或上传回填）；imageUrl 可作封面帧 */
   videoUrl?: string;
+  /** audio 卡：音频源（上传回填）；compose 卡：合成结果也存这里 */
+  audioUrl?: string;
+  /** compose 卡：上游视频节点的拼接顺序（未列出的连线源追加在尾部） */
+  itemIds?: string[];
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
@@ -194,6 +200,8 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   character: { w: 256, h: 300 },
   image: { w: 256, h: 260 },
   video: { w: 320, h: 300 },
+  audio: { w: 280, h: 190 },
+  compose: { w: 320, h: 280 },
   storyboard: { w: 320, h: 220 },
   group: { w: 480, h: 360 },
 };
@@ -1016,6 +1024,8 @@ export const NODE_META: Record<
   character: { label: "角色", dot: "var(--color-good)", hint: "角色设定卡" },
   image: { label: "图片", dot: "var(--color-warn)", hint: "设定图 / 参考图占位" },
   video: { label: "视频", dot: "var(--color-cool)", hint: "镜头视频 / 动态预览" },
+  audio: { label: "音频", dot: "var(--color-danger)", hint: "配音 / 音效 / BGM" },
+  compose: { label: "合成", dot: "var(--color-text-3)", hint: "按序拼接上游视频成片" },
   storyboard: { label: "分镜", dot: "var(--color-accent-2)", hint: "镜头画面描述" },
   group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
 };

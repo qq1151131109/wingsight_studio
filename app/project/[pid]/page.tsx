@@ -2,6 +2,7 @@
 
 import { ReactFlowProvider } from "@xyflow/react";
 import CanvasView from "@/components/canvas/CanvasView";
+import WorkbenchTopbar from "@/components/canvas/WorkbenchTopbar";
 import CanvasAgentBridge from "@/components/copilot/CanvasAgentBridge";
 import ChatPersistence from "@/components/copilot/ChatPersistence";
 import ProjectManager from "@/components/copilot/ProjectManager";
@@ -15,10 +16,13 @@ export default function ProjectWorkbench() {
     <AuthGate>
       <div className="flex h-dvh overflow-hidden">
         <ActivityBar />
-        <main className="relative min-w-0 flex-1">
-          <ReactFlowProvider>
-            <CanvasView />
-          </ReactFlowProvider>
+        <main className="flex min-w-0 flex-1 flex-col">
+          <WorkbenchTopbar />
+          <div className="relative min-h-0 flex-1">
+            <ReactFlowProvider>
+              <CanvasView />
+            </ReactFlowProvider>
+          </div>
         </main>
         <CanvasAgentBridge />
         <ChatPersistence />

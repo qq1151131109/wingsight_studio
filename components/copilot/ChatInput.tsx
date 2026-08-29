@@ -442,7 +442,7 @@ export default function ChatInput({
               title="停止生成"
               onClick={() => onStop?.()}
             >
-              <Square className="h-4 w-4 fill-current" />
+              <Square className="h-3 w-3 fill-current motion-safe:animate-pulse" />
             </button>
           ) : (
             <button

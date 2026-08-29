@@ -18,7 +18,11 @@ import {
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
-import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
+import {
+  FOCUS_NODES_EVENT,
+  FRAME_ANALYSIS_EVENT,
+  type FrameAnalysisDetail,
+} from "@/lib/canvas/events";
 
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
 interface WingsightAgentState {
@@ -33,6 +37,8 @@ const NODE_TYPE_LABEL: Record<string, string> = {
   character: "角色",
   image: "图片",
   video: "视频",
+  audio: "音频",
+  compose: "合成",
   storyboard: "分镜",
   group: "分组",
 };
@@ -184,11 +190,43 @@ export default function CanvasAgentBridge() {
     return () => window.removeEventListener(GENERATE_EVENT, onGenerate);
   }, [sendMessage]);
 
+  // 视频卡"AI 拉片"→ 抽帧已上传，组装逐帧分析指令（视觉模型看图，文本模型读 URL 清单）
+  useEffect(() => {
+    const onAnalyze = (e: Event) => {
+      const { nodeId, frames } = (e as CustomEvent<FrameAnalysisDetail>).detail;
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      if (!node || frames.length === 0) return;
+      const title = node.data.title || "未命名视频";
+      const textPart = [
+        `请对画布节点 ${nodeId}（视频卡「${title}」）做逐帧拉片分析。以下是等间隔抽取的 ${frames.length} 帧（时间点 → 帧 URL）：`,
+        ...frames.map((f) => `- ${f.t.toFixed(1)}s ${f.url}`),
+        "分析角度：景别变化与镜头切换、运镜推断（推拉摇跟固定）、构图与光线、节奏与建议的剪辑点。",
+        `把结论写成一张便签卡（canvas_ops add_node，nodeType=note，标题「拉片分析：${title}」，正文分小节精炼输出），并用 connect_nodes 连线 ${nodeId} → 新节点。`,
+      ].join("\n");
+      void sendMessage(
+        {
+          id: `frames_${nodeId}_${Date.now()}`,
+          role: "user",
+          content: [
+            { type: "text", text: textPart },
+            ...frames.map((f) => ({
+              type: "image",
+              source: { type: "url" as const, value: f.url, mimeType: "image/jpeg" },
+            })),
+          ],
+        } as never,
+        { followUp: true },
+      );
+    };
+    window.addEventListener(FRAME_ANALYSIS_EVENT, onAnalyze);
+    return () => window.removeEventListener(FRAME_ANALYSIS_EVENT, onAnalyze);
+  }, [sendMessage]);
+
   useCopilotAction({
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|image|storyboard",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue）/ ' +
+      '{op:"add_node",nodeType:"note|script|character|image|video|audio|compose|storyboard",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl）/ ' +
       '{op:"update_node",id,title,body} / {op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +

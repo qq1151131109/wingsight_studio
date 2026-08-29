@@ -22,7 +22,11 @@ const langgraphAgent = new HttpAgent({
 
 export function AgentProvider({ children }: { children: React.ReactNode }) {
   return (
-    <CopilotKit selfManagedAgents={{ default: langgraphAgent }}>
+    <CopilotKit
+      selfManagedAgents={{ default: langgraphAgent }}
+      // stock 的调试球（黑渐变圆钮）与纸感设计不符，且会顶掉 header 关闭按钮
+      showDevConsole={false}
+    >
       {children}
     </CopilotKit>
   );

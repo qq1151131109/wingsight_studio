@@ -55,6 +55,13 @@ def init_db() -> None:
                 viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
                 updated_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS chat_threads (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                title TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS chat_messages (
                 project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 seq INTEGER NOT NULL,
@@ -64,6 +71,17 @@ def init_db() -> None:
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (project_id, seq)
             );
+            CREATE TABLE IF NOT EXISTS assets (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'upload',
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, id)
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_url ON assets (project_id, url);
             """
         )
         # 存量库升级：归属与协作者列（幂等）
@@ -76,6 +94,63 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE projects ADD COLUMN collaborators TEXT NOT NULL DEFAULT '[]'"
             )
+        _migrate_chat_to_threads(conn)
+
+
+def _migrate_chat_to_threads(conn: sqlite3.Connection) -> None:
+    """单会话 → 多会话迁移（幂等）：
+
+    chat_messages 老主键 (project_id, seq) 不区分会话；重建为
+    (project_id, thread_id, seq)，存量消息归入每个项目自动建的
+    「历史会话」（标题取首条用户消息前 18 字，与前端自动标题规则一致）。
+    """
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_messages'"
+    ).fetchone()
+    if not has_table:
+        return
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(chat_messages)")}
+    if "thread_id" in cols:
+        return
+    rows = conn.execute(
+        "SELECT project_id, seq, id, role, content, created_at FROM chat_messages"
+        " ORDER BY project_id, seq"
+    ).fetchall()
+    conn.execute("ALTER TABLE chat_messages RENAME TO chat_messages_legacy")
+    conn.execute(
+        """
+        CREATE TABLE chat_messages (
+            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+            seq INTEGER NOT NULL,
+            id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (project_id, thread_id, seq)
+        )
+        """
+    )
+    # 每个有消息的项目建一个默认会话，旧消息整体搬入
+    by_project: Dict[str, List[sqlite3.Row]] = {}
+    for r in rows:
+        by_project.setdefault(r["project_id"], []).append(r)
+    for pid, msgs in by_project.items():
+        first_user = next((m for m in msgs if m["role"] == "user"), None)
+        title = (first_user["content"][:18] if first_user else "历史会话") or "历史会话"
+        tid = uuid.uuid4().hex[:12]
+        created = msgs[0]["created_at"]
+        conn.execute(
+            "INSERT INTO chat_threads (id, project_id, title, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (tid, pid, title, created, msgs[-1]["created_at"]),
+        )
+        conn.executemany(
+            "INSERT INTO chat_messages (project_id, thread_id, seq, id, role, content, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(pid, tid, m["seq"], m["id"], m["role"], m["content"], m["created_at"]) for m in msgs],
+        )
+    conn.execute("DROP TABLE chat_messages_legacy")
 
 
 def _now() -> str:
@@ -150,6 +225,8 @@ def delete_project(pid: str, viewer: Any = ANON_VIEWER) -> bool:
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (pid,))
         conn.execute("DELETE FROM canvases WHERE project_id = ?", (pid,))
         conn.execute("DELETE FROM chat_messages WHERE project_id = ?", (pid,))
+        conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (pid,))
+        conn.execute("DELETE FROM assets WHERE project_id = ?", (pid,))
     return cur.rowcount > 0
 
 
@@ -249,28 +326,99 @@ def _write_collaborators(pid: str, collab: List[str]) -> None:
         )
 
 
-# ---------- 聊天历史（前端整表覆盖写，服务端只保可信字段） ----------
+# ---------- 聊天会话（多会话：threads + 按会话存消息） ----------
 
 # 防御性上限：单条消息与整段历史的体积/条数封顶，避免流式期间异常膨胀
 MAX_MESSAGES = 400
 MAX_MESSAGE_CHARS = 20_000
+AUTO_TITLE_CHARS = 18  # 自动标题长度（前端历史列表同款规则）
 
 
-def load_chat_messages(pid: str, viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
+def _get_thread(
+    conn: sqlite3.Connection, pid: str, tid: str
+) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM chat_threads WHERE id = ? AND project_id = ?", (tid, pid)
+    ).fetchone()
+
+
+def _assert_thread(conn: sqlite3.Connection, pid: str, tid: str) -> sqlite3.Row:
+    row = _get_thread(conn, pid, tid)
+    if row is None:
+        import fastapi
+
+        raise fastapi.HTTPException(status_code=404, detail="会话不存在")
+    return row
+
+
+def list_threads(pid: str, viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
     assert_access(viewer, pid)
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT id, role, content, created_at FROM chat_messages"
-            " WHERE project_id = ? ORDER BY seq",
+            "SELECT t.id, t.title, t.updated_at, COUNT(m.seq) AS message_count"
+            " FROM chat_threads t LEFT JOIN chat_messages m"
+            " ON m.project_id = t.project_id AND m.thread_id = t.id"
+            " WHERE t.project_id = ?"
+            " GROUP BY t.id ORDER BY t.updated_at DESC",
             (pid,),
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def save_chat_messages(
-    pid: str, messages: Any, viewer: Any = ANON_VIEWER
+def create_thread(pid: str, title: str = "", viewer: Any = ANON_VIEWER) -> Dict[str, Any]:
+    assert_access(viewer, pid)
+    tid = uuid.uuid4().hex[:12]
+    now = _now()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT INTO chat_threads (id, project_id, title, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (tid, pid, title.strip()[:40], now, now),
+        )
+    return {"id": tid, "title": title.strip()[:40], "updated_at": now, "message_count": 0}
+
+
+def rename_thread(pid: str, tid: str, title: str, viewer: Any = ANON_VIEWER) -> bool:
+    with _conn() as conn:
+        _assert_thread(conn, pid, tid)
+        cur = conn.execute(
+            "UPDATE chat_threads SET title = ? WHERE id = ? AND project_id = ?",
+            (title.strip()[:40] or "未命名会话", tid, pid),
+        )
+    return cur.rowcount > 0
+
+
+def delete_thread(pid: str, tid: str, viewer: Any = ANON_VIEWER) -> bool:
+    assert_access(viewer, pid)
+    with _conn() as conn:
+        _assert_thread(conn, pid, tid)
+        conn.execute(
+            "DELETE FROM chat_messages WHERE project_id = ? AND thread_id = ?", (pid, tid)
+        )
+        cur = conn.execute(
+            "DELETE FROM chat_threads WHERE id = ? AND project_id = ?", (tid, pid)
+        )
+    return cur.rowcount > 0
+
+
+def load_chat_messages(
+    pid: str, tid: str, viewer: Any = ANON_VIEWER
 ) -> List[Dict[str, Any]]:
-    """整表覆盖：以客户端发来的顺序重建（seq=0..n-1），事务内先删后插。"""
+    assert_access(viewer, pid)
+    with _conn() as conn:
+        _assert_thread(conn, pid, tid)
+        rows = conn.execute(
+            "SELECT id, role, content, created_at FROM chat_messages"
+            " WHERE project_id = ? AND thread_id = ? ORDER BY seq",
+            (pid, tid),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_chat_messages(
+    pid: str, tid: str, messages: Any, viewer: Any = ANON_VIEWER
+) -> List[Dict[str, Any]]:
+    """整表覆盖（按会话）：重建 seq，touch 会话 updated_at，空标题时自动取首条用户消息。"""
     assert_access(viewer, pid)
     items: List[Dict[str, str]] = []
     if isinstance(messages, list):
@@ -293,14 +441,93 @@ def save_chat_messages(
     items = items[-MAX_MESSAGES:]
     now = _now()
     with _conn() as conn:
-        conn.execute("DELETE FROM chat_messages WHERE project_id = ?", (pid,))
+        thread = _assert_thread(conn, pid, tid)
+        conn.execute(
+            "DELETE FROM chat_messages WHERE project_id = ? AND thread_id = ?", (pid, tid)
+        )
         conn.executemany(
-            "INSERT INTO chat_messages (project_id, seq, id, role, content, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO chat_messages (project_id, thread_id, seq, id, role, content, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
             [
-                (pid, i, it["id"], it["role"], it["content"], it["created_at"])
+                (pid, tid, i, it["id"], it["role"], it["content"], it["created_at"])
                 for i, it in enumerate(items)
             ],
         )
+        # 自动标题：无标题且有用户消息 → 取首条前 N 字（一次性，之后保留用户命名）
+        title = thread["title"] or ""
+        if not title:
+            first_user = next((it["content"] for it in items if it["role"] == "user"), "")
+            title = first_user[:AUTO_TITLE_CHARS].strip() or "未命名会话"
+        conn.execute(
+            "UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ?",
+            (title, now, tid),
+        )
         conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now, pid))
     return items
+
+
+# ---------- 素材库（生成历史自动入库 + 手动收藏；url 同项目内去重） ----------
+
+ASSET_KINDS = ("image", "video", "audio")
+MAX_ASSETS = 2000
+
+
+def list_assets(pid: str, viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
+    assert_access(viewer, pid)
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, kind, title, url, source, created_at FROM assets"
+            " WHERE project_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (pid, MAX_ASSETS),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_asset(
+    pid: str,
+    kind: str,
+    title: str,
+    url: str,
+    source: str = "upload",
+    viewer: Any = ANON_VIEWER,
+) -> Dict[str, Any]:
+    """入库（幂等）：url 已存在时直接返回既有记录，不重复插入。"""
+    assert_access(viewer, pid)
+    if kind not in ASSET_KINDS:
+        import fastapi
+
+        raise fastapi.HTTPException(status_code=400, detail=f"kind 必须是 {'/'.join(ASSET_KINDS)}")
+    u = str(url or "").strip()
+    # 只收本服务资产与公网 URL（防 file:// 等伪协议入库）
+    if not (u.startswith("/agent-service/assets/") or u.startswith(("http://", "https://"))):
+        import fastapi
+
+        raise fastapi.HTTPException(status_code=400, detail="url 必须是本服务资产或 http(s) 地址")
+    src = "generation" if source == "generation" else "upload"
+    aid = uuid.uuid4().hex[:12]
+    now = _now()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO assets (project_id, id, kind, title, url, source, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (pid, aid, kind, (title or "").strip()[:80], u, src, now),
+        )
+        row = conn.execute(
+            "SELECT id, kind, title, url, source, created_at FROM assets"
+            " WHERE project_id = ? AND url = ?",
+            (pid, u),
+        ).fetchone()
+    return (
+        dict(row)
+        if row
+        else {"id": aid, "kind": kind, "title": title, "url": u, "source": src, "created_at": now}
+    )
+
+
+def delete_asset(pid: str, aid: str, viewer: Any = ANON_VIEWER) -> bool:
+    assert_access(viewer, pid)
+    with _conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM assets WHERE project_id = ? AND id = ?", (pid, aid)
+        )
+    return cur.rowcount > 0

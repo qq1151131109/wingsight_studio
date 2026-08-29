@@ -1,0 +1,205 @@
+"use client";
+
+/**
+ * 自绘聊天侧栏 Header（替换 stock Header，经 CopilotSidebar 的 Header prop 注入）：
+ *   标题 + [新会话] [历史] [关闭]
+ * 历史面板：列表（自动标题 + 时间 + 条数）/ 点击切换 / 重命名 / 删除；
+ * 删除当前会话时自动落到最新一条。会话状态在 lib/chat/session.ts。
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useChatContext } from "@copilotkit/react-ui";
+import { History, MessageSquarePlus, Pencil, Trash2, X } from "lucide-react";
+import { useCanvasStore } from "@/lib/canvas/store";
+import { useChatSession } from "@/lib/chat/session";
+import {
+  deleteChatThread,
+  listChatThreads,
+  renameChatThread,
+  type ChatThreadMeta,
+} from "@/lib/projects";
+import ConfirmDialog from "@/components/shell/ConfirmDialog";
+
+/** 相对时间（同首页项目卡规则） */
+function formatTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const min = 60_000;
+  if (diff < min) return "刚刚";
+  if (diff < 60 * min) return `${Math.floor(diff / min)} 分钟前`;
+  if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))} 小时前`;
+  return d.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+}
+
+export default function ChatSidebarHeader() {
+  const { labels, icons, setOpen } = useChatContext();
+  const projectId = useCanvasStore((s) => s.projectId);
+  const threadId = useChatSession((s) => s.threadId);
+  const setThreadId = useChatSession((s) => s.setThreadId);
+
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [threads, setThreads] = useState<ChatThreadMeta[] | null>(null);
+  const [deleting, setDeleting] = useState<ChatThreadMeta | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  const refresh = useCallback(async () => {
+    if (!projectId) return;
+    try {
+      setThreads(await listChatThreads(projectId));
+    } catch {
+      setThreads([]);
+    }
+  }, [projectId]);
+
+  const togglePanel = () => {
+    // 打开时拉最新列表（而非 effect 里拉，避免级联渲染）
+    if (!panelOpen) void refresh();
+    setPanelOpen(!panelOpen);
+  };
+
+  // 点击面板外部关闭
+  useEffect(() => {
+    if (!panelOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setPanelOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [panelOpen]);
+
+  const startNew = () => {
+    setThreadId(null);
+    setPanelOpen(false);
+  };
+
+  const rename = async (t: ChatThreadMeta) => {
+    if (!projectId) return;
+    const name = window.prompt("重命名会话", t.title || "未命名会话");
+    if (!name?.trim() || name.trim() === t.title) return;
+    if (await renameChatThread(projectId, t.id, name.trim())) void refresh();
+  };
+
+  const remove = async () => {
+    if (!deleting || !projectId) return;
+    if (await deleteChatThread(projectId, deleting.id)) {
+      const rest = (threads ?? []).filter((x) => x.id !== deleting.id);
+      setThreads(rest);
+      // 删的是当前会话 → 落到最新一条（或空新会话）
+      if (deleting.id === threadId) setThreadId(rest[0]?.id ?? null);
+    }
+    setDeleting(null);
+  };
+
+  return (
+    <div
+      ref={wrapRef}
+      className="copilotKitHeader relative flex w-full items-center"
+    >
+      <span className="truncate">{labels.title}</span>
+
+      <div className="ml-auto flex items-center gap-0.5">
+        <button
+          type="button"
+          title="新会话"
+          onClick={startNew}
+          className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          <MessageSquarePlus className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          title="历史会话"
+          onClick={togglePanel}
+          className={`rounded-md p-1.5 transition-colors hover:bg-surface-2 hover:text-text ${
+            panelOpen ? "bg-surface-2 text-text" : "text-text-3"
+          }`}
+        >
+          <History className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          aria-label="Close"
+          onClick={() => setOpen(false)}
+          className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          {icons.headerCloseIcon ?? <X className="h-4 w-4" />}
+        </button>
+      </div>
+
+      {panelOpen ? (
+        <div className="absolute right-2 top-[calc(100%+4px)] z-30 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+          <p className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-text-4">
+            历史会话
+          </p>
+          {threads === null ? (
+            <p className="px-2 py-4 text-center text-xs text-text-4">加载中…</p>
+          ) : threads.length === 0 ? (
+            <p className="px-2 py-4 text-center text-xs text-text-4">
+              暂无历史会话
+            </p>
+          ) : (
+            <div className="max-h-80 overflow-auto">
+              {threads.map((t) => (
+                <div
+                  key={t.id}
+                  className={`group flex items-center gap-1 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-2 ${
+                    t.id === threadId ? "bg-surface-2" : ""
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="min-w-0 flex-1 text-left"
+                    onClick={() => {
+                      setThreadId(t.id);
+                      setPanelOpen(false);
+                    }}
+                  >
+                    <p
+                      className={`truncate text-xs ${
+                        t.id === threadId ? "font-medium text-text" : "text-text-2"
+                      }`}
+                    >
+                      {t.title || "未命名会话"}
+                    </p>
+                    <p className="text-[10px] text-text-4">
+                      {formatTime(t.updated_at)}
+                      {t.message_count > 0 ? ` · ${t.message_count} 条` : ""}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    title="重命名"
+                    className="shrink-0 rounded p-1 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100"
+                    onClick={() => void rename(t)}
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    title="删除"
+                    className="shrink-0 rounded p-1 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                    onClick={() => setDeleting(t)}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {deleting ? (
+        <ConfirmDialog
+          title={`删除会话「${deleting.title || "未命名会话"}」？`}
+          message="该会话的全部聊天记录将被永久删除，此操作不可撤销。"
+          confirmText="删除"
+          danger
+          onConfirm={() => void remove()}
+          onCancel={() => setDeleting(null)}
+        />
+      ) : null}
+    </div>
+  );
+}

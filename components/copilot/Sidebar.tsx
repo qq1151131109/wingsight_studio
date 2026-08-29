@@ -1,13 +1,35 @@
 "use client";
 
-import { CopilotSidebar } from "@copilotkit/react-ui";
+import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
 import type {
   CopilotKitCSSProperties,
   RenderSuggestionsListProps,
 } from "@copilotkit/react-ui";
 import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import {
+  PanelRightClose,
+  PanelRightOpen,
+  Sparkles,
+} from "lucide-react";
 import ChatInput from "./ChatInput";
+import ChatSidebarHeader from "./ThreadsBar";
+
+/** 关闭侧栏后的"助手"显性入口（替换 stock 圆钮；对标参考布局的顶栏 Agent 按钮） */
+function AssistantFab() {
+  const { open, setOpen } = useChatContext();
+  if (open) return null; // 侧栏开着时无需入口（Header 有关闭钮，避免成对悬浮）
+  return (
+    <button
+      type="button"
+      onClick={() => setOpen(true)}
+      title="打开画布助手"
+      className="fixed right-3 top-3 z-40 flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-white shadow-md transition-opacity hover:opacity-90"
+    >
+      <Sparkles className="h-3.5 w-3.5" />
+      助手
+    </button>
+  );
+}
 
 /**
  * 主题化聊天侧栏：把 CopilotKit 的 CSS 变量映射到 juben 设计 token。
@@ -33,7 +55,7 @@ const SUGGESTIONS = [
   },
 ];
 
-/** 空态建议列表：对话一旦开始就隐藏，避免常驻噪音 */
+/** 空态建议列表：对话一旦开始就隐藏；2×2 纸感卡片（stock 的 .suggestion 太碎太小） */
 function EmptyStateSuggestions({
   suggestions,
   onSuggestionClick,
@@ -41,13 +63,14 @@ function EmptyStateSuggestions({
   const count = useCopilotChatHeadless_c().messages.length;
   if (count > 0) return null;
   return (
-    <div className="suggestions">
+    <div className="grid grid-cols-2 gap-1.5 px-1 pt-2">
       {suggestions.map((s) => (
         <button
           key={s.title}
           type="button"
-          className="suggestion"
+          title={s.message}
           onClick={() => onSuggestionClick(s.message)}
+          className="rounded-lg border border-hairline bg-surface-2 px-2.5 py-2 text-left text-xs leading-snug text-text-2 transition-colors hover:border-accent-soft hover:bg-surface-1 hover:text-text"
         >
           {s.title}
         </button>
@@ -86,10 +109,24 @@ export default function ThemedSidebar() {
         icons={{
           openIcon: <PanelRightOpen className="h-4 w-4" />,
           closeIcon: <PanelRightClose className="h-4 w-4" />,
+          // "思考中"指示器：纸感三点弹跳（stock 默认转圈与纸感不符）
+          activityIcon: (
+            <span className="flex items-center gap-1 py-2.5">
+              {[0, 1, 2].map((i) => (
+                <span
+                  key={i}
+                  className="h-1.5 w-1.5 rounded-full bg-accent/60 motion-safe:animate-bounce"
+                  style={{ animationDelay: `${i * 150}ms` }}
+                />
+              ))}
+            </span>
+          ),
         }}
         suggestions={SUGGESTIONS}
         RenderSuggestionsList={EmptyStateSuggestions}
         Input={ChatInput}
+        Header={ChatSidebarHeader}
+        Button={AssistantFab}
         defaultOpen
         clickOutsideToClose={false}
       />

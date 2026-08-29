@@ -23,9 +23,12 @@ import {
 import {
   ChevronRight,
   Clapperboard,
+  Combine,
   Drama,
   Film,
   Image as ImageIcon,
+  Library,
+  Music,
   Redo2,
   ScrollText,
   Search,
@@ -47,6 +50,7 @@ import { FOCUS_NODES_EVENT, type FocusNodesDetail } from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
 import { nodeTypes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
+import AssetTray, { AssetAutoRecorder } from "./AssetTray";
 
 /** 视口相等判断（按值比较，防程序化 setViewport 与 store 回写互触发） */
 const vpEq = (a: Viewport, b: Viewport) =>
@@ -86,17 +90,27 @@ const AUTO_EDGE_LABELS: Record<string, string> = {
   "script->storyboard": "拆解",
   "script->character": "设定",
   "script->note": "备注",
+  "script->audio": "配音",
   "character->storyboard": "出演",
   "character->image": "定妆",
   "character->video": "出演",
+  "character->audio": "台词",
   "storyboard->image": "出图",
   "storyboard->video": "出视频",
+  "storyboard->audio": "音效",
   "storyboard->storyboard": "转场",
   "image->video": "动态化",
   "image->image": "迭代",
   "video->video": "拼接",
+  "video->compose": "片段",
+  "compose->compose": "片段",
+  "compose->video": "成片",
+  "audio->video": "配乐",
+  "audio->audio": "混音",
+  "audio->image": "参考",
   "note->storyboard": "参考",
   "note->image": "参考",
+  "note->audio": "参考",
 };
 
 /** 连接校验：禁自环与重复边（对标 osc 的 connection rules，取最常用两条） */
@@ -106,6 +120,7 @@ const CONVERT_TYPES: WingNodeType[] = [
   "character",
   "image",
   "video",
+  "audio",
   "storyboard",
 ];
 
@@ -193,6 +208,8 @@ const NODE_TYPE_ITEMS: {
   },
   { type: "image", icon: <ImageIcon className="h-4 w-4" />, key: "i-image" },
   { type: "video", icon: <Film className="h-4 w-4" />, key: "i-video" },
+  { type: "audio", icon: <Music className="h-4 w-4" />, key: "i-audio" },
+  { type: "compose", icon: <Combine className="h-4 w-4" />, key: "i-compose" },
 ];
 
 /** 拖拽导入：图片→上传建 image 卡；.txt/.md→文本卡（md 当剧本、txt 当便签） */
@@ -238,6 +255,23 @@ async function importDroppedFiles(
             body: "",
             videoUrl: url,
             status: "ready",
+          },
+        });
+        i += 1;
+      } catch {
+        /* 上传失败跳过该文件 */
+      }
+    } else if (f.type.startsWith("audio/")) {
+      try {
+        const url = await uploadAsset(f, f.type, f.name);
+        if (!url) continue;
+        store.addNode({
+          position,
+          data: {
+            nodeType: "audio",
+            title: name || "导入音频",
+            body: "",
+            audioUrl: url,
           },
         });
         i += 1;
@@ -383,8 +417,8 @@ function NodeSearch() {
   );
 }
 
-/** 底部坞：撤销/重做 + 缩放 + 保存状态（对标 novanova / AIGC 的顶底栏能力） */
-function BottomDock() {
+/** 底部坞：撤销/重做 + 缩放 + 素材库 + 保存状态（对标 novanova / AIGC 的顶底栏能力） */
+function BottomDock({ onOpenAssets }: { onOpenAssets: () => void }) {
   const canUndo = useCanvasStore((s) => s.canUndoNow);
   const canRedo = useCanvasStore((s) => s.canRedoNow);
   const saveState = useCanvasStore((s) => s.saveState);
@@ -400,6 +434,16 @@ function BottomDock() {
           : null;
   return (
     <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
+      <button
+        type="button"
+        title="素材库（生成历史自动入库，点击放回画布）"
+        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        onClick={onOpenAssets}
+      >
+        <Library className="h-4 w-4" />
+        素材库
+      </button>
+      <span className="mx-0.5 h-5 w-px bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
         <Undo2 className="h-4 w-4" />
       </DockBtn>
@@ -898,6 +942,9 @@ export default function CanvasView() {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const closeCtx = useCallback(() => setCtxMenu(null), []);
 
+  // 素材库面板（底部坞 / 右键空白 打开）
+  const [trayOpen, setTrayOpen] = useState(false);
+
   useEffect(() => {
     if (!ctxMenu && !pendingLink) return;
     const onKey = (e: KeyboardEvent) => {
@@ -1092,7 +1139,7 @@ export default function CanvasView() {
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*,video/*,.txt,.md,.markdown"
+        accept="image/*,video/*,audio/*,.txt,.md,.markdown"
         className="hidden"
         onChange={onUploadPicked}
       />
@@ -1162,6 +1209,14 @@ export default function CanvasView() {
           position="bottom-right"
           pannable
           zoomable
+          // 纸感主题：默认白底在米黄画布上是突兀的白块
+          bgColor="var(--color-surface-2)"
+          maskColor="color-mix(in oklab, var(--color-surface-1) 72%, transparent)"
+          style={{
+            borderRadius: 10,
+            border: "1px solid var(--color-hairline)",
+            boxShadow: "0 1px 3px oklch(0 0 0 / 0.06)",
+          }}
           nodeColor={(n) => NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.dot ?? "var(--color-warm)"}
           nodeStrokeColor="var(--color-hairline)"
         />
@@ -1169,10 +1224,12 @@ export default function CanvasView() {
           <AddNodeToolbar />
           <NodeSearch />
         </div>
-        <BottomDock />
+        <BottomDock onOpenAssets={() => setTrayOpen(true)} />
         <SelectionGuard />
         <CanvasShortcuts />
+        <AssetAutoRecorder />
       </ReactFlow>
+      {trayOpen ? <AssetTray onClose={() => setTrayOpen(false)} /> : null}
       {pendingLink ? (
         <>
           <div
@@ -1232,8 +1289,13 @@ export default function CanvasView() {
             ) : ctxMenu.kind === "pane" ? (
               <>
                 <CtxItem label="上传" onClick={openUploadPicker} />
-                {/* 资产库尚未接入，对标 reference 先占位禁用 */}
-                <CtxItem label="保存到我的资产" disabled />
+                <CtxItem
+                  label="素材库…"
+                  onClick={() => {
+                    setTrayOpen(true);
+                    closeCtx();
+                  }}
+                />
                 <CtxItem
                   label="添加节点"
                   chevron

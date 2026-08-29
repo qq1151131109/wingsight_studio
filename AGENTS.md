@@ -15,9 +15,9 @@ AI 影视创作无限画布工作台：React Flow 画布 + CopilotKit 聊天 + L
 ## 结构
 
 - `app/` Next.js 16 前端（Turbopack）。`agent-provider.tsx` 注册自管 Agent；`page.tsx` = 活动栏 + 画布 + 聊天侧栏
-- `components/canvas/` 画布（`CanvasView`、`nodes.tsx` 自定义卡、`CanvasShortcuts` 撤销/粘贴）；`components/copilot/` 桥接（`CanvasAgentBridge` 读写通道、`ProjectManager` 项目同步）；`components/shell/ActivityBar`
+- `components/canvas/` 画布（`CanvasView`、`nodes.tsx` 自定义卡、`CanvasShortcuts` 撤销/粘贴、`AssetTray` 素材库面板 + 自动入库、`DirectorPanel` 导演台（语汇来自 `agent/camera.py` 经 `/agent-service/camera-vocab` 下发，编译成 body 的【摄影】段））；`components/copilot/` 桥接（`CanvasAgentBridge` 读写通道、`ProjectManager` 项目同步）；`components/shell/ActivityBar`
 - `lib/canvas/store.ts` zustand 画布状态（**服务端为唯一事实源**，localStorage 仅离线缓存；`addNode` 自动从 `data.nodeType` 推导 `node.type`，漏推导会渲染成空白默认节点）；`lib/canvas/ops.ts` canvas_ops 契约与校验
-- `agent/` Python 服务（FastAPI + LangGraph + ag-ui-langgraph，uv 管理）：`graph.py` 主图与系统提示、`skills.py` Langflow 调用（v1 阻塞 API + tweaks）、`projects.py` 项目/画布 SQLite、`auth*.py` 认证、`camera.py` 摄影语汇库
+- `agent/` Python 服务（FastAPI + LangGraph + ag-ui-langgraph，uv 管理）：`graph.py` 主图与系统提示、`skills.py` Langflow 调用（v1 阻塞 API + tweaks）、`projects.py` 项目/画布/聊天/素材库 SQLite、`compose.py` ffmpeg 视频拼接（compose 卡直连，不经 LLM）、`auth*.py` 认证、`camera.py` 摄影语汇库
 - `scripts/` 端到端测试（node 集成测试 + auth 冒烟）
 
 ## 常用命令

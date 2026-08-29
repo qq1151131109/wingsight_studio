@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   Handle,
   NodeResizer,
@@ -9,16 +9,21 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import {
+  Camera,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   CircleAlert,
+  Combine,
   Copy,
   Download,
   Expand,
   Film,
   Maximize2,
+  Music,
   Plus,
   RefreshCw,
+  ScanSearch,
   Trash2,
   Upload,
   X,
@@ -29,12 +34,14 @@ import {
   NODE_META,
   absolutePosition,
   useCanvasStore,
+  type WingNode,
   type WingNodeData,
   type WingNodeType,
 } from "@/lib/canvas/store";
-import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
-import { uploadAsset } from "@/lib/projects";
+import { FOCUS_NODES_EVENT, FRAME_ANALYSIS_EVENT } from "@/lib/canvas/events";
+import { composeVideos, uploadAsset } from "@/lib/projects";
 import PromptBar from "./PromptBar";
+import DirectorPanel from "./DirectorPanel";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
@@ -72,6 +79,8 @@ const PLUS_MENU_TYPES: WingNodeType[] = [
   "storyboard",
   "image",
   "video",
+  "audio",
+  "compose",
 ];
 
 function ToolButton({
@@ -107,12 +116,15 @@ function CardShell({
   children,
   selected,
   aspect,
+  toolbarExtra,
 }: {
   id: string;
   children: React.ReactNode;
   selected: boolean;
   /** 就绪的图片/视频锁定宽高比缩放 */
   aspect?: boolean;
+  /** 工具条扩展位（如导演台按钮），插在复制与删除之间 */
+  toolbarExtra?: React.ReactNode;
 }) {
   const [hovered, setHovered] = useState(false);
   const [plusOpen, setPlusOpen] = useState(false);
@@ -155,6 +167,7 @@ function CardShell({
           >
             <Copy className="h-3.5 w-3.5" />
           </ToolButton>
+          {toolbarExtra}
           <ToolButton
             title="删除"
             danger
@@ -392,7 +405,7 @@ function makeUpdater(id: string) {
 
 /** 下载文件名：标题净字 + 从 URL 推断后缀 */
 function downloadName(title: string, url: string, fallbackExt: string) {
-  const m = url.match(/\.(png|jpe?g|webp|gif|mp4|webm|mov)(?:\?|$)/i);
+  const m = url.match(/\.(png|jpe?g|webp|gif|mp4|webm|mov|mp3|wav|m4a|ogg|flac|aac)(?:\?|$)/i);
   const ext = m ? m[1].toLowerCase().replace("jpeg", "jpg") : fallbackExt;
   const safe = (title || "").replace(/[\\/:*?"<>|]/g, "").trim().slice(0, 40);
   return `${safe || "wingsight"}.${ext}`;
@@ -879,10 +892,13 @@ function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
   );
 }
 
-/** 抽帧：等距取 count 帧缩略图 dataURL（同源视频不污染画布） */
+/** 抽帧：等距取 count 帧缩略图 dataURL（同源视频不污染画布）。
+ *  width/quality 可调：缩略条用 96px，AI 拉片要 320px 保细节 */
 async function extractVideoFrames(
   src: string,
   count: number,
+  width = 96,
+  quality = 0.72,
 ): Promise<{ t: number; data: string }[]> {
   const v = document.createElement("video");
   v.src = src;
@@ -895,7 +911,7 @@ async function extractVideoFrames(
   });
   const dur = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 1;
   const canvas = document.createElement("canvas");
-  const w = 96;
+  const w = width;
   canvas.width = w;
   canvas.height = Math.max(
     1,
@@ -911,9 +927,21 @@ async function extractVideoFrames(
       v.currentTime = t;
     });
     ctx.drawImage(v, 0, 0, canvas.width, canvas.height);
-    out.push({ t, data: canvas.toDataURL("image/jpeg", 0.72) });
+    out.push({ t, data: canvas.toDataURL("image/jpeg", quality) });
   }
   return out;
+}
+
+/** dataURL → Blob（上传用） */
+function dataUrlToBlob(data: string): Promise<Blob | null> {
+  return new Promise((resolve) => {
+    const [head, b64] = data.split(",");
+    const mime = head.match(/data:(.+?);/)?.[1] ?? "image/jpeg";
+    const bin = atob(b64 ?? "");
+    const arr = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    resolve(new Blob([arr], { type: mime }));
+  });
 }
 
 /** 抽取原生分辨率的一帧 → 上传 → 建连线的 image 卡（对标 AIGCCanvasFlow 的"+图"） */
@@ -973,6 +1001,8 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [zoom, setZoom] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [frames, setFrames] = useState<{ t: number; data: string }[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   const framesFor = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1018,8 +1048,48 @@ function VideoCard({ data, id, selected }: NodeProps) {
     })();
   };
 
+  /** AI 拉片：抽 8 帧（320px）上传成资产 → 事件 → 桥接层组装聊天指令给 agent 做镜头语言分析 */
+  const runFrameAnalysis = async () => {
+    if (!d.videoUrl || analyzing) return;
+    setAnalyzing(true);
+    try {
+      const shots = await extractVideoFrames(d.videoUrl, 8, 320, 0.7);
+      const uploaded: { url: string; t: number }[] = [];
+      for (const s of shots) {
+        const blob = await dataUrlToBlob(s.data);
+        const url = blob ? await uploadAsset(blob, "image/jpeg", `frame_${s.t.toFixed(1)}s.jpg`) : null;
+        if (url) uploaded.push({ url, t: s.t });
+      }
+      if (uploaded.length > 0) {
+        window.dispatchEvent(
+          new CustomEvent(FRAME_ANALYSIS_EVENT, {
+            detail: { nodeId: id, frames: uploaded },
+          }),
+        );
+      }
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
   return (
-    <CardShell id={id} selected={selected} aspect={d.status === "ready"}>
+    <CardShell
+      id={id}
+      selected={selected}
+      aspect={d.status === "ready"}
+      toolbarExtra={
+        <ToolButton
+          title="导演台：景别/运镜/机身/布光"
+          onClick={() =>
+            setDirectorNode(
+              useCanvasStore.getState().nodes.find((n) => n.id === id) ?? null,
+            )
+          }
+        >
+          <Camera className="h-3.5 w-3.5" />
+        </ToolButton>
+      }
+    >
       <Badge nodeType="video" />
       <div className="mt-1.5 flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
         {d.status === "loading" ? (
@@ -1039,6 +1109,18 @@ function VideoCard({ data, id, selected }: NodeProps) {
               onClick={(e) => e.stopPropagation()}
             />
             <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+              <button
+                type="button"
+                title={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
+                disabled={analyzing}
+                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60 disabled:opacity-50"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void runFrameAnalysis();
+                }}
+              >
+                <ScanSearch className="h-3.5 w-3.5" />
+              </button>
               <a
                 href={d.videoUrl}
                 download={downloadName(d.title, d.videoUrl, "mp4")}
@@ -1119,6 +1201,9 @@ function VideoCard({ data, id, selected }: NodeProps) {
       {zoom && d.videoUrl ? (
         <VideoLightbox src={d.videoUrl} onClose={() => setZoom(false)} />
       ) : null}
+      {directorNode ? (
+        <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
+      ) : null}
       <input
         ref={fileRef}
         type="file"
@@ -1130,8 +1215,251 @@ function VideoCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 分镜卡字段 chip：双击就地编辑（镜号 / 景别 / 运镜 / 时长共用） */
-function ShotChip({
+/** 音频卡：上传占位 / 播放器 + 下载（配音 / 音效 / BGM；波形裁剪后续迭代） */
+function AudioCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const update = makeUpdater(id);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
+  if (!d || typeof d.nodeType !== "string") return null;
+
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f || !f.type.startsWith("audio/")) return;
+    setUploading(true);
+    void (async () => {
+      try {
+        const url = await uploadAsset(f, f.type, f.name);
+        if (url) update({ audioUrl: url });
+      } finally {
+        setUploading(false);
+      }
+    })();
+  };
+
+  return (
+    <CardShell id={id} selected={selected}>
+      <Badge nodeType="audio" />
+      <div className="mt-1.5 flex h-16 min-h-16 w-full items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2">
+        {d.audioUrl ? (
+          <audio
+            src={d.audioUrl}
+            controls
+            preload="metadata"
+            className="nodrag nowheel h-8 w-full"
+            onClick={(e) => e.stopPropagation()}
+          />
+        ) : uploading ? (
+          <span className="text-xs text-text-3">上传中…</span>
+        ) : (
+          <button
+            type="button"
+            className="nodrag flex flex-col items-center gap-1 px-4 text-center text-text-4 hover:text-text-3"
+            onClick={(e) => {
+              e.stopPropagation();
+              fileRef.current?.click();
+            }}
+          >
+            <Music className="h-4 w-4" />
+            <span className="text-xs">上传音频（配音 / 音效 / BGM）</span>
+          </button>
+        )}
+      </div>
+      <Editable
+        value={d.title}
+        onSave={(title) => update({ title })}
+        className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
+        placeholder="（无标题）"
+      />
+      {d.body ? (
+        <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
+          {d.body}
+        </p>
+      ) : null}
+      {d.audioUrl ? (
+        <a
+          href={d.audioUrl}
+          download={downloadName(d.title, d.audioUrl, "mp3")}
+          title="下载音频"
+          className="nodrag absolute left-2 top-9 rounded-md bg-black/40 p-1 text-white opacity-0 transition-opacity hover:bg-black/60 group-hover:opacity-100"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Download className="h-3 w-3" />
+        </a>
+      ) : null}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="audio/*"
+        className="hidden"
+        onChange={onFile}
+      />
+    </CardShell>
+  );
+}
+
+/** 合成卡：连线接入的视频按序拼接（novanova 的连线排序式；执行走服务端 ffmpeg 直连） */
+function ComposeCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const update = makeUpdater(id);
+  const nodes = useCanvasStore((s) => s.nodes);
+  const edges = useCanvasStore((s) => s.edges);
+  const projectId = useCanvasStore((s) => s.projectId);
+  // 连线进来的视频源（video/compose 且有产物），新连的自动追加到序列尾
+  const sources = useMemo(() => {
+    const out: { sid: string; node: WingNode }[] = [];
+    for (const e of edges) {
+      if (e.target !== id) continue;
+      const n = nodes.find((x) => x.id === e.source);
+      if (n?.data.videoUrl) out.push({ sid: e.source, node: n });
+    }
+    return out;
+  }, [edges, id, nodes]);
+  const sourcesKey = sources.map((s) => s.sid).join(",");
+
+  // 新连入的源追加进 itemIds（顺序权威存 data；被移除的源边已断，不会回来）
+  useEffect(() => {
+    const list = (d.itemIds as string[] | undefined) ?? [];
+    const fresh = sources.filter((s) => !list.includes(s.sid));
+    if (fresh.length === 0) return;
+    update({ itemIds: [...list, ...fresh.map((s) => s.sid)] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourcesKey]);
+
+  // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
+  if (!d || typeof d.nodeType !== "string") return null;
+
+  const order = (d.itemIds as string[] | undefined) ?? [];
+  const listed = sources.filter((s) => order.includes(s.sid));
+  const items = [
+    ...listed.sort((a, b) => order.indexOf(a.sid) - order.indexOf(b.sid)),
+    ...sources.filter((s) => !order.includes(s.sid)),
+  ];
+
+  const move = (i: number, dir: -1 | 1) => {
+    const ids = items.map((s) => s.sid);
+    const j = i + dir;
+    if (j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    update({ itemIds: ids });
+  };
+  const removeSource = (sid: string) => {
+    useCanvasStore.getState().commitHistory();
+    useCanvasStore.setState((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === id ? { ...n, data: { ...n.data, itemIds: (n.data.itemIds ?? []).filter((x) => x !== sid) } } : n,
+      ),
+      edges: s.edges.filter((e) => !(e.target === id && e.source === sid)),
+    }));
+  };
+
+  const runCompose = async () => {
+    if (items.length === 0 || !projectId) {
+      update({ status: "error", errorMessage: projectId ? "没有可合成的视频源" : "无项目上下文，无法合成" });
+      return;
+    }
+    update({ status: "loading", errorMessage: undefined });
+    const res = await composeVideos(projectId, items.map((s) => s.node.data.videoUrl as string));
+    if (res?.url) update({ videoUrl: res.url, status: "ready" });
+    else update({ status: "error", errorMessage: "合成失败（源文件不兼容或服务端异常），可重试" });
+  };
+
+  return (
+    <CardShell id={id} selected={selected}>
+      <Badge nodeType="compose" />
+      {d.videoUrl ? (
+        <div className="mt-1.5 h-28 min-h-28 w-full overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
+          <video
+            src={d.videoUrl}
+            controls
+            preload="metadata"
+            playsInline
+            className="nodrag nowheel ws-media-in h-full w-full bg-black object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      ) : null}
+      <div className="ws-detail mt-1.5 flex max-h-36 flex-col gap-1 overflow-auto nowheel">
+        {items.length === 0 ? (
+          <p className="rounded-md border border-dashed border-hairline px-2 py-3 text-center text-[10px] text-text-4">
+            把视频卡连线到这里，按序拼接成片
+          </p>
+        ) : (
+          items.map((s, i) => (
+            <div
+              key={s.sid}
+              className="flex items-center gap-1 rounded-md border border-hairline bg-surface-2 px-1.5 py-1"
+            >
+              <span className="shrink-0 text-[10px] tabular-nums text-text-4">
+                {i + 1}.
+              </span>
+              <span
+                className="ws-card-dot shrink-0"
+                style={{ background: NODE_META[s.node.data.nodeType].dot }}
+              />
+              <span className="min-w-0 flex-1 truncate text-[11px] text-text-2">
+                {s.node.data.title || s.sid}
+              </span>
+              <button type="button" title="上移" disabled={i === 0}
+                className="nodrag text-text-4 hover:text-text disabled:opacity-30"
+                onClick={(e) => { e.stopPropagation(); move(i, -1); }}>
+                <ChevronUp className="h-3 w-3" />
+              </button>
+              <button type="button" title="下移" disabled={i === items.length - 1}
+                className="nodrag text-text-4 hover:text-text disabled:opacity-30"
+                onClick={(e) => { e.stopPropagation(); move(i, 1); }}>
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              <button type="button" title="从合成移除（断开连线）"
+                className="nodrag text-text-4 hover:text-danger"
+                onClick={(e) => { e.stopPropagation(); removeSource(s.sid); }}>
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      {d.status === "loading" ? (
+        <GenProgress nodeId={id} expected={30} />
+      ) : d.status === "error" ? (
+        <button
+          type="button"
+          className="nodrag mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-danger/40 bg-danger/10 py-1.5 text-[11px] text-danger hover:bg-danger/20"
+          onClick={(e) => {
+            e.stopPropagation();
+            void runCompose();
+          }}
+        >
+          <CircleAlert className="h-3.5 w-3.5" />
+          {d.errorMessage || "合成失败"} · 点击重试
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={items.length === 0}
+          className="nodrag mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-md border border-accent bg-accent-dim py-1.5 text-[11px] font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
+          onClick={(e) => {
+            e.stopPropagation();
+            void runCompose();
+          }}
+        >
+          <Combine className="h-3.5 w-3.5" />
+          合成成片（{items.length} 段）
+        </button>
+      )}
+      <Editable
+        value={d.title}
+        onSave={(title) => update({ title })}
+        className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
+        placeholder="合成结果标题"
+      />
+    </CardShell>
+  );
+}
+
+/** 分镜卡字段 chip：双击就地编辑（镜号 / 景别 / 运镜 / 时长共用） */function ShotChip({
   label,
   value,
   onSave,
@@ -1157,9 +1485,26 @@ function ShotChip({
 function StoryboardCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
+  // 导演台打开时快照节点（面板内 apply 再读最新 store，避免渲染期 getState）
+  const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   if (!d || typeof d.nodeType !== "string") return null;
   return (
-    <CardShell id={id} selected={selected}>
+    <CardShell
+      id={id}
+      selected={selected}
+      toolbarExtra={
+        <ToolButton
+          title="导演台：景别/运镜/机身/布光"
+          onClick={() =>
+            setDirectorNode(
+              useCanvasStore.getState().nodes.find((n) => n.id === id) ?? null,
+            )
+          }
+        >
+          <Camera className="h-3.5 w-3.5" />
+        </ToolButton>
+      }
+    >
       <div className="flex items-center justify-between gap-2">
         <Badge nodeType="storyboard" />
       </div>
@@ -1193,6 +1538,9 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
         placeholder="台词 / 旁白"
         className="ws-detail mt-1.5 line-clamp-2 border-l-2 border-hairline pl-1.5 text-xs italic leading-relaxed text-text-3"
       />
+      {directorNode ? (
+        <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
+      ) : null}
     </CardShell>
   );
 }
@@ -1260,6 +1608,8 @@ export const nodeTypes = {
   character: memo(CharacterCard),
   image: memo(ImageCard),
   video: memo(VideoCard),
+  audio: memo(AudioCard),
+  compose: memo(ComposeCard),
   storyboard: memo(StoryboardCard),
   group: memo(GroupCard),
 };

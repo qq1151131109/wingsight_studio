@@ -24,6 +24,8 @@ load_dotenv(_HERE.parent / ".env.local")
 
 import auth  # noqa: E402  (在 dotenv 之后导入，读取最终环境变量)
 import auth_routes  # noqa: E402
+import camera  # noqa: E402
+import compose  # noqa: E402
 import graph  # noqa: E402
 import projects  # noqa: E402
 import skills  # noqa: E402
@@ -111,7 +113,15 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
         "video/webm": ".webm",
         "video/quicktime": ".mov",
         "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
         "audio/wav": ".wav",
+        "audio/x-wav": ".wav",
+        "audio/mp4": ".m4a",
+        "audio/x-m4a": ".m4a",
+        "audio/aac": ".aac",
+        "audio/ogg": ".ogg",
+        "audio/flac": ".flac",
+        "audio/webm": ".weba",
         "application/pdf": ".pdf",
         "application/json": ".json",
         "application/msword": ".doc",
@@ -133,6 +143,19 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
     fname = f"{_uuid.uuid4().hex[:12]}{ext}"
     (skills.ASSETS_DIR / fname).write_bytes(body)
     return {"url": f"/agent-service/assets/{fname}"}
+
+
+@app.get("/camera-vocab")
+def camera_vocab() -> dict:
+    """摄影语汇库（导演台面板数据源）：机身档案 / 镜头语汇 / 布光语汇。"""
+    return {
+        "cameras": [
+            {"id": name, "look": p["look"], "lenses": p["lenses"]}
+            for name, p in camera.CAMERA_PROFILES.items()
+        ],
+        "lensHints": camera.LENS_HINTS,
+        "lightHints": camera.LIGHT_HINTS,
+    }
 
 
 # ---------- 项目与画布持久化（前端经 /agent-service/projects/* 访问）----------
@@ -175,18 +198,85 @@ async def api_save_canvas(pid: str, req: dict, user: auth.CurrentUser):
     return {"ok": ok} if ok else Response(status_code=404)
 
 
-# ---------- 聊天历史（整表覆盖写；与画布同为项目数据）----------
+# ---------- 聊天会话（多会话；会话内消息整表覆盖写）----------
 
 
-@app.get("/projects/{pid}/messages")
-def api_load_messages(pid: str, user: auth.CurrentUser):
-    return projects.load_chat_messages(pid, user)
+@app.get("/projects/{pid}/threads")
+def api_list_threads(pid: str, user: auth.CurrentUser):
+    return projects.list_threads(pid, user)
 
 
-@app.put("/projects/{pid}/messages")
-async def api_save_messages(pid: str, req: dict, user: auth.CurrentUser):
-    saved = projects.save_chat_messages(pid, req.get("messages", []), user)
+@app.post("/projects/{pid}/threads")
+async def api_create_thread(
+    pid: str, req: dict | None = None, user: auth.CurrentUser = None  # type: ignore[assignment]
+):
+    # body 可省（curl 空 POST 也要能建会话）
+    return projects.create_thread(pid, str((req or {}).get("title", "")), user)
+
+
+@app.patch("/projects/{pid}/threads/{tid}")
+async def api_rename_thread(pid: str, tid: str, req: dict, user: auth.CurrentUser):
+    ok = projects.rename_thread(pid, tid, str(req.get("title", "")), user)
+    return {"ok": ok} if ok else Response(status_code=404)
+
+
+@app.delete("/projects/{pid}/threads/{tid}")
+def api_delete_thread(pid: str, tid: str, user: auth.CurrentUser):
+    return {"ok": projects.delete_thread(pid, tid, user)}
+
+
+@app.get("/projects/{pid}/threads/{tid}/messages")
+def api_load_thread_messages(pid: str, tid: str, user: auth.CurrentUser):
+    return projects.load_chat_messages(pid, tid, user)
+
+
+@app.put("/projects/{pid}/threads/{tid}/messages")
+async def api_save_thread_messages(pid: str, tid: str, req: dict, user: auth.CurrentUser):
+    saved = projects.save_chat_messages(pid, tid, req.get("messages", []), user)
     return {"ok": True, "count": len(saved)}
+
+
+# ---------- 素材库（生成历史自动入库；url 同项目内去重）----------
+
+
+@app.get("/projects/{pid}/assets")
+def api_list_assets(pid: str, user: auth.CurrentUser):
+    return projects.list_assets(pid, user)
+
+
+@app.post("/projects/{pid}/assets")
+async def api_save_asset(pid: str, req: dict, user: auth.CurrentUser):
+    return projects.save_asset(
+        pid,
+        str(req.get("kind", "")),
+        str(req.get("title", "")),
+        str(req.get("url", "")),
+        str(req.get("source", "upload")),
+        user,
+    )
+
+
+@app.delete("/projects/{pid}/assets/{aid}")
+def api_delete_asset(pid: str, aid: str, user: auth.CurrentUser):
+    return {"ok": projects.delete_asset(pid, aid, user)}
+
+
+# ---------- 视频合成（compose 卡按钮直连；ffmpeg 拼接本地资产）----------
+
+
+@app.post("/projects/{pid}/compose")
+def api_compose(pid: str, req: dict, user: auth.CurrentUser):
+    projects.assert_access(user, pid)
+    urls = req.get("urls")
+    if not isinstance(urls, list) or len(urls) == 0 or len(urls) > compose.MAX_SOURCES:
+        return Response(status_code=400)
+    try:
+        url = compose.compose_videos([str(u) for u in urls])
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    except Exception as exc:  # ffmpeg 失败等
+        return Response(status_code=500, content=str(exc), media_type="text/plain")
+    return {"url": url}
 
 
 # ---------- 协作者（owner/admin 管理；协作者与 owner 同权编辑）----------
