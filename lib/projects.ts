@@ -66,13 +66,16 @@ export async function saveCanvas(
   return r.ok;
 }
 
-/** 上传图片资产（粘贴/拖拽导入共用），返回同源可访问的图片 URL；失败返回 null */
+/** 上传媒体/文档附件（粘贴/拖拽/选择共用），返回同源可访问的 URL；失败返回 null。
+ *  name 传原始文件名：文档类 mime 认不出时服务端靠它推断扩展名。 */
 export async function uploadAsset(
   file: Blob,
   contentType?: string,
+  name?: string,
 ): Promise<string | null> {
   const buf = await file.arrayBuffer();
-  const r = await apiFetch("/agent-service/assets", {
+  const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+  const r = await apiFetch(`/agent-service/assets${qs}`, {
     method: "POST",
     headers: { "Content-Type": contentType || file.type || "image/png" },
     body: buf,
@@ -80,4 +83,33 @@ export async function uploadAsset(
   if (!r.ok) return null;
   const { url } = (await r.json()) as { url: string };
   return url;
+}
+
+// ---------- 聊天历史（与画布同为服务端事实源；只存 user/assistant 文本） ----------
+
+export interface ChatMessageRecord {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt?: string;
+}
+
+export async function loadChatHistory(
+  pid: string,
+): Promise<ChatMessageRecord[]> {
+  const r = await apiFetch(`${BASE}/${pid}/messages`);
+  if (!r.ok) throw new Error(`读取聊天历史失败：${r.status}`);
+  return r.json();
+}
+
+export async function saveChatHistory(
+  pid: string,
+  messages: ChatMessageRecord[],
+): Promise<boolean> {
+  const r = await apiFetch(`${BASE}/${pid}/messages`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  return r.ok;
 }

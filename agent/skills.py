@@ -187,6 +187,10 @@ async def generate_asset_images(
     sem = asyncio.Semaphore(3)
     done = [0]
     total = len(assets)
+    if config is not None:
+        await _emit_progress(
+            config, f"开始为 {total} 项资产生成设定图（并发 3，每张完成会播报）…"
+        )
 
     async def one(asset: Dict[str, Any]) -> str:
         name = str(asset.get("name", "?"))
@@ -221,16 +225,20 @@ async def _emit_progress(config: Any, message: str) -> None:
     copilotkit 包的 emit_message 发 "copilotkit_manually_emit_message"，
     而当前 ag-ui-langgraph 只认 "manually_emit_message"（版本错位）——
     直接按 ag-ui 侧期望的事件名与 payload 发送。
+    进度只是锦上添花：任何失败都吞掉，绝不影响工具本身执行。
     """
     import uuid as _uuid
 
     from langchain_core.callbacks import adispatch_custom_event
 
-    await adispatch_custom_event(
-        "manually_emit_message",
-        {"message": message, "message_id": f"progress_{_uuid.uuid4().hex[:10]}", "role": "assistant"},
-        config=config,
-    )
+    try:
+        await adispatch_custom_event(
+            "manually_emit_message",
+            {"message": message, "message_id": f"progress_{_uuid.uuid4().hex[:10]}", "role": "assistant"},
+            config=config,
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
 
 
 def _format_asset_result(name: str, raw: str) -> str:

@@ -8,12 +8,13 @@
 - 画布 ground truth 走共享状态 canvasSummary（前端 useCoAgent setState 同步）。
 """
 
+import base64
 import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List
 
-from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
@@ -46,7 +47,7 @@ async def list_langflow_skills() -> str:
 
 
 @tool
-async def decompose_script(script: str) -> str:
+async def decompose_script(script: str, config: RunnableConfig) -> str:
     """把剧本拆解为资产清单（角色/场景/道具，含外形与视觉要点）。
 
     用户给出剧本（完整或片段）并想要资产卡/设定图时，先用这个工具拆解，
@@ -55,12 +56,13 @@ async def decompose_script(script: str) -> str:
     Args:
         script: 剧本原文（尽量完整传入，不要自行摘要）。
     """
+    await skills._emit_progress(config, "正在拆解剧本，提取角色 / 场景 / 道具清单…")
     return await skills.decompose_script(script)
 
 
 @tool
 async def run_langflow_skill(
-    skill: str, input_text: str, params_json: str = ""
+    skill: str, input_text: str, params_json: str, config: RunnableConfig
 ) -> str:
     """调用一个 Langflow 技能（预置生成管线）并返回其文本结果。
 
@@ -70,6 +72,7 @@ async def run_langflow_skill(
         params_json: 技能参数，JSON 对象字符串，如 {"platform":"抖音","count":6}；
             只能使用技能清单里声明的参数，不需要时留空。
     """
+    await skills._emit_progress(config, f"正在调用技能「{skill}」，生成中…")
     params = None
     if params_json and params_json.strip():
         try:
@@ -106,6 +109,126 @@ backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）
 FRONTEND_TOOL_ALLOWLIST = {"canvas_ops"}
+
+
+# ---------- 多模态附件（图片/视频随消息上传） ----------
+
+# 视觉模型名探测（AGENT_VISION_ENABLED=1/0 可强制覆盖）。
+# deepseek-chat 等纯文本模型收到 image_url 块会 400，必须在净化阶段剥离。
+_VISION_MODEL_HINTS = (
+    "vl", "vision", "4v", "gpt-4o", "gpt-4.1", "o3", "o4",
+    "gemini", "claude", "pixtral", "internvl",
+)
+
+
+def _vision_enabled() -> bool:
+    explicit = (os.environ.get("AGENT_VISION_ENABLED") or "").strip().lower()
+    if explicit:
+        return explicit in ("1", "true", "yes", "on")
+    model = (os.environ.get("AGENT_MODEL") or "deepseek-chat").lower()
+    return any(h in model for h in _VISION_MODEL_HINTS)
+
+
+_MEDIA_BLOCK_LABELS = {
+    "image_url": "图片",
+    "image": "图片",
+    "video": "视频",
+    "audio": "音频",
+    "file": "文件",
+}
+
+
+def _flatten_media_message(m: Any) -> Any:
+    """纯文本模型视图：content 块数组 → 纯文本（媒体块降级成 URL 清单）。
+
+    不原地改消息（state 里持有引用），返回替换后的新 HumanMessage；
+    URL 已在文本里出现时不重复罗列。视觉模型路径不经过此函数。
+    """
+    texts: List[str] = []
+    media: List[str] = []
+    for b in m.content if isinstance(m.content, list) else []:
+        if not isinstance(b, dict):
+            continue
+        btype = str(b.get("type", ""))
+        if btype == "text" and isinstance(b.get("text"), str):
+            texts.append(b["text"])
+        elif btype in _MEDIA_BLOCK_LABELS:
+            url = b.get("url") or (b.get("image_url") or {}).get("url") or ""
+            media.append(f"{_MEDIA_BLOCK_LABELS.get(btype, '媒体')} {url}".strip())
+    joined = "\n".join(t for t in texts if t)
+    # 文本里已有的 URL 不重复罗列（前端消息本身就带附件清单）
+    extra = [line for line in media if not (line.rsplit(" ", 1)[-1] and line.rsplit(" ", 1)[-1] in joined)]
+    if extra:
+        joined = "\n".join(
+            [
+                p
+                for p in (
+                    joined,
+                    "【用户附件（当前模型为纯文本，仅 URL 可用）】",
+                    *(f"- {x}" for x in extra),
+                )
+                if p
+            ]
+        )
+    return HumanMessage(content=joined or "（附件消息）", id=getattr(m, "id", None))
+
+
+# 视觉模型路径：本地附件嵌入（模型服务器够不着 /agent-service/assets/ 的本机路径，
+# 必须转成 base64 data URL；DeepSeek 视觉接口只收静态图，视频/音频块剔除）
+_LOCAL_ASSET_PREFIX = "/agent-service/assets/"
+_ASSET_IMAGE_MIME = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+_EMBED_IMAGE_MAX = 16 * 1024 * 1024  # API 单图上限 32MiB，留余量
+
+
+def _local_asset_to_data_url(url: str) -> str | None:
+    name = Path(url).name
+    mime = _ASSET_IMAGE_MIME.get(Path(name).suffix.lower())
+    if not mime:
+        return None
+    try:
+        data = (skills.ASSETS_DIR / name).read_bytes()
+    except OSError:
+        return None
+    if not data or len(data) > _EMBED_IMAGE_MAX:
+        return None
+    return f"data:{mime};base64," + base64.b64encode(data).decode()
+
+
+def _embed_local_media(m: Any) -> Any:
+    """视觉模型视图：本地图片 URL → data URL；公网 URL / data URL 原样保留。
+
+    视频/音频/文件块剔除（接口不收，文本清单里已有 URL 可供工具引用）。
+    无任何可保留内容时退回纯文本视图。
+    """
+    blocks_out: List[Any] = []
+    for b in m.content if isinstance(m.content, list) else []:
+        if not isinstance(b, dict):
+            continue
+        btype = str(b.get("type", ""))
+        if btype == "text":
+            blocks_out.append(b)
+        elif btype == "image_url":
+            url = (b.get("image_url") or {}).get("url", "")
+            if url.startswith("data:image/"):
+                blocks_out.append(b)
+            elif url.startswith(_LOCAL_ASSET_PREFIX):
+                data_url = _local_asset_to_data_url(url)
+                if data_url:
+                    blocks_out.append(
+                        {"type": "image_url", "image_url": {"url": data_url}}
+                    )
+            elif url.startswith(("http://", "https://")):
+                blocks_out.append(b)
+            # 其他来源丢弃（清单里已有 URL）
+    if not blocks_out:
+        return _flatten_media_message(m)
+    return HumanMessage(content=blocks_out, id=getattr(m, "id", None))
 
 
 # ---------- 系统提示 ----------
@@ -222,11 +345,14 @@ def _unanswered_frontend_calls(messages: List[Any]) -> bool:
 
 
 def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
-    """清洗历史，保证 assistant(tool_calls) ↔ tool 的合法交替：
+    """清洗历史，保证模型侧永不 400：
 
-    - 孤儿 tool 消息（对应的 assistant tool_call 不在历史里）剔除
-    - assistant 的 tool_call 缺响应时补占位响应（模型侧 400 的根源）
+    - assistant(tool_calls) ↔ tool 的合法交替：孤儿 tool 消息剔除、
+      assistant 的 tool_call 缺响应时补占位响应
+    - 纯文本模型：content 为多模态块数组的用户消息降级成纯文本
+      （媒体块 → URL 清单，见 _flatten_media_message）
     """
+    flatten_media = not _vision_enabled()
     result: List[Any] = []
     pending: Dict[str, str] = {}
     for m in messages:
@@ -252,7 +378,14 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
                         )
                     )
                 pending.clear()
-            result.append(m)
+            if isinstance(m, HumanMessage) and isinstance(m.content, list):
+                result.append(
+                    _flatten_media_message(m)
+                    if flatten_media
+                    else _embed_local_media(m)
+                )
+            else:
+                result.append(m)
     for tc_id, name in pending.items():
         result.append(
             ToolMessage(

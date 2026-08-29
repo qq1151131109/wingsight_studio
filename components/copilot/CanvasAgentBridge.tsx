@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   useCoAgent,
   useCopilotAction,
@@ -9,7 +9,13 @@ import {
 } from "@copilotkit/react-core";
 import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
-import { applyOps, type OpResult } from "@/lib/canvas/ops";
+import {
+  applyOps,
+  normalizeOps,
+  type CanvasOp,
+  type OpResult,
+} from "@/lib/canvas/ops";
+import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
@@ -26,9 +32,26 @@ const NODE_TYPE_LABEL: Record<string, string> = {
   script: "剧本",
   character: "角色",
   image: "图片",
+  video: "视频",
   storyboard: "分镜",
   group: "分组",
 };
+
+/** 生成结果媒体（出现在 canvas_ops 结果卡里，点击可定位画布节点） */
+interface MediaItem {
+  nodeId: string;
+  title: string;
+  url: string;
+  kind: "image" | "video";
+}
+
+type OpResultEx = OpResult & { media?: MediaItem[]; rejected?: boolean };
+
+/** 破坏性操作审批的挂起请求（handler 阻塞等用户点确认） */
+interface Approval {
+  summary: string;
+  resolve: (ok: boolean) => void;
+}
 
 /**
  * 画布 ↔ Agent 桥：
@@ -38,6 +61,8 @@ const NODE_TYPE_LABEL: Record<string, string> = {
 export default function CanvasAgentBridge() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
+  // 破坏性操作（删除/分组）审批弹窗；handler await 用户选择
+  const [approval, setApproval] = useState<Approval | null>(null);
 
   const { setState } = useCoAgent<WingsightAgentState>({
     name: "default",
@@ -177,7 +202,7 @@ export default function CanvasAgentBridge() {
         description: "画布操作数组",
       },
     ],
-    handler: ({ ops }: { ops?: unknown }) => {
+    handler: async ({ ops }: { ops?: unknown }) => {
       // 容错：部分模型会把数组序列化成字符串
       const raw =
         typeof ops === "string"
@@ -187,7 +212,30 @@ export default function CanvasAgentBridge() {
             : ops && typeof ops === "object"
               ? ops
               : [];
+      const list = normalizeOps(raw);
+
+      // 人在环：删除/分组先请用户确认（整批等待，通过后一起执行）
+      const destructive = list.filter(
+        (o) => o.op === "delete_nodes" || o.op === "group_nodes",
+      );
+      if (destructive.length > 0) {
+        const ok = await new Promise<boolean>((resolve) => {
+          setApproval({ summary: describeDestructive(destructive), resolve });
+        });
+        setApproval(null);
+        if (!ok) {
+          const rejected: OpResultEx = {
+            applied: 0,
+            createdIds: [],
+            errors: [],
+            rejected: true,
+          };
+          return rejected as unknown as string;
+        }
+      }
+
       const result = applyOps(raw);
+      const media = collectMedia(list, result.createdIds);
       // 可见性：新建的节点自动选中 + 高亮闪烁；agent 没显式 set_viewport 时镜头跟过去
       if (result.createdIds.length > 0) {
         const store = useCanvasStore.getState();
@@ -201,7 +249,7 @@ export default function CanvasAgentBridge() {
           );
         }
       }
-      return result as unknown as string;
+      return { ...result, ...(media.length > 0 ? { media } : {}) } as unknown as string;
     },
     render: ({ status, result }) => {
       if (status !== "complete" || !result) {
@@ -211,7 +259,14 @@ export default function CanvasAgentBridge() {
           </div>
         );
       }
-      const r = result as unknown as OpResult;
+      const r = result as unknown as OpResultEx;
+      if (r.rejected) {
+        return (
+          <div className="my-1 rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs text-text-3">
+            已按你的选择跳过这批删除 / 分组操作。
+          </div>
+        );
+      }
       const ok = r.errors.length === 0;
       return (
         <div className="my-1 rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
@@ -237,12 +292,118 @@ export default function CanvasAgentBridge() {
               ))}
             </ul>
           ) : null}
+          {r.media && r.media.length > 0 ? (
+            <div className="mt-2 grid grid-cols-2 gap-1.5">
+              {r.media.map((m) => (
+                <button
+                  key={`${m.nodeId}_${m.url}`}
+                  type="button"
+                  title="点击在画布上定位"
+                  className="group relative block overflow-hidden rounded-md border border-hairline transition-shadow hover:shadow-md"
+                  onClick={() =>
+                    window.dispatchEvent(
+                      new CustomEvent(FOCUS_NODES_EVENT, {
+                        detail: { ids: [m.nodeId] },
+                      }),
+                    )
+                  }
+                >
+                  {m.kind === "image" ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={m.url}
+                      alt={m.title}
+                      className="h-20 w-full object-cover"
+                    />
+                  ) : (
+                    <video
+                      src={m.url}
+                      muted
+                      playsInline
+                      preload="metadata"
+                      className="h-20 w-full object-cover"
+                    />
+                  )}
+                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
+                    {m.title}
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       );
     },
   });
 
-  return null;
+  return approval ? (
+    <ConfirmDialog
+      title="允许助手修改画布？"
+      message={approval.summary}
+      confirmText="允许执行"
+      danger
+      onConfirm={() => approval.resolve(true)}
+      onCancel={() => approval.resolve(false)}
+    />
+  ) : null;
+}
+
+/** 把破坏性操作批描述成人话（审批弹窗正文） */
+function describeDestructive(ops: CanvasOp[]): string {
+  const del = ops.filter((o) => o.op === "delete_nodes") as Extract<
+    CanvasOp,
+    { op: "delete_nodes" }
+  >[];
+  const grp = ops.filter((o) => o.op === "group_nodes") as Extract<
+    CanvasOp,
+    { op: "group_nodes" }
+  >[];
+  const store = useCanvasStore.getState();
+  const parts: string[] = [];
+  if (del.length > 0) {
+    const titles = del
+      .flatMap((o) => o.ids)
+      .map((id) => store.nodes.find((n) => n.id === id)?.data.title ?? id)
+      .slice(0, 8)
+      .join("、");
+    parts.push(`删除 ${del.reduce((n, o) => n + o.ids.length, 0)} 张卡片（${titles}）`);
+  }
+  if (grp.length > 0) {
+    parts.push(
+      `把 ${grp.reduce((n, o) => n + o.ids.length, 0)} 张卡片收进分组${grp[0].title ? `「${grp[0].title}」` : ""}`,
+    );
+  }
+  return `助手请求：${parts.join("；")}。允许后这批操作会立即执行。`;
+}
+
+/** 从 ops 里挑出生成结果媒体（update_node/add_node 带 imageUrl/videoUrl） */
+function collectMedia(list: CanvasOp[], createdIds: string[]): MediaItem[] {
+  const store = useCanvasStore.getState();
+  const out: MediaItem[] = [];
+  for (const op of list) {
+    if (op.op === "update_node") {
+      const url = op.imageUrl ?? op.videoUrl;
+      if (!url) continue;
+      const node = store.nodes.find((n) => n.id === op.id);
+      if (!node) continue;
+      out.push({
+        nodeId: op.id,
+        title: node.data.title || "生成结果",
+        url,
+        kind: op.videoUrl ? "video" : "image",
+      });
+    } else if (op.op === "add_node" && op.id) {
+      const url = op.imageUrl ?? op.videoUrl;
+      if (!url || !createdIds.includes(op.id)) continue;
+      out.push({
+        nodeId: op.id,
+        title: op.title || "生成结果",
+        url,
+        kind: op.videoUrl ? "video" : "image",
+      });
+    }
+  }
+  return out.slice(0, 6);
 }
 
 function safeParse(text: string): unknown {

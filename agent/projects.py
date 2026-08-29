@@ -1,6 +1,7 @@
 """项目与画布的服务端持久化（SQLite）。
 
-projects + canvases 两张表，画布整体 JSON 存取。
+projects + canvases + chat_messages 三张表：画布整体 JSON 存取，
+聊天历史按消息行存取（与画布同为服务端唯一事实源，刷新/换设备可回填）。
 前端经 /agent-service/projects/* 同源代理访问。
 
 多用户（AUTH_ENABLED=true 时）：
@@ -53,6 +54,15 @@ def init_db() -> None:
                 edges TEXT NOT NULL DEFAULT '[]',
                 viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                seq INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, seq)
             );
             """
         )
@@ -139,6 +149,7 @@ def delete_project(pid: str, viewer: Any = ANON_VIEWER) -> bool:
     with _conn() as conn:
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (pid,))
         conn.execute("DELETE FROM canvases WHERE project_id = ?", (pid,))
+        conn.execute("DELETE FROM chat_messages WHERE project_id = ?", (pid,))
     return cur.rowcount > 0
 
 
@@ -236,3 +247,60 @@ def _write_collaborators(pid: str, collab: List[str]) -> None:
             "UPDATE projects SET collaborators = ?, updated_at = ? WHERE id = ?",
             (json.dumps(collab, ensure_ascii=False), _now(), pid),
         )
+
+
+# ---------- 聊天历史（前端整表覆盖写，服务端只保可信字段） ----------
+
+# 防御性上限：单条消息与整段历史的体积/条数封顶，避免流式期间异常膨胀
+MAX_MESSAGES = 400
+MAX_MESSAGE_CHARS = 20_000
+
+
+def load_chat_messages(pid: str, viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
+    assert_access(viewer, pid)
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, role, content, created_at FROM chat_messages"
+            " WHERE project_id = ? ORDER BY seq",
+            (pid,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def save_chat_messages(
+    pid: str, messages: Any, viewer: Any = ANON_VIEWER
+) -> List[Dict[str, Any]]:
+    """整表覆盖：以客户端发来的顺序重建（seq=0..n-1），事务内先删后插。"""
+    assert_access(viewer, pid)
+    items: List[Dict[str, str]] = []
+    if isinstance(messages, list):
+        for m in messages:
+            if not isinstance(m, dict):
+                continue
+            mid = str(m.get("id") or uuid.uuid4().hex[:16])
+            role = str(m.get("role") or "")
+            content = str(m.get("content") or "")
+            if role not in ("user", "assistant") or not content.strip():
+                continue
+            items.append(
+                {
+                    "id": mid[:64],
+                    "role": role,
+                    "content": content[:MAX_MESSAGE_CHARS],
+                    "created_at": str(m.get("created_at") or _now())[:40],
+                }
+            )
+    items = items[-MAX_MESSAGES:]
+    now = _now()
+    with _conn() as conn:
+        conn.execute("DELETE FROM chat_messages WHERE project_id = ?", (pid,))
+        conn.executemany(
+            "INSERT INTO chat_messages (project_id, seq, id, role, content, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (pid, i, it["id"], it["role"], it["content"], it["created_at"])
+                for i, it in enumerate(items)
+            ],
+        )
+        conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now, pid))
+    return items
