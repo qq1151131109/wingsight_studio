@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // 关掉左下角的 N 开发指示器（纯开发态装饰，与产品 UI 无关）
+  devIndicators: false,
+
   // dev 服务器默认只信任 localhost 来源；放行本机回环/局域网/远程隧道域名
   allowedDevOrigins: [
     "localhost",

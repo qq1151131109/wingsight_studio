@@ -22,18 +22,11 @@ import {
 } from "@xyflow/react";
 import {
   ChevronRight,
-  Clapperboard,
-  Combine,
-  Drama,
-  Film,
-  Image as ImageIcon,
   Library,
-  Music,
   Redo2,
-  ScrollText,
   Search,
-  StickyNote,
   Undo2,
+  WandSparkles,
   ZoomIn as ZoomInIcon,
   ZoomOut,
   Maximize,
@@ -46,11 +39,14 @@ import {
   type WingNode,
   type WingNodeType,
 } from "@/lib/canvas/store";
+import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { FOCUS_NODES_EVENT, type FocusNodesDetail } from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
 import { nodeTypes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
+import NodeInputPanel from "./NodeInputPanel";
+import PromptLibraryPanel from "./PromptLibraryPanel";
 
 /** 视口相等判断（按值比较，防程序化 setViewport 与 store 回写互触发） */
 const vpEq = (a: Viewport, b: Viewport) =>
@@ -180,37 +176,35 @@ function NodeAddMenu({ onPick }: { onPick: (t: WingNodeType) => void }) {
   return (
     <div className="flex min-w-[140px] flex-col">
       <p className="px-2 py-1 text-[10px] text-text-4">添加节点</p>
-      {NODE_TYPE_ITEMS.map(({ type, icon, key }) => (
-        <CtxItem
-          key={key}
-          label={NODE_META[type].label}
-          icon={icon}
-          onClick={() => onPick(type)}
-        />
-      ))}
+      {NODE_TYPE_ITEMS.map(({ type, key }) => {
+        const Icon = TYPE_ICONS[type];
+        return (
+          <CtxItem
+            key={key}
+            label={NODE_META[type].label}
+            icon={Icon ? <Icon className="h-4 w-4" /> : null}
+            onClick={() => onPick(type)}
+          />
+        );
+      })}
     </div>
   );
 }
 
-/** 节点类型清单：工具条 / 双击选择器 / 右键"添加节点"三处共用 */
-const NODE_TYPE_ITEMS: {
-  type: WingNodeType;
-  icon: React.ReactNode;
-  key: string;
-}[] = [
-  { type: "note", icon: <StickyNote className="h-4 w-4" />, key: "i-note" },
-  { type: "script", icon: <ScrollText className="h-4 w-4" />, key: "i-script" },
-  { type: "character", icon: <Drama className="h-4 w-4" />, key: "i-char" },
-  {
-    type: "storyboard",
-    icon: <Clapperboard className="h-4 w-4" />,
-    key: "i-story",
-  },
-  { type: "image", icon: <ImageIcon className="h-4 w-4" />, key: "i-image" },
-  { type: "video", icon: <Film className="h-4 w-4" />, key: "i-video" },
-  { type: "audio", icon: <Music className="h-4 w-4" />, key: "i-audio" },
-  { type: "compose", icon: <Combine className="h-4 w-4" />, key: "i-compose" },
-];
+/** 节点类型清单：工具条 / 双击选择器 / 右键"添加节点"三处共用（图标见 type-icons） */
+const NODE_TYPE_ITEMS: { type: WingNodeType; key: string }[] = (
+  [
+    "note",
+    "script",
+    "character",
+    "storyboard",
+    "shotlist",
+    "image",
+    "video",
+    "audio",
+    "compose",
+  ] as WingNodeType[]
+).map((type) => ({ type, key: `i-${type}` }));
 
 /** 拖拽导入：图片→上传建 image 卡；.txt/.md→文本卡（md 当剧本、txt 当便签） */
 async function importDroppedFiles(
@@ -318,22 +312,25 @@ function AddNodeToolbar() {
   };
   return (
     <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
-      {NODE_TYPE_ITEMS.map(({ type, icon, key }) => (
-        <button
-          key={key}
-          type="button"
-          draggable
-          title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
-          className="flex h-8 w-8 cursor-grab items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-          onClick={() => addAtCenter(type)}
-          onDragStart={(e) => {
-            e.dataTransfer.setData(PALETTE_DRAG_TYPE, type);
-            e.dataTransfer.effectAllowed = "copy";
-          }}
-        >
-          {icon}
-        </button>
-      ))}
+      {NODE_TYPE_ITEMS.map(({ type, key }) => {
+        const Icon = TYPE_ICONS[type];
+        return (
+          <button
+            key={key}
+            type="button"
+            draggable
+            title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
+            className="flex h-8 w-8 cursor-grab items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+            onClick={() => addAtCenter(type)}
+            onDragStart={(e) => {
+              e.dataTransfer.setData(PALETTE_DRAG_TYPE, type);
+              e.dataTransfer.effectAllowed = "copy";
+            }}
+          >
+            {Icon ? <Icon className="h-4 w-4" /> : null}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -418,7 +415,13 @@ function NodeSearch() {
 }
 
 /** 底部坞：撤销/重做 + 缩放 + 素材库 + 保存状态（对标 novanova / AIGC 的顶底栏能力） */
-function BottomDock({ onOpenAssets }: { onOpenAssets: () => void }) {
+function BottomDock({
+  onOpenAssets,
+  onOpenPrompts,
+}: {
+  onOpenAssets: () => void;
+  onOpenPrompts: () => void;
+}) {
   const canUndo = useCanvasStore((s) => s.canUndoNow);
   const canRedo = useCanvasStore((s) => s.canRedoNow);
   const saveState = useCanvasStore((s) => s.saveState);
@@ -442,6 +445,24 @@ function BottomDock({ onOpenAssets }: { onOpenAssets: () => void }) {
       >
         <Library className="h-4 w-4" />
         素材库
+      </button>
+      <button
+        type="button"
+        title="提示词库（点击追加到生成输入区）"
+        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        onClick={onOpenPrompts}
+      >
+        <WandSparkles className="h-4 w-4" />
+        提示词
+      </button>
+      <button
+        type="button"
+        title="提示词库（点击追加到生成输入区）"
+        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        onClick={onOpenPrompts}
+      >
+        <WandSparkles className="h-4 w-4" />
+        提示词
       </button>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
@@ -832,15 +853,72 @@ export default function CanvasView() {
       .map((n) => n.id)
       .join(","),
   );
+  // 相邻高亮（open-ai-canvas related 态）：hover/选中单卡时点亮它的连线与邻居
+  const [hoverId, setHoverId] = useState<string | null>(null);
+  const selectedKey = nodes
+    .filter((n) => n.selected)
+    .map((n) => n.id)
+    .join(",");
+  const related = useMemo(() => {
+    const selected = selectedKey ? selectedKey.split(",") : [];
+    return hoverId ?? (selected.length === 1 ? selected[0] : null);
+  }, [hoverId, selectedKey]);
+  const onNodeHover = useCallback(
+    (_: React.MouseEvent, node: WingNode) => setHoverId(node.id),
+    [],
+  );
+  const onNodeHoverEnd = useCallback(() => setHoverId(null), []);
+
   const displayEdges = useMemo(() => {
     const loading = new Set(loadingKey ? loadingKey.split(",") : []);
     const typeById = new Map(nodes.map((n) => [n.id, n.data.nodeType] as const));
-    return edges.map((e) => ({
-      ...e,
-      ...(loading.has(e.target) ? { animated: true } : {}),
-      label: AUTO_EDGE_LABELS[`${typeById.get(e.source)}->${typeById.get(e.target)}`],
-    }));
-  }, [edges, loadingKey, nodes]);
+    // 折叠分组的边重接（对标 open-ai-canvas frame 折叠）：隐藏子卡的连线
+    // 显示层改挂到组节点，展开自动还原（纯显示转换，不动数据）
+    const hiddenToGroup = new Map<string, string>();
+    for (const n of nodes) {
+      if (!n.hidden || !n.parentId) continue;
+      const parent = nodes.find((x) => x.id === n.parentId);
+      if (parent?.data.collapsed) hiddenToGroup.set(n.id, n.parentId);
+    }
+    const wire = (id: string) => hiddenToGroup.get(id) ?? id;
+    return edges.map((e) => {
+      const src = wire(e.source);
+      const tgt = wire(e.target);
+      return {
+        ...e,
+        source: src,
+        target: tgt,
+        ...(loading.has(e.target) ? { animated: true } : {}),
+        label:
+          AUTO_EDGE_LABELS[
+            `${typeById.get(e.source)}->${typeById.get(e.target)}`
+          ],
+        ...(related
+          ? src === related || tgt === related
+            ? { className: "ws-edge-related" }
+            : {}
+          : {}),
+      };
+    });
+  }, [edges, loadingKey, nodes, related]);
+
+  const displayNodes = useMemo(() => {
+    if (!related) {
+      const anyLocked = nodes.some((n) => n.data.locked);
+      if (!anyLocked) return nodes;
+      return nodes.map((n) => (n.data.locked ? { ...n, draggable: false } : n));
+    }
+    const relatedIds = new Set<string>([related]);
+    for (const e of edges) {
+      if (e.source === related) relatedIds.add(e.target);
+      if (e.target === related) relatedIds.add(e.source);
+    }
+    return nodes.map((n) =>
+      relatedIds.has(n.id)
+        ? { ...n, className: "ws-node-related", ...(n.data.locked ? { draggable: false } : {}) }
+        : { ...n, className: undefined, ...(n.data.locked ? { draggable: false } : {}) },
+    );
+  }, [nodes, edges, related]);
 
   // 连接校验：自环与重复边直接拒绝
   const isValidConnection = useCallback<IsValidConnection>((conn) => {
@@ -942,8 +1020,9 @@ export default function CanvasView() {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const closeCtx = useCallback(() => setCtxMenu(null), []);
 
-  // 素材库面板（底部坞 / 右键空白 打开）
+  // 素材库 / 提示词库面板（底部坞 / 右键空白 打开，二者互斥）
   const [trayOpen, setTrayOpen] = useState(false);
+  const [promptsOpen, setPromptsOpen] = useState(false);
 
   useEffect(() => {
     if (!ctxMenu && !pendingLink) return;
@@ -1103,8 +1182,23 @@ export default function CanvasView() {
     }
   }, []);
 
+  // 桌面文件悬停时的全画布接收态（对标 open-ai-canvas dropzone；enter/leave 计数防子元素抖动）
+  const [dropHover, setDropHover] = useState(false);
+  const dragDepth = useRef(0);
+  const onWrapperDragEnter = useCallback((event: React.DragEvent) => {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    dragDepth.current += 1;
+    setDropHover(true);
+  }, []);
+  const onWrapperDragLeave = useCallback(() => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDropHover(false);
+  }, []);
+
   const onDrop = useCallback(
     (event: React.DragEvent) => {
+      dragDepth.current = 0;
+      setDropHover(false);
       const paletteType = event.dataTransfer.getData(PALETTE_DRAG_TYPE);
       if (paletteType) {
         event.preventDefault();
@@ -1134,7 +1228,19 @@ export default function CanvasView() {
   );
 
   return (
-    <div className="relative h-full w-full" onWheelCapture={onWheelCapture}>
+    <div
+      className="relative h-full w-full"
+      onWheelCapture={onWheelCapture}
+      onDragEnter={onWrapperDragEnter}
+      onDragLeave={onWrapperDragLeave}
+    >
+      {dropHover ? (
+        <div className="ws-dropzone">
+          <div className="rounded-lg bg-surface-1 px-4 py-2 text-xs font-medium text-text shadow-lg">
+            松手导入素材（图片 / 视频 / 音频 / 文本）
+          </div>
+        </div>
+      ) : null}
       <input
         ref={fileInputRef}
         type="file"
@@ -1145,9 +1251,10 @@ export default function CanvasView() {
       />
       {nodes.length === 0 ? <EmptyState /> : null}
       <SelectionToolbar />
+      <NodeInputPanel />
       <GuideOverlay />
       <ReactFlow
-        nodes={nodes}
+        nodes={displayNodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
         defaultEdgeOptions={DEFAULT_EDGE_OPTS}
@@ -1163,6 +1270,8 @@ export default function CanvasView() {
         onNodeDragStop={onNodeDragStop}
         onBeforeDelete={onBeforeDelete}
         onPaneContextMenu={onPaneContextMenu}
+        onNodeMouseEnter={onNodeHover}
+        onNodeMouseLeave={onNodeHoverEnd}
         onNodeContextMenu={onNodeContextMenu}
         onSelectionContextMenu={onSelectionContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}
@@ -1224,12 +1333,22 @@ export default function CanvasView() {
           <AddNodeToolbar />
           <NodeSearch />
         </div>
-        <BottomDock onOpenAssets={() => setTrayOpen(true)} />
+        <BottomDock
+          onOpenAssets={() => {
+            setTrayOpen(true);
+            setPromptsOpen(false);
+          }}
+          onOpenPrompts={() => {
+            setPromptsOpen(true);
+            setTrayOpen(false);
+          }}
+        />
         <SelectionGuard />
         <CanvasShortcuts />
         <AssetAutoRecorder />
       </ReactFlow>
       {trayOpen ? <AssetTray onClose={() => setTrayOpen(false)} /> : null}
+      {promptsOpen ? <PromptLibraryPanel onClose={() => setPromptsOpen(false)} /> : null}
       {pendingLink ? (
         <>
           <div

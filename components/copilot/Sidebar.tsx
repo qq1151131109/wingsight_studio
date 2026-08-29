@@ -23,7 +23,7 @@ function AssistantFab() {
       type="button"
       onClick={() => setOpen(true)}
       title="打开画布助手"
-      className="fixed right-3 top-3 z-40 flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-white shadow-md transition-opacity hover:opacity-90"
+      className="fixed right-4 top-14 z-40 flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-white shadow-md transition-opacity hover:opacity-90"
     >
       <Sparkles className="h-3.5 w-3.5" />
       助手

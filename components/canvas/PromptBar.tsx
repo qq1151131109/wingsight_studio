@@ -1,24 +1,40 @@
 "use client";
 
 /**
- * 图片/视频卡占位态的生成输入条（角色一致性入口，对标影策/AIGCCanvasFlow 的 @引用）：
- *   输入画面描述 + "@"引用画布卡片（角色/场景优先）→ 点生成
- *   → GENERATE_EVENT → CanvasAgentBridge 组装指令（含引用卡内容摘要）发给 agent。
- * 引用以 chip 形式挂在输入条上（可删），不进正文——纯 textarea 实现，避免 contentEditable。
+ * 生成输入条（生成输入面板的主体）：描述 + "@"引用画布卡片 → 点生成
+ *   → GENERATE_EVENT → CanvasAgentBridge 组装指令发给 agent。
+ * 引用以 chip 形式挂在输入条上（可删），不进正文——纯 textarea 实现。
+ * 拖画布媒体到面板上 = 快捷加引用（ADD_REF_EVENT，nodes.tsx 的 mediaDragProps 发出）。
  */
 
-import { useMemo, useRef, useState } from "react";
-import { Sparkles, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Sparkles, Star, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import {
+  ADD_REF_EVENT,
+  PROMPT_PICK_EVENT,
+  type AddRefDetail,
+  type PromptPickDetail,
+} from "@/lib/canvas/events";
+import { toggleFavorite } from "@/lib/prompt-library";
 
 /** 卡片输入条上的"直接生成"事件 */
 export const GENERATE_EVENT = "wingsight:generate";
 
 export type GenerateDetail = {
   nodeId: string;
-  kind: "image" | "video";
+  /** text=撰写/续写正文（note/script），image/video=媒体生成（结果回填对应 URL 字段） */
+  kind: "image" | "video" | "text";
   prompt: string;
   refIds: string[];
+  /** image 生成时的候选张数（1/2/4，缺省 1） */
+  count?: number;
+};
+
+const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
+  image: "描述画面，@ 引用画布卡片保持一致",
+  video: "描述镜头内容，@ 引用画布卡片保持一致",
+  text: "想让 AI 写什么？@ 引用画布卡片补充设定",
 };
 
 /** caret 前最后一个 @提及片段（"雨夜@女侠" → q="女侠"） */
@@ -43,9 +59,14 @@ const TYPE_ORDER: Record<string, number> = {
 export default function PromptBar({
   nodeId,
   kind,
+  placeholder,
+  variant = "inline",
 }: {
   nodeId: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "text";
+  placeholder?: string;
+  /** floating = 选中卡下方的独立大面板（libtv 范式）；inline = 卡内紧凑 */
+  variant?: "inline" | "floating";
 }) {
   const nodes = useCanvasStore((s) => s.nodes);
   const [text, setText] = useState("");
@@ -54,7 +75,36 @@ export default function PromptBar({
     null,
   );
   const [hi, setHi] = useState(0);
+  const [count, setCount] = useState(1);
+  const [favSaved, setFavSaved] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // 提示词库点选 → 追加到输入框
+  useEffect(() => {
+    const onPick = (e: Event) => {
+      const { text } = (e as CustomEvent<PromptPickDetail>).detail;
+      if (!text) return;
+      setText((prev) => (prev.trim() ? `${prev.trimEnd()}, ${text}` : text));
+      taRef.current?.focus();
+    };
+    window.addEventListener(PROMPT_PICK_EVENT, onPick);
+    return () => window.removeEventListener(PROMPT_PICK_EVENT, onPick);
+  }, []);
+
+  // 拖画布媒体到面板 = 快捷把该卡加为引用（对标 viedeo-workflow 的 drag-to-chat）
+  useEffect(() => {
+    const onAddRef = (e: Event) => {
+      const refId = (e as CustomEvent<AddRefDetail>).detail?.nodeId;
+      if (!refId || refId === nodeId) return;
+      setRefs((rs) => {
+        if (rs.some((r) => r.id === refId)) return rs;
+        const n = useCanvasStore.getState().nodes.find((x) => x.id === refId);
+        return n ? [...rs, n] : rs;
+      });
+    };
+    window.addEventListener(ADD_REF_EVENT, onAddRef);
+    return () => window.removeEventListener(ADD_REF_EVENT, onAddRef);
+  }, [nodeId]);
 
   const candidates = useMemo(() => {
     if (!mention) return [];
@@ -97,7 +147,13 @@ export default function PromptBar({
     if (!prompt && refs.length === 0) return;
     window.dispatchEvent(
       new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
-        detail: { nodeId, kind, prompt, refIds: refs.map((r) => r.id) },
+        detail: {
+          nodeId,
+          kind,
+          prompt,
+          refIds: refs.map((r) => r.id),
+          ...(kind === "image" && count > 1 ? { count } : {}),
+        },
       }),
     );
     setText("");
@@ -105,10 +161,15 @@ export default function PromptBar({
     setMention(null);
   };
 
+  const floating = variant === "floating";
   return (
-    <div className="ws-detail nodrag nowheel mt-1.5 rounded-md border border-hairline bg-surface-2/60 p-1.5">
+    <div
+      className={`ws-detail nodrag nowheel rounded-md border border-hairline bg-surface-2/60 ${
+        floating ? "border-0 bg-transparent p-0" : "mt-1.5 p-1.5"
+      }`}
+    >
       {refs.length > 0 ? (
-        <div className="mb-1 flex flex-wrap gap-1">
+        <div className={`flex flex-wrap gap-1 ${floating ? "mb-1.5" : "mb-1"}`}>
           {refs.map((r) => (
             <span
               key={r.id}
@@ -133,13 +194,34 @@ export default function PromptBar({
           ))}
         </div>
       ) : null}
+      {kind === "image" && floating ? (
+        <div className="mb-1 flex items-center gap-1 px-1">
+          <span className="text-[10px] text-text-4">候选</span>
+          {[1, 2, 4].map((n) => (
+            <button
+              key={n}
+              type="button"
+              className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                count === n
+                  ? "border-accent bg-accent-dim text-text"
+                  : "border-hairline text-text-3 hover:text-text"
+              }`}
+              onClick={() => setCount(n)}
+            >
+              {n} 张
+            </button>
+          ))}
+        </div>
+      ) : null}
       <div className="relative flex items-end gap-1">
         <textarea
           ref={taRef}
           value={text}
-          rows={2}
-          placeholder="描述画面，@ 引用画布卡片保持一致"
-          className="w-full resize-none bg-transparent px-1 py-0.5 text-xs leading-relaxed text-text outline-none placeholder:text-text-4"
+          rows={floating ? 3 : 2}
+          placeholder={placeholder ?? KIND_PLACEHOLDER[kind]}
+          className={`w-full resize-none bg-transparent leading-relaxed text-text outline-none placeholder:text-text-4 ${
+            floating ? "px-1 py-1 text-sm" : "px-1 py-0.5 text-xs"
+          }`}
           onChange={(e) => {
             setText(e.target.value);
             const m = detectMention(e.target.value, e.target.selectionStart);
@@ -182,11 +264,29 @@ export default function PromptBar({
         />
         <button
           type="button"
-          title="生成（Ctrl+Enter）"
-          className="mb-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text"
+          title={favSaved ? "已收藏" : "收藏当前输入到提示词库"}
+          className={`mb-0.5 grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
+            floating ? "h-8 w-8" : "h-7 w-7"
+          } ${favSaved ? "text-warn" : "text-text-2"}`}
+          onClick={() => {
+            const t = text.trim();
+            if (!t) return;
+            toggleFavorite(t);
+            setFavSaved(true);
+            setTimeout(() => setFavSaved(false), 1500);
+          }}
+        >
+          <Star className={`h-3.5 w-3.5 ${favSaved ? "fill-current text-warn" : ""}`} />
+        </button>
+        <button
+          type="button"
+          title={kind === "text" ? "让 AI 撰写（Ctrl+Enter）" : "生成（Ctrl+Enter）"}
+          className={`mb-0.5 grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text ${
+            floating ? "h-8 w-8" : "h-7 w-7"
+          }`}
           onClick={submit}
         >
-          <Sparkles className="h-3.5 w-3.5" />
+          <Sparkles className={floating ? "h-4 w-4" : "h-3.5 w-3.5"} />
         </button>
         {mention && candidates.length > 0 ? (
           <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-56 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">

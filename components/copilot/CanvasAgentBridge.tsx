@@ -21,7 +21,11 @@ import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptB
 import {
   FOCUS_NODES_EVENT,
   FRAME_ANALYSIS_EVENT,
+  MASK_REDRAW_EVENT,
+  ROW_GENERATE_EVENT,
   type FrameAnalysisDetail,
+  type MaskRedrawDetail,
+  type RowGenerateDetail,
 } from "@/lib/canvas/events";
 
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
@@ -145,17 +149,59 @@ export default function CanvasAgentBridge() {
   // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
   useEffect(() => {
     const onGenerate = (e: Event) => {
-      const { nodeId, kind, prompt, refIds } = (e as CustomEvent<GenerateDetail>)
+      const { nodeId, kind, prompt, refIds, count } = (e as CustomEvent<GenerateDetail>)
         .detail;
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
+      if (kind === "text") {
+        // 正文撰写：不置 loading（文本卡无该状态），agent 直接 update_node 写 body
+        const refLines = refIds
+          .map((rid) => st.nodes.find((n) => n.id === rid))
+          .filter((n): n is NonNullable<typeof n> => Boolean(n))
+          .map(
+            (n) =>
+              `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 200)}`,
+          )
+          .join("\n");
+        const content = [
+          `请为画布节点 ${nodeId}（「${node.data.title}」）撰写正文：`,
+          prompt || "（根据标题与卡片类型撰写，简洁有内容）",
+          refLines
+            ? `参考以下画布卡片的内容：\n${refLines}`
+            : "",
+          `完成后用 canvas_ops update_node 把全文写进该节点的 body 字段，不要改动标题等其他字段。`,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        void sendMessage(
+          {
+            id: `gen_${nodeId}_${Date.now()}`,
+            role: "user",
+            content,
+          },
+          { followUp: true },
+        );
+        return;
+      }
       st.updateNodeData(nodeId, {
         status: "loading",
         errorMessage: undefined,
         body: prompt || node.data.body,
         // 引用关系落在卡上：选中生成卡时画布高亮这些引用卡（@一致性可视化）
         refIds,
+        // 重生成前把当前主图存进版本历史（重生成不丢旧结果，可对比/回滚）
+        ...(node.data.imageUrl || node.data.videoUrl
+          ? {
+              versions: [
+                ...(node.data.versions ?? []),
+                {
+                  url: (node.data.imageUrl ?? node.data.videoUrl)!,
+                  at: new Date().toISOString().slice(5, 16).replace("T", " "),
+                },
+              ].slice(-12),
+            }
+          : {}),
       });
       const refLines = refIds
         .map((rid) => st.nodes.find((n) => n.id === rid))
@@ -167,12 +213,17 @@ export default function CanvasAgentBridge() {
         .join("\n");
       const field = kind === "video" ? "videoUrl" : "imageUrl";
       const kindLabel = kind === "video" ? "视频" : "图片";
+      const countLine =
+        kind === "image" && count && count > 1
+          ? `\n请生成 ${count} 张候选（把生成调用重复 ${count} 次或一次传 ${count} 个同项资产），全部完成后用 canvas_ops update_node 一次写入：imageUrls=[${count} 个URL数组]、imageUrl=其中你推荐的一张、status:"ready"。`
+          : "";
       const content = [
         `请为画布节点 ${nodeId}（${kindLabel}卡「${node.data.title}」）生成内容：`,
         prompt || "（按卡片标题与正文生成）",
         refLines
           ? `严格参考以下画布卡片的内容描述，保持角色外形/服装/场景细节一致：\n${refLines}`
           : "",
+        countLine,
         `完成后用 canvas_ops update_node 把 ${nodeId} 置为 {status:"ready", ${field}:<url>}；失败则置 {status:"error", errorMessage:<原因>}，不要让卡片停在 loading。`,
       ]
         .filter(Boolean)
@@ -222,12 +273,90 @@ export default function CanvasAgentBridge() {
     return () => window.removeEventListener(FRAME_ANALYSIS_EVENT, onAnalyze);
   }, [sendMessage]);
 
+  // 分镜表某行"出图"→ 聊天指令（agent 生成后 update_row 回填行缩略图）
+  useEffect(() => {
+    const onRowGen = (e: Event) => {
+      const { nodeId, rid, prompt, refIds } = (e as CustomEvent<RowGenerateDetail>)
+        .detail;
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      const refLines = refIds
+        .map((rid2) => useCanvasStore.getState().nodes.find((n) => n.id === rid2))
+        .filter((n): n is NonNullable<typeof n> => Boolean(n))
+        .map(
+          (n) =>
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 200)}`,
+        )
+        .join("\n");
+      const content = [
+        `请为分镜表节点 ${nodeId} 的镜头行 ${rid} 生成画面图：`,
+        prompt || "（按该行画面描述生成）",
+        refLines ? `参考以下画布卡片保持一致性：\n${refLines}` : "",
+        `完成后用 canvas_ops update_node 携带 row:{rid:"${rid}", imageUrl:<url>} 回填该行缩略图；失败也请汇报原因。`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+      void sendMessage(
+        {
+          id: `rowgen_${nodeId}_${rid}_${Date.now()}`,
+          role: "user",
+          content,
+        },
+        { followUp: true },
+      );
+    };
+    window.addEventListener(ROW_GENERATE_EVENT, onRowGen);
+    return () => window.removeEventListener(ROW_GENERATE_EVENT, onRowGen);
+  }, [sendMessage]);
+
+  // 标注重绘：原图+红笔标注合成图双参考，只改标注区域（图生图）
+  useEffect(() => {
+    const onMaskRedraw = (e: Event) => {
+      const { nodeId, annotatedUrl, originUrl, prompt } = (
+        e as CustomEvent<MaskRedrawDetail>
+      ).detail;
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      if (!node) return;
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        status: "loading",
+        errorMessage: undefined,
+        // 旧图进版本历史
+        versions: [
+          ...(node.data.versions ?? []),
+          ...(originUrl
+            ? [
+                {
+                  url: originUrl,
+                  at: new Date().toISOString().slice(5, 16).replace("T", " "),
+                },
+              ]
+            : []),
+        ].slice(-12),
+      });
+      const content = [
+        `请对画布节点 ${nodeId}（「${node.data.title}」）做局部重绘：`,
+        `标注图：${annotatedUrl}（红色半透明笔刷 = 需要修改的区域）`,
+        `原图：${originUrl}`,
+        `改动要求：${prompt}`,
+        "生成时严格保持标注区域以外的画面内容、构图与光线不变；以上下游一致的方式重绘红色区域。",
+        `完成后用 canvas_ops update_node 把 ${nodeId} 置为 {status:"ready", imageUrl:<新图url>}；失败置 {status:"error", errorMessage:<原因>}。`,
+      ].join("\n");
+      void sendMessage(
+        { id: `mask_${nodeId}_${Date.now()}`, role: "user", content },
+        { followUp: true },
+      );
+    };
+    window.addEventListener(MASK_REDRAW_EVENT, onMaskRedraw);
+    return () => window.removeEventListener(MASK_REDRAW_EVENT, onMaskRedraw);
+  }, [sendMessage]);
+
   useCopilotAction({
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|image|video|audio|compose|storyboard",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl）/ ' +
-      '{op:"update_node",id,title,body} / {op:"delete_nodes",ids:[...]} / ' +
+      '{op:"add_node",nodeType:"note|script|character|image|video|audio|compose|storyboard|shotlist",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl；shotlist 可带 rows 行数组）/ ' +
+      '{op:"update_node",id,title,body}（分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
+      '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
       "可以在一批里执行多个操作。",

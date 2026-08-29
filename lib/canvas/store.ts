@@ -13,7 +13,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 
-/** 画布节点类型：便签 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分组框 */
+/** 画布节点类型：便签 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 分组框 */
 export type WingNodeType =
   | "note"
   | "script"
@@ -23,7 +23,20 @@ export type WingNodeType =
   | "audio"
   | "compose"
   | "storyboard"
+  | "shotlist"
   | "group";
+
+/** 分镜表的一行（一个镜头） */
+export interface ShotRow {
+  rid: string;
+  shotSize?: string;
+  cameraMove?: string;
+  duration?: string;
+  action?: string;
+  dialogue?: string;
+  /** 该镜头的出图结果（镜头级生成回填） */
+  imageUrl?: string;
+}
 
 export interface WingNodeData {
   nodeType: WingNodeType;
@@ -36,6 +49,15 @@ export interface WingNodeData {
   audioUrl?: string;
   /** compose 卡：上游视频节点的拼接顺序（未列出的连线源追加在尾部） */
   itemIds?: string[];
+  /** image 卡：一次生成的多张候选（imageUrl 恒等于候选[primaryIndex]） */
+  imageUrls?: string[];
+  primaryIndex?: number;
+  /** 历史版本（每次重生成前把当前主图存档；对比/回滚用） */
+  versions?: { url: string; at: string }[];
+  /** 锁定：不可拖动、不可改标题（卡上工具条切换） */
+  locked?: boolean;
+  /** 分镜表：镜头行 */
+  rows?: ShotRow[];
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
@@ -203,15 +225,22 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   audio: { w: 280, h: 190 },
   compose: { w: 320, h: 280 },
   storyboard: { w: 320, h: 220 },
+  shotlist: { w: 560, h: 420 },
   group: { w: 480, h: 360 },
 };
 
-/** 卡片创建时的默认宽度（resize 前提：包装层有显式宽度，卡片内容 h-full/w-full 撑满） */
-function withDefaultWidth(n: WingNode): WingNode {
-  if (n.style?.width) return n;
+/** 卡片创建/装载时的默认尺寸（resize 前提：包装层有显式宽高，卡片内容撑满）。
+ *  宽高缺一个补一个：老卡只有宽没有高，会塌成一条（内容高度） */
+function withDefaultSize(n: WingNode): WingNode {
+  const fp = NODE_FOOTPRINT[n.data?.nodeType];
+  if (!fp || (n.style?.width && n.style?.height)) return n;
   return {
     ...n,
-    style: { ...n.style, width: NODE_FOOTPRINT[n.data?.nodeType]?.w ?? 256 },
+    style: {
+      ...n.style,
+      ...(n.style?.width ? {} : { width: fp.w }),
+      ...(n.style?.height ? {} : { height: fp.h }),
+    },
   };
 }
 
@@ -336,7 +365,7 @@ export const useCanvasStore = create<CanvasState>()(
         history.past = [];
         history.future = [];
         set((state) => ({
-          nodes: nodes.map(withDefaultWidth),
+          nodes: nodes.map(withDefaultSize),
           edges,
           viewport,
           hydrated: true,
@@ -451,7 +480,7 @@ export const useCanvasStore = create<CanvasState>()(
         const type = node.type ?? node.data?.nodeType ?? "note";
         get().commitHistory();
         set((state) => ({
-          nodes: [...state.nodes, withDefaultWidth({ ...node, id, type } as WingNode)],
+          nodes: [...state.nodes, withDefaultSize({ ...node, id, type } as WingNode)],
         }));
         return id;
       },
@@ -1027,6 +1056,7 @@ export const NODE_META: Record<
   audio: { label: "音频", dot: "var(--color-danger)", hint: "配音 / 音效 / BGM" },
   compose: { label: "合成", dot: "var(--color-text-3)", hint: "按序拼接上游视频成片" },
   storyboard: { label: "分镜", dot: "var(--color-accent-2)", hint: "镜头画面描述" },
+  shotlist: { label: "分镜表", dot: "var(--color-warn)", hint: "整场戏的镜头清单" },
   group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
 };
 

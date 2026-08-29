@@ -24,8 +24,9 @@ export function AgentProvider({ children }: { children: React.ReactNode }) {
   return (
     <CopilotKit
       selfManagedAgents={{ default: langgraphAgent }}
-      // stock 的调试球（黑渐变圆钮）与纸感设计不符，且会顶掉 header 关闭按钮
-      showDevConsole={false}
+      // dev 构建默认挂载 web inspector（右上角黑球，shadow DOM Web Component）；
+      // 旧 prop showDevConsole 已废弃不管这事，正确开关是 enableInspector
+      enableInspector={false}
     >
       {children}
     </CopilotKit>

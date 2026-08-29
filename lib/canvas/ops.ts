@@ -27,8 +27,22 @@ export type AddNodeOp = {
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
+  /** image 卡：一次生成的多张候选 */
+  imageUrls?: string[];
   /** compose 卡：上游视频节点 id 的拼接顺序 */
   itemIds?: string[];
+  /** 锁定（不可拖动/不可改标题） */
+  locked?: boolean;
+  /** 分镜表：整表替换镜头行 */
+  rows?: {
+    rid?: string;
+    shotSize?: string;
+    cameraMove?: string;
+    duration?: string;
+    action?: string;
+    dialogue?: string;
+    imageUrl?: string;
+  }[];
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长（建卡时可直接带上） */
   shotNumber?: string;
   shotSize?: string;
@@ -48,8 +62,21 @@ export type UpdateNodeOp = {
   imageUrl?: string;
   videoUrl?: string;
   audioUrl?: string;
+  imageUrls?: string[];
+  primaryIndex?: number;
   itemIds?: string[];
+  locked?: boolean;
   errorMessage?: string;
+  /** 分镜表：按 rid 更新单行（常用：镜头级出图回填 imageUrl） */
+  row?: {
+    rid: string;
+    shotSize?: string;
+    cameraMove?: string;
+    duration?: string;
+    action?: string;
+    dialogue?: string;
+    imageUrl?: string;
+  };
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长 / 台词 */
   shotNumber?: string;
   shotSize?: string;
@@ -183,8 +210,25 @@ export function applyOps(rawOps: unknown): OpResult {
               ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
               ...(op.videoUrl !== undefined ? { videoUrl: op.videoUrl } : {}),
               ...(op.audioUrl !== undefined ? { audioUrl: op.audioUrl } : {}),
+              ...(Array.isArray(op.imageUrls)
+                ? { imageUrls: op.imageUrls.slice(0, 8).map(String) }
+                : {}),
               ...(Array.isArray(op.itemIds)
                 ? { itemIds: op.itemIds.slice(0, 20).map(String) }
+                : {}),
+              ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
+              ...(Array.isArray(op.rows)
+                ? {
+                    rows: op.rows.slice(0, 60).map((r, i) => ({
+                      rid: String(r.rid ?? `r${i + 1}`),
+                      ...(r.shotSize !== undefined ? { shotSize: String(r.shotSize).slice(0, 20) } : {}),
+                      ...(r.cameraMove !== undefined ? { cameraMove: String(r.cameraMove).slice(0, 20) } : {}),
+                      ...(r.duration !== undefined ? { duration: String(r.duration).slice(0, 20) } : {}),
+                      ...(r.action !== undefined ? { action: String(r.action).slice(0, 500) } : {}),
+                      ...(r.dialogue !== undefined ? { dialogue: String(r.dialogue).slice(0, 500) } : {}),
+                      ...(r.imageUrl !== undefined ? { imageUrl: String(r.imageUrl) } : {}),
+                    })),
+                  }
                 : {}),
               ...(op.shotNumber !== undefined
                 ? { shotNumber: op.shotNumber.slice(0, 8) }
@@ -220,8 +264,32 @@ export function applyOps(rawOps: unknown): OpResult {
             ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
             ...(op.videoUrl !== undefined ? { videoUrl: op.videoUrl } : {}),
             ...(op.audioUrl !== undefined ? { audioUrl: op.audioUrl } : {}),
+            ...(Array.isArray(op.imageUrls)
+              ? { imageUrls: op.imageUrls.slice(0, 8).map(String) }
+              : {}),
+            ...(op.primaryIndex !== undefined
+              ? { primaryIndex: Math.max(0, Math.floor(op.primaryIndex)) }
+              : {}),
             ...(Array.isArray(op.itemIds)
               ? { itemIds: op.itemIds.slice(0, 20).map(String) }
+              : {}),
+            ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
+            ...(op.row && typeof op.row.rid === "string"
+              ? {
+                  rows: (() => {
+                    const rows = [
+                      ...(store.nodes.find((n) => n.id === op.id)?.data.rows ?? []),
+                    ];
+                    const i = rows.findIndex((r) => r.rid === op.row!.rid);
+                    const patch = Object.fromEntries(
+                      Object.entries(op.row!).filter(
+                        ([k, v]) => k !== "rid" && v !== undefined,
+                      ),
+                    ) as Partial<(typeof rows)[number]>;
+                    if (i >= 0) rows[i] = { ...rows[i], ...patch };
+                    return rows;
+                  })(),
+                }
               : {}),
             ...(op.errorMessage !== undefined
               ? { errorMessage: op.errorMessage.slice(0, 300) }

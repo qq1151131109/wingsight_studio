@@ -124,7 +124,16 @@ body {
 }
 ::-webkit-scrollbar-track { background: transparent; }
 
-/* === 画布卡片 — 纸面质感 === */
+/* === 画布卡片 — 纸面质感（libtv 范式：标题在卡外上方，手柄在左右） === */
+
+/* 节点根：不含卡面样式，纵向排布 标题行 + 卡体；手柄挂在这一层 */
+.ws-node {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+}
 
 .ws-card {
     background: var(--color-surface-1);
@@ -154,20 +163,34 @@ body {
     outline-offset: 3px;
 }
 
-/* LOD：低缩放（<0.5）只留徽标 + 标题，降噪 */
-.ws-card.is-tiny .ws-detail { display: none; }
-.ws-card.is-tiny .react-flow__handle { opacity: 0; }
+/* LOD：低缩放（<0.5）只留标题，降噪 */
+.ws-node.is-tiny .ws-detail { display: none; }
+.ws-node.is-tiny .react-flow__handle { opacity: 0 !important; }
 
-/* 卡片手柄：默认隐藏，hover/选中/连线时浮现（画布更安静） */
-.ws-card .react-flow__handle {
+/* 卡片手柄即"加号"圆钮：默认隐藏，hover/选中/连线时浮现（对标 libtv 选中态）。
+   点击=弹建卡菜单，拖拽=发起连线（点击与拖拽由 nodes.tsx 按位移区分） */
+.ws-node .react-flow__handle {
     opacity: 0;
     transition: opacity 120ms;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 9999px;
+    border: 1px solid var(--color-hairline-strong);
+    background: var(--color-surface-1);
+    color: var(--color-text-3);
+    display: grid;
+    place-items: center;
+    font-size: 0;
 }
-.ws-card:hover .react-flow__handle,
-.ws-card.selected .react-flow__handle,
+.ws-node:hover .react-flow__handle,
+.ws-node.is-selected .react-flow__handle,
 .react-flow__handle-connecting,
 .react-flow__handle.connectionindicator:hover {
     opacity: 1;
+}
+.ws-node .react-flow__handle:hover {
+    border-color: var(--color-accent);
+    color: var(--color-text);
 }
 
 /* agent 建卡后的瞬时高亮：强调环闪两下 */
@@ -202,6 +225,56 @@ body {
     from { opacity: 0; }
     to { opacity: 1; }
 }
+
+/* 生成中：媒体区的斜向扫描光带（对标 S-Copilot，配合进度文案） */
+.ws-loading-scan { position: relative; overflow: hidden; }
+.ws-loading-scan::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(105deg, transparent 30%, var(--color-accent-dim) 50%, transparent 70%);
+    animation: ws-scan 1.6s ease-in-out infinite;
+}
+@keyframes ws-scan {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(100%); }
+}
+
+/* 成功徽章：loading→ready 时左上角闪现后自动淡出 */
+.ws-success-badge { animation: ws-success-in 2.4s ease forwards; }
+@keyframes ws-success-in {
+    0% { opacity: 0; transform: scale(0.8); }
+    10% { opacity: 1; transform: scale(1); }
+    70% { opacity: 1; }
+    100% { opacity: 0; }
+}
+
+/* 相邻高亮：hover/选中节点的邻居与连线点亮（对标 open-ai-canvas related） */
+.react-flow__node.ws-node-related .ws-card {
+    border-color: var(--color-accent-2);
+    box-shadow: 0 0 0 1px var(--color-accent-2);
+}
+.react-flow__edge.ws-edge-related .react-flow__edge-path {
+    stroke: var(--color-accent-2);
+    stroke-width: 2;
+}
+
+/* 桌面文件拖入画布的接收态 */
+.ws-dropzone {
+    position: absolute;
+    inset: 10px;
+    z-index: 30;
+    pointer-events: none;
+    border: 2px dashed var(--color-accent);
+    border-radius: 1rem;
+    background: color-mix(in oklab, var(--color-accent) 8%, transparent);
+    display: grid;
+    place-items: center;
+}
+
+/* 拖媒体进生成面板的接收态 */
+.ws-ref-drop-active { outline: 2px dashed var(--color-accent-2); outline-offset: 2px; }
 
 /* === React Flow 主题适配 === */
 
@@ -317,6 +390,21 @@ body {
 
 /* ── CopilotKit 聊天侧栏 · 纸感精修（覆盖 stock 默认样式） ──
    变量映射在 components/copilot/Sidebar.tsx；这里只做结构性的观感修正 */
+
+/* 调试球双保险：v2 的 web inspector 是 shadow DOM 自定义元素（cpk-web-inspector），
+   enableInspector={false} 之外再加宿主隐藏兜底（shadow 内部样式不影响宿主 display） */
+cpk-web-inspector {
+    display: none !important;
+}
+.copilotKitDevConsole {
+    display: none !important;
+}
+
+/* 侧栏关闭态的 Window 残留：stock 靠 translateX(100%) 滑出，但边框阴影仍会
+   在屏幕右缘漏出一条白边（与助手入口按钮位置重叠）；关闭态直接不渲染 */
+.copilotKitWindow:not(.open) {
+    display: none !important;
+}
 
 /* 头部：纸面同色、编辑风标题（stock 是白底 + 橙色普通字重） */
 .copilotKitSidebar .copilotKitHeader {

@@ -240,8 +240,9 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 
 ## 操作画布
 调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项：
-- {{"op":"add_node","nodeType":"note|script|character|image|video|audio|compose|storyboard","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局；image/video/audio 可带 imageUrl/videoUrl/audioUrl）
+- {{"op":"add_node","nodeType":"note|script|character|image|video|audio|compose|storyboard|shotlist","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,dialogue}}] 行数组）
 - {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
+- {{"op":"update_node","id":"分镜表id","row":{{"rid":"行id","imageUrl":"url"}}}}  更新分镜表的单行（镜头级出图回填）
 - {{"op":"delete_nodes","ids":["节点id",...]}}  删除卡片
 - {{"op":"connect_nodes","fromId":"节点id","toId":"节点id"}}  连线（方向：from → to）
 - {{"op":"group_nodes","ids":["节点id",...],"title":"分组名"}}  把多张卡收进一个分组框（如整场戏的分镜归拢）

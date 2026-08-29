@@ -1,6 +1,14 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Handle,
   NodeResizer,
@@ -9,7 +17,9 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import {
+  Brush,
   Camera,
+  Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
@@ -17,13 +27,23 @@ import {
   Combine,
   Copy,
   Download,
+  Drama,
   Expand,
   Film,
+  Grid3X3,
+  History,
+  Image as ImageIcon,
+  Info,
+  Lock,
+  LockOpen,
   Maximize2,
   Music,
+  Pause,
+  Play,
   Plus,
   RefreshCw,
   ScanSearch,
+  Split,
   Trash2,
   Upload,
   X,
@@ -34,14 +54,21 @@ import {
   NODE_META,
   absolutePosition,
   useCanvasStore,
+  type ShotRow,
   type WingNode,
   type WingNodeData,
   type WingNodeType,
 } from "@/lib/canvas/store";
-import { FOCUS_NODES_EVENT, FRAME_ANALYSIS_EVENT } from "@/lib/canvas/events";
+import { TYPE_ICONS } from "@/lib/canvas/type-icons";
+import {
+  FOCUS_NODES_EVENT,
+  FRAME_ANALYSIS_EVENT,
+  ROW_GENERATE_EVENT,
+} from "@/lib/canvas/events";
 import { composeVideos, uploadAsset } from "@/lib/projects";
-import PromptBar from "./PromptBar";
 import DirectorPanel from "./DirectorPanel";
+import VersionHistoryModal from "./NodeMediaHistory";
+import MaskEditDialog from "./MaskEditDialog";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
@@ -67,6 +94,24 @@ function createConnectedNode(sourceId: string, type: WingNodeType) {
     data: { nodeType: type, title: NODE_META[type].hint, body: "" },
   });
   st.connect({ source: sourceId, target: id });
+  useCanvasStore.getState().selectNodes([id]);
+  window.dispatchEvent(
+    new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
+  );
+}
+
+/** 从一张卡左侧建上游卡并自动连线（新卡 → 本卡） */
+function createUpstreamNode(targetId: string, type: WingNodeType) {
+  const st = useCanvasStore.getState();
+  const tgt = st.nodes.find((n) => n.id === targetId);
+  if (!tgt) return;
+  const abs = absolutePosition(st.nodes, tgt);
+  const fp = NODE_FOOTPRINT[tgt.data.nodeType] ?? NODE_FOOTPRINT.note;
+  const id = st.addNode({
+    position: { x: abs.x - fp.w - 60, y: abs.y },
+    data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+  });
+  st.connect({ source: id, target: targetId });
   useCanvasStore.getState().selectNodes([id]);
   window.dispatchEvent(
     new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
@@ -111,36 +156,197 @@ function ToolButton({
   );
 }
 
+/** 拖拽媒体=设为生成引用（NodeInputPanel/PromptBar 接收，见 ADD_REF_EVENT） */
+export function mediaDragProps(nodeId: string) {
+  return {
+    draggable: true,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData(
+        "application/x-ws-node-ref",
+        JSON.stringify({ nodeId }),
+      );
+      e.dataTransfer.effectAllowed = "copy";
+    },
+  };
+}
+
+/** 节点信息弹窗（对标 novanova 的 info/JSON 双视图）：id 复制、媒体溯源、原始数据 */
+function NodeInfoModal({
+  node,
+  onClose,
+}: {
+  node: WingNode;
+  onClose: () => void;
+}) {
+  const d = node.data;
+  const copy = (t: string) =>
+    void navigator.clipboard?.writeText(t).catch(() => undefined);
+  const media = [
+    ["图片", d.imageUrl],
+    ["候选图", d.imageUrls?.length ? `${d.imageUrls.length} 张` : null],
+    ["视频", d.videoUrl],
+    ["音频", d.audioUrl],
+  ].filter(([, v]) => Boolean(v)) as [string, string][];
+  const refs = Array.isArray(d.refIds) ? (d.refIds as string[]) : [];
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      onClick={onClose}
+    >
+      <div
+        className="nowheel flex max-h-[70vh] w-full max-w-md flex-col gap-2.5 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="text-sm font-semibold text-text">节点信息</h3>
+        <div className="flex items-center justify-between rounded-md border border-hairline bg-surface-2 px-2 py-1.5 text-xs">
+          <span className="text-text-3">
+            ID <code className="text-text">{node.id}</code>
+          </span>
+          <button
+            type="button"
+            className="text-accent hover:underline"
+            onClick={() => copy(node.id)}
+          >
+            复制
+          </button>
+        </div>
+        <div className="grid grid-cols-[64px_1fr] gap-x-2 gap-y-1.5 text-xs">
+          <span className="text-text-4">类型</span>
+          <span className="text-text">{NODE_META[d.nodeType].label}</span>
+          <span className="text-text-4">标题</span>
+          <span className="truncate text-text">{d.title || "（无标题）"}</span>
+          <span className="text-text-4">正文</span>
+          <span className="text-text">{(d.body ?? "").length} 字</span>
+          {media.map(([label, v]) => (
+            <Fragment key={label}>
+              <span className="text-text-4">{label}</span>
+              <span className="flex min-w-0 items-center gap-1">
+                <span className="truncate text-text">{v}</span>
+                <button
+                  type="button"
+                  className="shrink-0 text-accent hover:underline"
+                  onClick={() => copy(v)}
+                >
+                  复制
+                </button>
+              </span>
+            </Fragment>
+          ))}
+          {refs.length > 0 ? (
+            <>
+              <span className="text-text-4">引用</span>
+              <span className="text-text">{refs.length} 张卡</span>
+            </>
+          ) : null}
+        </div>
+        <details className="rounded-md border border-hairline bg-surface-2 p-2 text-xs">
+          <summary className="cursor-pointer text-text-3">原始数据 (JSON)</summary>
+          <pre className="nowheel mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-relaxed text-text-3">
+            {JSON.stringify({ ...d }, null, 2).slice(0, 2500)}
+          </pre>
+        </details>
+      </div>
+    </div>
+  );
+}
+
 function CardShell({
   id,
-  children,
+  data,
   selected,
   aspect,
   toolbarExtra,
+  children,
 }: {
   id: string;
-  children: React.ReactNode;
+  data: WingNodeData;
   selected: boolean;
   /** 就绪的图片/视频锁定宽高比缩放 */
   aspect?: boolean;
-  /** 工具条扩展位（如导演台按钮），插在复制与删除之间 */
+  /** 工具条扩展位（如导演台按钮），插在复制与锁定之间 */
   toolbarExtra?: React.ReactNode;
+  children: React.ReactNode;
 }) {
   const [hovered, setHovered] = useState(false);
-  const [plusOpen, setPlusOpen] = useState(false);
+  const [plusMenu, setPlusMenu] = useState<null | "left" | "right">(null);
+  const [nodeSnap, setNodeSnap] = useState<WingNode | null>(null);
+  // 手柄"加号"的点击 vs 拖拽连线区分：位移 <4px 视为干净点击，弹建卡菜单
+  const handleDown = useRef<{ x: number; y: number } | null>(null);
   // agent 建卡后的瞬时高亮（选择器返回布尔，未命中的卡不重渲）
   const flashing = useCanvasStore((s) => s.flashIds.includes(id));
-  // LOD：低缩放时只留徽标+标题（布尔选择器，只有跨阈值才触发重渲）
+  // LOD：低缩放时只留标题（布尔选择器，只有跨阈值才触发重渲）
   const tiny = useCanvasStore((s) => s.viewport.zoom < 0.5);
   // @引用光环：被选中生成卡引用时点亮
   const halo = useCanvasStore((s) => s.haloIds.includes(id));
+  const meta = NODE_META[data.nodeType];
+  const TypeIcon = TYPE_ICONS[data.nodeType];
+  const update = makeUpdater(id);
+
+  // 成功徽章：loading→ready 翻转时闪现 2.4s 自动淡出（对标 open-ai-canvas）
+  const [justReady, setJustReady] = useState(false);
+  const prevStatus = useRef(data.status);
+  useEffect(() => {
+    if (prevStatus.current === "loading" && data.status === "ready") {
+      setJustReady(true);
+      const t = setTimeout(() => setJustReady(false), 2400);
+      prevStatus.current = data.status;
+      return () => clearTimeout(t);
+    }
+    prevStatus.current = data.status;
+  }, [data.status]);
+
+  const locked = Boolean(data.locked);
+
+  const onHandlePointerDown = (e: React.PointerEvent) => {
+    handleDown.current = { x: e.clientX, y: e.clientY };
+  };
+  const onHandlePointerUp = (side: "left" | "right") => (e: React.PointerEvent) => {
+    const down = handleDown.current;
+    handleDown.current = null;
+    if (down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 4) {
+      setPlusMenu((cur) => (cur === side ? null : side));
+    }
+  };
+
+  const menu = (side: "left" | "right") =>
+    plusMenu === side ? (
+      <div
+        className={`absolute top-1/2 z-20 flex w-24 -translate-y-1/2 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg ${
+          side === "right" ? "left-full ml-3" : "right-full mr-3"
+        }`}
+      >
+        <p className="px-2 py-0.5 text-[10px] text-text-4">
+          {side === "right" ? "建下游卡" : "建上游卡"}
+        </p>
+        {PLUS_MENU_TYPES.map((t) => {
+          const Icon = TYPE_ICONS[t];
+          return (
+            <button
+              key={t}
+              type="button"
+              className="nodrag nowheel flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+              onClick={(e) => {
+                e.stopPropagation();
+                setPlusMenu(null);
+                if (side === "right") createConnectedNode(id, t);
+                else createUpstreamNode(id, t);
+              }}
+            >
+              {Icon ? <Icon className="h-3 w-3" /> : null}
+              {NODE_META[t].label}
+            </button>
+          );
+        })}
+      </div>
+    ) : null;
+
   return (
     <div
-      className={`ws-card group relative flex h-full w-full flex-col p-3 ${selected ? "selected" : ""} ${flashing ? "ws-flash" : ""} ${tiny ? "is-tiny" : ""} ${halo ? "ws-ref-halo" : ""}`}
+      className={`ws-node group ${selected ? "is-selected" : ""} ${tiny ? "is-tiny" : ""}`}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => {
         setHovered(false);
-        setPlusOpen(false);
+        setPlusMenu(null);
       }}
     >
       {/* 尺寸来自创建时的默认宽度（store.withDefaultWidth），用户可拖角缩放 */}
@@ -152,7 +358,28 @@ function CardShell({
         handleClassName="ws-resize-handle"
         lineClassName="ws-resize-line"
       />
-      <Handle type="target" position={Position.Top} />
+      {/* 连线手柄在左右（libtv 范式）：手柄即加号，点击弹菜单、拖拽发起连线。
+          top 偏移 +12px：卡体在标题行之下，让加号对准卡体垂直中心 */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ top: "calc(50% + 12px)" }}
+        onPointerDown={onHandlePointerDown}
+        onPointerUp={onHandlePointerUp("left")}
+        title="建上游卡 / 拖拽连线"
+      >
+        <Plus className="h-3 w-3" />
+      </Handle>
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ top: "calc(50% + 12px)" }}
+        onPointerDown={onHandlePointerDown}
+        onPointerUp={onHandlePointerUp("right")}
+        title="建下游卡 / 拖拽连线"
+      >
+        <Plus className="h-3 w-3" />
+      </Handle>
       <NodeToolbar isVisible={selected || hovered} position={Position.Top} offset={6}>
         <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
           <ToolButton
@@ -169,6 +396,24 @@ function CardShell({
           </ToolButton>
           {toolbarExtra}
           <ToolButton
+            title={locked ? "解锁（允许拖动与编辑）" : "锁定（防止误拖误改）"}
+            onClick={() => update({ locked: !locked })}
+          >
+            {locked ? (
+              <Lock className="h-3.5 w-3.5 text-accent" />
+            ) : (
+              <LockOpen className="h-3.5 w-3.5" />
+            )}
+          </ToolButton>
+          <ToolButton
+            title="节点信息"
+            onClick={() =>
+              setNodeSnap(useCanvasStore.getState().nodes.find((n) => n.id === id) ?? null)
+            }
+          >
+            <Info className="h-3.5 w-3.5" />
+          </ToolButton>
+          <ToolButton
             title="删除"
             danger
             onClick={() => useCanvasStore.getState().deleteNodes(selectionIdsOr(id))}
@@ -177,51 +422,171 @@ function CardShell({
           </ToolButton>
         </div>
       </NodeToolbar>
-      {children}
-      <Handle type="source" position={Position.Bottom} />
-      {/* hover 出现的"+"：一键建下游卡并连线 */}
-      <button
-        type="button"
-        title="建下游卡并连线"
-        className="nodrag absolute -right-3 top-1/2 z-10 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-full border border-hairline bg-surface-1 text-text-3 opacity-0 shadow-sm transition-opacity hover:border-accent hover:text-text focus-visible:opacity-100 group-hover:opacity-100"
-        onClick={(e) => {
-          e.stopPropagation();
-          setPlusOpen((o) => !o);
-        }}
+      {/* 标题行在卡外上方（libtv 范式）：类型图标（按类型着色）+ 可编辑标题 */}
+      <div className="mb-1 flex h-5 items-center gap-1.5 px-0.5" title={meta.label}>
+        {TypeIcon ? (
+          <TypeIcon
+            className="h-3.5 w-3.5 shrink-0"
+            style={{ color: meta.dot }}
+          />
+        ) : null}
+        {locked ? (
+          <span className="min-w-0 flex-1 truncate text-xs font-medium text-text-2">
+            {data.title || "（无标题）"}
+          </span>
+        ) : (
+          <Editable
+            value={data.title}
+            onSave={(title) => update({ title })}
+            placeholder="（无标题）"
+            className="min-w-0 flex-1 truncate text-xs font-medium text-text-2"
+          />
+        )}
+      </div>
+      <div
+        className={`ws-card relative flex min-h-0 flex-1 flex-col p-3 ${selected ? "selected" : ""} ${flashing ? "ws-flash" : ""} ${halo ? "ws-ref-halo" : ""}`}
       >
-        <Plus className="h-3.5 w-3.5" />
-      </button>
-      {plusOpen ? (
-        <div className="absolute left-full top-0 z-10 ml-2 flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-          <p className="px-2 py-0.5 text-[10px] text-text-4">建下游卡</p>
-          {PLUS_MENU_TYPES.map((t) => (
-            <button
-              key={t}
-              type="button"
-              className="nodrag nowheel flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-              onClick={(e) => {
-                e.stopPropagation();
-                setPlusOpen(false);
-                createConnectedNode(id, t);
-              }}
-            >
-              <span className="ws-card-dot" style={{ background: NODE_META[t].dot }} />
-              {NODE_META[t].label}
-            </button>
-          ))}
-        </div>
+        {justReady ? (
+          <span className="ws-success-badge absolute left-2 top-2 z-10 grid h-5 w-5 place-items-center rounded-full bg-good text-white shadow">
+            <Check className="h-3 w-3" />
+          </span>
+        ) : null}
+        {children}
+        {menu("left")}
+        {menu("right")}
+      </div>
+      {nodeSnap ? (
+        <NodeInfoModal node={nodeSnap} onClose={() => setNodeSnap(null)} />
       ) : null}
     </div>
   );
 }
 
-function Badge({ nodeType }: { nodeType: WingNodeData["nodeType"] }) {
-  const meta = NODE_META[nodeType];
+/** 媒体区右上角的悬停操作簇（各媒体卡统一位置与样式） */
+function CornerActions({ children }: { children: React.ReactNode }) {
   return (
-    <span className="ws-card-badge">
-      <span className="ws-card-dot" style={{ background: meta.dot }} />
-      {meta.label}
+    <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+      {children}
     </span>
+  );
+}
+
+/** 媒体空态：图标 + 主/副文案 + 点击上传（image/video/audio/character 共用） */
+function MediaEmpty({
+  icon,
+  hint,
+  sub,
+  onClick,
+  busy,
+}: {
+  icon: React.ReactNode;
+  hint: string;
+  sub?: string;
+  onClick?: () => void;
+  busy?: boolean;
+}) {
+  if (busy) return <span className="text-xs text-text-3">上传中…</span>;
+  return (
+    <button
+      type="button"
+      className="nodrag flex flex-col items-center gap-1.5 px-4 text-center text-text-4 transition-colors hover:text-text-3"
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick?.();
+      }}
+    >
+      {icon}
+      <span className="text-xs leading-relaxed">
+        {hint}
+        {sub ? (
+          <>
+            <br />
+            {sub}
+          </>
+        ) : null}
+      </span>
+    </button>
+  );
+}
+
+/** 自定义迷你音频播放器（替代原生 audio 控件，贴合纸面设计系统） */
+function AudioPlayer({ src, title }: { src: string; title: string }) {
+  const ref = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [cur, setCur] = useState(0);
+  const [dur, setDur] = useState(0);
+  const fmt = (t: number) =>
+    `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+  const toggle = () => {
+    const a = ref.current;
+    if (!a) return;
+    if (a.paused) void a.play().catch(() => undefined);
+    else a.pause();
+  };
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const a = ref.current;
+    if (!a || !Number.isFinite(dur) || dur <= 0) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    a.currentTime = Math.min(
+      Math.max(((e.clientX - r.left) / r.width) * dur, 0),
+      dur,
+    );
+  };
+  return (
+    <div className="nodrag nowheel flex w-full flex-col gap-1.5">
+      <audio
+        ref={ref}
+        src={src}
+        preload="metadata"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
+        onLoadedMetadata={(e) => setDur(e.currentTarget.duration)}
+      />
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          title={playing ? "暂停" : "播放"}
+          className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text"
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle();
+          }}
+        >
+          {playing ? (
+            <Pause className="h-3.5 w-3.5" />
+          ) : (
+            <Play className="ml-0.5 h-3.5 w-3.5" />
+          )}
+        </button>
+        <div
+          title="点击跳转进度"
+          className="h-1.5 flex-1 cursor-pointer overflow-hidden rounded-full bg-hairline-soft"
+          onClick={(e) => {
+            e.stopPropagation();
+            seek(e);
+          }}
+        >
+          <div
+            className="h-full rounded-full bg-accent transition-[width] duration-200"
+            style={{ width: dur > 0 ? `${(cur / dur) * 100}%` : 0 }}
+          />
+        </div>
+        <span className="shrink-0 text-[10px] tabular-nums text-text-4">
+          {fmt(cur)} / {fmt(Number.isFinite(dur) ? dur : 0)}
+        </span>
+        <a
+          href={src}
+          download={downloadName(title, src, "mp3")}
+          title="下载音频"
+          className="shrink-0 text-text-4 transition-colors hover:text-text"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Download className="h-3.5 w-3.5" />
+        </a>
+      </div>
+    </div>
   );
 }
 
@@ -298,10 +663,35 @@ function LargeTextEditor({
   );
 }
 
+/** @图N 引用 token 高亮显示（对标 Storyboard-Copilot 的 referenceToken 染色） */
+const REF_TOKEN_SPLIT = /(@图?\d+)/g;
+
+function TokenText({ text }: { text: string }) {
+  const parts = text.split(REF_TOKEN_SPLIT);
+  if (parts.length === 1) return <>{text}</>;
+  return (
+    <>
+      {parts.map((p, i) =>
+        /^(@图?\d+)$/.test(p) ? (
+          <span
+            key={i}
+            className="rounded bg-accent-dim px-0.5 font-medium text-accent"
+          >
+            {p}
+          </span>
+        ) : (
+          <Fragment key={i}>{p}</Fragment>
+        ),
+      )}
+    </>
+  );
+}
+
 /**
  * 就地编辑文本块：双击进入编辑（nodrag/nowheel 避免触发画布手势），
  * 单行模式 Enter、多行模式 Ctrl+Enter 或失焦保存，Esc 取消。统一用 textarea。
  * expandable：hover 出"放大编辑"按钮，长文进大模态改。
+ * 展示态自动高亮 @图N 引用 token。
  */
 function Editable({
   value,
@@ -339,7 +729,7 @@ function Editable({
           className={`cursor-text rounded-sm hover:bg-accent-dim ${className ?? ""}`}
           title="双击编辑"
         >
-          {value || <span className="italic text-text-4">{placeholder}</span>}
+          {value ? <TokenText text={value} /> : <span className="italic text-text-4">{placeholder}</span>}
         </div>
         {expandable ? (
           <button
@@ -411,7 +801,44 @@ function downloadName(title: string, url: string, fallbackExt: string) {
   return `${safe || "wingsight"}.${ext}`;
 }
 
-/** 便签 / 角色卡：紧凑文本卡 + 就地编辑 */
+/** 空卡直输框：新建即所得（点击卡片就是输入框），失焦/Ctrl+Enter 落库 */
+function InlineDraft({
+  onSave,
+  placeholder,
+  editorial,
+}: {
+  onSave: (text: string) => void;
+  placeholder: string;
+  editorial?: boolean;
+}) {
+  const [v, setV] = useState("");
+  return (
+    <textarea
+      autoFocus
+      value={v}
+      rows={3}
+      placeholder={placeholder}
+      onChange={(e) => setV(e.target.value)}
+      onBlur={() => {
+        const t = v.trim();
+        if (t) onSave(t);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          const t = v.trim();
+          if (t) onSave(t);
+        }
+      }}
+      className={`ws-detail nodrag nowheel min-h-20 w-full flex-1 resize-none rounded-md border border-hairline bg-surface-2/50 p-2 text-xs leading-relaxed text-text outline-none focus:border-accent placeholder:text-text-4 ${
+        editorial ? "font-editorial" : ""
+      }`}
+    />
+  );
+}
+
+/** 便签 / 剧本卡：紧凑文本卡 + 就地编辑（标题在卡外头部）。
+ *  空卡 = 直接输入框 + AI 撰写输入条（对标 libtv 的"尝试"+输入区） */
 function TextCard({
   data,
   id,
@@ -428,28 +855,39 @@ function TextCard({
   // 防御：历史/异常数据缺字段时跳过渲染，不让单个节点拖垮整棵树
   if (!data || typeof data.nodeType !== "string") return null;
   const update = makeUpdater(id);
+  const empty = !(data.body ?? "").trim();
   return (
-    <CardShell id={id} selected={selected}>
-      <Badge nodeType={data.nodeType} />
-      <Editable
-        value={data.title}
-        onSave={(title) => update({ title })}
-        className={`mt-1.5 line-clamp-2 text-sm font-semibold text-text ${
-          editorial ? "font-editorial" : ""
-        }`}
-        placeholder="（无标题）"
-      />
-      <Editable
-        value={data.body}
-        onSave={(body) => update({ body })}
-        multiline
-        expandable
-        label="正文"
-        placeholder="（空）"
-        className={`ws-detail mt-1.5 whitespace-pre-wrap text-xs leading-relaxed text-text-2 ${
-          scrollBody ? "max-h-48 overflow-auto nowheel" : "line-clamp-6"
-        }`}
-      />
+    <CardShell id={id} data={data} selected={selected}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {empty ? (
+          <InlineDraft
+            onSave={(body) => update({ body })}
+            placeholder={
+              editorial
+                ? "直接输入剧本…选中后可在下方让 AI 写"
+                : "直接输入内容…选中后可在下方让 AI 写"
+            }
+            editorial={editorial}
+          />
+        ) : (
+          <Editable
+            value={data.body}
+            onSave={(body) => update({ body })}
+            multiline
+            expandable
+            label="正文"
+            placeholder="（空）"
+            className={`ws-detail whitespace-pre-wrap text-xs leading-relaxed text-text-2 ${
+              editorial ? "font-editorial" : ""
+            } ${scrollBody ? "max-h-48 overflow-auto nowheel" : "line-clamp-6"}`}
+          />
+        )}
+      </div>
+      {empty ? (
+        <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
+          选中卡片后可在下方输入区让 AI 撰写
+        </p>
+      ) : null}
     </CardShell>
   );
 }
@@ -497,10 +935,17 @@ function CharacterCard({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <CardShell id={id} selected={selected} aspect={Boolean(d.imageUrl)}>
-      <Badge nodeType="character" />
-      <div className="ws-detail mt-1.5 flex h-40 min-h-40 w-full items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
-        {d.imageUrl ? (
+    <CardShell id={id} data={d} selected={selected} aspect={Boolean(d.imageUrl)}>
+      <div
+        className={`ws-detail mt-1.5 flex min-h-40 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+          d.status === "loading" ? "ws-loading-scan" : ""
+        }`}
+      >
+        {d.status === "loading" ? (
+          <GenProgress nodeId={id} expected={60} />
+        ) : d.status === "error" ? (
+          <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
+        ) : d.imageUrl ? (
           <button
             type="button"
             className="nodrag group relative h-full w-full"
@@ -515,8 +960,9 @@ function CharacterCard({ data, id, selected }: NodeProps) {
               src={d.imageUrl}
               alt={d.title}
               className="ws-media-in h-full w-full object-cover"
+              {...mediaDragProps(id)}
             />
-            <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <CornerActions>
               <button
                 type="button"
                 title="更换定妆照"
@@ -537,34 +983,18 @@ function CharacterCard({ data, id, selected }: NodeProps) {
               >
                 <Download className="h-3.5 w-3.5" />
               </a>
-            </span>
+            </CornerActions>
           </button>
-        ) : uploading ? (
-          <span className="text-xs text-text-3">上传中…</span>
         ) : (
-          <button
-            type="button"
-            className="nodrag flex flex-col items-center gap-1.5 px-4 text-center text-text-4 hover:text-text-3"
-            onClick={(e) => {
-              e.stopPropagation();
-              fileRef.current?.click();
-            }}
-          >
-            <span className="text-xl">🎭</span>
-            <span className="text-xs">
-              上传定妆照
-              <br />
-              （角色一致性锚点）
-            </span>
-          </button>
+          <MediaEmpty
+            icon={<Drama className="h-5 w-5" />}
+            hint="上传定妆照"
+            sub="角色一致性锚点"
+            busy={uploading}
+            onClick={() => fileRef.current?.click()}
+          />
         )}
       </div>
-      <Editable
-        value={d.title}
-        onSave={(title) => update({ title })}
-        className="mt-1.5 line-clamp-1 text-sm font-semibold text-text"
-        placeholder="角色名"
-      />
       <Editable
         value={d.body}
         onSave={(body) => update({ body })}
@@ -593,8 +1023,9 @@ function CharacterCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 图片放大预览：点击遮罩或 Esc 关闭 */
-/** 图片放大预览：支持画布内全部图片翻页（←/→ 或按钮），点击遮罩或 Esc 关闭 */
+/** 图片放大预览：翻页 + 滚轮缩放（光标为锚）+ 拖拽平移 + 百分比读数
+ *  （变换实现移植自 references/Storyboard-Copilot 的 useImageViewerTransform，
+ *  直接内联以满足 react-hooks/refs 对 ref 访问位置的约束） */
 function Lightbox({
   images,
   index,
@@ -606,6 +1037,126 @@ function Lightbox({
   onIndex: (i: number) => void;
   onClose: () => void;
 }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const [pct, setPct] = useState(100);
+  const cssScaleRef = useRef(1);
+  const imgScaleRef = useRef(1);
+  const imgPosRef = useRef({ x: 0, y: 0 });
+  const tgtScaleRef = useRef(1);
+  const tgtPosRef = useRef({ x: 0, y: 0 });
+  const rafRef = useRef<number | null>(null);
+  const dragStartRef = useRef({ x: 0, y: 0 });
+  const movedRef = useRef(false);
+
+  const applyTransform = useCallback(() => {
+    const img = imageRef.current;
+    if (!img) return;
+    const s = imgScaleRef.current;
+    const p = imgPosRef.current;
+    img.style.transform = `scale(${s}) translate(${p.x / s}px, ${p.y / s}px)`;
+  }, []);
+
+  const resetView = useCallback(() => {
+    imgScaleRef.current = 1;
+    imgPosRef.current = { x: 0, y: 0 };
+    tgtScaleRef.current = 1;
+    tgtPosRef.current = { x: 0, y: 0 };
+    applyTransform();
+  }, [applyTransform]);
+
+  const displayScale = useCallback(
+    () => Math.round(cssScaleRef.current * imgScaleRef.current * 100),
+    [],
+  );
+
+  /** 点击坐标是否落在图片内容上（object-contain 的留白不算） */
+  const pointOnImage = useCallback((cx: number, cy: number): boolean => {
+    const img = imageRef.current;
+    if (!img?.naturalWidth || !img.naturalHeight) return false;
+    const rect = img.getBoundingClientRect();
+    const imgRatio = img.naturalWidth / img.naturalHeight;
+    const boxRatio = rect.width / rect.height;
+    let w: number;
+    let h: number;
+    let ox: number;
+    let oy: number;
+    if (imgRatio > boxRatio) {
+      w = rect.width;
+      h = rect.width / imgRatio;
+      ox = 0;
+      oy = (rect.height - h) / 2;
+    } else {
+      h = rect.height;
+      w = rect.height * imgRatio;
+      oy = 0;
+      ox = (rect.width - w) / 2;
+    }
+    const x = cx - rect.left;
+    const y = cy - rect.top;
+    return x >= ox && x <= ox + w && y >= oy && y <= oy + h;
+  }, []);
+
+  // 滚轮缩放（rAF 平滑逼近目标值）
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const isMac = /mac/i.test(navigator.userAgent);
+    const onWheel = (e: WheelEvent) => {
+      if (!pointOnImage(e.clientX, e.clientY)) return;
+      e.preventDefault();
+      if (!rafRef.current) {
+        tgtScaleRef.current = imgScaleRef.current;
+        tgtPosRef.current = imgPosRef.current;
+      }
+      const dm = e.deltaMode === 1 ? 0.05 : e.deltaMode ? 1 : 0.002;
+      let ns = tgtScaleRef.current * Math.pow(2, -e.deltaY * dm * (e.ctrlKey && isMac ? 10 : 1));
+      ns = Math.max(0.1, Math.min(10, ns));
+      const rect = container.getBoundingClientRect();
+      const mx = e.clientX - rect.left - rect.width / 2;
+      const my = e.clientY - rect.top - rect.height / 2;
+      const k = ns / tgtScaleRef.current;
+      tgtScaleRef.current = ns;
+      tgtPosRef.current = {
+        x: mx * (1 - k) + tgtPosRef.current.x * k,
+        y: my * (1 - k) + tgtPosRef.current.y * k,
+      };
+      if (!rafRef.current) {
+        const loop = () => {
+          const ts = tgtScaleRef.current;
+          const tp = tgtPosRef.current;
+          imgScaleRef.current += (ts - imgScaleRef.current) * 0.3;
+          imgPosRef.current = {
+            x: imgPosRef.current.x + (tp.x - imgPosRef.current.x) * 0.3,
+            y: imgPosRef.current.y + (tp.y - imgPosRef.current.y) * 0.3,
+          };
+          applyTransform();
+          const settled =
+            Math.abs(imgScaleRef.current - ts) < 0.001 &&
+            Math.abs(imgPosRef.current.x - tp.x) < 0.1 &&
+            Math.abs(imgPosRef.current.y - tp.y) < 0.1;
+          if (settled) {
+            imgScaleRef.current = ts;
+            imgPosRef.current = tp;
+            applyTransform();
+            rafRef.current = null;
+          } else {
+            rafRef.current = requestAnimationFrame(loop);
+          }
+        };
+        rafRef.current = requestAnimationFrame(loop);
+      }
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      container.removeEventListener("wheel", onWheel);
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    };
+  }, [pointOnImage, applyTransform]);
+
+  // 百分比读数与键盘翻页/关闭
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -613,20 +1164,66 @@ function Lightbox({
       if (e.key === "ArrowRight" && index < images.length - 1) onIndex(index + 1);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, onIndex, index, images.length]);
+    const t = setInterval(() => setPct(displayScale()), 250);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      clearInterval(t);
+    };
+  }, [onClose, onIndex, index, images.length, displayScale]);
+  // 切换图片时复位视图
+  useEffect(() => {
+    resetView();
+    movedRef.current = false;
+  }, [index, resetView]);
+
   const cur = images[index];
   return (
     <div
+      ref={containerRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
-      onClick={onClose}
+      onMouseMove={(e) => {
+        if (!dragging) return;
+        movedRef.current = true;
+        const p = { x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y };
+        imgPosRef.current = p;
+        tgtPosRef.current = p;
+        applyTransform();
+      }}
+      onMouseUp={() => setDragging(false)}
+      onClick={() => {
+        if (!movedRef.current) onClose();
+        movedRef.current = false;
+      }}
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
+        ref={imageRef}
         src={cur?.src}
         alt={cur?.title}
-        className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
+        onLoad={() => {
+          const img = imageRef.current;
+          if (!img?.naturalWidth || !img.offsetWidth || !img.offsetHeight) return;
+          const ratio = img.naturalWidth / img.naturalHeight;
+          const boxRatio = img.offsetWidth / img.offsetHeight;
+          cssScaleRef.current =
+            (ratio > boxRatio ? img.offsetWidth : img.offsetHeight * ratio) /
+            img.naturalWidth;
+          resetView();
+        }}
+        onMouseDown={(e) => {
+          if (e.button !== 0 || !pointOnImage(e.clientX, e.clientY)) return;
+          e.preventDefault();
+          setDragging(true);
+          dragStartRef.current = {
+            x: e.clientX - imgPosRef.current.x,
+            y: e.clientY - imgPosRef.current.y,
+          };
+        }}
+        className={`max-h-full max-w-full rounded-lg object-contain shadow-2xl will-change-transform ${
+          dragging ? "cursor-grabbing" : "cursor-grab"
+        }`}
         onClick={(e) => e.stopPropagation()}
+        draggable={false}
       />
       {images.length > 1 ? (
         <>
@@ -659,6 +1256,20 @@ function Lightbox({
           </span>
         </>
       ) : null}
+      <div className="absolute bottom-4 left-4 flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/80">
+        <span className="tabular-nums">{pct}%</span>
+        <button
+          type="button"
+          className="text-white/70 underline-offset-2 hover:text-white hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            resetView();
+          }}
+        >
+          重置
+        </button>
+        <span className="text-white/40">滚轮缩放 · 拖拽平移</span>
+      </div>
       <button
         type="button"
         className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
@@ -744,13 +1355,75 @@ function RetryPanel({
   );
 }
 
-/** 图片卡：占位（输入条生成）/ loading 进度 / error 重试 / ready（放大 + 重生成 + 复制提示词） */
+/** 九宫格切图：3×3 裁块逐个上传，在原图右侧排成网格（对标 open-ai-canvas 切图） */
+async function splitImageToGrid(nodeId: string, url: string, title: string) {
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve();
+    img.onerror = () => reject(new Error("load failed"));
+    img.src = url;
+  });
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  if (!w || !h) return;
+  const st0 = useCanvasStore.getState();
+  const source = st0.nodes.find((n) => n.id === nodeId);
+  if (!source) return;
+  const abs = absolutePosition(st0.nodes, source);
+  const tileW = Math.max(64, Math.round(w / 3 / 2));
+  const tileH = Math.round(tileW * (h / w));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w / 3);
+  canvas.height = Math.round(h / 3);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  let placed = 0;
+  const createdIds: string[] = [];
+  for (let r = 0; r < 3; r++) {
+    for (let c = 0; c < 3; c++) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, (w / 3) * c, (h / 3) * r, w / 3, h / 3, 0, 0, w / 3, h / 3);
+      const blob = await new Promise<Blob | null>((resolve) =>
+        canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9),
+      );
+      if (!blob) continue;
+      const tileUrl = await uploadAsset(blob, "image/jpeg", `${title}_r${r}c${c}.jpg`);
+      if (!tileUrl) continue;
+      const st = useCanvasStore.getState();
+      const tid = st.addNode({
+        position: {
+          x: abs.x + NODE_FOOTPRINT.image.w + 80 + c * (tileW + 16),
+          y: abs.y + r * (tileH + 16),
+        },
+        data: {
+          nodeType: "image",
+          title: `${title || "图片"} · ${r * 3 + c + 1}/9`,
+          body: "",
+          imageUrl: tileUrl,
+          status: "ready",
+        },
+      });
+      createdIds.push(tid);
+      placed += 1;
+    }
+  }
+  if (placed > 0) {
+    useCanvasStore.getState().flashNodes(createdIds);
+  }
+}
+
+/** 图片卡：占位（上传 / 输入条生成）/ loading 进度 / error 重试 / ready（放大 + 重生成 + 候选切换 + 版本历史） */
 function ImageCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
   // 放大查看：进入时快照画布全部图片（可翻页）
   const [zoom, setZoom] = useState<number | null>(null);
   const [gallery, setGallery] = useState<{ src: string; title: string }[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [maskOpen, setMaskOpen] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
 
@@ -764,10 +1437,31 @@ function ImageCard({ data, id, selected }: NodeProps) {
     setZoom(idx >= 0 ? idx : 0);
   };
 
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    e.target.value = "";
+    if (!f || !f.type.startsWith("image/")) return;
+    setUploading(true);
+    void (async () => {
+      try {
+        const url = await uploadAsset(f, f.type, f.name);
+        if (url) update({ imageUrl: url, status: "ready" });
+      } finally {
+        setUploading(false);
+      }
+    })();
+  };
+
+  const candidates = d.imageUrls ?? [];
+  const versionCount = d.versions?.length ?? 0;
+
   return (
-    <CardShell id={id} selected={selected} aspect={d.status === "ready"}>
-      <Badge nodeType="image" />
-      <div className="mt-1.5 flex h-36 min-h-36 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
+    <CardShell id={id} data={d} selected={selected} aspect={d.status === "ready"}>
+      <div
+        className={`mt-1.5 flex h-36 min-h-36 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+          d.status === "loading" ? "ws-loading-scan" : ""
+        }`}
+      >
         {d.status === "loading" ? (
           <GenProgress nodeId={id} expected={22} />
         ) : d.status === "error" ? (
@@ -787,8 +1481,22 @@ function ImageCard({ data, id, selected }: NodeProps) {
               src={d.imageUrl}
               alt={d.title}
               className="ws-media-in h-full w-full object-cover"
+              {...mediaDragProps(id)}
             />
-            <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            {versionCount > 0 ? (
+              <button
+                type="button"
+                title="版本历史（重生成前的结果自动存档）"
+                className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity hover:bg-black/60 group-hover:opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHistoryOpen(true);
+                }}
+              >
+                <History className="h-3 w-3" />V{versionCount + 1}
+              </button>
+            ) : null}
+            <CornerActions>
               <a
                 href={d.imageUrl}
                 download={downloadName(d.title, d.imageUrl, "png")}
@@ -815,6 +1523,28 @@ function ImageCard({ data, id, selected }: NodeProps) {
               ) : null}
               <button
                 type="button"
+                title="标注重绘：涂出想改的区域让 AI 重绘"
+                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMaskOpen(true);
+                }}
+              >
+                <Brush className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title="九宫格切图：拆成 9 张卡"
+                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void splitImageToGrid(id, d.imageUrl!, d.title ?? "");
+                }}
+              >
+                <Grid3X3 className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
                 title="重新生成"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
@@ -831,24 +1561,47 @@ function ImageCard({ data, id, selected }: NodeProps) {
               <span className="rounded-md bg-black/40 p-1 text-white">
                 <ZoomIn className="h-3.5 w-3.5" />
               </span>
-            </span>
+            </CornerActions>
           </button>
         ) : (
-          <span className="text-xs text-text-4">🎨 {d.title || "图片占位"}</span>
+          <MediaEmpty
+            icon={<ImageIcon className="h-5 w-5" />}
+            hint="点击上传图片"
+            sub="或选中卡片后在下方输入让 AI 生成"
+            busy={uploading}
+            onClick={() => fileRef.current?.click()}
+          />
         )}
       </div>
-      <Editable
-        value={d.title}
-        onSave={(title) => update({ title })}
-        className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
-        placeholder="（无标题）"
-      />
+      {candidates.length > 1 ? (
+        <div className="ws-detail nowheel mt-1 flex items-center gap-1 overflow-x-auto">
+          <span className="shrink-0 text-[9px] text-text-4">
+            候选{candidates.length}
+          </span>
+          {candidates.map((u, i) => (
+            <button
+              key={`${u}_${i}`}
+              type="button"
+              title="设为主图"
+              className={`shrink-0 overflow-hidden rounded border transition-colors ${
+                u === d.imageUrl ? "border-accent" : "border-hairline-soft hover:border-accent-soft"
+              }`}
+              onClick={(e) => {
+                e.stopPropagation();
+                update({ primaryIndex: i, imageUrl: u });
+              }}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src={u} alt="" className="h-9 w-9 object-cover" />
+            </button>
+          ))}
+        </div>
+      ) : null}
       {d.body ? (
         <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
           {d.body}
         </p>
       ) : null}
-      {!d.status && !d.imageUrl ? <PromptBar nodeId={id} kind="image" /> : null}
       {zoom !== null && gallery.length > 0 ? (
         <Lightbox
           images={gallery}
@@ -857,6 +1610,24 @@ function ImageCard({ data, id, selected }: NodeProps) {
           onClose={() => setZoom(null)}
         />
       ) : null}
+      {historyOpen ? (
+        <VersionHistoryModal nodeId={id} data={d} onClose={() => setHistoryOpen(false)} />
+      ) : null}
+      {maskOpen && d.imageUrl ? (
+        <MaskEditDialog
+          nodeId={id}
+          src={d.imageUrl}
+          title={d.title ?? ""}
+          onClose={() => setMaskOpen(false)}
+        />
+      ) : null}
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={onFile}
+      />
     </CardShell>
   );
 }
@@ -1002,6 +1773,8 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [uploading, setUploading] = useState(false);
   const [frames, setFrames] = useState<{ t: number; data: string }[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
+  const [frameCount, setFrameCount] = useState(6);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   const framesFor = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -1017,21 +1790,23 @@ function VideoCard({ data, id, selected }: NodeProps) {
       v.pause();
     }
   }, [selected]);
-  // 就绪后抽 6 帧缩略图（异步；失败静默——跨域或解码不支持就不出条）
+  // 就绪后按选定帧数抽缩略图（异步；失败静默——跨域或解码不支持就不出条）
   useEffect(() => {
     const url = (data as WingNodeData | undefined)?.videoUrl;
-    if (!url || framesFor.current === url) return;
-    framesFor.current = url;
+    const key = url ? `${url}_${frameCount}` : "";
+    if (!url || framesFor.current === key) return;
+    framesFor.current = key;
     void (async () => {
       try {
-        setFrames(await extractVideoFrames(url, 6));
+        setFrames(await extractVideoFrames(url, frameCount));
       } catch {
         setFrames([]);
       }
     })();
-  }, [data]);
+  }, [data, frameCount]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
+  const versionCount = d.versions?.length ?? 0;
 
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -1075,6 +1850,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
   return (
     <CardShell
       id={id}
+      data={d}
       selected={selected}
       aspect={d.status === "ready"}
       toolbarExtra={
@@ -1090,8 +1866,11 @@ function VideoCard({ data, id, selected }: NodeProps) {
         </ToolButton>
       }
     >
-      <Badge nodeType="video" />
-      <div className="mt-1.5 flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
+      <div
+        className={`mt-1.5 flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+          d.status === "loading" ? "ws-loading-scan" : ""
+        }`}
+      >
         {d.status === "loading" ? (
           <GenProgress nodeId={id} expected={90} />
         ) : d.status === "error" ? (
@@ -1108,7 +1887,20 @@ function VideoCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full bg-black object-contain"
               onClick={(e) => e.stopPropagation()}
             />
-            <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <CornerActions>
+              {versionCount > 0 ? (
+                <button
+                  type="button"
+                  title="版本历史（重生成前的结果自动存档）"
+                  className="flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white hover:bg-black/60"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setHistoryOpen(true);
+                  }}
+                >
+                  <History className="h-3 w-3" />V{versionCount + 1}
+                </button>
+              ) : null}
               <button
                 type="button"
                 title={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
@@ -1141,42 +1933,44 @@ function VideoCard({ data, id, selected }: NodeProps) {
               >
                 <Maximize2 className="h-3.5 w-3.5" />
               </button>
-            </span>
+            </CornerActions>
           </div>
-        ) : uploading ? (
-          <span className="text-xs text-text-3">上传中…</span>
         ) : (
-          <button
-            type="button"
-            className="nodrag flex flex-col items-center gap-1.5 px-4 text-center text-text-4 hover:text-text-3"
-            onClick={(e) => {
-              e.stopPropagation();
-              fileRef.current?.click();
-            }}
-          >
-            <Film className="h-5 w-5" />
-            <span className="text-xs">
-              点击上传视频
-              <br />
-              或用下方输入条让 AI 生成
-            </span>
-          </button>
+          <MediaEmpty
+            icon={<Film className="h-5 w-5" />}
+            hint="点击上传视频"
+            sub="或选中卡片后在下方输入让 AI 生成"
+            busy={uploading}
+            onClick={() => fileRef.current?.click()}
+          />
         )}
       </div>
-      <Editable
-        value={d.title}
-        onSave={(title) => update({ title })}
-        className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
-        placeholder="（无标题）"
-      />
       {d.body ? (
         <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
           {d.body}
         </p>
       ) : null}
-      {/* 抽帧条：hover 某帧出"+图"，点击抽原生分辨率帧建连线图片卡 */}
+      {/* 抽帧条：hover 某帧出"+图"，点击抽原生分辨率帧建连线图片卡；帧数可切换 */}
       {d.videoUrl && frames.length > 0 ? (
-        <div className="ws-detail nowheel mt-1 flex gap-1 overflow-x-auto">
+        <div className="ws-detail nowheel mt-1 flex items-center gap-1 overflow-x-auto">
+          {[6, 12, 24].map((n) => (
+            <button
+              key={n}
+              type="button"
+              title={`抽 ${n} 帧`}
+              className={`shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors ${
+                frameCount === n
+                  ? "border-accent bg-accent-dim text-text"
+                  : "border-hairline text-text-4 hover:text-text-2"
+              }`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setFrameCount(n);
+              }}
+            >
+              {n}帧
+            </button>
+          ))}
           {frames.map((f) => (
             <button
               key={f.t}
@@ -1197,9 +1991,16 @@ function VideoCard({ data, id, selected }: NodeProps) {
           ))}
         </div>
       ) : null}
-      {!d.status && !d.videoUrl ? <PromptBar nodeId={id} kind="video" /> : null}
+      {!d.status && !d.videoUrl ? (
+        <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
+          选中卡片后可在下方输入区让 AI 生成
+        </p>
+      ) : null}
       {zoom && d.videoUrl ? (
         <VideoLightbox src={d.videoUrl} onClose={() => setZoom(false)} />
+      ) : null}
+      {historyOpen ? (
+        <VersionHistoryModal nodeId={id} data={d} onClose={() => setHistoryOpen(false)} />
       ) : null}
       {directorNode ? (
         <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
@@ -1215,7 +2016,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 音频卡：上传占位 / 播放器 + 下载（配音 / 音效 / BGM；波形裁剪后续迭代） */
+/** 音频卡：上传占位 / 自定义播放器（配音 / 音效 / BGM；波形裁剪后续迭代） */
 function AudioCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
@@ -1240,31 +2041,18 @@ function AudioCard({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <CardShell id={id} selected={selected}>
-      <Badge nodeType="audio" />
-      <div className="mt-1.5 flex h-16 min-h-16 w-full items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2">
+    <CardShell id={id} data={d} selected={selected}>
+      <div className="ws-detail mt-1.5 flex min-h-14 w-full items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5">
         {d.audioUrl ? (
-          <audio
-            src={d.audioUrl}
-            controls
-            preload="metadata"
-            className="nodrag nowheel h-8 w-full"
-            onClick={(e) => e.stopPropagation()}
-          />
-        ) : uploading ? (
-          <span className="text-xs text-text-3">上传中…</span>
+          <AudioPlayer src={d.audioUrl} title={d.title ?? ""} />
         ) : (
-          <button
-            type="button"
-            className="nodrag flex flex-col items-center gap-1 px-4 text-center text-text-4 hover:text-text-3"
-            onClick={(e) => {
-              e.stopPropagation();
-              fileRef.current?.click();
-            }}
-          >
-            <Music className="h-4 w-4" />
-            <span className="text-xs">上传音频（配音 / 音效 / BGM）</span>
-          </button>
+          <MediaEmpty
+            icon={<Music className="h-4 w-4" />}
+            hint="上传音频"
+            sub="配音 / 音效 / BGM"
+            busy={uploading}
+            onClick={() => fileRef.current?.click()}
+          />
         )}
       </div>
       <Editable
@@ -1277,17 +2065,6 @@ function AudioCard({ data, id, selected }: NodeProps) {
         <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
           {d.body}
         </p>
-      ) : null}
-      {d.audioUrl ? (
-        <a
-          href={d.audioUrl}
-          download={downloadName(d.title, d.audioUrl, "mp3")}
-          title="下载音频"
-          className="nodrag absolute left-2 top-9 rounded-md bg-black/40 p-1 text-white opacity-0 transition-opacity hover:bg-black/60 group-hover:opacity-100"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <Download className="h-3 w-3" />
-        </a>
       ) : null}
       <input
         ref={fileRef}
@@ -1367,8 +2144,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <CardShell id={id} selected={selected}>
-      <Badge nodeType="compose" />
+    <CardShell id={id} data={d} selected={selected}>
       {d.videoUrl ? (
         <div className="mt-1.5 h-28 min-h-28 w-full overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
           <video
@@ -1392,8 +2168,8 @@ function ComposeCard({ data, id, selected }: NodeProps) {
               key={s.sid}
               className="flex items-center gap-1 rounded-md border border-hairline bg-surface-2 px-1.5 py-1"
             >
-              <span className="shrink-0 text-[10px] tabular-nums text-text-4">
-                {i + 1}.
+              <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-accent-dim text-[9px] font-semibold tabular-nums text-text">
+                {i + 1}
               </span>
               <span
                 className="ws-card-dot shrink-0"
@@ -1449,28 +2225,32 @@ function ComposeCard({ data, id, selected }: NodeProps) {
           合成成片（{items.length} 段）
         </button>
       )}
-      <Editable
-        value={d.title}
-        onSave={(title) => update({ title })}
-        className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
-        placeholder="合成结果标题"
-      />
     </CardShell>
   );
 }
 
-/** 分镜卡字段 chip：双击就地编辑（镜号 / 景别 / 运镜 / 时长共用） */function ShotChip({
+/** 分镜卡字段 chip：双击就地编辑（镜号 / 景别 / 运镜 / 时长共用）。
+ *  accent：镜号用——数字章样式，从其他字段里跳出来 */
+function ShotChip({
   label,
   value,
+  accent,
   onSave,
 }: {
   label: string;
   value: string;
+  accent?: boolean;
   onSave: (v: string) => void;
 }) {
   return (
-    <span className="inline-flex min-w-11 items-center gap-1 rounded border border-hairline bg-surface-2 px-1 text-[10px] leading-4 text-text-3">
-      <span className="text-text-4">{label}</span>
+    <span
+      className={`inline-flex min-w-11 items-center gap-1 rounded border px-1 text-[10px] leading-4 ${
+        accent
+          ? "border-accent bg-accent-dim font-semibold tabular-nums text-text"
+          : "border-hairline bg-surface-2 text-text-3"
+      }`}
+    >
+      <span className={accent ? "text-accent" : "text-text-4"}>{label}</span>
       <Editable
         value={value}
         onSave={onSave}
@@ -1491,6 +2271,7 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
   return (
     <CardShell
       id={id}
+      data={d}
       selected={selected}
       toolbarExtra={
         <ToolButton
@@ -1505,21 +2286,12 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
         </ToolButton>
       }
     >
-      <div className="flex items-center justify-between gap-2">
-        <Badge nodeType="storyboard" />
-      </div>
       <div className="ws-detail mt-1.5 flex flex-wrap gap-1">
-        <ShotChip label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
+        <ShotChip accent label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
         <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize) => update({ shotSize })} />
         <ShotChip label="运镜" value={d.cameraMove ?? ""} onSave={(cameraMove) => update({ cameraMove })} />
         <ShotChip label="时长" value={d.duration ?? ""} onSave={(duration) => update({ duration })} />
       </div>
-      <Editable
-        value={d.title}
-        onSave={(title) => update({ title })}
-        className="font-editorial mt-1.5 line-clamp-2 text-sm font-semibold text-text"
-        placeholder="镜头标题"
-      />
       <Editable
         value={d.body}
         onSave={(body) => update({ body })}
@@ -1584,10 +2356,10 @@ function GroupCard({ data, id, selected }: NodeProps) {
             <ChevronDown className="h-3.5 w-3.5" />
           )}
         </button>
-        <span
-          className="ws-card-dot shrink-0"
-          style={{ background: NODE_META.group.dot }}
-        />
+        {(() => {
+          const GroupIcon = TYPE_ICONS.group;
+          return <GroupIcon className="h-3 w-3 shrink-0 text-text-4" />;
+        })()}
         <Editable
           value={d.title}
           onSave={(title) => update({ title })}
@@ -1602,6 +2374,204 @@ function GroupCard({ data, id, selected }: NodeProps) {
   );
 }
 
+/** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆成分镜卡链与镜头级出图 */
+function ShotListCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const update = makeUpdater(id);
+  if (!d || typeof d.nodeType !== "string") return null;
+  const rows = d.rows ?? [];
+
+  const setRow = (rid: string, patch: Partial<ShotRow>) => {
+    update({
+      rows: rows.map((r) => (r.rid === rid ? { ...r, ...patch } : r)),
+    });
+  };
+  const addRow = () => {
+    update({
+      rows: [
+        ...rows,
+        { rid: `r${Date.now().toString(36)}${rows.length}`, action: "" },
+      ],
+    });
+  };
+  const removeRow = (rid: string) => {
+    update({ rows: rows.filter((r) => r.rid !== rid) });
+  };
+
+  /** 拆成分镜卡：每行一张 storyboard 卡按序连线，首张连回分镜表 */
+  const splitToStoryboard = () => {
+    const filled = rows.filter((r) => (r.action ?? "").trim());
+    if (filled.length === 0) return;
+    const st = useCanvasStore.getState();
+    st.commitHistory();
+    const abs = absolutePosition(st.nodes, st.nodes.find((n) => n.id === id)!);
+    const fp = NODE_FOOTPRINT.storyboard;
+    let prevId = "";
+    const created: string[] = [];
+    filled.forEach((r, i) => {
+      const sid = st.addNode({
+        position: {
+          x: abs.x + (i % 4) * (fp.w + 60),
+          y: abs.y + Math.floor(i / 4) * (fp.h + 60),
+        },
+        data: {
+          nodeType: "storyboard",
+          title: `第 ${i + 1} 镜`,
+          body: r.action ?? "",
+          shotNumber: String(i + 1).padStart(2, "0"),
+          shotSize: r.shotSize,
+          cameraMove: r.cameraMove,
+          duration: r.duration,
+          dialogue: r.dialogue,
+        },
+      });
+      created.push(sid);
+      if (prevId) st.connect({ source: prevId, target: sid });
+      else st.connect({ source: id, target: sid });
+      prevId = sid;
+    });
+    st.selectNodes(created);
+    window.dispatchEvent(
+      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: created } }),
+    );
+  };
+
+  /** 镜头级出图（桥接层转聊天指令，agent 生成后 update_row 回填行缩略图） */
+  const genRow = (rid: string) => {
+    const row = rows.find((r) => r.rid === rid);
+    if (!row) return;
+    window.dispatchEvent(
+      new CustomEvent(ROW_GENERATE_EVENT, {
+        detail: {
+          nodeId: id,
+          rid,
+          prompt: [row.action, row.shotSize, row.cameraMove, row.dialogue]
+            .filter(Boolean)
+            .join("；"),
+          refIds: [],
+        },
+      }),
+    );
+  };
+
+  const totalDur = rows.reduce((sum, r) => {
+    const m = (r.duration ?? "").match(/(\d+(?:\.\d+)?)/);
+    return sum + (m ? parseFloat(m[1]) : 0);
+  }, 0);
+
+  return (
+    <CardShell
+      id={id}
+      data={d}
+      selected={selected}
+      toolbarExtra={
+        <ToolButton title="拆成分镜卡（每行一张、按序连线）" onClick={splitToStoryboard}>
+          <Split className="h-3.5 w-3.5" />
+        </ToolButton>
+      }
+    >
+      <div className="ws-detail nowheel min-h-0 flex-1 overflow-auto">
+        <div className="flex flex-col gap-1">
+          {rows.length === 0 ? (
+            <p className="rounded-md border border-dashed border-hairline px-2 py-4 text-center text-[11px] text-text-4">
+              点击下方「加一行」开始排镜头
+            </p>
+          ) : null}
+          {rows.map((r, i) => (
+            <div
+              key={r.rid}
+              className="group/row flex items-stretch gap-1 rounded-md border border-hairline bg-surface-2/60 px-1 py-1"
+            >
+              <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded bg-accent-dim text-[10px] font-semibold tabular-nums text-text">
+                {i + 1}
+              </span>
+              {r.imageUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={r.imageUrl}
+                  alt=""
+                  className="h-10 w-14 shrink-0 rounded object-cover"
+                />
+              ) : (
+                <button
+                  type="button"
+                  title="为这个镜头出图"
+                  className="nodrag grid h-10 w-14 shrink-0 place-items-center rounded border border-dashed border-hairline text-text-4 transition-colors hover:border-accent hover:text-text-2"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    genRow(r.rid);
+                  }}
+                >
+                  <ImageIcon className="h-3.5 w-3.5" />
+                </button>
+              )}
+              <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div className="flex flex-wrap gap-1">
+                  <ShotChip label="景别" value={r.shotSize ?? ""} onSave={(v) => setRow(r.rid, { shotSize: v })} />
+                  <ShotChip label="运镜" value={r.cameraMove ?? ""} onSave={(v) => setRow(r.rid, { cameraMove: v })} />
+                  <ShotChip label="时长" value={r.duration ?? ""} onSave={(v) => setRow(r.rid, { duration: v })} />
+                </div>
+                <Editable
+                  value={r.action ?? ""}
+                  onSave={(action) => setRow(r.rid, { action })}
+                  placeholder="画面描述（谁、在哪、做什么）"
+                  className="line-clamp-2 text-[11px] leading-relaxed text-text-2"
+                />
+                <Editable
+                  value={r.dialogue ?? ""}
+                  onSave={(dialogue) => setRow(r.rid, { dialogue })}
+                  placeholder="台词 / 旁白"
+                  className="line-clamp-1 border-l-2 border-hairline pl-1.5 text-[11px] italic leading-relaxed text-text-3"
+                />
+              </div>
+              <div className="flex shrink-0 flex-col items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100">
+                <button
+                  type="button"
+                  title={r.imageUrl ? "重新出图" : "出图"}
+                  className="nodrag text-text-4 hover:text-accent"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    genRow(r.rid);
+                  }}
+                >
+                  <RefreshCw className="h-3 w-3" />
+                </button>
+                <button
+                  type="button"
+                  title="删除此行"
+                  className="nodrag text-text-4 hover:text-danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeRow(r.rid);
+                  }}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="mt-1.5 flex items-center justify-between border-t border-hairline pt-1.5 text-[10px] text-text-4">
+        <span>
+          {rows.length} 镜 · 总时长约 {totalDur > 0 ? `${Math.round(totalDur * 10) / 10}s` : "—"}
+        </span>
+        <button
+          type="button"
+          className="nodrag flex items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text"
+          onClick={(e) => {
+            e.stopPropagation();
+            addRow();
+          }}
+        >
+          <Plus className="h-3 w-3" />
+          加一行
+        </button>
+      </div>
+    </CardShell>
+  );
+}
+
 export const nodeTypes = {
   note: memo(NoteCard),
   script: memo(ScriptCard),
@@ -1611,5 +2581,6 @@ export const nodeTypes = {
   audio: memo(AudioCard),
   compose: memo(ComposeCard),
   storyboard: memo(StoryboardCard),
+  shotlist: memo(ShotListCard),
   group: memo(GroupCard),
 };
