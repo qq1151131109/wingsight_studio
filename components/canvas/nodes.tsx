@@ -62,6 +62,8 @@ import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
 import { composeVideos, uploadAsset } from "@/lib/projects";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
+import MarkdownView from "./MarkdownView";
+import { TokenText } from "./TokenText";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
@@ -635,35 +637,13 @@ function LargeTextEditor({
   );
 }
 
-/** @图N 引用 token 高亮显示（对标 Storyboard-Copilot 的 referenceToken 染色） */
-const REF_TOKEN_SPLIT = /(@图?\d+)/g;
-
-function TokenText({ text }: { text: string }) {
-  const parts = text.split(REF_TOKEN_SPLIT);
-  if (parts.length === 1) return <>{text}</>;
-  return (
-    <>
-      {parts.map((p, i) =>
-        /^(@图?\d+)$/.test(p) ? (
-          <span
-            key={i}
-            className="rounded bg-accent-dim px-0.5 font-medium text-accent"
-          >
-            {p}
-          </span>
-        ) : (
-          <Fragment key={i}>{p}</Fragment>
-        ),
-      )}
-    </>
-  );
-}
+/** @图N 引用 token 高亮：实现移至 ./TokenText（与 MarkdownView 共用） */
 
 /**
  * 就地编辑文本块：双击进入编辑（nodrag/nowheel 避免触发画布手势），
  * 单行模式 Enter、多行模式 Ctrl+Enter 或失焦保存，Esc 取消。统一用 textarea。
  * expandable：hover 出"放大编辑"按钮，长文进大模态改。
- * 展示态自动高亮 @图N 引用 token。
+ * 展示态自动高亮 @图N 引用 token；markdown=true 时展示态改走 MarkdownView。
  */
 function Editable({
   value,
@@ -673,6 +653,7 @@ function Editable({
   placeholder,
   expandable,
   label,
+  markdown,
 }: {
   value: string;
   onSave: (next: string) => void;
@@ -681,6 +662,7 @@ function Editable({
   placeholder?: string;
   expandable?: boolean;
   label?: string;
+  markdown?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -701,7 +683,15 @@ function Editable({
           className={`cursor-text rounded-sm hover:bg-accent-dim ${className ?? ""}`}
           title="双击编辑"
         >
-          {value ? <TokenText text={value} /> : <span className="italic text-text-4">{placeholder}</span>}
+          {value ? (
+            markdown ? (
+              <MarkdownView text={value} />
+            ) : (
+              <TokenText text={value} />
+            )
+          ) : (
+            <span className="italic text-text-4">{placeholder}</span>
+          )}
         </div>
         {expandable ? (
           <button
@@ -869,8 +859,8 @@ function TextCard({
             onSave={(body) => update({ body })}
             placeholder={
               editorial
-                ? "直接输入剧本…选中后可在下方让 AI 写"
-                : "直接输入内容…选中后可在下方让 AI 写"
+                ? "直接输入剧本（支持 Markdown）…选中后可在下方让 AI 写"
+                : "直接输入内容（支持 Markdown）…选中后可在下方让 AI 写"
             }
             editorial={editorial}
           />
@@ -880,9 +870,10 @@ function TextCard({
             onSave={(body) => update({ body })}
             multiline
             expandable
+            markdown
             label="正文"
             placeholder="（空）"
-            className={`ws-detail whitespace-pre-wrap text-xs leading-relaxed text-text-2 ${
+            className={`ws-detail text-xs leading-relaxed text-text-2 ${
               editorial ? "font-editorial" : ""
             } ${scrollBody ? "max-h-48 overflow-auto nowheel" : "line-clamp-6"}`}
           />
