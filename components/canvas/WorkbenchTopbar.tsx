@@ -7,8 +7,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { Pencil, UserPlus } from "lucide-react";
+import { Pencil, Moon, Sun, SunMoon, UserPlus } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
+import { useThemeStore, type ThemeMode } from "@/lib/theme";
 import { renameProject } from "@/lib/projects";
 import { listCollaborators } from "@/lib/admin";
 import CollaboratorsDialog from "@/components/home/CollaboratorsDialog";
@@ -24,6 +25,30 @@ function avatarColor(name: string): string {
 export default function WorkbenchTopbar() {
   const projectId = useCanvasStore((s) => s.projectId);
   const projectName = useCanvasStore((s) => s.projectName);
+  const themeMode = useThemeStore((s) => s.mode);
+  const cycleTheme = useThemeStore((s) => s.cycleTheme);
+
+  // 三态循环 auto → light → dark；auto 按 20:00–次日 8:00 自动夜间
+  const THEME_UI: Record<
+    ThemeMode,
+    { icon: React.ReactNode; title: string; next: string }
+  > = {
+    auto: {
+      icon: <SunMoon className="h-4 w-4" />,
+      title: "主题：跟随时间（20:00–次日 8:00 自动夜间）· 点击改为始终日间",
+      next: "始终日间",
+    },
+    light: {
+      icon: <Sun className="h-4 w-4" />,
+      title: "主题：始终日间（覆盖中，到下个时间边界回落自动）· 点击改为始终夜间",
+      next: "始终夜间",
+    },
+    dark: {
+      icon: <Moon className="h-4 w-4" />,
+      title: "主题：始终夜间（覆盖中，到下个时间边界回落自动）· 点击恢复跟随时间",
+      next: "跟随时间",
+    },
+  };
 
   const [collabs, setCollabs] = useState<string[]>([]);
   const [editing, setEditing] = useState(false);
@@ -118,6 +143,18 @@ export default function WorkbenchTopbar() {
           </span>
         ) : null}
       </div>
+
+      {/* 主题三态循环：跟随时间（auto 20:00–8:00 夜间）→ 始终日间 → 始终夜间 */}
+      <button
+        type="button"
+        title={THEME_UI[themeMode].title + `（点击：${THEME_UI[themeMode].next}）`}
+        onClick={() => cycleTheme()}
+        className={`grid h-8 w-8 place-items-center rounded-md transition-colors hover:bg-surface-2 ${
+          themeMode === "auto" ? "text-text-3 hover:text-text" : "text-text"
+        }`}
+      >
+        {THEME_UI[themeMode].icon}
+      </button>
 
       <button
         type="button"

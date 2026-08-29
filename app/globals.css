@@ -484,8 +484,9 @@ cpk-web-inspector {
 }
 
 /* ---------- Markdown 正文渲染（.ws-md，文本/剧本卡非编辑态） ----------
-   尺寸随卡片字号（text-xs）相对缩放（em），米黄纸感 token 配色 */
-.ws-md { line-height: 1.7; }
+   尺寸随卡片字号（text-xs）相对缩放（em），米黄纸感 token 配色。
+   行高继承：与编辑态 textarea 共用同一个 leading-relaxed，两态排版一致 */
+.ws-md { line-height: inherit; }
 .ws-md > :first-child { margin-top: 0; }
 .ws-md > :last-child { margin-bottom: 0; }
 .ws-md p { margin: 0.4em 0; }

@@ -244,20 +244,29 @@ function withDefaultSize(n: WingNode): WingNode {
   };
 }
 
-/** 节点集合的占位盒（绝对坐标 + 分组偏移差；对齐/分布与多选工具条定位共用）。
- *  尺寸优先取用户 resize 后的 style，缺省回落到类型估算。 */
+/** 节点实际尺寸。xyflow v12 的 resize 回写的是顶层 width/height + measured
+ *  （applyNodeChanges 不写 style），style 只是创建时的默认值——
+ *  优先级 measured > 顶层 > style > 类型足迹，所有尺寸读取一律走这里 */
+export function nodeSize(n: WingNode): { w: number; h: number } {
+  const fp = NODE_FOOTPRINT[n.data?.nodeType] ?? NODE_FOOTPRINT.note;
+  return {
+    w: n.measured?.width ?? n.width ?? (Number(n.style?.width) || fp.w),
+    h: n.measured?.height ?? n.height ?? (Number(n.style?.height) || fp.h),
+  };
+}
+
+/** 节点集合的占位盒（绝对坐标 + 分组偏移差；对齐/分布与多选工具条定位共用） */
 export function selectionBoxes(nodes: WingNode[], ids: string[]) {
   return nodes
     .filter((n) => ids.includes(n.id))
     .map((n) => {
       const abs = absolutePosition(nodes, n);
-      const fp = NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
       return {
         id: n.id,
         x: abs.x,
         y: abs.y,
-        w: Number(n.style?.width) || fp.w,
-        h: Number(n.style?.height) || fp.h,
+        w: nodeSize(n).w,
+        h: nodeSize(n).h,
         dx: n.position.x - abs.x,
         dy: n.position.y - abs.y,
       };
@@ -270,12 +279,12 @@ function findPasteOffset(
   existing: WingNode[],
 ): { x: number; y: number } {
   const box = (n: WingNode) => {
-    const fp = NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
+    const size = nodeSize(n);
     return {
       x: n.position.x,
       y: n.position.y,
-      w: Number(n.style?.width) || fp.w,
-      h: Number(n.style?.height) || fp.h,
+      w: size.w,
+      h: size.h,
     };
   };
   const clips = clipNodes.map(box);
@@ -682,8 +691,8 @@ export const useCanvasStore = create<CanvasState>()(
               refsX.push(o.x, o.x + o.w / 2, o.x + o.w);
               refsY.push(o.y, o.y + o.h / 2, o.y + o.h);
             }
-            const w = Number(self.style?.width) || NODE_FOOTPRINT[self.data.nodeType]?.w || 256;
-            const h = Number(self.style?.height) || NODE_FOOTPRINT[self.data.nodeType]?.h || 150;
+            const w = nodeSize(self).w;
+            const h = nodeSize(self).h;
             const sx = axisSnap(drags[0].position.x, w, refsX);
             const sy = axisSnap(drags[0].position.y, h, refsY);
             guides = { x: sx ? [sx.line] : [], y: sy ? [sy.line] : [] };
@@ -960,8 +969,8 @@ export const useCanvasStore = create<CanvasState>()(
                     ...n.data,
                     collapsed: true,
                     prevSize: {
-                      w: Number(group.style?.width) || NODE_FOOTPRINT.group.w,
-                      h: Number(group.style?.height) || NODE_FOOTPRINT.group.h,
+                      w: nodeSize(group).w,
+                      h: nodeSize(group).h,
                     },
                   },
                 };
@@ -969,8 +978,8 @@ export const useCanvasStore = create<CanvasState>()(
               return {
                 ...n,
                 style: {
-                  width: prev?.w ?? (Number(group.style?.width) || NODE_FOOTPRINT.group.w),
-                  height: prev?.h ?? (Number(group.style?.height) || NODE_FOOTPRINT.group.h),
+                  width: prev?.w ?? nodeSize(group).w,
+                  height: prev?.h ?? nodeSize(group).h,
                 },
                 data: { ...n.data, collapsed: false, prevSize: undefined },
               };
@@ -989,23 +998,21 @@ export const useCanvasStore = create<CanvasState>()(
         let changed = false;
         const next = state.nodes.map((n) => ({ ...n }));
         const byId = new Map(next.map((n) => [n.id, n] as const));
-        const fp = (n: WingNode) =>
-          NODE_FOOTPRINT[n.data.nodeType] ?? NODE_FOOTPRINT.note;
         for (const id of ids) {
           const n = byId.get(id);
           if (!n || n.data.nodeType === "group") continue;
           const parent = n.parentId ? byId.get(n.parentId) : undefined;
           const absX = n.position.x + (parent?.position.x ?? 0);
           const absY = n.position.y + (parent?.position.y ?? 0);
-          const w = Number(n.style?.width) || fp(n).w;
-          const h = Number(n.style?.height) || fp(n).h;
+          const w = nodeSize(n).w;
+          const h = nodeSize(n).h;
           // 中心落入其他分组框 → 收编（Figma 式 frame 包含语义）
           const cx = absX + w / 2;
           const cy = absY + h / 2;
           const target = groups.find((g) => {
             if (g.id === n.parentId) return false;
-            const gw = Number(g.style?.width) || NODE_FOOTPRINT.group.w;
-            const gh = Number(g.style?.height) || NODE_FOOTPRINT.group.h;
+            const gw = nodeSize(g).w;
+            const gh = nodeSize(g).h;
             return (
               cx >= g.position.x &&
               cx <= g.position.x + gw &&
@@ -1022,8 +1029,8 @@ export const useCanvasStore = create<CanvasState>()(
           }
           // 完全拖出本组（留 24px 容差）→ 提升回画布层
           if (parent) {
-            const pw = Number(parent.style?.width) || NODE_FOOTPRINT.group.w;
-            const ph = Number(parent.style?.height) || NODE_FOOTPRINT.group.h;
+            const pw = nodeSize(parent).w;
+            const ph = nodeSize(parent).h;
             const margin = 24;
             const out =
               n.position.x + w < -margin ||

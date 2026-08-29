@@ -733,15 +733,16 @@ function SelectionToolbar() {
         const b = base.boxes.find((x) => x.id === n.id);
         if (!b) return n;
         const w = Math.max(160, Math.round(b.w * ratio));
+        const h = Math.max(120, Math.round(b.h * ratio));
         const absX = Math.round(base.anchor.x + (b.x - base.anchor.x) * ratio);
         const absY = Math.round(base.anchor.y + (b.y - base.anchor.y) * ratio);
-        const h = n.style?.height
-          ? Math.max(120, Math.round((Number(n.style.height) || b.h) * ratio))
-          : undefined;
+        // 顶层 w/h 与 style 双写：xyflow 渲染/回写走顶层，style 留作默认尺寸语义
         return {
           ...n,
           position: { x: absX - b.dx, y: absY - b.dy },
-          style: { ...n.style, width: w, ...(h !== undefined ? { height: h } : {}) },
+          width: w,
+          height: h,
+          style: { ...n.style, width: w, height: h },
         };
       }),
     }));

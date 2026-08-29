@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect } from "react";
 import { CopilotKit } from "@copilotkit/react-core";
 import { HttpAgent } from "@ag-ui/client";
 import { getToken } from "@/lib/auth";
+import { startThemeSync } from "@/lib/theme";
 
 /**
  * LangGraph 主 agent（agent/ 目录，FastAPI + ag-ui-langgraph，8123 端口）。
@@ -21,6 +23,8 @@ const langgraphAgent = new HttpAgent({
 });
 
 export function AgentProvider({ children }: { children: React.ReactNode }) {
+  // 全站主题同步（juben 时间规则：边界自动切换 / 多标签同步），只挂一次
+  useEffect(() => startThemeSync(), []);
   return (
     <CopilotKit
       selfManagedAgents={{ default: langgraphAgent }}

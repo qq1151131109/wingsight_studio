@@ -26,7 +26,6 @@ import {
   Copy,
   Download,
   Drama,
-  Expand,
   Film,
   Grid3X3,
   History,
@@ -564,86 +563,16 @@ function AudioPlayer({ src, title }: { src: string; title: string }) {
   );
 }
 
-/** 长文放大编辑模态（对标影策"放大编辑"）：Ctrl+Enter 保存、Esc 取消 */
-function LargeTextEditor({
-  title,
-  value,
-  onSave,
-  onClose,
-}: {
-  title: string;
-  value: string;
-  onSave: (next: string) => void;
-  onClose: () => void;
-}) {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
-      onClick={onClose}
-    >
-      <div
-        className="flex h-[72vh] w-full max-w-2xl flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="mb-2 flex items-center justify-between gap-4">
-          <h3 className="font-editorial text-sm font-semibold text-text">
-            {title}
-          </h3>
-          <span className="shrink-0 text-[10px] text-text-4">
-            Ctrl+Enter 保存 · Esc 取消
-          </span>
-        </div>
-        <textarea
-          autoFocus
-          value={v}
-          onChange={(e) => setV(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-              onSave(v);
-              onClose();
-            }
-          }}
-          className="nowheel flex-1 w-full resize-none rounded-lg border border-hairline bg-surface-2 p-3 text-sm leading-relaxed text-text outline-none focus:border-accent"
-        />
-        <div className="mt-2 flex justify-end gap-2">
-          <button
-            type="button"
-            className="rounded-md border border-hairline px-3 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2"
-            onClick={onClose}
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            className="rounded-md border border-accent bg-accent-dim px-3 py-1.5 text-xs text-text transition-colors hover:bg-accent-soft"
-            onClick={() => {
-              onSave(v);
-              onClose();
-            }}
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/** @图N 引用 token 高亮：实现移至 ./TokenText（与 MarkdownView 共用） */
-
 /**
- * 就地编辑文本块：双击进入编辑（nodrag/nowheel 避免触发画布手势），
- * 单行模式 Enter、多行模式 Ctrl+Enter 或失焦保存，Esc 取消。统一用 textarea。
- * expandable：hover 出"放大编辑"按钮，长文进大模态改。
+ * 就地编辑文本块（nodrag/nowheel 避免触发画布手势），统一用 textarea：
+ * 默认双击进入编辑，单行模式 Enter、多行模式 Ctrl+Enter 或失焦保存。
+ * autoEdit（选中即编辑，Storyboard-Copilot 范式）：选中态直接呈现 textarea、
+ * 光标接在文末，取消选中/失焦自动保存——文本/剧本卡正文用。
+ * Esc 保存并退出（autoEdit 下退出 = 取消选中）。改动经 draftRef 兜底提交，
+ * 删卡/切换等不走 blur 的卸载路径不丢字。
  * 展示态自动高亮 @图N 引用 token；markdown=true 时展示态改走 MarkdownView。
+ * fill：撑满父 flex 容器剩余高度（卡片拉大后正文跟随填充，配合调用方
+ * 传 flex-1 min-h-0 overflow-auto 的 className 使用）。
  */
 function Editable({
   value,
@@ -651,37 +580,64 @@ function Editable({
   className,
   multiline,
   placeholder,
-  expandable,
-  label,
   markdown,
+  fill,
+  autoEdit,
 }: {
   value: string;
   onSave: (next: string) => void;
   className?: string;
   multiline?: boolean;
   placeholder?: string;
-  expandable?: boolean;
-  label?: string;
   markdown?: boolean;
+  fill?: boolean;
+  autoEdit?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const active = editing || autoEdit;
+
+  // 草稿兜底：取消选中/卸载不走 blur，统一从这里补提交
+  const draftRef = useRef<string | null>(null);
+  const valueRef = useRef(value);
+  useEffect(() => {
+    valueRef.current = value;
+  }, [value]);
+  const commitDraft = () => {
+    const t = draftRef.current;
+    draftRef.current = null;
+    if (t !== null && t !== valueRef.current) onSave(t);
+  };
+  const commitRef = useRef(commitDraft);
+  useEffect(() => {
+    commitRef.current = commitDraft;
+  });
+  useEffect(() => {
+    if (!autoEdit) commitRef.current();
+  }, [autoEdit]);
+  useEffect(() => () => commitRef.current(), []);
 
   useEffect(() => {
-    if (editing) ref.current?.focus();
-  }, [editing]);
+    if (active && ref.current) {
+      ref.current.focus();
+      // 光标接在文末（novanova 范式），从上次写到的位置继续
+      const len = ref.current.value.length;
+      ref.current.setSelectionRange(len, len);
+    }
+  }, [active]);
 
-  if (!editing) {
+  if (!active) {
     return (
-      <div className="group relative">
+      <div
+        className={`group relative ${fill ? "flex min-h-0 flex-1 flex-col" : ""}`}
+      >
         <div
           onDoubleClick={(e) => {
             e.stopPropagation();
             setEditing(true);
           }}
           className={`cursor-text rounded-sm hover:bg-accent-dim ${className ?? ""}`}
-          title="双击编辑"
+          title={autoEdit ? "点击选中直接编辑" : "双击编辑"}
         >
           {value ? (
             markdown ? (
@@ -693,36 +649,13 @@ function Editable({
             <span className="italic text-text-4">{placeholder}</span>
           )}
         </div>
-        {expandable ? (
-          <button
-            type="button"
-            title="放大编辑"
-            className="nodrag absolute right-0 top-0 rounded p-0.5 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100"
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpanded(true);
-            }}
-          >
-            <Expand className="h-3 w-3" />
-          </button>
-        ) : null}
-        {expanded ? (
-          <LargeTextEditor
-            title={label ?? "编辑内容"}
-            value={value}
-            onSave={(next) => {
-              const t = next.trim();
-              if (t !== value) onSave(t);
-            }}
-            onClose={() => setExpanded(false)}
-          />
-        ) : null}
       </div>
     );
   }
 
   const commit = () => {
     setEditing(false);
+    draftRef.current = null;
     const next = (ref.current?.value ?? "").trim();
     if (next !== value) onSave(next);
   };
@@ -731,20 +664,30 @@ function Editable({
     <textarea
       ref={ref}
       defaultValue={value}
-      autoFocus
       rows={multiline ? Math.min(10, Math.max(3, value.split("\n").length)) : 1}
       onBlur={commit}
+      onChange={(e) => {
+        draftRef.current = e.currentTarget.value;
+      }}
       onClick={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
-        if (e.key === "Escape") setEditing(false);
+        if (e.key === "Escape") {
+          // 保存后退出；选中即编辑模式退出 = 取消选中（渲染预览）
+          if (autoEdit) useCanvasStore.getState().clearSelection();
+          else commit();
+        }
         if (e.key === "Enter" && (multiline ? e.ctrlKey || e.metaKey : true)) {
           commit();
         }
       }}
-      className={`nodrag nowheel w-full resize-none rounded-sm border border-accent bg-surface-2 px-1 py-0.5 leading-inherit outline-none ${
-        multiline ? "" : "whitespace-nowrap overflow-hidden"
-      }`}
+      className={`nodrag nowheel w-full resize-none outline-none ${
+        fill
+          ? // 正文（纸面式）：无边框透明底，与预览态排版完全一致，
+            // 编辑态只靠卡片选中描边 + 光标提示
+            "min-h-0 flex-1 border-0 bg-transparent px-0 py-0"
+          : "rounded-sm border border-accent bg-surface-2 px-1 py-0.5"
+      } ${multiline ? "" : "whitespace-nowrap overflow-hidden"}`}
     />
   );
 }
@@ -808,13 +751,11 @@ function TextCard({
   id,
   selected,
   editorial,
-  scrollBody,
 }: {
   data: WingNodeData;
   id: string;
   selected: boolean;
   editorial?: boolean;
-  scrollBody?: boolean;
 }) {
   // 防御：历史/异常数据缺字段时跳过渲染，不让单个节点拖垮整棵树
   if (!data || typeof data.nodeType !== "string") return null;
@@ -869,13 +810,13 @@ function TextCard({
             value={data.body}
             onSave={(body) => update({ body })}
             multiline
-            expandable
             markdown
-            label="正文"
+            fill
+            autoEdit={selected}
             placeholder="（空）"
-            className={`ws-detail text-xs leading-relaxed text-text-2 ${
+            className={`ws-detail min-h-0 flex-1 overflow-auto text-xs leading-relaxed text-text-2 ${
               editorial ? "font-editorial" : ""
-            } ${scrollBody ? "max-h-48 overflow-auto nowheel" : "line-clamp-6"}`}
+            } nowheel`}
           />
         )}
       </div>
@@ -909,7 +850,6 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       id={id}
       selected={selected}
       editorial
-      scrollBody
     />
   );
 }
@@ -1004,8 +944,6 @@ function CharacterCard({ data, id, selected }: NodeProps) {
         value={d.body}
         onSave={(body) => update({ body })}
         multiline
-        expandable
-        label="角色设定"
         placeholder="外形 / 性格 / 服装 / 说话方式"
         className="ws-detail mt-1.5 line-clamp-6 whitespace-pre-wrap text-xs leading-relaxed text-text-2"
       />
@@ -2026,7 +1964,7 @@ function AudioCard({ data, id, selected }: NodeProps) {
 
   return (
     <CardShell id={id} data={d} selected={selected}>
-      <div className="ws-detail mt-1.5 flex min-h-14 w-full items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5">
+      <div className="ws-detail mt-1.5 flex min-h-14 w-full flex-1 items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5">
         {d.audioUrl ? (
           <AudioPlayer src={d.audioUrl} title={d.title ?? ""} />
         ) : (
@@ -2130,7 +2068,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
   return (
     <CardShell id={id} data={d} selected={selected}>
       {d.videoUrl ? (
-        <div className="mt-1.5 h-28 min-h-28 w-full overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
+        <div className="mt-1.5 min-h-28 w-full flex-1 overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
           <video
             src={d.videoUrl}
             controls
@@ -2141,7 +2079,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
           />
         </div>
       ) : null}
-      <div className="ws-detail mt-1.5 flex max-h-36 flex-col gap-1 overflow-auto nowheel">
+      <div className="ws-detail mt-1.5 flex max-h-36 shrink-0 flex-col gap-1 overflow-auto nowheel">
         {items.length === 0 ? (
           <p className="rounded-md border border-dashed border-hairline px-2 py-3 text-center text-[10px] text-text-4">
             把视频卡连线到这里，按序拼接成片
@@ -2262,8 +2200,6 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
         value={d.body}
         onSave={(body) => update({ body })}
         multiline
-        expandable
-        label="画面描述"
         placeholder="画面描述（谁、在哪、做什么）"
         className="ws-detail nowheel mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
       />
@@ -2271,8 +2207,6 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
         value={d.dialogue ?? ""}
         onSave={(dialogue) => update({ dialogue })}
         multiline
-        expandable
-        label="台词 / 旁白"
         placeholder="台词 / 旁白"
         className="ws-detail mt-1.5 line-clamp-2 border-l-2 border-hairline pl-1.5 text-xs italic leading-relaxed text-text-3"
       />
