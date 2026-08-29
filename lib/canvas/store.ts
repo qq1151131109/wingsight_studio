@@ -13,7 +13,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 
-/** 画布节点类型：便签 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 分组框 */
+/** 画布节点类型：文本 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 分组框 */
 export type WingNodeType =
   | "note"
   | "script"
@@ -217,7 +217,7 @@ export function absolutePosition(
 
 /** 估算卡片占位（打组算包围盒用；与渲染宽度近似即可） */
 export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
-  note: { w: 256, h: 150 },
+  note: { w: 280, h: 170 },
   script: { w: 352, h: 260 },
   character: { w: 256, h: 300 },
   image: { w: 256, h: 260 },
@@ -1048,7 +1048,7 @@ export const NODE_META: Record<
   WingNodeType,
   { label: string; dot: string; hint: string }
 > = {
-  note: { label: "便签", dot: "var(--color-warm)", hint: "随手的想法与备注" },
+  note: { label: "文本", dot: "var(--color-warm)", hint: "自由文本" },
   script: { label: "剧本", dot: "var(--color-accent)", hint: "故事大纲或分场剧本" },
   character: { label: "角色", dot: "var(--color-good)", hint: "角色设定卡" },
   image: { label: "图片", dot: "var(--color-warn)", hint: "设定图 / 参考图占位" },

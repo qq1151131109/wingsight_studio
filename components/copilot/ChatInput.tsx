@@ -12,7 +12,7 @@
  * mention 检测与候选排序和画布 PromptBar 同款逻辑。
  */
 
-import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { InputProps } from "@copilotkit/react-ui";
 import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
 import {
@@ -27,6 +27,8 @@ import {
 } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { uploadAsset } from "@/lib/projects";
+import { apiFetch } from "@/lib/auth";
+import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 
 /** caret 前最后一个 @提及片段（"雨夜@女侠" → q="女侠"） */
 function detectMention(
@@ -36,6 +38,24 @@ function detectMention(
   const m = text.slice(0, caret).match(/@([^\s@]{0,20})$/);
   if (!m) return null;
   return { start: caret - m[0].length, q: m[1] };
+}
+
+/** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
+function detectSlash(
+  text: string,
+  caret: number,
+): { start: number; q: string } | null {
+  const m = text.slice(0, caret).match(/(^|\s)\/([^\s/]{0,20})$/);
+  if (!m) return null;
+  return { start: caret - m[2].length - 1, q: m[2] };
+}
+
+// ---------- 技能（slash 菜单数据源，/agent-service/skills） ----------
+
+interface SkillMeta {
+  name: string;
+  description: string;
+  params: { name: string; desc: string }[];
 }
 
 /** 候选排序：角色最前（一致性主场景），其次有媒体的卡 */
@@ -49,7 +69,7 @@ const TYPE_ORDER: Record<string, number> = {
 };
 
 const NODE_TYPE_LABEL: Record<string, string> = {
-  note: "便签",
+  note: "文本",
   script: "剧本",
   character: "角色",
   image: "图片",
@@ -121,12 +141,43 @@ export default function ChatInput({
   const [mention, setMention] = useState<{ start: number; q: string } | null>(
     null,
   );
+  const [slash, setSlash] = useState<{ start: number; q: string } | null>(null);
+  const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [hi, setHi] = useState(0);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** 进行中的上传（submit 时 await 全部完成；count 驱动按钮禁用态） */
   const uploadsRef = useRef<Map<string, Promise<void>>>(new Map());
   const [uploadingCount, setUploadingCount] = useState(0);
+
+  // 技能清单：挂载拉一次（slash 菜单数据源），失败静默（菜单只是不出现）
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const r = await apiFetch("/agent-service/skills");
+        if (r.ok && alive) setSkills((await r.json()) as SkillMeta[]);
+      } catch {
+        /* 服务离线：slash 菜单不可用即可 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const slashCandidates = useMemo(() => {
+    if (!slash) return [];
+    const q = slash.q.toLowerCase();
+    return skills
+      .filter(
+        (s) =>
+          !q ||
+          s.name.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q),
+      )
+      .slice(0, 6);
+  }, [skills, slash]);
 
   const candidates = useMemo(() => {
     if (!mention) return [];
@@ -168,6 +219,22 @@ export default function ChatInput({
     setRefs((r) => [...r, n]);
     setMention(null);
     requestAnimationFrame(() => taRef.current?.focus());
+  };
+
+  const pickSkill = (s: SkillMeta) => {
+    if (!slash) return;
+    // 抠掉 "/查询词"，填入技能模板（用户接着补任务描述与参数）
+    const next =
+      text.slice(0, slash.start) + `调用技能「${s.name}」处理：` + text.slice(slash.start + 1 + slash.q.length);
+    setText(next);
+    setSlash(null);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(next.length, next.length);
+      autoGrow();
+    });
   };
 
   // ---------- 附件：添加 / 上传 / 内联读取 ----------
@@ -282,6 +349,7 @@ export default function ChatInput({
     setRefs([]);
     setAttachments([]);
     setMention(null);
+    setSlash(null);
     requestAnimationFrame(() => {
       if (taRef.current) taRef.current.style.height = "auto";
     });
@@ -310,6 +378,28 @@ export default function ChatInput({
         return;
       }
     }
+    if (slash && slashCandidates.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setHi((h) => (h + 1) % slashCandidates.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setHi((h) => (h - 1 + slashCandidates.length) % slashCandidates.length);
+        return;
+      }
+      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+        e.preventDefault();
+        pickSkill(slashCandidates[hi]);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        setSlash(null);
+        return;
+      }
+    }
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       void submit();
@@ -335,9 +425,19 @@ export default function ChatInput({
         {refs.length > 0 || attachments.length > 0 ? (
           <div className="mb-1.5 flex flex-wrap gap-1">
             {refs.map((r) => (
-              <span
+              <button
                 key={r.id}
-                className="inline-flex items-center gap-1 rounded border border-hairline bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-2"
+                type="button"
+                // 点击 chip 定位画布节点；X 才是移除
+                title={`点击在画布定位「${r.data.title || "无题"}」`}
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent(FOCUS_NODES_EVENT, {
+                      detail: { ids: [r.id] },
+                    }),
+                  )
+                }
+                className="inline-flex items-center gap-1 rounded border border-hairline bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
               >
                 <span
                   className="ws-card-dot"
@@ -346,15 +446,14 @@ export default function ChatInput({
                 <span className="max-w-28 truncate">
                   @{r.data.title?.slice(0, 10) || "无题"}
                 </span>
-                <button
-                  type="button"
-                  title="移除引用"
-                  className="text-text-4 hover:text-danger"
-                  onClick={() => setRefs((rs) => rs.filter((x) => x.id !== r.id))}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </span>
+                <X
+                  className="h-3 w-3 text-text-4 hover:text-danger"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRefs((rs) => rs.filter((x) => x.id !== r.id));
+                  }}
+                />
+              </button>
             ))}
             {attachments.map((a) => (
               <span
@@ -409,12 +508,15 @@ export default function ChatInput({
             setText(e.target.value);
             const m = detectMention(e.target.value, e.target.selectionStart);
             setMention(m);
+            // @ 优先；无 @ 时检测 /slash
+            setSlash(m ? null : detectSlash(e.target.value, e.target.selectionStart));
             setHi(0);
             autoGrow();
           }}
           onClick={(e) => {
             const m = detectMention(e.currentTarget.value, e.currentTarget.selectionStart);
             setMention(m);
+            setSlash(m ? null : detectSlash(e.currentTarget.value, e.currentTarget.selectionStart));
             setHi(0);
           }}
           onKeyDown={onKeyDown}
@@ -491,6 +593,38 @@ export default function ChatInput({
                 <span className="ml-auto shrink-0 text-[10px] text-text-4">
                   {NODE_META[c.data.nodeType]?.label}
                 </span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {slash && slashCandidates.length > 0 ? (
+          <div className="absolute bottom-full left-0 z-20 mb-1 max-h-48 w-72 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+            <p className="px-2 pb-1 pt-0.5 text-[10px] text-text-4">
+              Langflow 技能（回车选用）
+            </p>
+            {slashCandidates.map((s, i) => (
+              <button
+                key={s.name}
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                className={`flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-xs ${
+                  i === hi ? "bg-surface-2 text-text" : "text-text-2"
+                }`}
+                onClick={() => pickSkill(s)}
+                onMouseEnter={() => setHi(i)}
+                title={
+                  s.params.length > 0
+                    ? `参数：${s.params.map((p) => p.name).join("、")}`
+                    : undefined
+                }
+              >
+                <span className="truncate font-medium">⚡ {s.name}</span>
+                {s.description ? (
+                  <span className="truncate text-[11px] text-text-4">
+                    {s.description}
+                  </span>
+                ) : null}
               </button>
             ))}
           </div>

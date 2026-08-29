@@ -62,6 +62,9 @@ function toRecords(messages: ChatMsg[]): ChatMessageRecord[] {
   const out: ChatMessageRecord[] = [];
   for (const m of messages) {
     if (m.role !== "user" && m.role !== "assistant") continue;
+    // 瞬时进度消息（agent 工具执行中推送的 progress_*）不落库：
+    // 它是状态提示不是对话内容，回看历史时应消失
+    if (typeof m.id === "string" && m.id.startsWith("progress_")) continue;
     const encoded = encodeContent(m.content);
     if (!encoded) continue;
     out.push({

@@ -9,12 +9,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useChatContext } from "@copilotkit/react-ui";
-import { History, MessageSquarePlus, Pencil, Trash2, X } from "lucide-react";
+import { History, MessageSquarePlus, Pencil, Download, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { useChatSession } from "@/lib/chat/session";
 import {
   deleteChatThread,
   listChatThreads,
+  loadChatMessages,
   renameChatThread,
   type ChatThreadMeta,
 } from "@/lib/projects";
@@ -40,8 +41,43 @@ export default function ChatSidebarHeader() {
 
   const [panelOpen, setPanelOpen] = useState(false);
   const [threads, setThreads] = useState<ChatThreadMeta[] | null>(null);
+  const [threadQuery, setThreadQuery] = useState("");
   const [deleting, setDeleting] = useState<ChatThreadMeta | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  const shownThreads = (threads ?? []).filter((t) => {
+    const q = threadQuery.trim().toLowerCase();
+    return !q || (t.title || "未命名会话").toLowerCase().includes(q);
+  });
+
+  /** 导出当前会话为 Markdown（拼文本 + Blob 下载，不经服务端） */
+  const exportCurrent = async () => {
+    if (!projectId || !threadId) return;
+    try {
+      const [msgs, meta] = await Promise.all([
+        loadChatMessages(projectId, threadId),
+        Promise.resolve(
+          (threads ?? []).find((t) => t.id === threadId)?.title || "会话",
+        ),
+      ]);
+      if (msgs.length === 0) return;
+      const lines = [`# ${meta}`, ""];
+      for (const m of msgs) {
+        lines.push(`**${m.role === "user" ? "🧑 用户" : "🎬 助手"}**`, "", m.content, "", "---", "");
+      }
+      const blob = new Blob([lines.join("\n")], {
+        type: "text/markdown;charset=utf-8",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${meta}-${new Date().toISOString().slice(0, 10)}.md`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 静默：导出失败不打扰 */
+    }
+  };
 
   const refresh = useCallback(async () => {
     if (!projectId) return;
@@ -129,18 +165,40 @@ export default function ChatSidebarHeader() {
 
       {panelOpen ? (
         <div className="absolute right-2 top-[calc(100%+4px)] z-30 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-          <p className="px-2 pb-1 pt-1.5 text-[10px] uppercase tracking-wide text-text-4">
-            历史会话
-          </p>
+          <div className="flex items-center gap-1 px-2 pb-1 pt-1.5">
+            <p className="text-[10px] uppercase tracking-wide text-text-4">
+              历史会话
+            </p>
+            <button
+              type="button"
+              title="导出当前会话为 Markdown"
+              className="ml-auto rounded p-0.5 text-text-4 transition-colors hover:text-text"
+              onClick={() => void exportCurrent()}
+            >
+              <Download className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="px-1 pb-1">
+            <input
+              value={threadQuery}
+              onChange={(e) => setThreadQuery(e.target.value)}
+              placeholder="搜索会话…"
+              className="w-full rounded-md border border-hairline bg-surface-2 px-2 py-1 text-xs text-text outline-none placeholder:text-text-4 focus:border-accent-soft"
+            />
+          </div>
           {threads === null ? (
             <p className="px-2 py-4 text-center text-xs text-text-4">加载中…</p>
           ) : threads.length === 0 ? (
             <p className="px-2 py-4 text-center text-xs text-text-4">
               暂无历史会话
             </p>
+          ) : shownThreads.length === 0 ? (
+            <p className="px-2 py-4 text-center text-xs text-text-4">
+              没有匹配的会话
+            </p>
           ) : (
             <div className="max-h-80 overflow-auto">
-              {threads.map((t) => (
+              {shownThreads.map((t) => (
                 <div
                   key={t.id}
                   className={`group flex items-center gap-1 rounded-md px-2 py-1.5 transition-colors hover:bg-surface-2 ${

@@ -36,7 +36,7 @@ interface WingsightAgentState {
 const EMPTY: WingsightAgentState = { canvasSummary: "（画布为空）" };
 
 const NODE_TYPE_LABEL: Record<string, string> = {
-  note: "便签",
+  note: "文本",
   script: "剧本",
   character: "角色",
   image: "图片",
@@ -55,7 +55,11 @@ interface MediaItem {
   kind: "image" | "video";
 }
 
-type OpResultEx = OpResult & { media?: MediaItem[]; rejected?: boolean };
+type OpResultEx = OpResult & {
+  media?: MediaItem[];
+  rejected?: boolean;
+  elapsedMs?: number;
+};
 
 /** 破坏性操作审批的挂起请求（handler 阻塞等用户点确认） */
 interface Approval {
@@ -173,6 +177,16 @@ export default function CanvasAgentBridge() {
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
+      // 连线即数据流：目标卡的入边上游自动进生成上下文（@ 手动引用过的不重复）
+      const upstreamLines = st.edges
+        .filter((e) => e.target === nodeId && !refIds.includes(e.source))
+        .map((e) => st.nodes.find((n) => n.id === e.source))
+        .filter((n): n is NonNullable<typeof n> => Boolean(n))
+        .map(
+          (n) =>
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 300)}`,
+        )
+        .join("\n");
       if (kind === "text") {
         // 正文撰写：不置 loading（文本卡无该状态），agent 直接 update_node 写 body
         const refLines = refIds
@@ -188,6 +202,9 @@ export default function CanvasAgentBridge() {
           prompt || "（根据标题与卡片类型撰写，简洁有内容）",
           refLines
             ? `参考以下画布卡片的内容：\n${refLines}`
+            : "",
+          upstreamLines
+            ? `该卡连线的上游内容（续写/润色时保持连贯）：\n${upstreamLines}`
             : "",
           `完成后用 canvas_ops update_node 把全文写进该节点的 body 字段，不要改动标题等其他字段。`,
         ]
@@ -242,6 +259,9 @@ export default function CanvasAgentBridge() {
         refLines
           ? `严格参考以下画布卡片的内容描述，保持角色外形/服装/场景细节一致：\n${refLines}`
           : "",
+        upstreamLines
+          ? `该卡已连线接入以下上游内容，作为本次生成的依据（文本卡=画面描述来源，图片/角色卡=保持形象一致）：\n${upstreamLines}`
+          : "",
         countLine,
         `完成后用 canvas_ops update_node 把 ${nodeId} 置为 {status:"ready", ${field}:<url>}；失败则置 {status:"error", errorMessage:<原因>}，不要让卡片停在 loading。`,
       ]
@@ -271,7 +291,7 @@ export default function CanvasAgentBridge() {
         `请对画布节点 ${nodeId}（视频卡「${title}」）做逐帧拉片分析。以下是等间隔抽取的 ${frames.length} 帧（时间点 → 帧 URL）：`,
         ...frames.map((f) => `- ${f.t.toFixed(1)}s ${f.url}`),
         "分析角度：景别变化与镜头切换、运镜推断（推拉摇跟固定）、构图与光线、节奏与建议的剪辑点。",
-        `把结论写成一张便签卡（canvas_ops add_node，nodeType=note，标题「拉片分析：${title}」，正文分小节精炼输出），并用 connect_nodes 连线 ${nodeId} → 新节点。`,
+        `把结论写成一张文本卡（canvas_ops add_node，nodeType=note，标题「拉片分析：${title}」，正文分小节精炼输出），并用 connect_nodes 连线 ${nodeId} → 新节点。`,
       ].join("\n");
       void sendMessage(
         {
@@ -420,7 +440,9 @@ export default function CanvasAgentBridge() {
         }
       }
 
+      const t0 = performance.now();
       const result = applyOps(raw);
+      const elapsedMs = Math.round(performance.now() - t0);
       const media = collectMedia(list, result.createdIds);
       // 可见性：新建的节点自动选中 + 高亮闪烁；agent 没显式 set_viewport 时镜头跟过去
       if (result.createdIds.length > 0) {
@@ -435,7 +457,11 @@ export default function CanvasAgentBridge() {
           );
         }
       }
-      return { ...result, ...(media.length > 0 ? { media } : {}) } as unknown as string;
+      return {
+        ...result,
+        elapsedMs,
+        ...(media.length > 0 ? { media } : {}),
+      } as unknown as string;
     },
     render: ({ status, result }) => {
       if (status !== "complete" || !result) {
@@ -470,6 +496,14 @@ export default function CanvasAgentBridge() {
             {r.createdIds.length > 0
               ? `，新建 ${r.createdIds.length} 个节点`
               : ""}
+            {typeof r.elapsedMs === "number" ? (
+              <span className="ml-1 font-normal text-text-4">
+                · 用{" "}
+                {r.elapsedMs >= 1000
+                  ? `${(r.elapsedMs / 1000).toFixed(1)}s`
+                  : `${r.elapsedMs}ms`}
+              </span>
+            ) : null}
           </div>
           {r.errors.length > 0 ? (
             <ul className="mt-1 list-inside list-disc text-text-3">

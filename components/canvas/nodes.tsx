@@ -12,13 +12,11 @@ import {
 import {
   Handle,
   NodeResizer,
-  NodeToolbar,
   Position,
   type NodeProps,
 } from "@xyflow/react";
 import {
   Brush,
-  Camera,
   Check,
   ChevronDown,
   ChevronRight,
@@ -33,9 +31,6 @@ import {
   Grid3X3,
   History,
   Image as ImageIcon,
-  Info,
-  Lock,
-  LockOpen,
   Maximize2,
   Music,
   Pause,
@@ -43,8 +38,6 @@ import {
   Plus,
   RefreshCw,
   ScanSearch,
-  Split,
-  Trash2,
   Upload,
   X,
   ZoomIn,
@@ -65,32 +58,25 @@ import {
   FRAME_ANALYSIS_EVENT,
   ROW_GENERATE_EVENT,
 } from "@/lib/canvas/events";
+import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
 import { composeVideos, uploadAsset } from "@/lib/projects";
-import DirectorPanel from "./DirectorPanel";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
 
-/** 工具条上"复制/删除"的语义：节点在多选内则作用于整个选区，否则只作用本卡 */
-function selectionIdsOr(id: string): string[] {
-  const sel = useCanvasStore
-    .getState()
-    .nodes.filter((n) => n.selected)
-    .map((n) => n.id);
-  return sel.includes(id) && sel.length > 1 ? sel : [id];
-}
-
-/** 从一张卡右侧建下游卡并自动连线（AIGCCanvasFlow 的 hover "+" 模式） */
+/** 从一张卡右侧建下游卡并自动连线（AIGCCanvasFlow 的 hover "+" 模式）。
+ *  已有下游时按级联错位摆放，避免叠卡；返回新节点 id 供调用方追加动作 */
 function createConnectedNode(sourceId: string, type: WingNodeType) {
   const st = useCanvasStore.getState();
   const src = st.nodes.find((n) => n.id === sourceId);
-  if (!src) return;
+  if (!src) return null;
   const abs = absolutePosition(st.nodes, src);
   const fp = NODE_FOOTPRINT[src.data.nodeType] ?? NODE_FOOTPRINT.note;
+  const fanout = st.edges.filter((e) => e.source === sourceId).length;
   const id = st.addNode({
-    position: { x: abs.x + fp.w + 60, y: abs.y },
+    position: { x: abs.x + fp.w + 60, y: abs.y + fanout * 72 },
     data: { nodeType: type, title: NODE_META[type].hint, body: "" },
   });
   st.connect({ source: sourceId, target: id });
@@ -98,6 +84,7 @@ function createConnectedNode(sourceId: string, type: WingNodeType) {
   window.dispatchEvent(
     new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
   );
+  return id;
 }
 
 /** 从一张卡左侧建上游卡并自动连线（新卡 → 本卡） */
@@ -118,43 +105,18 @@ function createUpstreamNode(targetId: string, type: WingNodeType) {
   );
 }
 
+/** 加号手柄菜单：与 NODE_TYPE_ITEMS 同序（对标 libtv 建卡菜单） */
 const PLUS_MENU_TYPES: WingNodeType[] = [
   "note",
-  "character",
-  "storyboard",
   "image",
   "video",
-  "audio",
   "compose",
+  "audio",
+  "script",
+  "character",
+  "storyboard",
+  "shotlist",
 ];
-
-function ToolButton({
-  title,
-  danger,
-  onClick,
-  children,
-}: {
-  title: string;
-  danger?: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      className={`nodrag nowheel flex h-6 w-6 items-center justify-center rounded-md transition-colors ${
-        danger ? "text-danger hover:bg-danger/10" : "text-text-2 hover:bg-surface-2 hover:text-text"
-      }`}
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 /** 拖拽媒体=设为生成引用（NodeInputPanel/PromptBar 接收，见 ADD_REF_EVENT） */
 export function mediaDragProps(nodeId: string) {
@@ -170,8 +132,9 @@ export function mediaDragProps(nodeId: string) {
   };
 }
 
-/** 节点信息弹窗（对标 novanova 的 info/JSON 双视图）：id 复制、媒体溯源、原始数据 */
-function NodeInfoModal({
+/** 节点信息弹窗（对标 novanova 的 info/JSON 双视图）：id 复制、媒体溯源、原始数据。
+ *  挂载入口在画布右键菜单（CanvasView） */
+export function NodeInfoModal({
   node,
   onClose,
 }: {
@@ -255,7 +218,6 @@ function CardShell({
   data,
   selected,
   aspect,
-  toolbarExtra,
   children,
 }: {
   id: string;
@@ -263,13 +225,15 @@ function CardShell({
   selected: boolean;
   /** 就绪的图片/视频锁定宽高比缩放 */
   aspect?: boolean;
-  /** 工具条扩展位（如导演台按钮），插在复制与锁定之间 */
-  toolbarExtra?: React.ReactNode;
   children: React.ReactNode;
 }) {
-  const [hovered, setHovered] = useState(false);
   const [plusMenu, setPlusMenu] = useState<null | "left" | "right">(null);
-  const [nodeSnap, setNodeSnap] = useState<WingNode | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  // 磁性追踪（libtv/Flora 手感）：手柄朝光标方向偏移（限幅 12px）+ 按距离放大
+  const [magnet, setMagnet] = useState({
+    left: { p: 0, sx: 0, sy: 0 },
+    right: { p: 0, sx: 0, sy: 0 },
+  });
   // 手柄"加号"的点击 vs 拖拽连线区分：位移 <4px 视为干净点击，弹建卡菜单
   const handleDown = useRef<{ x: number; y: number } | null>(null);
   // agent 建卡后的瞬时高亮（选择器返回布尔，未命中的卡不重渲）
@@ -296,6 +260,54 @@ function CardShell({
   }, [data.status]);
 
   const locked = Boolean(data.locked);
+
+  const onRootMouseMove = (e: React.MouseEvent) => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    // 手柄锚点：垂直在卡体中部（根高一半 + 标题行偏移 12px），水平在左右边缘
+    const cy = rect.top + rect.height / 2;
+    const probe = (
+      ax: number,
+      ay: number,
+    ): { p: number; sx: number; sy: number } => {
+      const dx = e.clientX - ax;
+      const dy = e.clientY - ay;
+      const d = Math.hypot(dx, dy) || 1;
+      const p = Math.max(0, Math.min(1, 1 - d / 150));
+      // 朝光标方向偏移（限幅 12px），到手边时归位
+      const shift = 12 * p;
+      return { p, sx: (dx / d) * shift, sy: (dy / d) * shift };
+    };
+    setMagnet({
+      left: probe(rect.left, cy),
+      right: probe(rect.right, cy),
+    });
+  };
+
+  const handleStyle = (side: "left" | "right"): React.CSSProperties => {
+    const { p, sx, sy } = magnet[side];
+    return {
+      // 锚点外移：按钮整体悬在节点外侧（留 6px 间隙），磁性偏移叠加其上
+      ...(side === "left"
+        ? {
+            left: 0,
+            transform: `translate(calc(-100% - 6px + ${sx}px), calc(-50% + ${sy}px)) scale(${1 + 0.4 * p})`,
+          }
+        : {
+            right: 0,
+            left: "auto",
+            transform: `translate(calc(100% + 6px + ${sx}px), calc(-50% + ${sy}px)) scale(${1 + 0.4 * p})`,
+          }),
+      top: "calc(50% + 12px)",
+      // 光标越近光圈越大（磁性吸附的视觉反馈）
+      boxShadow:
+        p > 0.5
+          ? `0 0 0 ${Math.round(p * 6)}px var(--color-accent-dim)`
+          : "0 1px 2px oklch(0 0 0 / 0.12)",
+      transition:
+        "transform 160ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 160ms ease-out, opacity 120ms",
+    };
+  };
 
   const onHandlePointerDown = (e: React.PointerEvent) => {
     handleDown.current = { x: e.clientX, y: e.clientY };
@@ -342,10 +354,14 @@ function CardShell({
 
   return (
     <div
+      ref={rootRef}
       className={`ws-node group ${selected ? "is-selected" : ""} ${tiny ? "is-tiny" : ""}`}
-      onMouseEnter={() => setHovered(true)}
+      onMouseMove={onRootMouseMove}
       onMouseLeave={() => {
-        setHovered(false);
+        setMagnet({
+          left: { p: 0, sx: 0, sy: 0 },
+          right: { p: 0, sx: 0, sy: 0 },
+        });
         setPlusMenu(null);
       }}
     >
@@ -360,10 +376,11 @@ function CardShell({
       />
       {/* 连线手柄在左右（libtv 范式）：手柄即加号，点击弹菜单、拖拽发起连线。
           top 偏移 +12px：卡体在标题行之下，让加号对准卡体垂直中心 */}
+      {/* 连线手柄在左右（libtv 范式）：显式定位正跨边缘；磁性追踪越近越大 */}
       <Handle
         type="target"
         position={Position.Left}
-        style={{ top: "calc(50% + 12px)" }}
+        style={handleStyle("left")}
         onPointerDown={onHandlePointerDown}
         onPointerUp={onHandlePointerUp("left")}
         title="建上游卡 / 拖拽连线"
@@ -373,55 +390,13 @@ function CardShell({
       <Handle
         type="source"
         position={Position.Right}
-        style={{ top: "calc(50% + 12px)" }}
+        style={handleStyle("right")}
         onPointerDown={onHandlePointerDown}
         onPointerUp={onHandlePointerUp("right")}
         title="建下游卡 / 拖拽连线"
       >
         <Plus className="h-3 w-3" />
       </Handle>
-      <NodeToolbar isVisible={selected || hovered} position={Position.Top} offset={6}>
-        <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-          <ToolButton
-            title="复制"
-            onClick={() => {
-              const ids = selectionIdsOr(id);
-              useCanvasStore.setState((s) => ({
-                nodes: s.nodes.map((n) => ({ ...n, selected: ids.includes(n.id) })),
-              }));
-              useCanvasStore.getState().copySelection();
-            }}
-          >
-            <Copy className="h-3.5 w-3.5" />
-          </ToolButton>
-          {toolbarExtra}
-          <ToolButton
-            title={locked ? "解锁（允许拖动与编辑）" : "锁定（防止误拖误改）"}
-            onClick={() => update({ locked: !locked })}
-          >
-            {locked ? (
-              <Lock className="h-3.5 w-3.5 text-accent" />
-            ) : (
-              <LockOpen className="h-3.5 w-3.5" />
-            )}
-          </ToolButton>
-          <ToolButton
-            title="节点信息"
-            onClick={() =>
-              setNodeSnap(useCanvasStore.getState().nodes.find((n) => n.id === id) ?? null)
-            }
-          >
-            <Info className="h-3.5 w-3.5" />
-          </ToolButton>
-          <ToolButton
-            title="删除"
-            danger
-            onClick={() => useCanvasStore.getState().deleteNodes(selectionIdsOr(id))}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-          </ToolButton>
-        </div>
-      </NodeToolbar>
       {/* 标题行在卡外上方（libtv 范式）：类型图标（按类型着色）+ 可编辑标题 */}
       <div className="mb-1 flex h-5 items-center gap-1.5 px-0.5" title={meta.label}>
         {TypeIcon ? (
@@ -455,9 +430,6 @@ function CardShell({
         {menu("left")}
         {menu("right")}
       </div>
-      {nodeSnap ? (
-        <NodeInfoModal node={nodeSnap} onClose={() => setNodeSnap(null)} />
-      ) : null}
     </div>
   );
 }
@@ -837,8 +809,10 @@ function InlineDraft({
   );
 }
 
-/** 便签 / 剧本卡：紧凑文本卡 + 就地编辑（标题在卡外头部）。
- *  空卡 = 直接输入框 + AI 撰写输入条（对标 libtv 的"尝试"+输入区） */
+/** 文本 / 剧本卡：紧凑文本卡 + 就地编辑（标题在卡外头部）。
+ *  空卡 = 直接输入框 + AI 撰写输入条（对标 libtv 的"尝试"+输入区）。
+ *  文本卡（非剧本）底部带字数徽标 + 「生图/生视频」快捷键（viedeo-workflow
+ *  的 prompt 启动器模式）：右侧建媒体卡并连线，正文即提示词直接发起生成 */
 function TextCard({
   data,
   id,
@@ -856,6 +830,37 @@ function TextCard({
   if (!data || typeof data.nodeType !== "string") return null;
   const update = makeUpdater(id);
   const empty = !(data.body ?? "").trim();
+  const genFromText = (kind: "image" | "video") => {
+    const newId = createConnectedNode(id, kind);
+    if (!newId) return;
+    window.dispatchEvent(
+      new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
+        detail: {
+          nodeId: newId,
+          kind,
+          prompt: (data.body ?? "").trim(),
+          refIds: [],
+        },
+      }),
+    );
+  };
+  const genBtn = (kind: "image" | "video", label: string) => {
+    const Icon = TYPE_ICONS[kind];
+    return (
+      <button
+        type="button"
+        className="nodrag nowheel flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        title={`以本文为提示词，右侧新建${label}卡并生成`}
+        onClick={(e) => {
+          e.stopPropagation();
+          genFromText(kind);
+        }}
+      >
+        {Icon ? <Icon className="h-3 w-3" /> : null}
+        {label}
+      </button>
+    );
+  };
   return (
     <CardShell id={id} data={data} selected={selected}>
       <div className="flex min-h-0 flex-1 flex-col">
@@ -887,6 +892,15 @@ function TextCard({
         <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
           选中卡片后可在下方输入区让 AI 撰写
         </p>
+      ) : !editorial ? (
+        <div className="ws-detail mt-1.5 flex items-center gap-1">
+          <span className="text-[10px] tabular-nums text-text-4">
+            {(data.body ?? "").length} 字
+          </span>
+          <span className="flex-1" />
+          {genBtn("image", "生图")}
+          {genBtn("video", "生视频")}
+        </div>
       ) : null}
     </CardShell>
   );
@@ -1775,7 +1789,6 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [analyzing, setAnalyzing] = useState(false);
   const [frameCount, setFrameCount] = useState(6);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   const framesFor = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1848,24 +1861,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
   };
 
   return (
-    <CardShell
-      id={id}
-      data={d}
-      selected={selected}
-      aspect={d.status === "ready"}
-      toolbarExtra={
-        <ToolButton
-          title="导演台：景别/运镜/机身/布光"
-          onClick={() =>
-            setDirectorNode(
-              useCanvasStore.getState().nodes.find((n) => n.id === id) ?? null,
-            )
-          }
-        >
-          <Camera className="h-3.5 w-3.5" />
-        </ToolButton>
-      }
-    >
+    <CardShell id={id} data={d} selected={selected} aspect={d.status === "ready"}>
       <div
         className={`mt-1.5 flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
           d.status === "loading" ? "ws-loading-scan" : ""
@@ -2001,9 +1997,6 @@ function VideoCard({ data, id, selected }: NodeProps) {
       ) : null}
       {historyOpen ? (
         <VersionHistoryModal nodeId={id} data={d} onClose={() => setHistoryOpen(false)} />
-      ) : null}
-      {directorNode ? (
-        <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
       ) : null}
       <input
         ref={fileRef}
@@ -2261,31 +2254,13 @@ function ShotChip({
   );
 }
 
-/** 分镜卡：宽卡 + 镜号/景别/运镜/时长字段行 + 台词 + 衬线编辑风 */
+/** 分镜卡：宽卡 + 镜号/景别/运镜/时长字段行 + 台词（导演台入口在右键菜单） */
 function StoryboardCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
-  // 导演台打开时快照节点（面板内 apply 再读最新 store，避免渲染期 getState）
-  const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   if (!d || typeof d.nodeType !== "string") return null;
   return (
-    <CardShell
-      id={id}
-      data={d}
-      selected={selected}
-      toolbarExtra={
-        <ToolButton
-          title="导演台：景别/运镜/机身/布光"
-          onClick={() =>
-            setDirectorNode(
-              useCanvasStore.getState().nodes.find((n) => n.id === id) ?? null,
-            )
-          }
-        >
-          <Camera className="h-3.5 w-3.5" />
-        </ToolButton>
-      }
-    >
+    <CardShell id={id} data={d} selected={selected}>
       <div className="ws-detail mt-1.5 flex flex-wrap gap-1">
         <ShotChip accent label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
         <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize) => update({ shotSize })} />
@@ -2310,9 +2285,6 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
         placeholder="台词 / 旁白"
         className="ws-detail mt-1.5 line-clamp-2 border-l-2 border-hairline pl-1.5 text-xs italic leading-relaxed text-text-3"
       />
-      {directorNode ? (
-        <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
-      ) : null}
     </CardShell>
   );
 }
@@ -2374,6 +2346,44 @@ function GroupCard({ data, id, selected }: NodeProps) {
   );
 }
 
+/** 拆成分镜卡：每行一张 storyboard 卡按序连线，首张连回分镜表（右键菜单入口） */
+export function splitShotlistToNodes(node: WingNode) {
+  const rows = (node.data.rows ?? []).filter((r) => (r.action ?? "").trim());
+  if (rows.length === 0) return;
+  const st = useCanvasStore.getState();
+  st.commitHistory();
+  const abs = absolutePosition(st.nodes, node);
+  const fp = NODE_FOOTPRINT.storyboard;
+  let prevId = "";
+  const created: string[] = [];
+  rows.forEach((r, i) => {
+    const sid = st.addNode({
+      position: {
+        x: abs.x + (i % 4) * (fp.w + 60),
+        y: abs.y + Math.floor(i / 4) * (fp.h + 60),
+      },
+      data: {
+        nodeType: "storyboard",
+        title: `第 ${i + 1} 镜`,
+        body: r.action ?? "",
+        shotNumber: String(i + 1).padStart(2, "0"),
+        shotSize: r.shotSize,
+        cameraMove: r.cameraMove,
+        duration: r.duration,
+        dialogue: r.dialogue,
+      },
+    });
+    created.push(sid);
+    if (prevId) st.connect({ source: prevId, target: sid });
+    else st.connect({ source: node.id, target: sid });
+    prevId = sid;
+  });
+  st.selectNodes(created);
+  window.dispatchEvent(
+    new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: created } }),
+  );
+}
+
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆成分镜卡链与镜头级出图 */
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
@@ -2396,44 +2406,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   };
   const removeRow = (rid: string) => {
     update({ rows: rows.filter((r) => r.rid !== rid) });
-  };
-
-  /** 拆成分镜卡：每行一张 storyboard 卡按序连线，首张连回分镜表 */
-  const splitToStoryboard = () => {
-    const filled = rows.filter((r) => (r.action ?? "").trim());
-    if (filled.length === 0) return;
-    const st = useCanvasStore.getState();
-    st.commitHistory();
-    const abs = absolutePosition(st.nodes, st.nodes.find((n) => n.id === id)!);
-    const fp = NODE_FOOTPRINT.storyboard;
-    let prevId = "";
-    const created: string[] = [];
-    filled.forEach((r, i) => {
-      const sid = st.addNode({
-        position: {
-          x: abs.x + (i % 4) * (fp.w + 60),
-          y: abs.y + Math.floor(i / 4) * (fp.h + 60),
-        },
-        data: {
-          nodeType: "storyboard",
-          title: `第 ${i + 1} 镜`,
-          body: r.action ?? "",
-          shotNumber: String(i + 1).padStart(2, "0"),
-          shotSize: r.shotSize,
-          cameraMove: r.cameraMove,
-          duration: r.duration,
-          dialogue: r.dialogue,
-        },
-      });
-      created.push(sid);
-      if (prevId) st.connect({ source: prevId, target: sid });
-      else st.connect({ source: id, target: sid });
-      prevId = sid;
-    });
-    st.selectNodes(created);
-    window.dispatchEvent(
-      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: created } }),
-    );
   };
 
   /** 镜头级出图（桥接层转聊天指令，agent 生成后 update_row 回填行缩略图） */
@@ -2460,16 +2432,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   }, 0);
 
   return (
-    <CardShell
-      id={id}
-      data={d}
-      selected={selected}
-      toolbarExtra={
-        <ToolButton title="拆成分镜卡（每行一张、按序连线）" onClick={splitToStoryboard}>
-          <Split className="h-3.5 w-3.5" />
-        </ToolButton>
-      }
-    >
+    <CardShell id={id} data={d} selected={selected}>
       <div className="ws-detail nowheel min-h-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-1">
           {rows.length === 0 ? (

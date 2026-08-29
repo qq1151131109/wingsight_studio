@@ -21,11 +21,16 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import {
+  Camera,
   ChevronRight,
+  Info,
   Library,
   ListTree,
+  Lock,
+  LockOpen,
   Redo2,
   Search,
+  Split,
   Undo2,
   WandSparkles,
   ZoomIn as ZoomInIcon,
@@ -43,14 +48,16 @@ import {
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { FOCUS_NODES_EVENT, type FocusNodesDetail } from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
-import { nodeTypes } from "./nodes";
+import { nodeTypes, NodeInfoModal, splitShotlistToNodes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
 import NodeInputPanel from "./NodeInputPanel";
+import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import ShortcutsModal from "./ShortcutsModal";
 import ServiceBanner from "./ServiceBanner";
 import OutlinePanel from "./OutlinePanel";
+import DirectorPanel from "./DirectorPanel";
 
 /** 离线指示：断网时顶部常驻小条（保存走 saveState "offline" 文案，这里补全局感知） */
 function OfflineIndicator() {
@@ -196,8 +203,17 @@ function CtxItem({
 
 const CtxSep = () => <div className="mx-1 my-1 h-px bg-hairline" />;
 
-/** "添加节点"类型列表：双击选择器与右键二级展开共用 */
-function NodeAddMenu({ onPick }: { onPick: (t: WingNodeType) => void }) {
+/** "添加节点"类型列表：双击选择器与右键二级展开共用。
+ *  底部带「添加资源」分组（上传/素材库），结构对标 libtv 的建卡菜单 */
+function NodeAddMenu({
+  onPick,
+  onUpload,
+  onTray,
+}: {
+  onPick: (t: WingNodeType) => void;
+  onUpload?: () => void;
+  onTray?: () => void;
+}) {
   return (
     <div className="flex min-w-[140px] flex-col">
       <p className="px-2 py-1 text-[10px] text-text-4">添加节点</p>
@@ -212,26 +228,35 @@ function NodeAddMenu({ onPick }: { onPick: (t: WingNodeType) => void }) {
           />
         );
       })}
+      {onUpload || onTray ? (
+        <>
+          <CtxSep />
+          <p className="px-2 py-1 text-[10px] text-text-4">添加资源</p>
+          {onUpload ? <CtxItem label="上传" onClick={onUpload} /> : null}
+          {onTray ? <CtxItem label="素材库…" onClick={onTray} /> : null}
+        </>
+      ) : null}
     </div>
   );
 }
 
-/** 节点类型清单：工具条 / 双击选择器 / 右键"添加节点"三处共用（图标见 type-icons） */
+/** 节点类型清单：工具条 / 双击选择器 / 右键"添加节点"三处共用（图标见 type-icons）。
+ *  顺序对标 libtv：文本→图片→视频→智能剪辑→音频→脚本，影视特化卡排后 */
 const NODE_TYPE_ITEMS: { type: WingNodeType; key: string }[] = (
   [
     "note",
+    "image",
+    "video",
+    "compose",
+    "audio",
     "script",
     "character",
     "storyboard",
     "shotlist",
-    "image",
-    "video",
-    "audio",
-    "compose",
   ] as WingNodeType[]
 ).map((type) => ({ type, key: `i-${type}` }));
 
-/** 拖拽导入：图片→上传建 image 卡；.txt/.md→文本卡（md 当剧本、txt 当便签） */
+/** 拖拽导入：图片→上传建 image 卡；.txt/.md→文本卡（md 当剧本、txt 当文本） */
 async function importDroppedFiles(
   files: File[],
   at: { x: number; y: number },
@@ -1051,6 +1076,9 @@ export default function CanvasView() {
   const [trayOpen, setTrayOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  // 右键菜单触发的导演台 / 节点信息弹窗
+  const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
+  const [infoNode, setInfoNode] = useState<WingNode | null>(null);
 
   useEffect(() => {
     if (!ctxMenu && !pendingLink) return;
@@ -1388,6 +1416,12 @@ export default function CanvasView() {
       {trayOpen ? <AssetTray onClose={() => setTrayOpen(false)} /> : null}
       {promptsOpen ? <PromptLibraryPanel onClose={() => setPromptsOpen(false)} /> : null}
       {outlineOpen ? <OutlinePanel onClose={() => setOutlineOpen(false)} /> : null}
+      {directorNode ? (
+        <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
+      ) : null}
+      {infoNode ? (
+        <NodeInfoModal node={infoNode} onClose={() => setInfoNode(null)} />
+      ) : null}
       {pendingLink ? (
         <>
           <div
@@ -1441,11 +1475,36 @@ export default function CanvasView() {
             }}
           >
             {ctxMenu.kind === "add" ? (
-              <NodeAddMenu onPick={addAtCtx} />
+              <NodeAddMenu
+                onPick={addAtCtx}
+                onUpload={() => {
+                  closeCtx();
+                  openUploadPicker();
+                }}
+                onTray={() => {
+                  setTrayOpen(true);
+                  closeCtx();
+                }}
+              />
             ) : ctxMenu.kind === "pane" && ctxMenu.sub === "add" ? (
-              <NodeAddMenu onPick={addAtCtx} />
+              <NodeAddMenu
+                onPick={addAtCtx}
+                onUpload={() => {
+                  closeCtx();
+                  openUploadPicker();
+                }}
+                onTray={() => {
+                  setTrayOpen(true);
+                  closeCtx();
+                }}
+              />
             ) : ctxMenu.kind === "pane" ? (
               <>
+                <CtxItem
+                  label="添加节点"
+                  chevron
+                  onClick={() => setCtxMenu({ ...ctxMenu, sub: "add" })}
+                />
                 <CtxItem label="上传" onClick={openUploadPicker} />
                 <CtxItem
                   label="素材库…"
@@ -1453,11 +1512,6 @@ export default function CanvasView() {
                     setTrayOpen(true);
                     closeCtx();
                   }}
-                />
-                <CtxItem
-                  label="添加节点"
-                  chevron
-                  onClick={() => setCtxMenu({ ...ctxMenu, sub: "add" })}
                 />
                 <CtxSep />
                 <CtxItem
@@ -1490,18 +1544,102 @@ export default function CanvasView() {
                 />
               </>
             ) : ctxMenu.kind === "node" ? (
-              <>
-                <CtxItem
-                  label="复制"
-                  onClick={() => {
-                    copyNodes([ctxMenu.id]);
-                    closeCtx();
-                  }}
-                />
-                <CtxItem
-                  label="置顶"
-                  onClick={() => {
-                    useCanvasStore.getState().bringToFront([ctxMenu.id]);
+              (() => {
+                const node = nodes.find((n) => n.id === ctxMenu.id);
+                const type = node?.data.nodeType;
+                return (
+                  <>
+                    {type === "storyboard" || type === "video" ? (
+                      <CtxItem
+                        label="导演台"
+                        icon={<Camera className="h-4 w-4" />}
+                        onClick={() => {
+                          if (node) setDirectorNode(node);
+                          closeCtx();
+                        }}
+                      />
+                    ) : null}
+                    {type === "shotlist" && node ? (
+                      <CtxItem
+                        label="拆成分镜卡"
+                        icon={<Split className="h-4 w-4" />}
+                        onClick={() => {
+                          splitShotlistToNodes(node);
+                          closeCtx();
+                        }}
+                      />
+                    ) : null}
+                    {type === "note" || type === "script" ? (
+                      <CtxItem
+                        label="AI 润色正文"
+                        icon={<WandSparkles className="h-4 w-4" />}
+                        disabled={!(node?.data.body ?? "").trim()}
+                        onClick={() => {
+                          window.dispatchEvent(
+                            new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
+                              detail: {
+                                nodeId: ctxMenu.id,
+                                kind: "text",
+                                prompt:
+                                  "润色当前正文：保持原意与事实不变，优化文笔、节奏与画面感，直接输出润色后的全文。",
+                                refIds: [],
+                              },
+                            }),
+                          );
+                          closeCtx();
+                        }}
+                      />
+                    ) : null}
+                    {type === "note" || type === "script" ? (
+                      <CtxItem
+                        label="复制正文"
+                        disabled={!(node?.data.body ?? "").trim()}
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(
+                            node?.data.body ?? "",
+                          );
+                          closeCtx();
+                        }}
+                      />
+                    ) : null}
+                    <CtxItem
+                      label="复制"
+                      onClick={() => {
+                        copyNodes([ctxMenu.id]);
+                        closeCtx();
+                      }}
+                    />
+                    <CtxItem
+                      label={node?.data.locked ? "解锁" : "锁定"}
+                      icon={
+                        node?.data.locked ? (
+                          <LockOpen className="h-4 w-4" />
+                        ) : (
+                          <Lock className="h-4 w-4" />
+                        )
+                      }
+                      onClick={() => {
+                        if (node)
+                          useCanvasStore
+                            .getState()
+                            .updateNodeData(ctxMenu.id, {
+                              locked: !node.data.locked,
+                            });
+                        closeCtx();
+                      }}
+                    />
+                    <CtxItem
+                      label="节点信息"
+                      icon={<Info className="h-4 w-4" />}
+                      onClick={() => {
+                        if (node) setInfoNode(node);
+                        closeCtx();
+                      }}
+                    />
+                    <CtxItem
+                      label="置顶"
+                      onClick={() => {
+                        useCanvasStore.getState().bringToFront([ctxMenu.id]);
                     closeCtx();
                   }}
                 />
@@ -1544,7 +1682,9 @@ export default function CanvasView() {
                     closeCtx();
                   }}
                 />
-              </>
+                  </>
+                );
+              })()
             ) : ctxMenu.kind === "convert" ? (
               <>
                 <p className="px-2 py-1 text-[10px] text-text-4">转换为（保留内容与连线）</p>

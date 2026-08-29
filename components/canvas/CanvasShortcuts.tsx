@@ -89,7 +89,27 @@ export default function CanvasShortcuts() {
       const files = [...(e.clipboardData?.items ?? [])].filter((i) =>
         i.type.startsWith("image/"),
       );
-      if (files.length === 0) return;
+      if (files.length === 0) {
+        // 无图时看纯文本：直接建「文本」卡（novanova 模式）。内部剪贴板
+        // 非空说明 keydown 已粘贴过节点，这里不重复建卡
+        const text = e.clipboardData?.getData("text/plain")?.trim() ?? "";
+        if (!text || useCanvasStore.getState().clipboardCount > 0) return;
+        e.preventDefault();
+        const firstLine = text.split("\n").find((l) => l.trim()) ?? "";
+        const center = screenToFlowPosition({
+          x: window.innerWidth / 2,
+          y: window.innerHeight / 2,
+        });
+        useCanvasStore.getState().addNode({
+          position: { x: center.x - 140, y: center.y - 85 },
+          data: {
+            nodeType: "note",
+            title: firstLine.trim().slice(0, 24) || "粘贴的文本",
+            body: text.slice(0, 4000),
+          },
+        });
+        return;
+      }
       e.preventDefault();
       const file = files[0].getAsFile();
       if (!file) return;

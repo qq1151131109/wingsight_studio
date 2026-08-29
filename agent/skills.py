@@ -324,6 +324,22 @@ def describe_skills() -> str:
     return "\n".join(lines)
 
 
+def list_skills_payload() -> List[Dict[str, Any]]:
+    """结构化技能清单（前端 slash 菜单用）。"""
+    registry = load_skill_registry()
+    return [
+        {
+            "name": name,
+            "description": item.get("description", ""),
+            "params": [
+                {"name": pname, "desc": p.get("desc", "")}
+                for pname, p in (item.get("params") or {}).items()
+            ],
+        }
+        for name, item in registry.items()
+    ]
+
+
 async def run_skill(
     skill: str, input_text: str, params: Optional[Dict[str, Any]] = None
 ) -> str:

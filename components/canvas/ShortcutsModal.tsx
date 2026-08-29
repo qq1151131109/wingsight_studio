@@ -19,7 +19,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { keys: ["⇧⌘Z", "Ctrl+Y"], title: "重做", group: "画布" },
   { keys: ["⌘C"], title: "复制选中卡片", group: "画布" },
   { keys: ["⌘X"], title: "剪切选中卡片", group: "画布" },
-  { keys: ["⌘V"], title: "粘贴", group: "画布" },
+  { keys: ["⌘V"], title: "粘贴卡片 / 图片 / 文本（文本直接建卡）", group: "画布" },
   { keys: ["⌘D"], title: "原地复制", group: "画布" },
   { keys: ["⌘A"], title: "全选", group: "画布" },
   { keys: ["Backspace"], title: "删除选中", group: "画布" },

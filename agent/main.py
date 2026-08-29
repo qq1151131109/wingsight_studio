@@ -158,6 +158,12 @@ def camera_vocab() -> dict:
     }
 
 
+@app.get("/skills")
+def list_skills() -> list:
+    """结构化技能清单（聊天输入框 slash 菜单数据源）。"""
+    return skills.list_skills_payload()
+
+
 # ---------- 项目与画布持久化（前端经 /agent-service/projects/* 访问）----------
 
 

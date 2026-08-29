@@ -1,18 +1,48 @@
 "use client";
 
-import { CopilotSidebar, useChatContext } from "@copilotkit/react-ui";
+import {
+  CopilotSidebar,
+  useChatContext,
+  type ErrorMessageProps,
+} from "@copilotkit/react-ui";
 import type {
   CopilotKitCSSProperties,
   RenderSuggestionsListProps,
 } from "@copilotkit/react-ui";
 import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
 import {
+  CircleAlert,
   PanelRightClose,
   PanelRightOpen,
+  RotateCcw,
   Sparkles,
 } from "lucide-react";
 import ChatInput from "./ChatInput";
 import ChatSidebarHeader from "./ThreadsBar";
+
+/** 失败卡：错误说明 + 重试本轮（stock 只显示错误文案，用户得整句重打） */
+function ErrorWithRetry({ error, onRegenerate }: ErrorMessageProps) {
+  return (
+    <div className="my-1 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-text-2">
+      <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
+      <div className="min-w-0 flex-1">
+        <p className="leading-relaxed">
+          本次响应出错：{error?.message?.slice(0, 160) || "未知错误"}
+        </p>
+        {onRegenerate ? (
+          <button
+            type="button"
+            onClick={onRegenerate}
+            className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-hairline bg-surface-1 px-2 py-1 text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+          >
+            <RotateCcw className="h-3 w-3" />
+            重试本轮
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 /** 关闭侧栏后的"助手"显性入口（替换 stock 圆钮；对标参考布局的顶栏 Agent 按钮） */
 function AssistantFab() {
@@ -127,6 +157,7 @@ export default function ThemedSidebar() {
         Input={ChatInput}
         Header={ChatSidebarHeader}
         Button={AssistantFab}
+        ErrorMessage={ErrorWithRetry}
         defaultOpen
         clickOutsideToClose={false}
       />
