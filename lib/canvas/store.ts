@@ -586,7 +586,11 @@ export const useCanvasStore = create<CanvasState>()(
         const type = node.type ?? node.data?.nodeType ?? "note";
         get().commitHistory();
         set((state) => ({
-          nodes: [...state.nodes, withDefaultSize({ ...node, id, type } as WingNode)],
+          // 幂等防御：同 id 已存在（ops 重放/同批双发）不重复插入——
+          // React key 冲突会让整棵渲染树错乱，宁可不加
+          nodes: state.nodes.some((n) => n.id === id)
+            ? state.nodes
+            : [...state.nodes, withDefaultSize({ ...node, id, type } as WingNode)],
         }));
         return id;
       },

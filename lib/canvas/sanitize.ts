@@ -22,6 +22,7 @@ export function sanitizeCanvas(
     nodes.filter((n) => n && typeof n.id === "string").map((n) => n.id),
   );
   const cleanNodes: WingNode[] = [];
+  const seenIds = new Set<string>();
   let removedNodes = 0;
   let fixedParents = 0;
   for (const n of nodes) {
@@ -29,6 +30,12 @@ export function sanitizeCanvas(
       removedNodes += 1;
       continue;
     }
+    if (seenIds.has(n.id)) {
+      // 重复 id（多会话竞态/重放）：React key 唯一性要求，保留首个
+      removedNodes += 1;
+      continue;
+    }
+    seenIds.add(n.id);
     if (n.parentId && !ids.has(n.parentId)) {
       // 组框丢失的孤儿卡：脱离分组（坐标按绝对值近似处理，交给用户微调）
       const { parentId: _p, extent: _e, ...rest } = n;

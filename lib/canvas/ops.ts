@@ -184,7 +184,12 @@ export function applyOps(rawOps: unknown): OpResult {
             );
             break;
           }
-          if (op.id && store.nodes.some((n) => n.id === op.id)) {
+          if (
+            op.id &&
+            // 用实时 state 而非循环外的快照：同一批 ops 里同 id 出现两次时，
+            // 快照看不到前一条刚插入的，会漏判造成重复 key
+            useCanvasStore.getState().nodes.some((n) => n.id === op.id)
+          ) {
             errors.push(`add_node: 节点 ${op.id} 已存在`);
             break;
           }

@@ -1275,7 +1275,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
             <img
               src={d.imageUrl}
               alt={d.title}
-              className="ws-media-in h-full w-full object-cover"
+              className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
             <CornerActions>
@@ -1920,7 +1920,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
             <img
               src={d.imageUrl}
               alt={d.title}
-              className="ws-media-in h-full w-full object-cover"
+              className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
             {versionCount > 0 ? (
