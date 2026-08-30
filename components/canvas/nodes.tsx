@@ -75,6 +75,7 @@ import {
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
 import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
+import { createPortal } from "react-dom";
 import { composeVideos, uploadAsset } from "@/lib/projects";
 import {
   decomposeAssets,
@@ -2746,6 +2747,13 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const [selRows, setSelRows] = useState<Set<string> | null>(null);
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
+  // 行内 @引用候选：rid=正在输入的行，draft=@ 后的过滤词，
+  // rect=输入框视口坐标（候选面板 portal 到 body，fixed 定位防滚动容器裁剪）
+  const [mention, setMention] = useState<{
+    rid: string;
+    draft: string;
+    rect: { left: number; top: number; bottom: number };
+  } | null>(null);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
@@ -2756,7 +2764,16 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     const ups = edges
       .filter((e) => e.target === id)
       .map((e) => nodes.find((n) => n.id === e.source))
-      .filter((n): n is WingNode => Boolean(n && (n.data.body ?? "").trim()));
+      .filter(
+        (n): n is WingNode =>
+          Boolean(
+            n &&
+              !["character", "scene", "prop", "costume"].includes(
+                String(n.data.nodeType),
+              ) &&
+              (n.data.body ?? "").trim(),
+          ),
+      );
     const pick =
       ups.find((n) => n.data.nodeType === "script") ??
       ups.find((n) => n.data.nodeType === "note") ??
@@ -2781,16 +2798,36 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           ]
             .filter(Boolean)
             .join("；") || undefined,
-        // 硬约束（ai-moive-studio 范式）：分镜只用画布已有角色，不发明新角色
-        characters: nodes
-          .filter((n) => n.data.nodeType === "character" && n.data.title)
-          .map((n) => n.data.title as string),
       });
       if (next.length === 0) {
         setGenError("生成结果为空");
         return;
       }
-      update({ rows: next, status: "ready" });
+      // 生成结果自动绑 refIds：行内 @名称 与画布资产卡同名即绑定
+      const titleToId = new Map(
+        nodes
+          .filter(
+            (n) =>
+              ["character", "scene", "prop", "costume"].includes(
+                String(n.data.nodeType),
+              ) && n.data.title,
+          )
+          .map((n) => [n.data.title as string, n.id]),
+      );
+      const bound = next.map((r) => {
+        const ids = [
+          ...new Set(
+            (r.action ?? "")
+              .split("@")
+              .slice(1)
+              .map((seg) => seg.trim())
+              .map((name) => titleToId.get(name))
+              .filter((v): v is string => Boolean(v)),
+          ),
+        ];
+        return ids.length > 0 ? { ...r, refIds: ids } : r;
+      });
+      update({ rows: bound, status: "ready" });
     } catch (exc) {
       setGenError(exc instanceof Error ? exc.message : "生成失败");
     } finally {
@@ -2814,18 +2851,30 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     update({ rows: rows.filter((r) => r.rid !== rid) });
   };
 
-  /** 画面描述里 @到的资产卡 → 一致性参考描述（资产卡标题+设定节选） */
+  /** 行引用资产 → 一致性参考描述（资产卡标题+设定节选） */
   const refNotesFor = (r: ShotRow) =>
-    mentionedRefIds(`${r.action ?? ""}${r.dialogue ?? ""}`)
-      .map((nid) => nodes.find((n) => n.id === nid))
-      .filter((n): n is WingNode => Boolean(n))
+    rowRefNodes(r)
       .map((n) => `【${n.data.title}】${(n.data.body ?? "").slice(0, 160)}`)
       .join("；");
 
-  /** @到的资产卡设定图 URL（一致性锚点，直连出图时传给 flow 当参考图） */
+  /** 选中 @候选：补全名称、写入结构化 refIds（改名不失联） */
+  const pickMention = (rid: string, node: WingNode) => {
+    const r = rows.find((x) => x.rid === rid);
+    if (!r) return;
+    const title = node.data.title as string;
+    const action = r.action ?? "";
+    const m = /@([^@\n]*)$/.exec(action);
+    const next = (
+      m ? action.slice(0, m.index) + `@${title} ` : `${action}@${title} `
+    ).trimEnd();
+    const refIds = Array.from(new Set([...(r.refIds ?? []), node.id]));
+    setRow(rid, { action: `${next} `, refIds });
+    setMention(null);
+  };
+
+  /** 行引用资产 → 设定图 URL（一致性锚点，直连出图时传给 flow 当参考图） */
   const refImagesFor = (r: ShotRow) =>
-    mentionedRefIds(`${r.action ?? ""}${r.dialogue ?? ""}`)
-      .map((nid) => nodes.find((n) => n.id === nid))
+    rowRefNodes(r)
       .map((n) => (n?.data.imageUrl as string | undefined) ?? "")
       .filter(Boolean);
 
@@ -2836,16 +2885,49 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     return composeShotPrompt(r, (d.visualStyle ?? "").trim());
   };
 
-  /** 画面描述里 @到的资产卡（角色/场景/道具）→ refIds（一致性参考） */
-  const mentionedRefIds = (text: string) =>
-    nodes
+  /** 文本 @名称 兜底匹配：最长优先（防“小雨”误命中“小雨萍”），
+   *  已命中的区间不再被更短名覆盖；含服饰在内的四类资产 */
+  const mentionedRefIds = (text: string) => {
+    const cands = nodes
       .filter(
         (n) =>
-          ["character", "scene", "prop"].includes(String(n.data.nodeType)) &&
-          n.data.title &&
-          text.includes(`@${n.data.title}`),
+          ["character", "scene", "prop", "costume"].includes(
+            String(n.data.nodeType),
+          ) && n.data.title,
       )
-      .map((n) => n.id);
+      .sort(
+        (a, b) =>
+          (b.data.title as string).length - (a.data.title as string).length,
+      );
+    const found: string[] = [];
+    const spans: [number, number][] = [];
+    for (const n of cands) {
+      const token = `@${n.data.title}`;
+      let from = 0;
+      for (;;) {
+        const i = text.indexOf(token, from);
+        if (i === -1) break;
+        const end = i + token.length;
+        if (!spans.some(([s0, e0]) => i < e0 && end > s0)) {
+          spans.push([i, end]);
+          found.push(n.id);
+        }
+        from = i + 1;
+      }
+    }
+    return found;
+  };
+
+  /** 行引用解析：结构化 refIds 优先，文本 @名称 兜底，合并去重 */
+  const rowRefNodes = (r: ShotRow) => {
+    const ids = new Set<string>(r.refIds ?? []);
+    mentionedRefIds(`${r.action ?? ""}${r.dialogue ?? ""}`).forEach((id) =>
+      ids.add(id),
+    );
+    return [...ids]
+      .map((nid) => nodes.find((n) => n.id === nid))
+      .filter((n): n is WingNode => Boolean(n));
+  };
 
   /** 拆解资产（novanova「分镜同时出资产清单」的独立化）：直连拆解 flow，
    *  角色自动建角色卡（同名跳过）并连线回本卡；场景/道具不建卡——其描述
@@ -2876,7 +2958,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       const src = st.nodes.find((n) => n.id === id);
       if (!src) return;
       const abs = absolutePosition(st.nodes, src);
-      const sz = nodeSize(src);
       // 排布（novanova 资产分组范式）：角色/场景/道具各成一个组框，
       // 组内 2 列网格；三个组从左到右排开（整组矩形一次性避让找空地，
       // 逐卡避让会散）。重复拆解时同名卡跳过、组框按需补建
@@ -2889,7 +2970,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       const groupIds: string[] = [];
       const kindCounts: Record<string, number> = {};
       let existed = 0;
-      let cursorX = abs.x + sz.w + 80;
+      // 资产卡放分镜表左侧（连入左把手），组框贴着左缘往左排
+      let groupRight = abs.x - 80;
       const anchorY = abs.y;
       for (const { type, label } of KIND_ORDER) {
         const cur = useCanvasStore.getState();
@@ -2907,7 +2989,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         const kcols = Math.min(2, fresh.length);
         const kw = kcols * (fp.w + 60) - 60;
         const kh = Math.ceil(fresh.length / kcols) * (fp.h + 54) - 54;
-        const origin = findFreePosition(cur.nodes, { x: cursorX, y: anchorY }, {
+        const origin = findFreePosition(cur.nodes, { x: groupRight - kw, y: anchorY }, {
           w: kw,
           h: kh,
         });
@@ -2929,13 +3011,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           });
           // 分镜表 → 资产卡：资产卡是拆解的派生产物（与「拆成分镜卡」同向），
           // 反向连会混进 scriptSource 的上游来源列表
-          st2.connect({ source: id, target: nid });
           ids.push(nid);
         });
         const gid = useCanvasStore.getState().groupNodes(ids, label);
         if (gid) groupIds.push(gid);
         created.push(...ids);
-        cursorX = origin.x + kw + 80;
+        groupRight = origin.x - 80;
       }
       if (created.length > 0) {
         const end = useCanvasStore.getState();
@@ -2965,7 +3046,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               !KIND_TITLES.includes(g!.data.title ?? ""),
           );
         for (const g of genericGroups) end.ungroupNode(g.id);
-        let cursorX2 = abs.x + sz.w + 80;
+        let groupRight2 = abs.x - 80;
         const newGroups: string[] = [];
         for (const { type, label } of KIND_ORDER) {
           const cur = useCanvasStore.getState();
@@ -2980,7 +3061,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           const kcols = Math.min(2, items.length);
           const kw = kcols * (fp.w + 60) - 60;
           const kh = Math.ceil(items.length / kcols) * (fp.h + 54) - 54;
-          const origin = findFreePosition(cur.nodes, { x: cursorX2, y: anchorY }, {
+          const origin = findFreePosition(cur.nodes, { x: groupRight2 - kw, y: anchorY }, {
             w: kw,
             h: kh,
           });
@@ -3001,8 +3082,17 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             .getState()
             .groupNodes(items.map((m) => m.id), label);
           if (gid) newGroups.push(gid);
-          cursorX2 = origin.x + kw + 80;
+          groupRight2 = origin.x - 80;
         }
+        // 历史遗留的 分镜表→资产 边统一翻转为 资产→分镜表
+        const matchedIds = new Set(matched.map((m) => m.id));
+        useCanvasStore.setState((s) => ({
+          edges: s.edges.map((e) =>
+            e.source === id && matchedIds.has(e.target)
+              ? { ...e, source: e.target, target: id }
+              : e,
+          ),
+        }));
         if (newGroups.length > 0) {
           useCanvasStore.getState().selectNodes(newGroups);
           window.dispatchEvent(
@@ -3296,7 +3386,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     )}
                   </button>
                 )}
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex flex-wrap items-center gap-1">
                     <ShotSelect label="景别" value={r.shotSize ?? ""} options={SHOT_SIZES} onSave={(v) => setRow(r.rid, { shotSize: v })} />
                     <ShotChip label="运镜" value={r.cameraMove ?? ""} onSave={(v) => setRow(r.rid, { cameraMove: v })} />
@@ -3305,12 +3395,40 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                   </div>
                   <Editable
                     value={r.action ?? ""}
-                    onSave={(action) => setRow(r.rid, { action })}
+                    onSave={(action) => {
+                      setRow(r.rid, { action });
+                      // 光标感知：草稿 = 光标前最近 @ 到光标；草稿带空格即收起
+                      const ta = document.activeElement as HTMLTextAreaElement | null;
+                      const caret =
+                        ta && ta.tagName === "TEXTAREA" ? ta.selectionStart : null;
+                      const before = caret !== null ? action.slice(0, caret) : action;
+                      const at = before.lastIndexOf("@");
+                      if (at === -1) {
+                        setMention(null);
+                        return;
+                      }
+                      const draft = before.slice(at + 1);
+                      if (draft.length > 0 && draft.trim() !== draft) {
+                        setMention(null);
+                        return;
+                      }
+                      if (!ta) {
+                        setMention(null);
+                        return;
+                      }
+                      const rect = ta.getBoundingClientRect();
+                      setMention({
+                        rid: r.rid,
+                        draft,
+                        rect: { left: rect.left, top: rect.top, bottom: rect.bottom },
+                      });
+                    }}
                     multiline
                     always
                     placeholder="画面描述（谁、在哪、做什么，@资产名 引用角色）"
                     className="max-h-14 overflow-auto text-[11px] leading-relaxed text-text-2"
                   />
+
                   <Editable
                     value={r.dialogue ?? ""}
                     onSave={(dialogue) => setRow(r.rid, { dialogue })}
@@ -3520,6 +3638,59 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           </button>
         </span>
       </div>
+      {mention
+        ? createPortal(
+            <div
+              className="nodrag nowheel fixed z-50 max-h-52 w-64 overflow-auto rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
+              style={{ left: mention.rect.left, top: mention.rect.bottom + 4 }}
+            >
+              <p className="px-1.5 py-0.5 text-[9px] text-text-4">引用资产卡</p>
+              {(() => {
+                const cands = nodes.filter(
+                  (n) =>
+                    ["character", "scene", "prop", "costume"].includes(
+                      String(n.data.nodeType),
+                    ) &&
+                    n.data.title &&
+                    (n.data.title as string).includes(mention.draft),
+                );
+                if (cands.length === 0)
+                  return (
+                    <p className="px-1.5 py-1 text-[10px] text-text-4">
+                      没有匹配的资产卡
+                    </p>
+                  );
+                return cands.map((n) => (
+                  <button
+                    key={n.id}
+                    type="button"
+                    className="nodrag flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left text-[10px] text-text-2 transition-colors hover:bg-surface-2"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      pickMention(mention.rid, n);
+                    }}
+                  >
+                    {n.data.imageUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={n.data.imageUrl}
+                        alt=""
+                        className="h-6 w-8 rounded object-cover"
+                      />
+                    ) : (
+                      <span className="grid h-6 w-8 place-items-center rounded bg-surface-2 text-[8px] text-text-4">
+                        {NODE_META[n.data.nodeType]?.label ?? "?"}
+                      </span>
+                    )}
+                    <span className="truncate">{n.data.title}</span>
+                  </button>
+                ));
+              })()}
+            </div>,
+            document.body,
+          )
+        : null}
     </CardShell>
   );
 }

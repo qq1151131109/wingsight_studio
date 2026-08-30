@@ -199,15 +199,46 @@ def api_load_canvas(pid: str, user: auth.CurrentUser):
 
 @app.put("/projects/{pid}/canvas")
 async def api_save_canvas(pid: str, req: dict, user: auth.CurrentUser):
-    ok = projects.save_canvas(
+    """乐观锁保存：带 revision 时与当前不一致返回 409（前端提示冲突）；
+    force=true 跳过检查（用户显式选择覆盖）。
+
+    保存前按 id 去重 nodes/edges：多会话并发时快照交错会产生重复条目，
+    重复 id 会让前端 React key 冲突、渲染塌掉。"""
+    def _dedupe(items: list) -> list:
+        seen: set = set()
+        out = []
+        for item in items:
+            iid = item.get("id") if isinstance(item, dict) else None
+            if iid is None or iid in seen:
+                continue
+            seen.add(iid)
+            out.append(item)
+        return out
+
+    nodes = _dedupe(req.get("nodes", []))
+    node_ids = {n.get("id") for n in nodes}
+    edges = _dedupe(req.get("edges", []))
+    edges = [e for e in edges if e.get("source") in node_ids and e.get("target") in node_ids]
+    result = projects.save_canvas(
         pid,
-        req.get("nodes", []),
-        req.get("edges", []),
+        nodes,
+        edges,
         req.get("viewport"),
         req.get("meta"),
         user,
+        expected_revision=req.get("revision"),
+        force=bool(req.get("force")),
     )
-    return {"ok": ok} if ok else Response(status_code=404)
+    if result is None:
+        return Response(status_code=404)
+    ok, rev = result
+    if not ok:
+        return Response(
+            status_code=409,
+            content=json.dumps({"error": "revision_conflict", "revision": rev}),
+            media_type="application/json",
+        )
+    return {"ok": True, "revision": rev}
 
 
 # ---------- 聊天会话（多会话；会话内消息整表覆盖写）----------
@@ -343,6 +374,18 @@ async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
         parts.append(f"单镜时长：{int(req['durationSeconds'])} 秒")
     if str(req.get("visualStyle") or "").strip():
         parts.append(f"全局视觉风格：{str(req['visualStyle']).strip()}")
+    # 已有资产名单（类型化）：供分镜 @名称 引用与角色约束
+    assets = req.get("assets") if isinstance(req.get("assets"), list) else []
+    if assets:
+        label = {"character": "角色", "scene": "场景", "prop": "道具", "costume": "服饰"}
+        entries = [
+            f"- [{label.get(a.get('type'), a.get('type'))}] {a.get('name')}"
+            for a in assets
+            if str(a.get("name") or "").strip()
+        ]
+        if entries:
+            parts.append("已有资产名单：")
+            parts.extend(entries)
     parts.append("剧本：")
     parts.append(script)
     text = await skills.run_flow_blocking(flow_id, input_value="\n".join(parts))

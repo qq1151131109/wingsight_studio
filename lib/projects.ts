@@ -52,6 +52,7 @@ export async function loadCanvas(
   edges: unknown[];
   viewport: unknown;
   meta?: { visualStyle?: string };
+  revision?: number;
 } | null> {
   const r = await apiFetch(`${BASE}/${pid}/canvas`);
   if (r.status === 404) return { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } };
@@ -66,14 +67,24 @@ export async function saveCanvas(
     edges: unknown[];
     viewport: unknown;
     meta?: { visualStyle?: string };
+    /** 乐观锁：服务端 revision 不一致返回 conflict；0/缺省=不过检 */
+    revision?: number;
+    /** 用户显式覆盖服务器版本（跳过乐观锁） */
+    force?: boolean;
   },
-): Promise<boolean> {
+): Promise<{ ok: boolean; conflict: boolean; revision?: number }> {
   const r = await apiFetch(`${BASE}/${pid}/canvas`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(state),
   });
-  return r.ok;
+  if (r.status === 409) {
+    const body = (await r.json().catch(() => null)) as { revision?: number } | null;
+    return { ok: false, conflict: true, revision: body?.revision };
+  }
+  if (!r.ok) return { ok: false, conflict: false };
+  const data = (await r.json().catch(() => null)) as { ok?: boolean; revision?: number } | null;
+  return { ok: Boolean(data?.ok), conflict: false, revision: data?.revision };
 }
 
 /** 上传媒体/文档附件（粘贴/拖拽/选择共用），返回同源可访问的 URL；失败返回 null。

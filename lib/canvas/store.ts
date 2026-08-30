@@ -47,6 +47,8 @@ export interface ShotRow {
   imageUrl?: string;
   /** 批量出图物化的图片节点：缩略图读该节点实时数据，重生成=原节点重跑 */
   imageNodeId?: string;
+  /** 结构化 @引用（资产卡 id）：改名不失联；文本 @名称 仅作展示与兜底匹配 */
+  refIds?: string[];
 }
 
 /** 景别枚举（搬 novanova 十大景别，前后端/flow 提示词共用同一集合） */
@@ -131,6 +133,8 @@ interface CanvasState {
   viewport: Viewport;
   /** 当前项目（服务端持久化）；null = 尚未初始化 */
   projectId: string | null;
+  /** 服务端画布修订号（乐观锁：保存时带上，0=未同步不过检） */
+  rev: number;
   /** 项目级画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
    *  注入所有出图与分镜生成；存画布 meta，随项目持久化 */
   projectStyle: string;
@@ -178,7 +182,7 @@ interface CanvasState {
   /** 在语义操作前调用：把当前状态压入撤销栈 */
   commitHistory: () => void;
   /** 服务端保存状态（ProjectManager 写，画布上的保存指示器读） */
-  saveState: "idle" | "saving" | "saved" | "offline";
+  saveState: "idle" | "saving" | "saved" | "offline" | "conflict";
   setSaveState: (s: CanvasState["saveState"]) => void;
   /** @引用光环：选中生成卡时高亮它引用的卡片（瞬态，不入撤销栈） */
   haloIds: string[];
@@ -441,6 +445,7 @@ export const useCanvasStore = create<CanvasState>()(
       edges: [],
       viewport: { x: 0, y: 0, zoom: 1 },
       projectId: null,
+      rev: 0,
       projectStyle: "",
       projectName: "",
       hydrated: false,

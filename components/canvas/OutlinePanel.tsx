@@ -5,8 +5,8 @@
  * 节点清单 + 计数，点击选中并运镜定位；搜索过滤。补足小地图之外的结构化导航。
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { ListTree, Search, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Download, ListTree, Search, Upload, X } from "lucide-react";
 import {
   NODE_META,
   useCanvasStore,
@@ -14,6 +14,8 @@ import {
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
+import { sanitizeCanvas } from "@/lib/canvas/sanitize";
+import { reportError } from "@/lib/error-dialog";
 
 export default function OutlinePanel({ onClose }: { onClose: () => void }) {
   const nodes = useCanvasStore((s) => s.nodes);
@@ -44,6 +46,71 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
     );
   }, [nodes, q]);
 
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  /** 导出画布：结构 JSON（媒体文件仍在服务端 /agent-service/assets/） */
+  const exportCanvas = () => {
+    const st = useCanvasStore.getState();
+    const payload = {
+      app: "wingsight-canvas",
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      projectId: st.projectId,
+      projectName: st.projectName,
+      visualStyle: st.projectStyle,
+      viewport: st.viewport,
+      nodes: st.nodes.map((n) => {
+        const rest = { ...(n as Record<string, unknown>) };
+        delete rest.selected;
+        delete rest.dragging;
+        return rest;
+      }),
+      edges: st.edges,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `画布-${st.projectName || st.projectId || "未命名"}-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  /** 导入画布 JSON：校验 + 消毒 + 整体替换（含强制写回服务器） */
+  const importCanvas = async (file: File) => {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as {
+        app?: string;
+        nodes?: unknown[];
+        edges?: unknown[];
+        visualStyle?: string;
+        viewport?: unknown;
+      };
+      if (data.app !== "wingsight-canvas" || !Array.isArray(data.nodes) || !Array.isArray(data.edges)) {
+        reportError("导入失败", "文件不是 wingsight-canvas 导出的画布 JSON");
+        return;
+      }
+      const clean = sanitizeCanvas(data.nodes as never, data.edges as never);
+      const st = useCanvasStore.getState();
+      st.commitHistory();
+      st.replaceCanvas(clean.nodes, clean.edges, st.viewport);
+      useCanvasStore.setState({
+        projectStyle: String(data.visualStyle ?? ""),
+        rev: 0, // 导入视为覆盖意图：自动保存跳过乐观检直接写回服务器
+        saveState: "idle",
+      });
+      reportError(
+        "导入完成",
+        `载入 ${clean.nodes.length} 张卡片、${clean.edges.length} 条连线` +
+          (clean.removedNodes || clean.removedEdges
+            ? `（消毒剔除 ${clean.removedNodes} 个坏节点 / ${clean.removedEdges} 条坏连线）`
+            : ""),
+      );
+    } catch (exc) {
+      reportError("导入失败", exc instanceof Error ? exc.message : String(exc));
+    }
+  };
+
   const locate = (id: string) => {
     useCanvasStore.getState().selectNodes([id]);
     window.dispatchEvent(
@@ -58,6 +125,33 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
           <ListTree className="h-3.5 w-3.5" />
           画布大纲
         </h3>
+        <button
+          type="button"
+          title="导出画布 JSON（结构备份；媒体文件在服务端 assets）"
+          className="nodrag rounded p-0.5 text-text-4 hover:text-text"
+          onClick={exportCanvas}
+        >
+          <Download className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          title="导入画布 JSON（整体替换当前画布）"
+          className="nodrag rounded p-0.5 text-text-4 hover:text-text"
+          onClick={() => fileRef.current?.click()}
+        >
+          <Upload className="h-3.5 w-3.5" />
+        </button>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            e.target.value = "";
+            if (f) void importCanvas(f);
+          }}
+        />
         <button
           type="button"
           title="关闭（Esc）"

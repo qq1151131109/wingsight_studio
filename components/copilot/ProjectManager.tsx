@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useCanvasStore } from "@/lib/canvas/store";
+import { sanitizeCanvas } from "@/lib/canvas/sanitize";
 import {
   createProject,
   listProjects,
@@ -92,6 +93,7 @@ export default function ProjectManager() {
         edges: store.edges,
         viewport: store.viewport,
         meta: { visualStyle: store.projectStyle },
+        revision: store.rev > 0 ? store.rev : undefined,
       }).catch(() => undefined);
     }
     await activateProject({ id: pid, name: "", updated_at: "" });
@@ -123,6 +125,7 @@ export default function ProjectManager() {
         edges: s.edges,
         viewport: s.viewport,
         meta: { visualStyle: s.projectStyle },
+        revision: s.rev > 0 ? s.rev : undefined,
       });
     }, SYNC_DEBOUNCE_MS);
     return () => {
@@ -136,11 +139,13 @@ export default function ProjectManager() {
       if (!timer.current) return;
       const s = useCanvasStore.getState();
       if (s.projectId && s.hydrated) {
+        if (useCanvasStore.getState().saveState === "conflict") return; // 冲突未处理前不自动覆盖
         void persist(s.projectId, {
           nodes: s.nodes,
           edges: s.edges,
           viewport: s.viewport,
           meta: { visualStyle: s.projectStyle },
+          revision: s.rev > 0 ? s.rev : undefined,
         });
       }
     };
@@ -159,9 +164,13 @@ async function persist(
     edges: unknown[];
     viewport: unknown;
     meta?: { visualStyle?: string };
+    revision?: number;
+    force?: boolean;
   },
 ) {
   const run = saveChain.then(async () => {
+    // 冲突未处理前停止自动保存（避免反复 409 与静默覆盖）
+    if (useCanvasStore.getState().saveState === "conflict" && !payload.force) return;
     // 会话瞬态（选中/拖拽中）不落盘：否则重载项目会恢复上次的旧选区
     const nodes = payload.nodes.map((n) => {
       if (!n || typeof n !== "object") return n;
@@ -181,10 +190,22 @@ async function persist(
       /* 隐私模式等忽略 */
     }
     try {
-      await saveCanvas(pid, clean);
+      const res = await saveCanvas(pid, clean);
       // 仅当仍在本项目时更新状态（快速切换项目不被旧请求覆盖）
-      if (useCanvasStore.getState().projectId === pid) {
-        useCanvasStore.getState().setSaveState("saved");
+      if (useCanvasStore.getState().projectId !== pid) return;
+      if (res.conflict) {
+        // 乐观锁命中：服务器有更新的画布。停止自动保存，等用户在底部坞选择
+        // 「载入服务器版本」或「强制覆盖」
+        useCanvasStore.getState().setSaveState("conflict");
+        return;
+      }
+      if (res.ok) {
+        useCanvasStore.setState({
+          rev: res.revision ?? useCanvasStore.getState().rev,
+          saveState: "saved",
+        });
+      } else {
+        useCanvasStore.getState().setSaveState("offline");
       }
     } catch {
       if (useCanvasStore.getState().projectId === pid) {
@@ -202,13 +223,23 @@ async function activateProject(p: ProjectMeta) {
   try {
     const canvas = await loadCanvas(p.id);
     if (canvas) {
-      store.replaceCanvas(
+      const clean = sanitizeCanvas(
         canvas.nodes as never,
         canvas.edges as never,
+      );
+      if (clean.removedNodes || clean.removedEdges || clean.fixedParents) {
+        console.warn(
+          `[canvas] 装载消毒：剥离 ${clean.removedNodes} 个坏节点 / ${clean.removedEdges} 条坏连线 / ${clean.fixedParents} 个孤儿分组引用`,
+        );
+      }
+      store.replaceCanvas(
+        clean.nodes as never,
+        clean.edges as never,
         (canvas.viewport ?? { x: 0, y: 0, zoom: 1 }) as never,
       );
       useCanvasStore.setState({
         projectStyle: String((canvas as { meta?: { visualStyle?: string } }).meta?.visualStyle ?? ""),
+        rev: canvas.revision ?? 0,
       });
       if (!p.name) {
         const list = await listProjects();
@@ -221,9 +252,13 @@ async function activateProject(p: ProjectMeta) {
     // 服务端读取失败 → 本地缓存
   }
   const cached = readCache(p.id);
-  store.replaceCanvas(
+  const cc = sanitizeCanvas(
     (cached?.nodes ?? []) as never,
     (cached?.edges ?? []) as never,
+  );
+  store.replaceCanvas(
+    cc.nodes as never,
+    cc.edges as never,
     (cached?.viewport ?? { x: 0, y: 0, zoom: 1 }) as never,
   );
   if (!p.name) useCanvasStore.setState({ projectName: "" });

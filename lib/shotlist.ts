@@ -10,8 +10,8 @@ export async function generateShotlist(
     shotCount?: number;
     durationSeconds?: number;
     visualStyle?: string;
-    /** 画布已有角色名单（硬约束：分镜只用这些角色，不发明新角色） */
-    characters?: string[];
+    /** 画布已有资产名单（类型化）：分镜 @名称 引用 + 角色硬约束 */
+    assets?: { type: string; name: string }[];
   },
 ): Promise<ShotRow[]> {
   const r = await apiFetch("/agent-service/storyboard/generate", {

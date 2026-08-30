@@ -54,6 +54,7 @@ def init_db() -> None:
                 edges TEXT NOT NULL DEFAULT '[]',
                 viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
                 meta TEXT NOT NULL DEFAULT '{}',
+                revision INTEGER NOT NULL DEFAULT 1,
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS chat_threads (
@@ -99,6 +100,8 @@ def init_db() -> None:
         ccols = {r["name"] for r in conn.execute("PRAGMA table_info(canvases)")}
         if "meta" not in ccols:
             conn.execute("ALTER TABLE canvases ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
+        if "revision" not in ccols:
+            conn.execute("ALTER TABLE canvases ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
         _migrate_chat_to_threads(conn)
 
 
@@ -249,7 +252,8 @@ def load_canvas(pid: str, viewer: Any = ANON_VIEWER) -> Dict[str, Any] | None:
     assert_access(viewer, pid)
     with _conn() as conn:
         row = conn.execute(
-            "SELECT nodes, edges, viewport, meta FROM canvases WHERE project_id = ?", (pid,)
+            "SELECT nodes, edges, viewport, meta, revision FROM canvases WHERE project_id = ?",
+            (pid,),
         ).fetchone()
         if not row:
             return None
@@ -258,6 +262,7 @@ def load_canvas(pid: str, viewer: Any = ANON_VIEWER) -> Dict[str, Any] | None:
         "edges": json.loads(row["edges"]),
         "viewport": json.loads(row["viewport"]),
         "meta": json.loads(row["meta"] or "{}"),
+        "revision": int(row["revision"] or 1),
     }
 
 
@@ -268,7 +273,15 @@ def save_canvas(
     viewport: Any,
     meta: Any = None,
     viewer: Any = ANON_VIEWER,
-) -> bool:
+    expected_revision: int | None = None,
+    force: bool = False,
+) -> tuple[bool, int] | None:
+    """保存画布。乐观锁：expected_revision 与当前不一致且未 force 时返回 None
+    （调用方转 409 冲突）。成功返回 (True, 新 revision)。项目不存在返回 None。
+
+    返回值：(True, rev) 成功｜None 冲突或项目不存在——冲突与缺失由调用方
+    先行探测（load 一个不存在的项目会 404），这里用 None 模糊处理可接受。
+    """
     assert_access(viewer, pid)
     now = _now()
     with _conn() as conn:
@@ -276,27 +289,49 @@ def save_canvas(
             "SELECT 1 FROM projects WHERE id = ?", (pid,)
         ).fetchone()
         if not exists:
-            return False
-        conn.execute(
-            """
-            INSERT INTO canvases (project_id, nodes, edges, viewport, meta, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(project_id) DO UPDATE SET
-                nodes=excluded.nodes, edges=excluded.edges,
-                viewport=excluded.viewport, meta=excluded.meta,
-                updated_at=excluded.updated_at
-            """,
-            (
-                pid,
-                json.dumps(nodes, ensure_ascii=False),
-                json.dumps(edges, ensure_ascii=False),
-                json.dumps(viewport or {"x": 0, "y": 0, "zoom": 1}),
-                json.dumps(meta or {}, ensure_ascii=False),
-                now,
-            ),
-        )
+            return None
+        row = conn.execute(
+            "SELECT revision FROM canvases WHERE project_id = ?", (pid,)
+        ).fetchone()
+        current = int(row["revision"]) if row else 1
+        if expected_revision is not None and not force and current != int(expected_revision):
+            return (False, current)
+        new_rev = current + 1
+        if row:
+            conn.execute(
+                """
+                UPDATE canvases SET nodes=?, edges=?, viewport=?, meta=?,
+                    revision=?, updated_at=?
+                WHERE project_id=?
+                """,
+                (
+                    json.dumps(nodes, ensure_ascii=False),
+                    json.dumps(edges, ensure_ascii=False),
+                    json.dumps(viewport or {"x": 0, "y": 0, "zoom": 1}),
+                    json.dumps(meta or {}, ensure_ascii=False),
+                    new_rev,
+                    now,
+                    pid,
+                ),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO canvases (project_id, nodes, edges, viewport, meta, revision, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pid,
+                    json.dumps(nodes, ensure_ascii=False),
+                    json.dumps(edges, ensure_ascii=False),
+                    json.dumps(viewport or {"x": 0, "y": 0, "zoom": 1}),
+                    json.dumps(meta or {}, ensure_ascii=False),
+                    new_rev,
+                    now,
+                ),
+            )
         conn.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now, pid))
-    return True
+    return (True, new_rev)
 
 
 # ---------- 协作者（owner/admin 管理；协作者获得与 owner 同等编辑权） ----------
