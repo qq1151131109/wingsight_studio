@@ -101,8 +101,8 @@ export interface WingNodeData {
   visualStyle?: string;
   /** 分镜表：一次性远程触发生成旗标（剧本卡「拆分镜表」置位，本卡消费即清） */
   autoGenerate?: boolean;
-  /** 角色卡 Look 变体（juben 范式：身份图 × 服饰 = 多张定妆图）。
-   *  label=造型名（如 冬装/校服），costumeId 可关联服饰卡 */
+  /** 遗留字段（一卡一图重构前）：角色卡 Look 变体。UI 已不读写，仅装载时
+   *  经 sanitizeCanvas 迁移拆成独立图片卡并连线（角色→Look卡） */
   looks?: { label: string; imageUrl: string; costumeId?: string }[];
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";

@@ -355,15 +355,21 @@ async def start_decompose_job(
             state["assets"] = assets
             state["errors"] = errors
             if auto_looks and IMAGEGEN_FLOW_ID and DMX_API_KEY:
-                state["phase"] = "images"
-                # 名单同名 = 画布已有同名卡（flow 会沿用旧名）：其卡不受本次
-                # 建卡影响，自动出图产物没有落点，跳过省成本
-                existed_names = {
-                    str(e.get("name") or "").strip()
-                    for e in existing or []
-                    if str(e.get("type") or "") == "character"
-                }
-                await _auto_look_images(assets, state, visual_style, existed_names)
+                # 画风闸兜底（前端已拦，这里防 API 直调绕过）：无画风不自动出图
+                if not visual_style.strip():
+                    state["images_note"] = "未提供画风，已跳过自动出图"
+                else:
+                    state["phase"] = "images"
+                    # 名单同名 = 画布已有同名卡（flow 会沿用旧名）：其卡不受本次
+                    # 建卡影响，自动出图产物没有落点，跳过省成本
+                    existed_names = {
+                        str(e.get("name") or "").strip()
+                        for e in existing or []
+                        if str(e.get("type") or "") == "character"
+                    }
+                    await _auto_look_images(
+                        assets, state, visual_style, existed_names
+                    )
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
         finally:

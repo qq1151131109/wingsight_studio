@@ -34,6 +34,7 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 
 ## 架构铁律
 
+- **画风闸（juben image_style_required 范式）**：出图类操作（分镜批量出图 / 资产卡 AI 出图 / 拆解自动出图链）要求画风已选——全局画风或分镜表卡自身风格任一有值即可；无画风只拦视觉产物，文字流程（拆解/分镜表生成）与聊天自由出图不拦。前端三入口拦截 + `start_decompose_job` 兜底（visual_style 为空记 images_note）
 - 前端与 agent 间一切流量走**同源代理**（`next.config.ts` rewrites：`/agent-service*`、`/api/v1/*` → 127.0.0.1:8123）。密钥（AGENT/LANGFLOW/DMX key）只存在根目录 `.env.local`（agent 经 dotenv 读取），**绝不下发浏览器、绝不提交**
 - 主 Agent 是**瘦编排者**：系统提示只放"宪法"（`graph.py` SYSTEM_PROMPT），任务知识一律放 Langflow 技能或工具 docstring。新增能力 = 新工具/技能，不是加提示词
 - **LLM 生成类能力一律走 Langflow**（做成 flow，不在 agent 代码里直调模型/写死提示词）；唯一例外是聊天主循环本身（`graph.py` LangGraph 直连 DeepSeek）。约定与清单见下节「Langflow 工作流」

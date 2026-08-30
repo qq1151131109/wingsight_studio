@@ -417,6 +417,7 @@ async def api_assets_decompose_status(job_id: str, user: auth.CurrentUser):
         "status": job["status"],
         "phase": job.get("phase"),
         "progress": job.get("progress"),
+        "images_note": job.get("images_note"),
         "assets": job.get("assets"),
         "errors": job.get("errors"),
     }

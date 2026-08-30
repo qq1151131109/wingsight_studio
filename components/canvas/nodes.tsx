@@ -83,6 +83,7 @@ import {
   getShotImageJob,
   startCharacterImageJob,
   startShotImageJob,
+  type DecomposedLook,
 } from "@/lib/shotlist";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
@@ -1106,90 +1107,23 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const imgLabel = ASSET_IMAGE_LABEL[kind];
   const [uploading, setUploading] = useState(false);
   const [imgJob, setImgJob] = useState(false);
-  const [lookOpen, setLookOpen] = useState(false);
-  const [lookLabel, setLookLabel] = useState("");
-  const [lookCostumeId, setLookCostumeId] = useState("");
-  const [lookBusy, setLookBusy] = useState(false);
-  const [lookCostumes, setLookCostumes] = useState<WingNode[] | null>(null);
+  const [styleHint, setStyleHint] = useState("");
   const [zoom, setZoom] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
-  const looks = kind === "character" ? (d.looks ?? []) : [];
 
-  /** 生成 Look 变体（juben 协议）：参考图1=角色主图（身份锚点），
-   *  参考图2=关联服饰卡的设定图（服饰结构）；产物入 looks 并设为主图 */
-  const genLookVariant = async () => {
-    const label = lookLabel.trim();
-    if (lookBusy || !label) return;
-    const cur = useCanvasStore.getState();
-    const costume = lookCostumeId
-      ? cur.nodes.find((n) => n.id === lookCostumeId)
-      : null;
-    const refImages = [
-      (d.imageUrl as string | undefined),
-      (costume?.data.imageUrl as string | undefined),
-    ].filter(Boolean) as string[];
-    const description = [
-      `生成角色「${d.title || "角色"}」的 Look 造型定妆图：${label}。设定：${d.body ?? ""}`,
-      refImages[0]
-        ? "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，保持完全不变；忽略其服装、配饰、姿态与背景。"
-        : "",
-      costume
-        ? `参考图2（服饰结构参考）：目标服饰「${costume.data.title}」；形制、材质、配色以该图为准。`
-        : "",
-      `造型要求：${label}。`,
-    ]
-      .filter(Boolean)
-      .join(" ");
-    setLookBusy(true);
-    try {
-      const jobId = await startShotImageJob([
-        {
-          rid: id,
-          name: `${d.title || "角色"}·${label}`,
-          description,
-          assetType: "character",
-          referenceImages: refImages,
-        },
-      ]);
-      const deadline = Date.now() + 5 * 60 * 1000;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 2500));
-        let job;
-        try {
-          job = await getShotImageJob(jobId);
-        } catch {
-          if (Date.now() > deadline) throw new Error("出图超时");
-          continue;
-        }
-        const item = job.images[0];
-        if (item?.ok && item.imageUrl) {
-          update({
-            looks: [...(d.looks ?? []), { label, imageUrl: item.imageUrl, costumeId: lookCostumeId || undefined }],
-            imageUrl: item.imageUrl,
-            status: "ready",
-          });
-          setLookOpen(false);
-          setLookLabel("");
-          setLookCostumeId("");
-          return;
-        }
-        if (item?.error) throw new Error(item.error);
-        if (job.status === "done" || Date.now() > deadline)
-          throw new Error("出图失败");
-      }
-    } catch (exc) {
-      update({
-        status: "error",
-        errorMessage: exc instanceof Error ? exc.message : "Look 出图失败",
-      });
-    } finally {
-      setLookBusy(false);
-    }
-  };
+  /** AI 出主图（定妆照/概念图/设定图）：一张卡一张图。造型变体不再挂本卡
+   *  （拆解自动出图链已物化成独立图片卡并连线），历史 looks 数据装载时迁移 */
   const genLook = async () => {
     if (imgJob) return;
+    // 画风闸（juben image_style_required 同款）：设定图是全片一致性锚点，
+    // 无画风出图 = 风格随机漂移，拦下并引导底部坞
+    if (!projectStyle.trim()) {
+      setStyleHint("未选画风：请先在底部坞「画风」选项目画风，再 AI 出图");
+      return;
+    }
+    setStyleHint("");
     update({ status: "loading", errorMessage: undefined });
     setImgJob(true);
     try {
@@ -1329,7 +1263,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
         <button
           type="button"
           disabled={imgJob}
-          title={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）`}
+          title={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`}
           className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-dashed border-hairline px-2 py-1 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text disabled:opacity-40"
           onClick={(e) => {
             e.stopPropagation();
@@ -1340,100 +1274,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
           {imgJob ? "生成中…" : "AI 出图（按设定正文）"}
         </button>
       ) : null}
-      {kind === "character" ? (
-        <div className="ws-detail mt-1.5">
-          {looks.length > 0 ? (
-            <div className="mb-1 flex flex-wrap items-center gap-1">
-              {looks.map((lk) => (
-                <button
-                  key={lk.label + lk.imageUrl}
-                  type="button"
-                  title={`Look「${lk.label}」— 点击设为主图`}
-                  className={`nodrag flex items-center gap-1 rounded border p-0.5 transition-colors ${
-                    lk.imageUrl === d.imageUrl
-                      ? "border-accent"
-                      : "border-hairline-soft hover:border-accent-soft"
-                  }`}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    update({ imageUrl: lk.imageUrl, status: "ready" });
-                  }}
-                >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={lk.imageUrl} alt={lk.label} className="h-7 w-10 rounded object-cover" />
-                  <span className="pr-0.5 text-[9px] text-text-4">{lk.label}</span>
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {lookOpen ? (
-            <div className="flex flex-col gap-1 rounded-md border border-hairline bg-surface-2/60 p-1.5">
-              <input
-                value={lookLabel}
-                onChange={(e) => setLookLabel(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                placeholder="造型名（如：冬季校服）"
-                className="nodrag nowheel rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-2 outline-none focus:border-accent placeholder:text-text-4"
-              />
-              <select
-                value={lookCostumeId}
-                onChange={(e) => setLookCostumeId(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                title="关联服饰卡：其设定图将作为服饰结构参考（参考图2）"
-                className="nodrag nowheel rounded border border-hairline bg-surface-1 px-1 py-0.5 text-[10px] text-text-2 outline-none"
-              >
-                <option value="">关联服饰卡（可选）</option>
-                {(lookCostumes ?? []).map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.data.title || "未命名服饰"}
-                  </option>
-                ))}
-              </select>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  disabled={lookBusy || !lookLabel.trim()}
-                  className="nodrag rounded border border-accent bg-accent-dim px-1.5 py-0.5 text-[10px] font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void genLookVariant();
-                  }}
-                >
-                  {lookBusy ? "生成中…" : "生成 Look"}
-                </button>
-                <button
-                  type="button"
-                  className="nodrag text-[10px] text-text-4 hover:text-text"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setLookOpen(false);
-                  }}
-                >
-                  取消
-                </button>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              title="以当前定妆照为身份锚点，生成不同服饰/造型的 Look 变体（juben 协议）"
-              className="nodrag mt-1 flex items-center gap-0.5 text-[10px] text-text-4 transition-colors hover:text-accent"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!lookCostumes) {
-                  setLookCostumes(
-                    useCanvasStore
-                      .getState()
-                      .nodes.filter((n) => n.data.nodeType === "costume"),
-                  );
-                }
-                setLookOpen(true);
-              }}
-            >
-              <Plus className="h-3 w-3" /> Look 变体
-            </button>
-          )}
-        </div>
+      {styleHint ? (
+        <p className="ws-detail mt-1 text-[10px] text-warn">{styleHint}</p>
       ) : null}
       <Editable
         value={d.body ?? ""}
@@ -2843,12 +2685,16 @@ async function runAssetDecompose(opts: {
       )
       .map((n) => ({ type: String(n.data.nodeType), name: n.data.title as string }));
     // 全自动（juben 范式）：拆解后 agent 直接跑角色出图链（定妆照→逐 Look），
-    // 项目画风注入每张图；阶段进度经 onMsg 显示在卡上
+    // 项目画风注入每张图；阶段进度经 onMsg 显示在卡上。
+    // 画风闸：无全局画风时只拆文字不自动出图（与出图按钮同一道闸）
+    const styleReady = Boolean(
+      (useCanvasStore.getState().projectStyle ?? "").trim(),
+    );
     const { assets, errors: decompErrors } = await decomposeAssets(
       scriptSource,
       existing,
       {
-        autoLooks: true,
+        autoLooks: styleReady,
         visualStyle: useCanvasStore.getState().projectStyle ?? "",
         onPhase: ({ phase, progress }) => {
           if (phase === "images" && progress?.total)
@@ -2856,6 +2702,9 @@ async function runAssetDecompose(opts: {
         },
       },
     );
+    const styleNote = styleReady
+      ? ""
+      : "｜未选画风，未自动出图（底部坞「画风」选好后可在资产卡上单独出图）";
     const chars = assets;
     if (chars.length === 0) {
       opts.onMsg("剧本里没拆出可用资产");
@@ -2901,6 +2750,11 @@ async function runAssetDecompose(opts: {
         h: kh,
       });
       const ids: string[] = [];
+      const lookJobs: {
+        charId: string;
+        charName: string;
+        looks: DecomposedLook[];
+      }[] = [];
       fresh.forEach((a, i) => {
         const st2 = useCanvasStore.getState();
         const nid = st2.addNode({
@@ -2914,23 +2768,52 @@ async function runAssetDecompose(opts: {
             body: [a.description, a.visual_notes ? `视觉：${a.visual_notes}` : ""]
               .filter(Boolean)
               .join("\n"),
-            // 全自动出图产物：角色卡建卡即带定妆照与 Look 变体（可点击设主图）
+            // 全自动出图产物：定妆照即本卡唯一一张图（一张卡一张图）
             ...(a.image_url
-              ? {
-                  imageUrl: a.image_url,
-                  status: "ready" as const,
-                  looks: (a.looks ?? [])
-                    .filter((l) => l.image_url)
-                    .map((l) => ({
-                      label: l.label,
-                      imageUrl: l.image_url as string,
-                    })),
-                }
+              ? { imageUrl: a.image_url, status: "ready" as const }
               : {}),
           },
         });
         ids.push(nid);
+        // Look 造型图物化成独立图片卡（连线表达「派生自角色」），不在角色卡上挂多图
+        const looks = (a.looks ?? []).filter((l) => l.image_url);
+        if (type === "character" && looks.length > 0)
+          lookJobs.push({ charId: nid, charName: a.name, looks });
       });
+      // 角色组框右侧竖排 Look 卡（findFreePosition 整块避让锚点卡等已有内容）
+      for (const { charId, charName, looks } of lookJobs) {
+        const st2 = useCanvasStore.getState();
+        const lfp = { w: 176, h: 132 };
+        const lcols = Math.min(2, looks.length);
+        const low = lcols * (lfp.w + 32) - 32;
+        const loh = Math.ceil(looks.length / lcols) * (lfp.h + 32) - 32;
+        const lorigin = findFreePosition(
+          st2.nodes,
+          { x: origin.x + kw + 64, y: anchorY },
+          { w: low, h: loh },
+        );
+        looks.forEach((l, li) => {
+          const st3 = useCanvasStore.getState();
+          const lid = st3.addNode({
+            position: {
+              x: lorigin.x + (li % lcols) * (lfp.w + 32),
+              y: lorigin.y + Math.floor(li / lcols) * (lfp.h + 32),
+            },
+            style: { width: lfp.w, height: lfp.h },
+            data: {
+              nodeType: "image",
+              title: `${charName}·${l.label}`.slice(0, 40),
+              body: l.description ?? "",
+              imageUrl: l.image_url,
+              status: "ready" as const,
+            },
+          });
+          st3.connect({ source: charId, target: lid });
+          // 只进 created（选中/闪烁用），不进 ids——ids 会成为角色组框的
+          // 子节点（坐标转相对），Look 卡是画布层卡，不归组
+          created.push(lid);
+        });
+      }
       const gid = useCanvasStore.getState().groupNodes(ids, label);
       if (gid) groupIds.push(gid);
       created.push(...ids);
@@ -3041,9 +2924,11 @@ async function runAssetDecompose(opts: {
         ? `拆出 ${chars.length} 项资产：新建 ${created.length} 张` +
             (kindSummary ? `（${kindSummary}）` : "") +
             (existed ? `，${existed} 项已存在跳过` : "") +
-            (failNote ? `｜部分类型失败：${failNote}` : "")
+            (failNote ? `｜部分类型失败：${failNote}` : "") +
+            styleNote
         : `${existed} 项资产均已存在，未新建` +
-            (failNote ? `｜部分类型失败：${failNote}` : ""),
+            (failNote ? `｜部分类型失败：${failNote}` : "") +
+            styleNote,
     );
   } catch (exc) {
     opts.onError(exc instanceof Error ? exc.message : "拆解失败");
@@ -3234,13 +3119,33 @@ function ShotListCard({ data, id, selected }: NodeProps) {
 
   /** 文本 @名称 兜底匹配：最长优先（防“小雨”误命中“小雨萍”），
    *  已命中的区间不再被更短名覆盖；含服饰在内的四类资产 */
+  // Look 图卡判定：image 卡且有来自资产卡的连线 = 派生参考图（一张卡一张图
+  // 重构后，造型变体都是这种卡）；可被行内 @ 引用，出图时当一致性参考
+  const isLook = (n: WingNode | undefined) =>
+    Boolean(
+      n &&
+        n.data.nodeType === "image" &&
+        n.data.title &&
+        edges.some(
+          (e) =>
+            e.target === n.id &&
+            ["character", "scene", "prop", "costume"].includes(
+              String(nodes.find((m) => m.id === e.source)?.data.nodeType),
+            ),
+        ),
+    );
+
   const mentionedRefIds = (text: string) => {
+    // 资产卡 + 角色派生的 Look 图卡（有连线来源的 image 卡）都可被 @；
+    // 长名优先匹配防「@角色名」误吞「@角色名·造型」
     const cands = nodes
       .filter(
         (n) =>
-          ["character", "scene", "prop", "costume"].includes(
+          (["character", "scene", "prop", "costume"].includes(
             String(n.data.nodeType),
-          ) && n.data.title,
+          ) ||
+            isLook(n)) &&
+          n.data.title,
       )
       .sort(
         (a, b) =>
@@ -3302,6 +3207,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
    *  批量生成（并发 3，不经聊天 LLM），结果回填各节点。行缩略图读关联节点 */
   const genShotImages = async (targets: { row: ShotRow; seq: number }[]) => {
     if (imgGenerating || targets.length === 0) return;
+    // 画风闸（juben 硬闸 / novanova 画布线「请先填写视觉风格」同款）：
+    // 全局画风或本卡风格至少有一，否则同批镜头图风格必然漂移
+    if (!projectStyle.trim() && !(d.visualStyle ?? "").trim()) {
+      setGenError(
+        "未选画风：请先在底部坞「画风」选项目画风（或在本卡「分镜表风格」填写）再出图",
+      );
+      return;
+    }
     const st = useCanvasStore.getState();
     const src = st.nodes.find((n) => n.id === id);
     if (!src) return;
@@ -3464,7 +3377,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   };
 
   const totalDur = rows.reduce((sum, r) => {
-    const m = (r.duration ?? "").match(/(\d+(?:\.\d+)?)/);
+    // LLM 可能返回数字型 duration（JSON 数值），String 化防 .match 崩渲染树
+    const m = String(r.duration ?? "").match(/(\d+(?:\.\d+)?)/);
     return sum + (m ? parseFloat(m[1]) : 0);
   }, 0);
 
@@ -3817,9 +3731,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               {(() => {
                 const cands = nodes.filter(
                   (n) =>
-                    ["character", "scene", "prop", "costume"].includes(
+                    (["character", "scene", "prop", "costume"].includes(
                       String(n.data.nodeType),
-                    ) &&
+                    ) ||
+                      isLook(n)) &&
                     n.data.title &&
                     (n.data.title as string).includes(mention.draft),
                 );
