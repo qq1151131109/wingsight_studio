@@ -18,6 +18,9 @@ export type WingNodeType =
   | "note"
   | "script"
   | "character"
+  | "scene"
+  | "prop"
+  | "costume"
   | "image"
   | "video"
   | "audio"
@@ -40,8 +43,10 @@ export interface ShotRow {
   sound?: string;
   /** 最终提示词（行内合成或手写，出图时优先使用） */
   finalPrompt?: string;
-  /** 该镜头的出图结果（镜头级生成回填） */
+  /** 该镜头的出图结果（镜头级生成回填；直连批量出图时代存于关联节点） */
   imageUrl?: string;
+  /** 批量出图物化的图片节点：缩略图读该节点实时数据，重生成=原节点重跑 */
+  imageNodeId?: string;
 }
 
 /** 景别枚举（搬 novanova 十大景别，前后端/flow 提示词共用同一集合） */
@@ -90,6 +95,11 @@ export interface WingNodeData {
   locked?: boolean;
   /** 分镜表：镜头行 */
   rows?: ShotRow[];
+  /** 分镜表：全局视觉风格（约束所有镜头的描述与出图，novanova visualStyle） */
+  visualStyle?: string;
+  /** 角色卡 Look 变体（juben 范式：身份图 × 服饰 = 多张定妆图）。
+   *  label=造型名（如 冬装/校服），costumeId 可关联服饰卡 */
+  looks?: { label: string; imageUrl: string; costumeId?: string }[];
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
@@ -121,9 +131,13 @@ interface CanvasState {
   viewport: Viewport;
   /** 当前项目（服务端持久化）；null = 尚未初始化 */
   projectId: string | null;
+  /** 项目级画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
+   *  注入所有出图与分镜生成；存画布 meta，随项目持久化 */
+  projectStyle: string;
   projectName: string;
   /** 初始装载完成前不同步到服务端 */
   hydrated: boolean;
+  setProjectStyle: (style: string) => void;
   setProject: (id: string, name: string) => void;
   replaceCanvas: (
     nodes: WingNode[],
@@ -252,6 +266,9 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   note: { w: 280, h: 170 },
   script: { w: 352, h: 260 },
   character: { w: 256, h: 300 },
+  scene: { w: 320, h: 240 },
+  prop: { w: 256, h: 240 },
+  costume: { w: 256, h: 240 },
   image: { w: 256, h: 260 },
   video: { w: 320, h: 300 },
   audio: { w: 280, h: 190 },
@@ -424,6 +441,7 @@ export const useCanvasStore = create<CanvasState>()(
       edges: [],
       viewport: { x: 0, y: 0, zoom: 1 },
       projectId: null,
+      projectStyle: "",
       projectName: "",
       hydrated: false,
       canUndoNow: false,
@@ -433,6 +451,7 @@ export const useCanvasStore = create<CanvasState>()(
       alignGuides: { x: [], y: [] },
       clipboardCount: 0,
 
+      setProjectStyle: (style) => set({ projectStyle: style }),
       setSaveState: (saveState) => set({ saveState }),
       setHaloIds: (ids) => set({ haloIds: ids }),
       setAlignGuides: (g) => set({ alignGuides: g }),
@@ -640,6 +659,8 @@ export const useCanvasStore = create<CanvasState>()(
         get().commitHistory();
         set((s) => ({
           nodes: [
+            // xyflow 要求父节点在 children 之前（否则告警 + z 序不稳）
+            groupNode,
             ...s.nodes.map((n) =>
               targetIds.has(n.id)
                 ? ({
@@ -1129,6 +1150,9 @@ export const NODE_META: Record<
   note: { label: "文本", dot: "var(--color-warm)", hint: "自由文本" },
   script: { label: "剧本", dot: "var(--color-accent)", hint: "故事大纲或分场剧本" },
   character: { label: "角色", dot: "var(--color-good)", hint: "角色设定卡" },
+  scene: { label: "场景", dot: "var(--color-cool)", hint: "场景概念图 / 空间参考" },
+  prop: { label: "道具", dot: "var(--color-warm)", hint: "道具设定 / 单件参考" },
+  costume: { label: "服饰", dot: "var(--color-accent-2)", hint: "服饰设定 / Look 素材" },
   image: { label: "图片", dot: "var(--color-warn)", hint: "设定图 / 参考图占位" },
   video: { label: "视频", dot: "var(--color-cool)", hint: "镜头视频 / 动态预览" },
   audio: { label: "音频", dot: "var(--color-danger)", hint: "配音 / 音效 / BGM" },

@@ -47,7 +47,12 @@ export async function deleteProject(pid: string): Promise<boolean> {
 
 export async function loadCanvas(
   pid: string,
-): Promise<{ nodes: unknown[]; edges: unknown[]; viewport: unknown } | null> {
+): Promise<{
+  nodes: unknown[];
+  edges: unknown[];
+  viewport: unknown;
+  meta?: { visualStyle?: string };
+} | null> {
   const r = await apiFetch(`${BASE}/${pid}/canvas`);
   if (r.status === 404) return { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } };
   if (!r.ok) throw new Error(`读取画布失败：${r.status}`);
@@ -56,7 +61,12 @@ export async function loadCanvas(
 
 export async function saveCanvas(
   pid: string,
-  state: { nodes: unknown[]; edges: unknown[]; viewport: unknown },
+  state: {
+    nodes: unknown[];
+    edges: unknown[];
+    viewport: unknown;
+    meta?: { visualStyle?: string };
+  },
 ): Promise<boolean> {
   const r = await apiFetch(`${BASE}/${pid}/canvas`, {
     method: "PUT",

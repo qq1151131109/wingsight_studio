@@ -91,6 +91,7 @@ export default function ProjectManager() {
         nodes: store.nodes,
         edges: store.edges,
         viewport: store.viewport,
+        meta: { visualStyle: store.projectStyle },
       }).catch(() => undefined);
     }
     await activateProject({ id: pid, name: "", updated_at: "" });
@@ -109,6 +110,7 @@ export default function ProjectManager() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
   const viewport = useCanvasStore((s) => s.viewport);
+  const projectStyle = useCanvasStore((s) => s.projectStyle);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!projectId || !useCanvasStore.getState().hydrated) return;
@@ -120,12 +122,13 @@ export default function ProjectManager() {
         nodes: s.nodes,
         edges: s.edges,
         viewport: s.viewport,
+        meta: { visualStyle: s.projectStyle },
       });
     }, SYNC_DEBOUNCE_MS);
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [projectId, nodes, edges, viewport]);
+  }, [projectId, nodes, edges, viewport, projectStyle]);
 
   // ---------- 离开工作台：冲刷未落盘的修改 ----------
   useEffect(() => {
@@ -137,6 +140,7 @@ export default function ProjectManager() {
           nodes: s.nodes,
           edges: s.edges,
           viewport: s.viewport,
+          meta: { visualStyle: s.projectStyle },
         });
       }
     };
@@ -150,7 +154,12 @@ export default function ProjectManager() {
 let saveChain: Promise<unknown> = Promise.resolve();
 async function persist(
   pid: string,
-  payload: { nodes: unknown[]; edges: unknown[]; viewport: unknown },
+  payload: {
+    nodes: unknown[];
+    edges: unknown[];
+    viewport: unknown;
+    meta?: { visualStyle?: string };
+  },
 ) {
   const run = saveChain.then(async () => {
     // 会话瞬态（选中/拖拽中）不落盘：否则重载项目会恢复上次的旧选区
@@ -198,6 +207,9 @@ async function activateProject(p: ProjectMeta) {
         canvas.edges as never,
         (canvas.viewport ?? { x: 0, y: 0, zoom: 1 }) as never,
       );
+      useCanvasStore.setState({
+        projectStyle: String((canvas as { meta?: { visualStyle?: string } }).meta?.visualStyle ?? ""),
+      });
       if (!p.name) {
         const list = await listProjects();
         const meta = list.find((x) => x.id === p.id);

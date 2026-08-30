@@ -53,6 +53,7 @@ def init_db() -> None:
                 nodes TEXT NOT NULL DEFAULT '[]',
                 edges TEXT NOT NULL DEFAULT '[]',
                 viewport TEXT NOT NULL DEFAULT '{"x":0,"y":0,"zoom":1}',
+                meta TEXT NOT NULL DEFAULT '{}',
                 updated_at TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS chat_threads (
@@ -94,6 +95,10 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE projects ADD COLUMN collaborators TEXT NOT NULL DEFAULT '[]'"
             )
+        # 存量库升级：画布 meta 列（项目级画风等扩展配置，幂等）
+        ccols = {r["name"] for r in conn.execute("PRAGMA table_info(canvases)")}
+        if "meta" not in ccols:
+            conn.execute("ALTER TABLE canvases ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'")
         _migrate_chat_to_threads(conn)
 
 
@@ -244,7 +249,7 @@ def load_canvas(pid: str, viewer: Any = ANON_VIEWER) -> Dict[str, Any] | None:
     assert_access(viewer, pid)
     with _conn() as conn:
         row = conn.execute(
-            "SELECT nodes, edges, viewport FROM canvases WHERE project_id = ?", (pid,)
+            "SELECT nodes, edges, viewport, meta FROM canvases WHERE project_id = ?", (pid,)
         ).fetchone()
         if not row:
             return None
@@ -252,10 +257,18 @@ def load_canvas(pid: str, viewer: Any = ANON_VIEWER) -> Dict[str, Any] | None:
         "nodes": json.loads(row["nodes"]),
         "edges": json.loads(row["edges"]),
         "viewport": json.loads(row["viewport"]),
+        "meta": json.loads(row["meta"] or "{}"),
     }
 
 
-def save_canvas(pid: str, nodes: Any, edges: Any, viewport: Any, viewer: Any = ANON_VIEWER) -> bool:
+def save_canvas(
+    pid: str,
+    nodes: Any,
+    edges: Any,
+    viewport: Any,
+    meta: Any = None,
+    viewer: Any = ANON_VIEWER,
+) -> bool:
     assert_access(viewer, pid)
     now = _now()
     with _conn() as conn:
@@ -266,17 +279,19 @@ def save_canvas(pid: str, nodes: Any, edges: Any, viewport: Any, viewer: Any = A
             return False
         conn.execute(
             """
-            INSERT INTO canvases (project_id, nodes, edges, viewport, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO canvases (project_id, nodes, edges, viewport, meta, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(project_id) DO UPDATE SET
                 nodes=excluded.nodes, edges=excluded.edges,
-                viewport=excluded.viewport, updated_at=excluded.updated_at
+                viewport=excluded.viewport, meta=excluded.meta,
+                updated_at=excluded.updated_at
             """,
             (
                 pid,
                 json.dumps(nodes, ensure_ascii=False),
                 json.dumps(edges, ensure_ascii=False),
                 json.dumps(viewport or {"x": 0, "y": 0, "zoom": 1}),
+                json.dumps(meta or {}, ensure_ascii=False),
                 now,
             ),
         )

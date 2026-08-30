@@ -21,9 +21,18 @@ from typing_extensions import Literal
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
 DECOMPOSE_FLOW_ID = os.environ.get("LANGFLOW_DECOMPOSE_FLOW_ID", "")
+# 分类型拆解 flow（ai-moive-studio 范式：角色/场景/道具各自独立调用，
+# 单次输出小、按类型定制提示词、三路并发、单类失败不拖累其他）
+DECOMPOSE_FLOW_IDS = {
+    "character": os.environ.get("LANGFLOW_DECOMPOSE_CHARACTER_FLOW_ID", ""),
+    "scene": os.environ.get("LANGFLOW_DECOMPOSE_SCENE_FLOW_ID", ""),
+    "prop": os.environ.get("LANGFLOW_DECOMPOSE_PROP_FLOW_ID", ""),
+}
 IMAGEGEN_FLOW_ID = os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID", "")
 DMX_API_KEY = os.environ.get("DMX_API_KEY", "")
 VOLC_SEARCH_API_KEY = os.environ.get("VOLC_SEARCH_API_KEY", "")
+# 出图参考图回给 langflow 下载用的本机地址（/assets 未鉴权、文件名随机 hex）
+AGENT_BASE_URL = os.environ.get("AGENT_BASE_URL", "http://127.0.0.1:8123")
 
 # 生成图片的对外暴露目录（main.py 挂 /assets 端点，前端经 /agent-service/assets/ 访问）
 ASSETS_DIR = Path(__file__).resolve().parent / "static" / "assets"
@@ -122,43 +131,146 @@ def _extract_json_object(text: str) -> Optional[str]:
 
 async def decompose_script(script: str) -> str:
     """调拆解 flow 并严格校验，返回给 LLM 的清单文本。"""
-    if not DECOMPOSE_FLOW_ID:
-        return "（未配置 LANGFLOW_DECOMPOSE_FLOW_ID，资产拆解技能不可用）"
+    try:
+        assets, errors = await decompose_script_assets(script)
+    except RuntimeError as exc:
+        return f"拆解技能调用失败：{exc}"
+    if not assets:
+        return "（拆解结果为空：剧本里没有拆出任何资产）"
+
+    lines = [f"共拆出 {len(assets)} 个资产："]
+    for i, a in enumerate(assets, 1):
+        label = {"character": "角色", "scene": "场景", "prop": "道具"}[a["type"]]
+        lines.append(
+            f"{i}. [{label}] {a['name']}｜{a['description']}"
+            + (f"｜视觉：{a['visual_notes']}" if a["visual_notes"] else "")
+        )
+    if errors:
+        lines.append(
+            "（部分类型拆解失败：" + "；".join(f"{t}: {e}" for t, e in errors.items()) + "）"
+        )
+    return "\n".join(lines)
+
+
+async def decompose_script_assets(
+    script: str,
+    existing: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
+    """拆解剧本为结构化资产清单（直连端点用）。
+
+    配置了三个分类型 flow 时三路并发调用（各拆一类，单类失败记入
+    errors 不拖累其他）；否则回落到单一合并 flow。existing：画布已有
+    资产 [{type, name}]，注入名单让 LLM 沿用旧名（跨次拆解去重合并）。
+    返回 (assets, errors)；assets 为空时 errors 至少含一条。
+    """
+    rosters = {
+        t: [e for e in existing or [] if e.get("type") == t]
+        for t in DECOMPOSE_FLOW_IDS
+    }
+    if all(DECOMPOSE_FLOW_IDS[t] for t in DECOMPOSE_FLOW_IDS):
+
+        async def one(ttype: str) -> List[Dict[str, Any]]:
+            return await _decompose_one_type(
+                DECOMPOSE_FLOW_IDS[ttype], ttype, script, rosters[ttype]
+            )
+
+        results = await asyncio.gather(
+            *[one(t) for t in DECOMPOSE_FLOW_IDS], return_exceptions=True
+        )
+        merged: List[Dict[str, Any]] = []
+        errors: Dict[str, str] = {}
+        for ttype, res in zip(DECOMPOSE_FLOW_IDS, results):
+            if isinstance(res, BaseException):
+                errors[ttype] = str(res)[:200]
+            else:
+                merged.extend(res)
+        return merged, errors
+
+    merged, errors = await _decompose_legacy(script, existing)
+    return merged, errors
+
+
+async def _decompose_one_type(
+    flow_id: str,
+    ttype: str,
+    script: str,
+    roster: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    parts = []
+    if roster:
+        parts.append("已有资产名单：")
+        parts.extend(f"- [{a.get('type', '')}] {a.get('name', '')}" for a in roster)
+    parts.append("剧本：")
+    parts.append(script)
 
     raw = await run_flow_blocking(
-        DECOMPOSE_FLOW_ID,
-        input_value=script,
-        # 拆解要确定性：每次调用定点压低温度，不依赖 flow 里的设置
+        flow_id,
+        input_value="\n".join(parts),
         tweaks={"LanguageModelComponent": {"temperature": 0.1}},
     )
     if raw.startswith("（"):
-        return f"拆解技能调用失败：{raw}"
-
+        raise RuntimeError(raw.strip("（）"))
     obj_text = _extract_json_object(raw)
     if not obj_text:
-        return (
-            "拆解技能返回的不是 JSON（可能提示词被改动过）。原始输出前 300 字：\n"
-            + raw[:300]
-        )
+        raise RuntimeError(f"返回的不是 JSON。原始输出前 160 字：{raw[:160]}")
     try:
         asset_list = AssetList.model_validate_json(obj_text)
     except ValidationError as exc:
-        return (
-            "拆解结果未通过结构校验，请告诉用户拆解技能的输出格式有问题。问题：\n"
-            + str(exc.errors()[:3])
+        raise RuntimeError(f"未通过结构校验：{exc.errors()[:3]}") from exc
+    # flow 提示词已限定类型，这里再强制对齐一次（防模型串类）
+    return [
+        {"type": ttype, "name": a.name, "description": a.description, "visual_notes": a.visual_notes}
+        for a in asset_list.assets
+    ]
+
+
+async def _decompose_legacy(
+    script: str,
+    existing: Optional[List[Dict[str, Any]]] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
+    if not DECOMPOSE_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_DECOMPOSE_*_FLOW_ID（分类型）或 LANGFLOW_DECOMPOSE_FLOW_ID（合并）"
         )
 
-    if not asset_list.assets:
-        return "（拆解结果为空：剧本里没有拆出任何资产）"
+    parts = []
+    if existing:
+        lines = [
+            f"- [{a.get('type', '')}] {a.get('name', '')}"
+            for a in existing
+            if str(a.get("name", "")).strip()
+        ]
+        if lines:
+            parts.append("已有资产名单：")
+            parts.extend(lines)
+    parts.append("剧本：")
+    parts.append(script)
 
-    lines = [f"共拆出 {len(asset_list.assets)} 个资产："]
-    for i, a in enumerate(asset_list.assets, 1):
-        label = {"character": "角色", "scene": "场景", "prop": "道具"}[a.type]
-        lines.append(
-            f"{i}. [{label}] {a.name}｜{a.description}"
-            + (f"｜视觉：{a.visual_notes}" if a.visual_notes else "")
-        )
-    return "\n".join(lines)
+    raw = await run_flow_blocking(
+        DECOMPOSE_FLOW_ID,
+        input_value="\n".join(parts),
+        tweaks={"LanguageModelComponent": {"temperature": 0.1}},
+    )
+    if raw.startswith("（"):
+        raise RuntimeError(raw.strip("（）"))
+
+    obj_text = _extract_json_object(raw)
+    if not obj_text:
+        raise RuntimeError(f"拆解技能返回的不是 JSON。原始输出前 200 字：{raw[:200]}")
+    try:
+        asset_list = AssetList.model_validate_json(obj_text)
+    except ValidationError as exc:
+        raise RuntimeError(f"拆解结果未通过结构校验：{exc.errors()[:3]}") from exc
+
+    return [
+        {
+            "type": a.type,
+            "name": a.name,
+            "description": a.description,
+            "visual_notes": a.visual_notes,
+        }
+        for a in asset_list.assets
+    ], {}
 
 
 # ---------- 资产出图 ----------
@@ -241,25 +353,139 @@ async def _emit_progress(config: Any, message: str) -> None:
         print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
 
 
+def _extract_image_url(raw: str) -> Optional[str]:
+    """从单次出图 flow 结果里解析图片并归档到 /agent-service/assets/。
+
+    成功返回可访问 URL；失败返回 None（调用方决定如何汇报错误）。
+    """
+    obj_text = _extract_json_object(raw) or _extract_json_objects_loose(raw)
+    if not obj_text:
+        return None
+    try:
+        parsed = json.loads(obj_text)
+        r = parsed[0] if isinstance(parsed, list) else parsed
+        if r.get("status") == "ok" and r.get("image_path"):
+            src = Path(r["image_path"])
+            if src.is_file():
+                ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+                dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
+                shutil.copy2(src, ASSETS_DIR / dest)
+                return f"/agent-service/assets/{dest}"
+    except (json.JSONDecodeError, IndexError, KeyError):
+        pass
+    return None
+
+
 def _format_asset_result(name: str, raw: str) -> str:
     """把单资产 flow 结果整理为一行汇报（成功附 image_url）。"""
+    url = _extract_image_url(raw)
+    if url:
+        return f"✓ {name}｜image_url={url}"
     if raw.startswith("（"):
         return f"✗ {name}｜调用失败：{raw[:100]}"
-    obj_text = _extract_json_object(raw) or _extract_json_objects_loose(raw)
-    if obj_text:
-        try:
-            parsed = json.loads(obj_text)
-            r = parsed[0] if isinstance(parsed, list) else parsed
-            if r.get("status") == "ok" and r.get("image_path"):
-                src = Path(r["image_path"])
-                if src.is_file():
-                    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-                    dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
-                    shutil.copy2(src, ASSETS_DIR / dest)
-                    return f"✓ {name}｜image_url=/agent-service/assets/{dest}"
-        except (json.JSONDecodeError, IndexError, KeyError):
-            pass
     return f"✗ {name}｜结果解析失败：{raw[:100]}"
+
+
+# 分镜批量出图任务表：jobId -> {"status": running|done, "images": {rid: result}}
+# Next 同源代理对长请求约 30s 就掐断，批量出图必须异步任务 + 前端轮询
+STORYBOARD_IMAGE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def _prune_storyboard_image_jobs() -> None:
+    done = [k for k, v in STORYBOARD_IMAGE_JOBS.items() if v["status"] == "done"]
+    for k in done[:-49]:  # 最多保留 49 个已完成任务
+        STORYBOARD_IMAGE_JOBS.pop(k, None)
+
+
+def get_storyboard_image_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return STORYBOARD_IMAGE_JOBS.get(job_id)
+
+
+async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
+    """启动分镜行批量出图任务（直连 imagegen flow，并发 3，不经聊天）。
+
+    shots: [{rid, name, description, visual_notes?}]，字段与出图 flow 的
+    资产载荷一致（type 固定 scene，镜头画面不是角色设定图）。
+    立即返回 jobId；每张完成即写入任务状态，前端轮询增量取走。
+    """
+    if not IMAGEGEN_FLOW_ID:
+        raise RuntimeError("未配置 LANGFLOW_IMAGEGEN_FLOW_ID（flow 见 agent/flows/asset-imagegen.json）")
+    if not DMX_API_KEY:
+        raise RuntimeError("未配置 DMX_API_KEY，出图不可用")
+    _prune_storyboard_image_jobs()
+
+    # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
+    # 搜索 key，剥掉后走纯文生图
+    if not VOLC_SEARCH_API_KEY:
+        shots = [{k: v for k, v in s.items() if k != "search_query"} for s in shots]
+
+    job_id = uuid.uuid4().hex[:12]
+    STORYBOARD_IMAGE_JOBS[job_id] = {
+        "status": "running",
+        "images": {str(s.get("rid", "")): {"rid": str(s.get("rid", "")), "ok": False} for s in shots},
+    }
+
+    sem = asyncio.Semaphore(3)
+
+    async def one(shot: Dict[str, Any]) -> None:
+        rid = str(shot.get("rid", ""))
+        # flow 载荷只认 {type,name,description,visual_notes,reference_images?,search_query?}：
+        # rid 不能进 payload（会被渲染进出图提示词）。
+        # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
+        # 组件里 json.loads 会报 Invalid control character
+        def flat(value: Any) -> str:
+            return " ".join(str(value or "").split())
+
+        payload: Dict[str, Any] = {
+            "type": flat(shot.get("assetType") or "scene"),
+            "name": flat(shot.get("name") or rid or "镜头"),
+            "description": flat(shot.get("description")),
+        }
+        if shot.get("visual_notes"):
+            payload["visual_notes"] = flat(shot["visual_notes"])
+        # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
+        # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）
+        ref_images = [
+            AGENT_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
+            if u.startswith(("/agent-service/assets/", "/assets/"))
+            else str(u)
+            for u in (shot.get("referenceImages") or [])
+            if str(u).strip()
+        ]
+        if ref_images:
+            payload["reference_images"] = ref_images
+        async with sem:
+            result: Dict[str, Any]
+            try:
+                raw = await run_flow_blocking(
+                    IMAGEGEN_FLOW_ID,
+                    tweaks={
+                        "BatchAssetSheet-img02": {
+                            "assets_payload": json.dumps(
+                                {"assets": [payload]}, ensure_ascii=False
+                            ),
+                            "api_key": DMX_API_KEY,
+                        }
+                    },
+                )
+            except Exception as e:  # noqa: BLE001
+                result = {"rid": rid, "ok": False, "error": str(e)[:200]}
+            else:
+                url = _extract_image_url(raw)
+                if url:
+                    result = {"rid": rid, "ok": True, "imageUrl": url}
+                else:
+                    result = {"rid": rid, "ok": False, "error": raw[:200]}
+            STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = result
+
+    async def run() -> None:
+        try:
+            await asyncio.gather(*[one(s) for s in shots])
+        finally:
+            STORYBOARD_IMAGE_JOBS[job_id]["status"] = "done"
+
+    asyncio.create_task(run())
+    return job_id
 
 
 def _extract_json_objects_loose(text: str) -> Optional[str]:

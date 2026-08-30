@@ -33,15 +33,19 @@ import {
   History,
   Image as ImageIcon,
   Info,
+  Landmark,
   Lock,
   LockOpen,
+  Loader2,
   Maximize2,
   Music,
+  Package,
   Pause,
   Play,
   Plus,
   RefreshCw,
   ScanSearch,
+  Shirt,
   Trash2,
   Upload,
   X,
@@ -67,13 +71,18 @@ import {
   FOCUS_NODES_EVENT,
   FRAME_ANALYSIS_EVENT,
   NODE_INFO_EVENT,
-  ROW_GENERATE_EVENT,
   type FocusEditDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
 import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
 import { composeVideos, uploadAsset } from "@/lib/projects";
-import { generateShotlist } from "@/lib/shotlist";
+import {
+  decomposeAssets,
+  generateShotlist,
+  getShotImageJob,
+  startCharacterImageJob,
+  startShotImageJob,
+} from "@/lib/shotlist";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 
@@ -141,6 +150,9 @@ const PLUS_MENU_TYPES: WingNodeType[] = [
   "audio",
   "script",
   "character",
+  "scene",
+  "prop",
+  "costume",
   "storyboard",
   "shotlist",
 ];
@@ -711,6 +723,7 @@ function Editable({
       <textarea
         ref={ref}
         value={value}
+        placeholder={placeholder}
         rows={multiline ? Math.min(10, Math.max(always ? 1 : 3, value.split("\n").length)) : 1}
         onBlur={commit}
         onChange={(e) => {
@@ -923,15 +936,170 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 角色卡：定妆照槽位（上传/引用一致性锚点）+ 设定正文 */
-function CharacterCard({ data, id, selected }: NodeProps) {
+/** 资产卡（character/scene/prop 三态同构）：设定图槽位（上传/AI 出图）+ 设定正文。
+ *  设定图是分镜图一致性锚点（ai-moive-studio 的 look-dev 步骤）：
+ *  分镜行 @资产名 出图时会把设定图作为参考图传给出图 flow */
+const ASSET_ICON = {
+  character: Drama,
+  scene: Landmark,
+  prop: Package,
+  costume: Shirt,
+} as const;
+const ASSET_IMAGE_LABEL = {
+  character: "定妆照",
+  scene: "概念图",
+  prop: "设定图",
+  costume: "服饰结构图",
+} as const;
+const ASSET_EMPTY = {
+  character: { hint: "上传定妆照", sub: "角色一致性锚点" },
+  scene: { hint: "上传概念图", sub: "场景一致性锚点" },
+  prop: { hint: "上传设定图", sub: "道具一致性锚点" },
+  costume: { hint: "上传服饰结构图", sub: "服饰一致性锚点" },
+} as const;
+const ASSET_BODY_PH = {
+  character: "外形 / 性格 / 服装 / 说话方式",
+  scene: "空间 / 光线 / 氛围 / 陈设",
+  prop: "形制 / 材质 / 色彩 / 使用痕迹",
+  costume: "形制 / 材质 / 配色 / 工艺",
+} as const;
+
+function AssetCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
+  const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const kind = (
+    ["character", "scene", "prop", "costume"].includes(d?.nodeType ?? "")
+      ? d.nodeType
+      : "character"
+  ) as keyof typeof ASSET_IMAGE_LABEL;
+  const imgLabel = ASSET_IMAGE_LABEL[kind];
   const [uploading, setUploading] = useState(false);
+  const [imgJob, setImgJob] = useState(false);
+  const [lookOpen, setLookOpen] = useState(false);
+  const [lookLabel, setLookLabel] = useState("");
+  const [lookCostumeId, setLookCostumeId] = useState("");
+  const [lookBusy, setLookBusy] = useState(false);
+  const [lookCostumes, setLookCostumes] = useState<WingNode[] | null>(null);
   const [zoom, setZoom] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
+  const looks = kind === "character" ? (d.looks ?? []) : [];
+
+  /** 生成 Look 变体（juben 协议）：参考图1=角色主图（身份锚点），
+   *  参考图2=关联服饰卡的设定图（服饰结构）；产物入 looks 并设为主图 */
+  const genLookVariant = async () => {
+    const label = lookLabel.trim();
+    if (lookBusy || !label) return;
+    const cur = useCanvasStore.getState();
+    const costume = lookCostumeId
+      ? cur.nodes.find((n) => n.id === lookCostumeId)
+      : null;
+    const refImages = [
+      (d.imageUrl as string | undefined),
+      (costume?.data.imageUrl as string | undefined),
+    ].filter(Boolean) as string[];
+    const description = [
+      `生成角色「${d.title || "角色"}」的 Look 造型定妆图：${label}。设定：${d.body ?? ""}`,
+      refImages[0]
+        ? "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，保持完全不变；忽略其服装、配饰、姿态与背景。"
+        : "",
+      costume
+        ? `参考图2（服饰结构参考）：目标服饰「${costume.data.title}」；形制、材质、配色以该图为准。`
+        : "",
+      `造型要求：${label}。`,
+    ]
+      .filter(Boolean)
+      .join(" ");
+    setLookBusy(true);
+    try {
+      const jobId = await startShotImageJob([
+        {
+          rid: id,
+          name: `${d.title || "角色"}·${label}`,
+          description,
+          assetType: "character",
+          referenceImages: refImages,
+        },
+      ]);
+      const deadline = Date.now() + 5 * 60 * 1000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2500));
+        let job;
+        try {
+          job = await getShotImageJob(jobId);
+        } catch {
+          if (Date.now() > deadline) throw new Error("出图超时");
+          continue;
+        }
+        const item = job.images[0];
+        if (item?.ok && item.imageUrl) {
+          update({
+            looks: [...(d.looks ?? []), { label, imageUrl: item.imageUrl, costumeId: lookCostumeId || undefined }],
+            imageUrl: item.imageUrl,
+            status: "ready",
+          });
+          setLookOpen(false);
+          setLookLabel("");
+          setLookCostumeId("");
+          return;
+        }
+        if (item?.error) throw new Error(item.error);
+        if (job.status === "done" || Date.now() > deadline)
+          throw new Error("出图失败");
+      }
+    } catch (exc) {
+      update({
+        status: "error",
+        errorMessage: exc instanceof Error ? exc.message : "Look 出图失败",
+      });
+    } finally {
+      setLookBusy(false);
+    }
+  };
+  const genLook = async () => {
+    if (imgJob) return;
+    update({ status: "loading", errorMessage: undefined });
+    setImgJob(true);
+    try {
+      const jobId = await startCharacterImageJob({
+        rid: id,
+        name: d.title || "资产",
+        description: `${d.title || ""}。${d.body ?? ""}`.trim(),
+        // 服饰卡的设定图按道具契约（4:3 单件）出图
+        assetType: kind === "costume" ? "prop" : kind,
+        visualNotes: projectStyle ? `全局视觉风格：${projectStyle}` : undefined,
+      });
+      const usedStyle = projectStyle;
+      const deadline = Date.now() + 5 * 60 * 1000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2500));
+        let job;
+        try {
+          job = await getShotImageJob(jobId);
+        } catch {
+          if (Date.now() > deadline) throw new Error("出图超时");
+          continue;
+        }
+        const item = job.images[0];
+        if (item?.ok && item.imageUrl) {
+          update({ imageUrl: item.imageUrl, status: "ready", styleSnapshot: usedStyle });
+          return;
+        }
+        if (item?.error) throw new Error(item.error);
+        if (job.status === "done" || Date.now() > deadline)
+          throw new Error("出图失败");
+      }
+    } catch (exc) {
+      update({
+        status: "error",
+        errorMessage: exc instanceof Error ? exc.message : "出图失败",
+      });
+    } finally {
+      setImgJob(false);
+    }
+  };
 
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const f = e.target.files?.[0];
@@ -960,12 +1128,16 @@ function CharacterCard({ data, id, selected }: NodeProps) {
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
-          <button
-            type="button"
-            className="nodrag group relative h-full w-full"
+          <div
+            role="button"
+            tabIndex={0}
+            className="nodrag group relative h-full w-full cursor-zoom-in"
             onClick={(e) => {
               e.stopPropagation();
               setZoom(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") setZoom(true);
             }}
             title="点击放大"
           >
@@ -979,7 +1151,18 @@ function CharacterCard({ data, id, selected }: NodeProps) {
             <CornerActions>
               <button
                 type="button"
-                title="更换定妆照"
+                title="AI 重新出设定图（用设定正文）"
+                className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void genLook();
+                }}
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                title={`更换${imgLabel}`}
                 className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -998,23 +1181,136 @@ function CharacterCard({ data, id, selected }: NodeProps) {
                 <Download className="h-3.5 w-3.5" />
               </a>
             </CornerActions>
-          </button>
+          </div>
         ) : (
           <MediaEmpty
-            icon={<Drama className="h-5 w-5" />}
-            hint="上传定妆照"
-            sub="角色一致性锚点"
+            icon={(() => {
+              const Icon = ASSET_ICON[kind];
+              return <Icon className="h-5 w-5" />;
+            })()}
+            hint={`上传${imgLabel}`}
+            sub={ASSET_EMPTY[kind].sub}
             busy={uploading}
             onClick={() => fileRef.current?.click()}
           />
         )}
       </div>
+      {!d.imageUrl && d.status !== "loading" ? (
+        <button
+          type="button"
+          disabled={imgJob}
+          title={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）`}
+          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-dashed border-hairline px-2 py-1 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text disabled:opacity-40"
+          onClick={(e) => {
+            e.stopPropagation();
+            void genLook();
+          }}
+        >
+          <Sparkles className="h-3 w-3" />
+          {imgJob ? "生成中…" : "AI 出图（按设定正文）"}
+        </button>
+      ) : null}
+      {kind === "character" ? (
+        <div className="ws-detail mt-1.5">
+          {looks.length > 0 ? (
+            <div className="mb-1 flex flex-wrap items-center gap-1">
+              {looks.map((lk) => (
+                <button
+                  key={lk.label + lk.imageUrl}
+                  type="button"
+                  title={`Look「${lk.label}」— 点击设为主图`}
+                  className={`nodrag flex items-center gap-1 rounded border p-0.5 transition-colors ${
+                    lk.imageUrl === d.imageUrl
+                      ? "border-accent"
+                      : "border-hairline-soft hover:border-accent-soft"
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    update({ imageUrl: lk.imageUrl, status: "ready" });
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={lk.imageUrl} alt={lk.label} className="h-7 w-10 rounded object-cover" />
+                  <span className="pr-0.5 text-[9px] text-text-4">{lk.label}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {lookOpen ? (
+            <div className="flex flex-col gap-1 rounded-md border border-hairline bg-surface-2/60 p-1.5">
+              <input
+                value={lookLabel}
+                onChange={(e) => setLookLabel(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                placeholder="造型名（如：冬季校服）"
+                className="nodrag nowheel rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-2 outline-none focus:border-accent placeholder:text-text-4"
+              />
+              <select
+                value={lookCostumeId}
+                onChange={(e) => setLookCostumeId(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+                title="关联服饰卡：其设定图将作为服饰结构参考（参考图2）"
+                className="nodrag nowheel rounded border border-hairline bg-surface-1 px-1 py-0.5 text-[10px] text-text-2 outline-none"
+              >
+                <option value="">关联服饰卡（可选）</option>
+                {(lookCostumes ?? []).map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.data.title || "未命名服饰"}
+                  </option>
+                ))}
+              </select>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  disabled={lookBusy || !lookLabel.trim()}
+                  className="nodrag rounded border border-accent bg-accent-dim px-1.5 py-0.5 text-[10px] font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void genLookVariant();
+                  }}
+                >
+                  {lookBusy ? "生成中…" : "生成 Look"}
+                </button>
+                <button
+                  type="button"
+                  className="nodrag text-[10px] text-text-4 hover:text-text"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setLookOpen(false);
+                  }}
+                >
+                  取消
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              title="以当前定妆照为身份锚点，生成不同服饰/造型的 Look 变体（juben 协议）"
+              className="nodrag mt-1 flex items-center gap-0.5 text-[10px] text-text-4 transition-colors hover:text-accent"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (!lookCostumes) {
+                  setLookCostumes(
+                    useCanvasStore
+                      .getState()
+                      .nodes.filter((n) => n.data.nodeType === "costume"),
+                  );
+                }
+                setLookOpen(true);
+              }}
+            >
+              <Plus className="h-3 w-3" /> Look 变体
+            </button>
+          )}
+        </div>
+      ) : null}
       <Editable
         value={d.body ?? ""}
         onSave={(body) => update({ body })}
         multiline
         always
-        placeholder="外形 / 性格 / 服装 / 说话方式"
+        placeholder={ASSET_BODY_PH[kind]}
         className="ws-detail mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
       />
       {zoom && d.imageUrl ? (
@@ -1480,9 +1776,10 @@ function ImageCard({ data, id, selected }: NodeProps) {
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
-          <button
-            type="button"
-            className="nodrag group relative h-full w-full"
+          <div
+            role="button"
+            tabIndex={0}
+            className="nodrag group relative h-full w-full cursor-zoom-in"
             onClick={(e) => {
               e.stopPropagation();
               openZoom();
@@ -1575,7 +1872,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 <ZoomIn className="h-3.5 w-3.5" />
               </span>
             </CornerActions>
-          </button>
+          </div>
         ) : (
           <MediaEmpty
             icon={<ImageIcon className="h-5 w-5" />}
@@ -2418,6 +2715,20 @@ export function splitShotlistToNodes(node: WingNode) {
   );
 }
 
+/** 分镜行出图提示词合成（八段式轻量版；finalPrompt 有值时由调用方直用）。
+ *  全局视觉风格收尾（novanova visualStyle 段），供合成与批量出图共用 */
+function composeShotPrompt(r: ShotRow, visualStyle: string): string {
+  const seg = [
+    `镜头规格：${r.shotSize || "中景"}，${r.duration || 5} 秒`,
+    `画面内容：${r.action || "（无）"}`,
+    r.lighting ? `光影氛围：${r.lighting}` : "",
+    r.cameraMove ? `运镜：${r.cameraMove}` : "",
+    `声音：${[r.dialogue, r.sound].filter(Boolean).join("；") || "无"}`,
+    visualStyle ? `视觉风格：${visualStyle}` : "",
+  ].filter(Boolean);
+  return `${seg.join("。")}。`;
+}
+
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆成分镜卡链与镜头级出图 */
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
@@ -2430,6 +2741,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const [durationSec, setDurationSec] = useState(0);
   const [rowSeq, setRowSeq] = useState(0);
   const [openRows, setOpenRows] = useState<Set<string>>(() => new Set());
+  const [imgGenerating, setImgGenerating] = useState(false);
+  // 行选择：null = 全选（默认全选，取消勾选即收窄到子集）
+  const [selRows, setSelRows] = useState<Set<string> | null>(null);
+  const [decomposing, setDecomposing] = useState(false);
+  const [decomposeMsg, setDecomposeMsg] = useState("");
+  const projectStyle = useCanvasStore((s) => s.projectStyle);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const rows = d.rows ?? [];
@@ -2456,6 +2773,18 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       const next = await generateShotlist(scriptSource, {
         shotCount: shotCount || undefined,
         durationSeconds: durationSec || undefined,
+        // 项目画风打底 + 分镜表风格叠加
+        visualStyle:
+          [
+            projectStyle.trim() ? `全局：${projectStyle.trim()}` : "",
+            (d.visualStyle ?? "").trim(),
+          ]
+            .filter(Boolean)
+            .join("；") || undefined,
+        // 硬约束（ai-moive-studio 范式）：分镜只用画布已有角色，不发明新角色
+        characters: nodes
+          .filter((n) => n.data.nodeType === "character" && n.data.title)
+          .map((n) => n.data.title as string),
       });
       if (next.length === 0) {
         setGenError("生成结果为空");
@@ -2485,37 +2814,354 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     update({ rows: rows.filter((r) => r.rid !== rid) });
   };
 
-  /** 画面描述里 @到的角色卡 → refIds（桥接层转一致性参考） */
+  /** 画面描述里 @到的资产卡 → 一致性参考描述（资产卡标题+设定节选） */
+  const refNotesFor = (r: ShotRow) =>
+    mentionedRefIds(`${r.action ?? ""}${r.dialogue ?? ""}`)
+      .map((nid) => nodes.find((n) => n.id === nid))
+      .filter((n): n is WingNode => Boolean(n))
+      .map((n) => `【${n.data.title}】${(n.data.body ?? "").slice(0, 160)}`)
+      .join("；");
+
+  /** @到的资产卡设定图 URL（一致性锚点，直连出图时传给 flow 当参考图） */
+  const refImagesFor = (r: ShotRow) =>
+    mentionedRefIds(`${r.action ?? ""}${r.dialogue ?? ""}`)
+      .map((nid) => nodes.find((n) => n.id === nid))
+      .map((n) => (n?.data.imageUrl as string | undefined) ?? "")
+      .filter(Boolean);
+
+  /** 行出图提示词：最终提示词优先，否则按行字段合成（与 synthRow 同构，
+   *  全局视觉风格收尾——novanova 八段式轻量版） */
+  const composeRowPrompt = (r: ShotRow) => {
+    if (r.finalPrompt?.trim()) return r.finalPrompt.trim();
+    return composeShotPrompt(r, (d.visualStyle ?? "").trim());
+  };
+
+  /** 画面描述里 @到的资产卡（角色/场景/道具）→ refIds（一致性参考） */
   const mentionedRefIds = (text: string) =>
     nodes
       .filter(
         (n) =>
-          n.data.nodeType === "character" &&
+          ["character", "scene", "prop"].includes(String(n.data.nodeType)) &&
           n.data.title &&
           text.includes(`@${n.data.title}`),
       )
       .map((n) => n.id);
 
-  /** 镜头级出图（桥接层转聊天指令，agent 生成后 update_row 回填行缩略图）。
-   *  提示词优先用最终提示词；@资产名 命中的角色卡自动当一致性参考 */
-  const genRow = (rid: string) => {
-    const row = rows.find((r) => r.rid === rid);
-    if (!row) return;
-    const desc = `${row.action ?? ""}${row.dialogue ?? ""}`;
+  /** 拆解资产（novanova「分镜同时出资产清单」的独立化）：直连拆解 flow，
+   *  角色自动建角色卡（同名跳过）并连线回本卡；场景/道具不建卡——其描述
+   *  已在剧本/行文本里，出图提示词会带视觉风格与设定 */
+  const decompose = async () => {
+    if (decomposing || !scriptSource) return;
+    setDecomposing(true);
+    setDecomposeMsg("");
+    try {
+      // 画布已有资产名单喂给拆解 flow：同指资产沿用旧名（跨次拆解可去重合并）
+      const existing = nodes
+        .filter(
+          (n) =>
+            ["character", "scene", "prop"].includes(String(n.data.nodeType)) &&
+            n.data.title,
+        )
+        .map((n) => ({ type: String(n.data.nodeType), name: n.data.title as string }));
+      const { assets, errors: decompErrors } = await decomposeAssets(
+        scriptSource,
+        existing,
+      );
+      const chars = assets;
+      if (chars.length === 0) {
+        setDecomposeMsg("剧本里没拆出可用资产");
+        return;
+      }
+      const st = useCanvasStore.getState();
+      const src = st.nodes.find((n) => n.id === id);
+      if (!src) return;
+      const abs = absolutePosition(st.nodes, src);
+      const sz = nodeSize(src);
+      // 排布（novanova 资产分组范式）：角色/场景/道具各成一个组框，
+      // 组内 2 列网格；三个组从左到右排开（整组矩形一次性避让找空地，
+      // 逐卡避让会散）。重复拆解时同名卡跳过、组框按需补建
+      const KIND_ORDER = [
+        { type: "character" as const, label: "角色" },
+        { type: "scene" as const, label: "场景" },
+        { type: "prop" as const, label: "道具" },
+      ];
+      const created: string[] = [];
+      const groupIds: string[] = [];
+      const kindCounts: Record<string, number> = {};
+      let existed = 0;
+      let cursorX = abs.x + sz.w + 80;
+      const anchorY = abs.y;
+      for (const { type, label } of KIND_ORDER) {
+        const cur = useCanvasStore.getState();
+        const items = chars.filter((a) => a.type === type);
+        const fresh = items.filter(
+          (a) =>
+            !cur.nodes.some(
+              (n) => n.data.nodeType === type && n.data.title === a.name,
+            ),
+        );
+        existed += items.length - fresh.length;
+        if (fresh.length === 0) continue;
+        kindCounts[type] = fresh.length;
+        const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
+        const kcols = Math.min(2, fresh.length);
+        const kw = kcols * (fp.w + 60) - 60;
+        const kh = Math.ceil(fresh.length / kcols) * (fp.h + 54) - 54;
+        const origin = findFreePosition(cur.nodes, { x: cursorX, y: anchorY }, {
+          w: kw,
+          h: kh,
+        });
+        const ids: string[] = [];
+        fresh.forEach((a, i) => {
+          const st2 = useCanvasStore.getState();
+          const nid = st2.addNode({
+            position: {
+              x: origin.x + (i % kcols) * (fp.w + 60),
+              y: origin.y + Math.floor(i / kcols) * (fp.h + 54),
+            },
+            data: {
+              nodeType: type,
+              title: a.name,
+              body: [a.description, a.visual_notes ? `视觉：${a.visual_notes}` : ""]
+                .filter(Boolean)
+                .join("\n"),
+            },
+          });
+          // 分镜表 → 资产卡：资产卡是拆解的派生产物（与「拆成分镜卡」同向），
+          // 反向连会混进 scriptSource 的上游来源列表
+          st2.connect({ source: id, target: nid });
+          ids.push(nid);
+        });
+        const gid = useCanvasStore.getState().groupNodes(ids, label);
+        if (gid) groupIds.push(gid);
+        created.push(...ids);
+        cursorX = origin.x + kw + 80;
+      }
+      if (created.length > 0) {
+        const end = useCanvasStore.getState();
+        const focusIds = groupIds.length > 0 ? groupIds : created;
+        end.selectNodes(groupIds.length > 0 ? groupIds : created);
+        end.flashNodes(created);
+        window.dispatchEvent(
+          new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: focusIds } }),
+        );
+      }
+      if (created.length === 0 && existed > 0) {
+        // 全部已存在：把混在通用组框（「资产」/「分组」等旧命名）里的卡解散，
+        // 连同散卡一起按类型收拢重排、各自成组；已在类型组内的不动
+        const end = useCanvasStore.getState();
+        const matched = end.nodes.filter((n) =>
+          chars.some((a) => a.type === n.data.nodeType && a.name === n.data.title),
+        );
+        const KIND_TITLES = KIND_ORDER.map((k) => k.label);
+        const genericGroups = [
+          ...new Set(matched.map((n) => n.parentId).filter(Boolean)),
+        ]
+          .map((pid) => end.nodes.find((n) => n.id === pid))
+          .filter(
+            (g): g is WingNode =>
+              Boolean(g) &&
+              g!.data.nodeType === "group" &&
+              !KIND_TITLES.includes(g!.data.title ?? ""),
+          );
+        for (const g of genericGroups) end.ungroupNode(g.id);
+        let cursorX2 = abs.x + sz.w + 80;
+        const newGroups: string[] = [];
+        for (const { type, label } of KIND_ORDER) {
+          const cur = useCanvasStore.getState();
+          const items = cur.nodes.filter(
+            (n) =>
+              n.data.nodeType === type &&
+              !n.parentId &&
+              chars.some((a) => a.type === type && a.name === n.data.title),
+          );
+          if (items.length === 0) continue;
+          const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
+          const kcols = Math.min(2, items.length);
+          const kw = kcols * (fp.w + 60) - 60;
+          const kh = Math.ceil(items.length / kcols) * (fp.h + 54) - 54;
+          const origin = findFreePosition(cur.nodes, { x: cursorX2, y: anchorY }, {
+            w: kw,
+            h: kh,
+          });
+          useCanvasStore.setState((s) => ({
+            nodes: s.nodes.map((n) => {
+              const idx = items.findIndex((m) => m.id === n.id);
+              if (idx === -1) return n;
+              return {
+                ...n,
+                position: {
+                  x: origin.x + (idx % kcols) * (fp.w + 60),
+                  y: origin.y + Math.floor(idx / kcols) * (fp.h + 54),
+                },
+              };
+            }),
+          }));
+          const gid = useCanvasStore
+            .getState()
+            .groupNodes(items.map((m) => m.id), label);
+          if (gid) newGroups.push(gid);
+          cursorX2 = origin.x + kw + 80;
+        }
+        if (newGroups.length > 0) {
+          useCanvasStore.getState().selectNodes(newGroups);
+          window.dispatchEvent(
+            new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: newGroups } }),
+          );
+        }
+        setDecomposeMsg(
+          newGroups.length > 0
+            ? `${existed} 项资产均已存在：已按 角色/场景/道具 收拢成组`
+            : `${existed} 项资产均已存在（已在类型组内，不重排）`,
+        );
+        return;
+      }
+      const kindSummary = KIND_ORDER.filter((k) => kindCounts[k.type])
+        .map((k) => `${k.label} ${kindCounts[k.type]}`)
+        .join("・");
+      const failNote = Object.entries(decompErrors)
+        .map(([t, e]) => `${t}：${e}`)
+        .join("；");
+      setDecomposeMsg(
+        created.length > 0
+          ? `拆出 ${chars.length} 项资产：新建 ${created.length} 张` +
+              (kindSummary ? `（${kindSummary}）` : "") +
+              (existed ? `，${existed} 项已存在跳过` : "") +
+              (failNote ? `｜部分类型失败：${failNote}` : "")
+          : `${existed} 项资产均已存在，未新建` +
+              (failNote ? `｜部分类型失败：${failNote}` : ""),
+      );
+    } catch (exc) {
+      setGenError(exc instanceof Error ? exc.message : "拆解失败");
+    } finally {
+      setDecomposing(false);
+    }
+  };
+
+  /** 批量物化镜头图（novanova 分镜视频的图片版）：选中行 → 画布右侧双列
+   *  网格建图片卡（已有关联卡则原卡重跑）+ 自动连线 + 直连 imagegen flow
+   *  批量生成（并发 3，不经聊天 LLM），结果回填各节点。行缩略图读关联节点 */
+  const genShotImages = async (targets: { row: ShotRow; seq: number }[]) => {
+    if (imgGenerating || targets.length === 0) return;
+    const st = useCanvasStore.getState();
+    const src = st.nodes.find((n) => n.id === id);
+    if (!src) return;
+    setImgGenerating(true);
+    // 网格锚点：整块区域 findFreePosition 避让已有卡，块内双列铺开
+    const abs = absolutePosition(st.nodes, src);
+    const sz = nodeSize(src);
+    const fp = NODE_FOOTPRINT.image;
+    const colW = fp.w + 54;
+    const rowH = fp.h + 54;
+    const cols = Math.min(2, targets.length);
+    const origin = findFreePosition(st.nodes, { x: abs.x + sz.w + 80, y: abs.y }, {
+      w: cols * colW - 54,
+      h: Math.ceil(targets.length / cols) * rowH - 54,
+    });
+    const styleStack = [
+      (d.visualStyle ?? "").trim() ? `分镜表风格：${(d.visualStyle ?? "").trim()}` : "",
+      projectStyle.trim() ? `全局视觉风格：${projectStyle.trim()}` : "",
+    ].filter(Boolean);
+    const created: string[] = [];
+    const jobs: { rid: string; nodeId: string }[] = [];
+    const ridToNode = new Map<string, string>();
+    for (let i = 0; i < targets.length; i++) {
+      const { row } = targets[i];
+      const existing = row.imageNodeId
+        ? st.nodes.find((n) => n.id === row.imageNodeId)
+        : null;
+      if (existing) {
+        // 原卡重跑：保留位置与连线，只重置状态
+        useCanvasStore
+          .getState()
+          .updateNodeData(existing.id, { status: "loading", errorMessage: undefined, imageUrl: undefined });
+        jobs.push({ rid: row.rid, nodeId: existing.id });
+        ridToNode.set(row.rid, existing.id);
+        continue;
+      }
+      const col = i % cols;
+      const gridRow = Math.floor(i / cols);
+      const nid = st.addNode({
+        position: { x: origin.x + col * colW, y: origin.y + gridRow * rowH },
+        data: {
+          nodeType: "image",
+          title: `镜头 ${String(targets[i].seq + 1).padStart(2, "0")} 图`,
+          body: row.action ?? "",
+          status: "loading",
+          styleSnapshot: styleStack.join("；"),
+        },
+      });
+      st.connect({ source: id, target: nid });
+      created.push(nid);
+      jobs.push({ rid: row.rid, nodeId: nid });
+      ridToNode.set(row.rid, nid);
+    }
+    // imageNodeId 回填一次性落 store（逐行 setRow 会相互覆盖）
+    if (ridToNode.size > 0) {
+      useCanvasStore.getState().updateNodeData(id, {
+        rows: rows.map((r) =>
+          ridToNode.has(r.rid) ? { ...r, imageNodeId: ridToNode.get(r.rid) } : r,
+        ),
+      });
+    }
+    st.selectNodes(jobs.map((j) => j.nodeId));
+    if (created.length > 0) st.flashNodes(created);
     window.dispatchEvent(
-      new CustomEvent(ROW_GENERATE_EVENT, {
-        detail: {
-          nodeId: id,
-          rid,
-          prompt:
-            row.finalPrompt?.trim() ||
-            [row.action, row.shotSize, row.cameraMove, row.dialogue]
+      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: jobs.map((j) => j.nodeId) } }),
+    );
+    try {
+      const jobId = await startShotImageJob(
+        jobs.map((j) => {
+          const t = targets.find((x) => x.row.rid === j.rid)!;
+          return {
+            rid: j.rid,
+            name: `镜头${t.seq + 1}`,
+            description: composeRowPrompt(t.row),
+            visualNotes: [refNotesFor(t.row), ...styleStack]
               .filter(Boolean)
               .join("；"),
-          refIds: mentionedRefIds(desc),
-        },
-      }),
-    );
+            referenceImages: refImagesFor(t.row),
+          };
+        }),
+      );
+      // 轮询任务：每张完成即点亮对应节点（ready/error），全部完成才收尾
+      const applied = new Set<string>();
+      const deadline = Date.now() + 10 * 60 * 1000;
+      for (;;) {
+        await new Promise((r) => setTimeout(r, 2500));
+        let job;
+        try {
+          job = await getShotImageJob(jobId);
+        } catch {
+          // 单次轮询失败（网络/代理抖动）不判死，超时兜底
+          if (Date.now() > deadline) break;
+          continue;
+        }
+        const ust = useCanvasStore.getState();
+        for (const item of job.images) {
+          if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
+          applied.add(item.rid);
+          const j = jobs.find((x) => x.rid === item.rid);
+          if (!j) continue;
+          ust.updateNodeData(
+            j.nodeId,
+            item.ok && item.imageUrl
+              ? { imageUrl: item.imageUrl, status: "ready" }
+              : { status: "error", errorMessage: item.error || "出图失败" },
+          );
+        }
+        if (job.status === "done" || Date.now() > deadline) break;
+      }
+    } catch (exc) {
+      const msg = exc instanceof Error ? exc.message : "批量出图失败";
+      setGenError(msg);
+      const ust = useCanvasStore.getState();
+      for (const j of jobs) {
+        ust.updateNodeData(j.nodeId, { status: "error", errorMessage: msg });
+      }
+    } finally {
+      setImgGenerating(false);
+    }
   };
 
   /** 展开态切换（收起光影/音效/最终提示词等完整字段） */
@@ -2535,14 +3181,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     if (!r) return;
     if (r.finalPrompt?.trim() && !window.confirm("已有最终提示词，覆盖合成？"))
       return;
-    const seg = [
-      `镜头规格：${r.shotSize || "中景"}，${r.duration || 5} 秒`,
-      `画面内容：${r.action || "（无）"}`,
-      r.lighting ? `光影氛围：${r.lighting}` : "",
-      r.cameraMove ? `运镜：${r.cameraMove}` : "",
-      `声音：${[r.dialogue, r.sound].filter(Boolean).join("；") || "无"}`,
-    ].filter(Boolean);
-    setRow(rid, { finalPrompt: `${seg.join("。")}。` });
+    setRow(rid, { finalPrompt: composeShotPrompt(r, (d.visualStyle ?? "").trim()) });
   };
 
   const copyRow = (rid: string) => {
@@ -2570,6 +3209,13 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     return sum + (m ? parseFloat(m[1]) : 0);
   }, 0);
 
+  // 可出图行（有画面描述或最终提示词）∩ 勾选行（null = 全选）
+  const genableRows = rows.filter(
+    (r) => r.finalPrompt?.trim() || (r.action ?? "").trim(),
+  );
+  const selectedGenRows =
+    selRows === null ? genableRows : genableRows.filter((r) => selRows.has(r.rid));
+
   return (
     <CardShell id={id} data={d} selected={selected}>
       <div className="ws-detail nowheel min-h-0 flex-1 overflow-auto">
@@ -2579,33 +3225,75 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               连线剧本卡后点下方「生成分镜」，或手动「加一行」
             </p>
           ) : null}
-          {rows.map((r, i) => (
+          {rows.map((r, i) => {
+            const linked = r.imageNodeId
+              ? nodes.find((n) => n.id === r.imageNodeId)
+              : null;
+            const thumbUrl =
+              (r.imageUrl as string | undefined) ??
+              (linked?.data.imageUrl as string | undefined);
+            const thumbLoading = linked?.data.status === "loading";
+            const thumbError = linked?.data.status === "error";
+            return (
             <div
               key={r.rid}
               className="group/row rounded-md border border-hairline bg-surface-2/60 px-1 py-1"
             >
               <div className="flex items-stretch gap-1">
+                <input
+                  type="checkbox"
+                  className="nodrag mt-0.5 h-3 w-3 shrink-0 cursor-pointer accent-[var(--color-accent)]"
+                  checked={selRows === null || selRows.has(r.rid)}
+                  title="勾选参与批量出图"
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => {
+                    setSelRows((cur) => {
+                      const base = cur ?? new Set(rows.map((x) => x.rid));
+                      const next = new Set(base);
+                      if (next.has(r.rid)) next.delete(r.rid);
+                      else next.add(r.rid);
+                      return next;
+                    });
+                  }}
+                />
                 <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded bg-accent-dim text-[10px] font-semibold tabular-nums text-text">
                   {i + 1}
                 </span>
-                {r.imageUrl ? (
+                {thumbUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
-                    src={r.imageUrl}
+                    src={thumbUrl}
                     alt=""
                     className="h-10 w-14 shrink-0 rounded object-cover"
                   />
                 ) : (
                   <button
                     type="button"
-                    title="为这个镜头出图"
-                    className="nodrag grid h-10 w-14 shrink-0 place-items-center rounded border border-dashed border-hairline text-text-4 transition-colors hover:border-accent hover:text-text-2"
+                    title={
+                      thumbLoading
+                        ? "正在出图…"
+                        : thumbError
+                          ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
+                          : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
+                    }
+                    className={`nodrag grid h-10 w-14 shrink-0 place-items-center rounded border border-dashed transition-colors hover:border-accent hover:text-text-2 ${
+                      thumbError
+                        ? "border-danger/60 text-danger"
+                        : "border-hairline text-text-4"
+                    }`}
+                    disabled={thumbLoading}
                     onClick={(e) => {
                       e.stopPropagation();
-                      genRow(r.rid);
+                      void genShotImages([{ row: r, seq: i }]);
                     }}
                   >
-                    <ImageIcon className="h-3.5 w-3.5" />
+                    {thumbLoading ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : thumbError ? (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    ) : (
+                      <ImageIcon className="h-3.5 w-3.5" />
+                    )}
                   </button>
                 )}
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -2655,7 +3343,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       className="nodrag text-text-4 hover:text-accent"
                       onClick={(e) => {
                         e.stopPropagation();
-                        genRow(r.rid);
+                        void genShotImages([{ row: r, seq: i }]);
                       }}
                     >
                       <RefreshCw className="h-3 w-3" />
@@ -2718,16 +3406,24 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 </div>
               ) : null}
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       {/* 一键生成分镜（open-ai-canvas 的卡内 composer 模式）：来源=连线剧本卡
-          或本卡正文；参数镜头数/单镜时长，直连 langflow 写回 rows */}
+          或本卡正文；视觉风格全局约束；参数镜头数/单镜时长，直连 langflow 写回 rows */}
       <div className="ws-detail nodrag nowheel mt-1.5 flex items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
         <Sparkles className="h-3 w-3 shrink-0 text-accent" />
         <span className="min-w-0 flex-1 truncate text-text-4" title={scriptSource.slice(0, 120)}>
           {scriptSource ? "已连剧本" : "连接剧本卡或在本卡正文粘贴文本"}
         </span>
+        <input
+          value={d.visualStyle ?? ""}
+          onChange={(e) => update({ visualStyle: e.target.value })}
+          placeholder="分镜表风格（可选）"
+          title="本表视觉风格，叠加在项目画风之上（底部坞「画风」可设全局风格）"
+          className="nodrag nowheel w-24 shrink-0 rounded border border-hairline bg-surface-1 px-1 py-0.5 text-[10px] text-text-2 outline-none focus:border-accent placeholder:text-text-4"
+        />
         <select
           value={shotCount}
           onChange={(e) => setShotCount(Number(e.target.value))}
@@ -2753,6 +3449,18 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         </select>
         <button
           type="button"
+          disabled={decomposing || !scriptSource}
+          title="用拆解技能从剧本提取角色/场景/道具 → 自动建资产卡并连线回本卡。出分镜图前先给资产出设定图，一致性最好"
+          className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+          onClick={(e) => {
+            e.stopPropagation();
+            void decompose();
+          }}
+        >
+          {decomposing ? "拆解中…" : "拆解资产"}
+        </button>
+        <button
+          type="button"
           disabled={!scriptSource || generating}
           className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-2 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
           onClick={(e) => {
@@ -2763,24 +3471,54 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           {generating ? "生成中…" : rows.length > 0 ? "重新生成" : "生成分镜"}
         </button>
       </div>
+      {decomposeMsg ? (
+        <p className="ws-detail mt-1 text-[10px] text-text-3">{decomposeMsg}</p>
+      ) : null}
       {genError ? (
         <p className="ws-detail mt-1 text-[10px] text-danger">{genError}</p>
       ) : null}
       <div className="mt-1.5 flex items-center justify-between border-t border-hairline pt-1.5 text-[10px] text-text-4">
-        <span>
+        <span className="min-w-0 truncate">
           {rows.length} 镜 · 总时长约 {totalDur > 0 ? `${Math.round(totalDur * 10) / 10}s` : "—"}
         </span>
-        <button
-          type="button"
-          className="nodrag flex items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text"
-          onClick={(e) => {
-            e.stopPropagation();
-            addRow();
-          }}
-        >
-          <Plus className="h-3 w-3" />
-          加一行
-        </button>
+        <span className="flex shrink-0 items-center gap-1.5">
+          {/* 行级操作区：勾选行批量出图 / 加行（与行勾选列同一语义层） */}
+          <label
+            className="flex cursor-pointer items-center gap-1 transition-colors hover:text-text"
+            title={selRows === null ? "全选（取消勾选可自选行）" : "全选"}
+          >
+            <input
+              type="checkbox"
+              checked={selRows === null}
+              className="nodrag h-3 w-3 cursor-pointer accent-[var(--color-accent)]"
+              onChange={() => setSelRows((cur) => (cur === null ? new Set<string>() : null))}
+            />
+            全选
+          </label>
+          <button
+            type="button"
+            disabled={imgGenerating || selectedGenRows.length === 0}
+            title="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）"
+            className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-1.5 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
+            onClick={(e) => {
+              e.stopPropagation();
+              void genShotImages(selectedGenRows.map((row) => ({ row, seq: rows.indexOf(row) })));
+            }}
+          >
+            {imgGenerating ? "出图中…" : `出图·${selectedGenRows.length} 镜`}
+          </button>
+          <button
+            type="button"
+            className="nodrag flex items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text"
+            onClick={(e) => {
+              e.stopPropagation();
+              addRow();
+            }}
+          >
+            <Plus className="h-3 w-3" />
+            加一行
+          </button>
+        </span>
       </div>
     </CardShell>
   );
@@ -2789,7 +3527,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
 export const nodeTypes = {
   note: memo(NoteCard),
   script: memo(ScriptCard),
-  character: memo(CharacterCard),
+  character: memo(AssetCard),
+  scene: memo(AssetCard),
+  prop: memo(AssetCard),
   image: memo(ImageCard),
   video: memo(VideoCard),
   audio: memo(AudioCard),

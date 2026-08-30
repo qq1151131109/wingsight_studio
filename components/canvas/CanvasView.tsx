@@ -27,11 +27,13 @@ import {
   ListTree,
   Lock,
   LockOpen,
+  Palette,
   Redo2,
   Search,
   Split,
   Undo2,
   WandSparkles,
+  X,
   ZoomIn as ZoomInIcon,
   ZoomOut,
   Maximize,
@@ -53,6 +55,7 @@ import {
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
 import { uploadAsset } from "@/lib/projects";
+import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import { nodeTypes, NodeInfoModal, splitShotlistToNodes } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
@@ -218,6 +221,9 @@ const NODE_TYPE_ITEMS: { type: WingNodeType; key: string }[] = (
     "audio",
     "script",
     "character",
+    "scene",
+    "prop",
+    "costume",
     "storyboard",
     "shotlist",
   ] as WingNodeType[]
@@ -431,7 +437,92 @@ function NodeSearch() {
   );
 }
 
-/** 底部坞：撤销/重做 + 缩放 + 素材库 + 保存状态（对标 novanova / AIGC 的顶底栏能力） */
+/** 画风预设浏览（juben 风格模板库 86 条）：分类过滤 + 搜索，点选即套用。
+ *  选中态 = 项目画风与该预设 prompt 完全一致；手改文本后高亮自动消失 */
+function StylePresetList({
+  projectStyle,
+  onPick,
+}: {
+  projectStyle: string;
+  onPick: (prompt: string) => void;
+}) {
+  const [cat, setCat] = useState<string>("全部");
+  const [q, setQ] = useState("");
+  const cats = ["全部", ...STYLE_CATEGORIES];
+  const list = useMemo(() => {
+    const kw = q.trim();
+    return STYLE_PRESETS.filter(
+      (p) =>
+        (cat === "全部" || p.category === cat) &&
+        (!kw || p.name.includes(kw) || p.tagline.includes(kw) || p.prompt.includes(kw)),
+    );
+  }, [cat, q]);
+  return (
+    <div className="mt-3 flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center gap-1">
+        {cats.map((c) => (
+          <button
+            key={c}
+            type="button"
+            className={`rounded-full px-2 py-0.5 text-[10px] transition-colors ${
+              cat === c
+                ? "bg-accent-dim font-medium text-text"
+                : "text-text-3 hover:bg-surface-2 hover:text-text-2"
+            }`}
+            onClick={() => setCat(c)}
+          >
+            {c}
+          </button>
+        ))}
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="搜索画风…"
+          className="nodrag nowheel ml-auto w-24 rounded border border-hairline bg-surface-2/60 px-1.5 py-0.5 text-[10px] text-text outline-none focus:border-accent placeholder:text-text-4"
+        />
+      </div>
+      <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-md border border-hairline-soft bg-surface-2/40 p-2">
+        {list.length === 0 ? (
+          <p className="col-span-6 py-6 text-center text-[11px] text-text-4">没有匹配的画风</p>
+        ) : null}
+        {list.map((p) => {
+          const active = projectStyle === p.prompt;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              title={`${p.name}｜${p.tagline || p.category}`}
+              className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
+                active
+                  ? "border-accent ring-2 ring-accent"
+                  : "border-hairline hover:border-accent-soft"
+              }`}
+              onClick={() => onPick(p.prompt)}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={p.cover}
+                alt={p.name}
+                loading="lazy"
+                className="absolute inset-0 h-full w-full object-cover object-top"
+              />
+              {active ? (
+                <span className="absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full bg-accent text-[10px] font-bold text-surface-1">
+                  ✓
+                </span>
+              ) : null}
+              <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1.5 pb-1 pt-4 text-left text-[11px] font-medium text-white">
+                {p.name}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** 底部坞：撤销/重做 + 缩放 + 素材库 + 画风 + 保存状态（对标 novanova / AIGC 的顶底栏能力） */
 function BottomDock({
   onOpenAssets,
   onOpenPrompts,
@@ -445,6 +536,8 @@ function BottomDock({
   const canRedo = useCanvasStore((s) => s.canRedoNow);
   const saveState = useCanvasStore((s) => s.saveState);
   const zoom = useCanvasStore((s) => s.viewport.zoom);
+  const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const [stylePanel, setStylePanel] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
   const saveLabel =
     saveState === "saving"
@@ -455,7 +548,8 @@ function BottomDock({
           ? "离线 · 未保存"
           : null;
   return (
-    <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
+    <>
+      <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
       <button
         type="button"
         title="素材库（生成历史自动入库，点击放回画布）"
@@ -483,6 +577,25 @@ function BottomDock({
         <ListTree className="h-4 w-4" />
         大纲
       </button>
+      <span className="mx-0.5 h-5 w-px bg-hairline" />
+      {/* 项目画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
+          一处设定，注入所有出图与分镜生成；预设库移植自 juben 风格模板 */}
+      <div className="relative">
+        <button
+          type="button"
+          title="项目画风（全局视觉风格：注入所有出图与分镜生成）"
+          className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
+            projectStyle ? "text-accent" : "text-text-2 hover:text-text"
+          } ${stylePanel ? "bg-surface-2 text-text" : ""}`}
+          onClick={() => setStylePanel((v) => !v)}
+        >
+          <Palette className="h-4 w-4" />
+          画风
+          {projectStyle ? (
+            <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
+          ) : null}
+        </button>
+      </div>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
         <Undo2 className="h-4 w-4" />
@@ -524,7 +637,65 @@ function BottomDock({
           </span>
         </>
       ) : null}
-    </div>
+      </div>
+      {stylePanel ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
+          onClick={() => setStylePanel(false)}
+        >
+          <div
+            className="flex max-h-[88vh] w-[min(76rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-text">项目画风</p>
+                <p className="mt-0.5 text-[11px] text-text-4">
+                  全局视觉风格：自动注入所有资产出图、分镜生成与分镜出图。
+                  点选预设即套用，也可在底部自定义描述。
+                </p>
+              </div>
+              <button
+                type="button"
+                title="关闭"
+                className="rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+                onClick={() => setStylePanel(false)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <StylePresetList
+              projectStyle={projectStyle}
+              onPick={(prompt) => useCanvasStore.getState().setProjectStyle(prompt)}
+            />
+            <p className="mt-2 text-[11px] font-medium text-text-4">
+              自定义（可直接改，或点上方预设套用）
+            </p>
+            <textarea
+              value={projectStyle}
+              onChange={(e) => useCanvasStore.getState().setProjectStyle(e.target.value)}
+              placeholder="例：吉卜力水彩质感，柔和自然光，低饱和暖色"
+              rows={2}
+              className="nodrag nowheel mt-1 w-full resize-none rounded-md border border-hairline bg-surface-2/60 p-2 text-xs leading-relaxed text-text outline-none focus:border-accent placeholder:text-text-4"
+            />
+            <div className="mt-1 flex items-center justify-between">
+              <span className="text-[11px] text-text-4">
+                {projectStyle
+                  ? `${projectStyle.length} 字 · 自动保存`
+                  : "未设定（出图无风格约束）"}
+              </span>
+              <button
+                type="button"
+                className="rounded-md border border-hairline px-2 py-0.5 text-[11px] text-text-2 transition-colors hover:border-accent hover:text-text"
+                onClick={() => setStylePanel(false)}
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -803,6 +974,14 @@ export default function CanvasView() {
   // ref 按值比较防回环：程序化 setViewport 结束也会触发 onMoveEnd。
   const { screenToFlowPosition, setViewport: setRfViewport, fitView } =
     useReactFlow();
+  // dev 测试钩子：headless E2E 恢复视口用（onlyRenderVisibleElements 会把
+  // 视口外节点卸载，聚焦平移后测试需要能把目标卡摆回视野）
+  useEffect(() => {
+    if (process.env.NODE_ENV !== "production") {
+      (window as unknown as { __wsSetViewport?: unknown }).__wsSetViewport =
+        setRfViewport;
+    }
+  }, [setRfViewport]);
   const lastSyncedVp = useRef<Viewport>(viewport);
   useEffect(() => {
     if (vpEq(viewport, lastSyncedVp.current)) return;

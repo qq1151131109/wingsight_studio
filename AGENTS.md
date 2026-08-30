@@ -57,5 +57,6 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 - 远程访问经隧道（bore/ddnsto），`allowedDevOrigins` 已放行，改访问域名需同步 next.config.ts
 - xyflow 12.11 的 `fitView` prop **不是只在挂载时生效**：StoreUpdater 监听它，prop 值一旦翻转就置 `fitViewQueued` 重新 fit（空画布建第一卡会怼到 maxZoom）。要"只挂载时 fit"就用 `useState` 初值冻结（`CanvasView` 的 `fitOnMount`），勿写回随状态变化的表达式
 - xyflow 新节点首帧带 **`visibility: hidden`**（等 ResizeObserver 测量出尺寸才翻 visible），此窗口内对节点内元素调 `focus()` **静默失败**（无报错无焦点事件）。要"建卡即输入"必须逐帧重试到 `document.activeElement` 落位（`nodes.tsx` 的 `focusWhenVisible`），裸 `autoFocus`/mount effect 一次 focus 都会丢
+- Next 同源代理对长请求约 **30s 掐断**（rewrite 转发的超时，前端表现 500）。凡超 30s 的直连能力必须做**异步任务 + 轮询**（先例：`POST /storyboard/images` 返回 jobId + `GET /storyboard/images/{jobId}`），不能阻塞等 flow 跑完
 - 改 `agent/graph.py` 系统提示后必须重启 agent（uvicorn 无 --reload）；改 langflow 自定义组件源码后须重启 langflow（模块缓存）
 

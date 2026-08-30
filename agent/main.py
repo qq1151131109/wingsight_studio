@@ -200,7 +200,12 @@ def api_load_canvas(pid: str, user: auth.CurrentUser):
 @app.put("/projects/{pid}/canvas")
 async def api_save_canvas(pid: str, req: dict, user: auth.CurrentUser):
     ok = projects.save_canvas(
-        pid, req.get("nodes", []), req.get("edges", []), req.get("viewport"), user
+        pid,
+        req.get("nodes", []),
+        req.get("edges", []),
+        req.get("viewport"),
+        req.get("meta"),
+        user,
     )
     return {"ok": ok} if ok else Response(status_code=404)
 
@@ -336,6 +341,8 @@ async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
         parts.append(f"镜头数：{int(req['shotCount'])}")
     if req.get("durationSeconds"):
         parts.append(f"单镜时长：{int(req['durationSeconds'])} 秒")
+    if str(req.get("visualStyle") or "").strip():
+        parts.append(f"全局视觉风格：{str(req['visualStyle']).strip()}")
     parts.append("剧本：")
     parts.append(script)
     text = await skills.run_flow_blocking(flow_id, input_value="\n".join(parts))
@@ -350,6 +357,53 @@ async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
     if not rows:
         return Response(status_code=502, content="分镜解析为空", media_type="text/plain")
     return {"rows": rows}
+
+
+@app.post("/storyboard/images")
+async def api_storyboard_images(req: dict, user: auth.CurrentUser):
+    """分镜行批量出图：启动异步任务立即返回 jobId（Next 代理 30s 会掐断
+    长请求，无法阻塞等完）。前端轮询 GET /storyboard/images/{jobId}。
+
+    req: {shots: [{rid, name, description, visual_notes?}]}
+    """
+    shots = req.get("shots") or []
+    if not isinstance(shots, list) or not shots:
+        return Response(status_code=400, content="shots 为空", media_type="text/plain")
+    shots = shots[:24]  # 上限保护：一次批量最多 24 镜
+    try:
+        job_id = await skills.start_storyboard_image_job(shots)
+    except RuntimeError as exc:
+        return Response(status_code=503, content=str(exc), media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@app.get("/storyboard/images/{job_id}")
+async def api_storyboard_images_status(job_id: str, user: auth.CurrentUser):
+    job = skills.get_storyboard_image_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="任务不存在", media_type="text/plain")
+    return {"status": job["status"], "images": list(job["images"].values())}
+
+
+@app.post("/assets/decompose")
+async def api_assets_decompose(req: dict, user: auth.CurrentUser):
+    """剧本/分镜稿 → 结构化资产清单（直连拆解 flow，不经聊天 LLM）。
+
+    req: {script: str}
+    返回 {assets: [{type: character|scene|prop, name, description, visual_notes}]}
+    """
+    script = str(req.get("script") or "").strip()
+    if not script:
+        return Response(status_code=400, content="script 为空", media_type="text/plain")
+    existing = req.get("existing") if isinstance(req.get("existing"), list) else None
+    try:
+        assets, errors = await skills.decompose_script_assets(script, existing=existing)
+    except RuntimeError as exc:
+        return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")
+    if not assets:
+        detail = "；".join(f"{t}: {e}" for t, e in errors.items()) or "剧本里没有拆出任何资产"
+        return Response(status_code=502, content=detail[:300], media_type="text/plain")
+    return {"assets": assets, "errors": errors}
 
 
 # ---------- 协作者（owner/admin 管理；协作者与 owner 同权编辑）----------
