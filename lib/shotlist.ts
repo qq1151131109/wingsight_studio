@@ -14,45 +14,111 @@ export async function generateShotlist(
     assets?: { type: string; name: string }[];
   },
 ): Promise<ShotRow[]> {
-  const r = await apiFetch("/agent-service/storyboard/generate", {
+  const start = await apiFetch("/agent-service/storyboard/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ script, ...opts }),
   });
-  if (!r.ok) {
-    const detail = (await r.text()).slice(0, 160);
-    throw new Error(detail || `生成失败（${r.status}）`);
+  if (!start.ok) {
+    const detail = (await start.text()).slice(0, 160);
+    throw new Error(detail || `生成任务启动失败（${start.status}）`);
   }
-  const data = (await r.json()) as { rows?: ShotRow[] };
-  return data.rows ?? [];
+  const { jobId } = (await start.json()) as { jobId?: string };
+  if (!jobId) throw new Error("生成任务启动失败");
+
+  // 轮询（代理 30s 掐断长请求，生成必须异步）
+  const deadline = Date.now() + 5 * 60 * 1000;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const r = await apiFetch(`/agent-service/storyboard/generate/${jobId}`);
+    if (!r.ok) throw new Error(`生成任务查询失败（${r.status}）`);
+    const data = (await r.json()) as {
+      status: "running" | "done";
+      rows?: ShotRow[] | null;
+      error?: string;
+    };
+    if (data.status === "done") {
+      if (data.error) throw new Error(data.error);
+      return data.rows ?? [];
+    }
+    if (Date.now() > deadline) throw new Error("生成超时");
+  }
 }
 
-/** 剧本/分镜稿 → 结构化资产清单（直连拆解 flow）。 */
+export type DecomposedLook = {
+  label: string;
+  description: string;
+  /** 全自动出图链产物：定妆照生成后 Look 图的 /agent-service/assets/ 路径 */
+  image_url?: string;
+  error?: string;
+};
+
 export type DecomposedAsset = {
   type: "character" | "scene" | "prop";
   name: string;
   description: string;
   visual_notes: string;
+  /** 全自动出图链产物：角色定妆照 */
+  image_url?: string;
+  /** 角色拆解 flow 输出的造型/服饰变化计划（juben look 范式） */
+  looks?: DecomposedLook[];
 };
 
 export async function decomposeAssets(
   script: string,
   existing?: { type: string; name: string }[],
+  opts?: {
+    /** 全自动：拆解后 agent 直接跑角色出图链（定妆照→逐 Look） */
+    autoLooks?: boolean;
+    /** 项目画风，注入每张出图的视觉风格约束 */
+    visualStyle?: string;
+    /** 阶段/进度回调（decompose → images{n/total} → done），供卡上进度文案 */
+    onPhase?: (p: {
+      phase: string;
+      progress?: { done: number; total: number };
+    }) => void;
+  },
 ): Promise<{ assets: DecomposedAsset[]; errors: Record<string, string> }> {
-  const r = await apiFetch("/agent-service/assets/decompose", {
+  // 异步任务 + 轮询（代理 30s 掐断长请求，三路拆解 flow 并发也常超 30s）
+  const start = await apiFetch("/agent-service/assets/decompose", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ script, existing }),
+    body: JSON.stringify({
+      script,
+      existing,
+      auto_looks: opts?.autoLooks ?? false,
+      visual_style: opts?.visualStyle ?? "",
+    }),
   });
-  if (!r.ok) {
-    const detail = (await r.text()).slice(0, 160);
-    throw new Error(detail || `拆解失败（${r.status}）`);
+  if (!start.ok) {
+    const detail = (await start.text()).slice(0, 160);
+    throw new Error(detail || `拆解任务启动失败（${start.status}）`);
   }
-  const data = (await r.json()) as {
-    assets?: DecomposedAsset[];
-    errors?: Record<string, string>;
-  };
-  return { assets: data.assets ?? [], errors: data.errors ?? {} };
+  const { jobId } = (await start.json()) as { jobId?: string };
+  if (!jobId) throw new Error("拆解任务启动失败");
+  // 全自动出图链可能数分钟，轮询上限放宽到 12 分钟
+  const deadline = Date.now() + (opts?.autoLooks ? 12 : 5) * 60 * 1000;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    const r = await apiFetch(`/agent-service/assets/decompose/${jobId}`);
+    if (!r.ok) throw new Error(`拆解任务查询失败（${r.status}）`);
+    const data = (await r.json()) as {
+      status: "running" | "done";
+      phase?: string;
+      progress?: { done: number; total: number } | null;
+      assets?: DecomposedAsset[] | null;
+      errors?: Record<string, string>;
+      error?: string;
+    };
+    if (data.phase) {
+      opts?.onPhase?.({ phase: data.phase, progress: data.progress ?? undefined });
+    }
+    if (data.status === "done") {
+      if (data.error) throw new Error(data.error);
+      return { assets: data.assets ?? [], errors: data.errors ?? {} };
+    }
+    if (Date.now() > deadline) throw new Error("拆解超时");
+  }
 }
 
 /** 分镜行批量出图请求（直连 imagegen flow，不经聊天）。

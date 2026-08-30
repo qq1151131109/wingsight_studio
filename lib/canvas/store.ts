@@ -99,6 +99,8 @@ export interface WingNodeData {
   rows?: ShotRow[];
   /** 分镜表：全局视觉风格（约束所有镜头的描述与出图，novanova visualStyle） */
   visualStyle?: string;
+  /** 分镜表：一次性远程触发生成旗标（剧本卡「拆分镜表」置位，本卡消费即清） */
+  autoGenerate?: boolean;
   /** 角色卡 Look 变体（juben 范式：身份图 × 服饰 = 多张定妆图）。
    *  label=造型名（如 冬装/校服），costumeId 可关联服饰卡 */
   looks?: { label: string; imageUrl: string; costumeId?: string }[];

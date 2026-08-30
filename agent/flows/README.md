@@ -8,7 +8,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 
 | 文件 | flow 名 | 用途 | 环境变量 | tweaks 关键节点 |
 |---|---|---|---|---|
-| `asset-decompose-character.json` | 角色拆解 | 剧本 → 角色 JSON（单类型专用提示词） | `LANGFLOW_DECOMPOSE_CHARACTER_FLOW_ID` | `LanguageModelComponent-nFbmO`（system_message） |
+| `asset-decompose-character.json` | 角色拆解 | 剧本 → 角色 JSON（单类型专用提示词），额外输出 `looks:[{label,description}]` 造型规划（拆解→自动出图链用，juben look 范式） | `LANGFLOW_DECOMPOSE_CHARACTER_FLOW_ID` | `LanguageModelComponent-nFbmO`（system_message） |
 | `asset-decompose-scene.json` | 场景拆解 | 剧本 → 场景 JSON（含大纲推断主要发生地） | `LANGFLOW_DECOMPOSE_SCENE_FLOW_ID` | 同上 |
 | `asset-decompose-prop.json` | 道具拆解 | 剧本 → 道具 JSON | `LANGFLOW_DECOMPOSE_PROP_FLOW_ID` | 同上 |
 | `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 豆包出图 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload） |
@@ -25,7 +25,8 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 
 | 端点 | 复用 flow | 说明 |
 |---|---|---|
-| `POST /storyboard/generate` | 分镜表生成 | 剧本(+镜头数/时长/视觉风格) → rows |
+| `POST /storyboard/generate` + `GET /storyboard/generate/{jobId}` | 分镜表生成 | 剧本(+镜头数/时长/视觉风格/资产名单) → rows。**异步任务**：POST 返回 jobId，前端轮询 |
+| `POST /assets/decompose` + `GET /assets/decompose/{jobId}` | 三路拆解（或合并版） | 剧本(+已有资产名单) → 类型化资产清单。**异步任务**：三路 flow 并发也常超 30s，阻塞等完必 500 |
 | `POST /storyboard/images` + `GET /storyboard/images/{jobId}` | 单资产出图 | 分镜行批量出图：起任务立即返回 jobId，前端轮询（每张完成即写回任务状态）。**必须异步**——Next 同源代理约 30s 掐断长请求，阻塞等完必 500 |
 
 ## 导出（langflow → 本目录）

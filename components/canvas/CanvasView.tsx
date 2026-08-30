@@ -30,7 +30,6 @@ import {
   Palette,
   Redo2,
   Search,
-  Split,
   Undo2,
   WandSparkles,
   X,
@@ -57,7 +56,7 @@ import {
 import { loadCanvas, saveCanvas, uploadAsset } from "@/lib/projects";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
-import { nodeTypes, NodeInfoModal, splitShotlistToNodes } from "./nodes";
+import { nodeTypes, NodeInfoModal } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
 import NodeInputPanel from "./NodeInputPanel";
@@ -120,7 +119,6 @@ const CONVERT_TYPES: WingNodeType[] = [
   "image",
   "video",
   "audio",
-  "storyboard",
 ];
 
 function CtxItem({
@@ -225,7 +223,6 @@ const NODE_TYPE_ITEMS: { type: WingNodeType; key: string }[] = (
     "scene",
     "prop",
     "costume",
-    "storyboard",
     "shotlist",
   ] as WingNodeType[]
 ).map((type) => ({ type, key: `i-${type}` }));
@@ -1318,7 +1315,6 @@ export default function CanvasView() {
     "note",
     "image",
     "video",
-    "storyboard",
     "character",
   ];
 
@@ -1463,8 +1459,10 @@ export default function CanvasView() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadAtRef = useRef({ x: 0, y: 0 });
   const openUploadPicker = useCallback(() => {
-    if (ctxMenu?.kind !== "pane") return;
-    uploadAtRef.current = { x: ctxMenu.fx, y: ctxMenu.fy };
+    // 双击"添加节点"菜单（kind=add）与右键菜单（kind=pane）都带落点坐标
+    const menu = ctxMenu;
+    if (!menu || (menu.kind !== "pane" && menu.kind !== "add")) return;
+    uploadAtRef.current = { x: menu.fx, y: menu.fy };
     setCtxMenu(null);
     fileInputRef.current?.click();
   }, [ctxMenu]);
@@ -1820,16 +1818,6 @@ export default function CanvasView() {
                         icon={<Camera className="h-4 w-4" />}
                         onClick={() => {
                           if (node) setDirectorNode(node);
-                          closeCtx();
-                        }}
-                      />
-                    ) : null}
-                    {type === "shotlist" && node ? (
-                      <CtxItem
-                        label="拆成分镜卡"
-                        icon={<Split className="h-4 w-4" />}
-                        onClick={() => {
-                          splitShotlistToNodes(node);
                           closeCtx();
                         }}
                       />

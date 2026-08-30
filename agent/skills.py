@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import Literal
 
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
@@ -28,6 +28,101 @@ DECOMPOSE_FLOW_IDS = {
     "scene": os.environ.get("LANGFLOW_DECOMPOSE_SCENE_FLOW_ID", ""),
     "prop": os.environ.get("LANGFLOW_DECOMPOSE_PROP_FLOW_ID", ""),
 }
+
+def _parse_shot_rows(text: str) -> list[dict]:
+    """从 flow 输出文本中解析分镜 JSON 数组（容错：剥围栏、截取首尾括号）。"""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`").lstrip()
+        if t.startswith("json"):
+            t = t[4:].lstrip()
+    start, end = t.find("["), t.rfind("]")
+    if start == -1 or end <= start:
+        raise ValueError("输出里没有 JSON 数组")
+    arr = json.loads(t[start : end + 1])
+    rows = []
+    for i, it in enumerate(arr):
+        if not isinstance(it, dict):
+            continue
+        rows.append(
+            {
+                "rid": f"r{i + 1}",
+                "shotSize": str(it.get("shotSize") or ""),
+                "cameraMove": str(it.get("cameraMove") or ""),
+                "duration": str(it.get("duration") or ""),
+                "action": str(it.get("action") or ""),
+                "lighting": str(it.get("lighting") or ""),
+                "sound": str(it.get("sound") or ""),
+                "dialogue": str(it.get("dialogue") or ""),
+            }
+        )
+    return rows
+
+
+# 分镜表生成任务表：jobId -> {"status": running|done, "rows"| "error"}
+STORYBOARD_GEN_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_storyboard_gen_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return STORYBOARD_GEN_JOBS.get(job_id)
+
+
+async def start_storyboard_gen_job(
+    script: str,
+    shot_count: Optional[int] = None,
+    duration_seconds: Optional[int] = None,
+    visual_style: str = "",
+    assets: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """启动分镜表生成任务（异步：代理 30s 掐断长请求）。返回 jobId。"""
+    flow_id = os.environ.get("LANGFLOW_SHOTLIST_FLOW_ID", "")
+    if not flow_id:
+        raise RuntimeError("未配置 LANGFLOW_SHOTLIST_FLOW_ID")
+
+    parts = []
+    if shot_count:
+        parts.append(f"镜头数：{int(shot_count)}")
+    if duration_seconds:
+        parts.append(f"单镜时长：{int(duration_seconds)} 秒")
+    if str(visual_style or "").strip():
+        parts.append(f"全局视觉风格：{str(visual_style).strip()}")
+    assets = assets or []
+    label = {"character": "角色", "scene": "场景", "prop": "道具", "costume": "服饰"}
+    entries = [
+        f"- [{label.get(a.get('type'), a.get('type'))}] {a.get('name')}"
+        for a in assets
+        if str(a.get("name") or "").strip()
+    ]
+    if entries:
+        parts.append("已有资产名单：")
+        parts.extend(entries)
+    parts.append("剧本：")
+    parts.append(script)
+    input_value = "\n".join(parts)
+
+    job_id = uuid.uuid4().hex[:12]
+    STORYBOARD_GEN_JOBS[job_id] = {"status": "running", "rows": None, "error": None}
+
+    async def run() -> None:
+        state = STORYBOARD_GEN_JOBS[job_id]
+        try:
+            text = await run_flow_blocking(
+                flow_id,
+                input_value=input_value,
+                tweaks={"LanguageModelComponent": {"temperature": 0.4}},
+            )
+            state["rows"] = _parse_shot_rows(text)
+        except Exception as e:  # noqa: BLE001
+            state["error"] = str(e)[:300]
+        finally:
+            state["status"] = "done"
+        # 清理历史任务（保留最近 49 个已完成）
+        done = [k for k, v in STORYBOARD_GEN_JOBS.items() if v["status"] == "done"]
+        for k in done[:-49]:
+            STORYBOARD_GEN_JOBS.pop(k, None)
+
+    asyncio.create_task(run())
+    return job_id
 IMAGEGEN_FLOW_ID = os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID", "")
 DMX_API_KEY = os.environ.get("DMX_API_KEY", "")
 VOLC_SEARCH_API_KEY = os.environ.get("VOLC_SEARCH_API_KEY", "")
@@ -99,11 +194,41 @@ async def run_flow_blocking(flow_id: str, input_value: str = "", tweaks: Optiona
 # ---------- 资产拆解 ----------
 
 
+class AssetLook(BaseModel):
+    label: str = Field(min_length=1)
+    description: str = ""
+
+
 class Asset(BaseModel):
     type: Literal["character", "scene", "prop"]
     name: str = Field(min_length=1)
     description: str = ""
     visual_notes: str = ""
+    # 角色拆解 flow 额外输出：剧本中的造型/服饰变化计划（juben look 范式）。
+    # LLM 输出形态不稳（字符串、缺 label、杂字段都见过）：坏条目剔除而非
+    # 让整路拆解报废
+    looks: List[AssetLook] = []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _sanitize_looks(cls, data: Any) -> Any:
+        if not (isinstance(data, dict) and isinstance(data.get("looks"), list)):
+            return data
+        good: List[Dict[str, Any]] = []
+        for item in data["looks"]:
+            if isinstance(item, str) and item.strip():
+                good.append({"label": item.strip()})
+                continue
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or item.get("name") or "").strip()
+            if not label:
+                continue
+            good.append({
+                "label": label[:40],
+                "description": str(item.get("description") or "").strip(),
+            })
+        return {**data, "looks": good}
 
 
 class AssetList(BaseModel):
@@ -190,6 +315,141 @@ async def decompose_script_assets(
     return merged, errors
 
 
+# ---------- 资产拆解（异步任务：Next 同源代理 30s 掐断长请求） ----------
+
+DECOMPOSE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_decompose_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return DECOMPOSE_JOBS.get(job_id)
+
+
+async def start_decompose_job(
+    script: str,
+    existing: Optional[List[Dict[str, Any]]] = None,
+    auto_looks: bool = False,
+    visual_style: str = "",
+) -> str:
+    """启动资产拆解任务，立即返回 jobId（前端轮询 GET /assets/decompose/{jobId}）。
+
+    auto_looks=True 时拆解完成后自动续跑角色出图链（juben 全自动范式：
+    每角色先出定妆照，再以其为身份参考图逐个出 Look 造型图），
+    结果写回 asset 条目（image_url / looks[i].image_url）。
+    """
+    job_id = uuid.uuid4().hex[:12]
+    DECOMPOSE_JOBS[job_id] = {
+        "status": "running",
+        "phase": "decompose",
+        "progress": None,
+        "assets": None,
+        "errors": None,
+        "error": None,
+    }
+
+    async def run() -> None:
+        state = DECOMPOSE_JOBS[job_id]
+        try:
+            assets, errors = await decompose_script_assets(
+                script, existing=existing
+            )
+            state["assets"] = assets
+            state["errors"] = errors
+            if auto_looks and IMAGEGEN_FLOW_ID and DMX_API_KEY:
+                state["phase"] = "images"
+                # 名单同名 = 画布已有同名卡（flow 会沿用旧名）：其卡不受本次
+                # 建卡影响，自动出图产物没有落点，跳过省成本
+                existed_names = {
+                    str(e.get("name") or "").strip()
+                    for e in existing or []
+                    if str(e.get("type") or "") == "character"
+                }
+                await _auto_look_images(assets, state, visual_style, existed_names)
+        except Exception as e:  # noqa: BLE001
+            state["error"] = str(e)[:300]
+        finally:
+            state["phase"] = "done"
+            state["status"] = "done"
+        # 清理历史任务（保留最近 49 个已完成）
+        done = [k for k, v in DECOMPOSE_JOBS.items() if v["status"] == "done"]
+        for k in done[:-49]:
+            DECOMPOSE_JOBS.pop(k, None)
+
+    asyncio.create_task(run())
+    return job_id
+
+
+async def _auto_look_images(
+    assets: List[Dict[str, Any]],
+    state: Dict[str, Any],
+    visual_style: str,
+    skip_names: Optional[set[str]] = None,
+) -> None:
+    """角色出图自动链（juben collect_pending_character_materials 范式）：
+    每个角色定妆照 → 完成后逐 Look 并发出图（参考图1=定妆照，身份锚点
+    协议与前端手动 Look 相同）。结果写回条目；单张失败记 error 不拖累
+    其他。并发 3；角色上限 8、每角色 Look 上限 4（防大成本失控）。
+    skip_names（画布已有角色名）整卡跳过——出图没有落点。"""
+    chars = [
+        a
+        for a in assets
+        if a.get("type") == "character"
+        and str(a.get("name") or "").strip() not in (skip_names or set())
+    ][:8]
+    total = len(chars) + sum(min(len(a.get("looks") or []), 4) for a in chars)
+    done = [0]
+    state["progress"] = {"done": 0, "total": total}
+    sem = asyncio.Semaphore(3)
+    style_note = f"全局视觉风格：{visual_style}" if visual_style.strip() else ""
+
+    async def gen(shot: Dict[str, Any]) -> Dict[str, Any]:
+        async with sem:
+            r = await _generate_single_image(shot)
+        done[0] += 1
+        state["progress"] = {"done": done[0], "total": total}
+        return r
+
+    async def one_char(a: Dict[str, Any]) -> None:
+        desc = f"{a.get('name', '')}。{a.get('description', '')}"
+        if a.get("visual_notes"):
+            desc += f"（视觉：{a['visual_notes']}）"
+        sheet = await gen({
+            "name": a.get("name") or "角色",
+            "description": desc,
+            "assetType": "character",
+            "visualNotes": style_note,
+        })
+        looks = (a.get("looks") or [])[:4]
+        if not sheet.get("ok") or not sheet.get("imageUrl"):
+            # 没有定妆照就没有身份锚点，Look 退化成纯文生图一致性差：跳过
+            for l in looks:
+                l["error"] = "定妆照生成失败，Look 已跳过"
+            return
+        a["image_url"] = sheet["imageUrl"]
+
+        async def one_look(l: Dict[str, Any]) -> None:
+            r = await gen({
+                "name": f"{a.get('name', '')}·{l.get('label', '造型')}",
+                "description": " ".join([
+                    f"生成角色「{a.get('name', '')}」的造型定妆图：{l.get('label', '')}。",
+                    f"角色设定：{a.get('description', '')}。",
+                    "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，"
+                    "保持完全不变；忽略其服装、配饰、姿态与背景。",
+                    f"造型要求：{l.get('description', '')}。",
+                ]),
+                "assetType": "character",
+                "visualNotes": style_note,
+                "referenceImages": [sheet["imageUrl"]],
+            })
+            if r.get("ok") and r.get("imageUrl"):
+                l["image_url"] = r["imageUrl"]
+            else:
+                l["error"] = str(r.get("error") or "出图失败")[:200]
+
+        await asyncio.gather(*[one_look(l) for l in looks])
+
+    await asyncio.gather(*[one_char(a) for a in chars])
+
+
 async def _decompose_one_type(
     flow_id: str,
     ttype: str,
@@ -217,11 +477,20 @@ async def _decompose_one_type(
         asset_list = AssetList.model_validate_json(obj_text)
     except ValidationError as exc:
         raise RuntimeError(f"未通过结构校验：{exc.errors()[:3]}") from exc
-    # flow 提示词已限定类型，这里再强制对齐一次（防模型串类）
-    return [
+    # flow 提示词已限定类型，这里再强制对齐一次（防模型串类）；
+    # looks 仅角色类型保留（场景/道具无造型概念）
+    out = [
         {"type": ttype, "name": a.name, "description": a.description, "visual_notes": a.visual_notes}
         for a in asset_list.assets
     ]
+    if ttype == "character":
+        for item, a in zip(out, asset_list.assets):
+            if a.looks:
+                item["looks"] = [
+                    {"label": l.label, "description": l.description}
+                    for l in a.looks
+                ]
+    return out
 
 
 async def _decompose_legacy(
@@ -401,6 +670,55 @@ def get_storyboard_image_job(job_id: str) -> Optional[Dict[str, Any]]:
     return STORYBOARD_IMAGE_JOBS.get(job_id)
 
 
+async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
+    """单张出图原语（直连 imagegen flow，不经聊天）：入参字段同批量出图
+    请求（name/description/visualNotes?/assetType?/referenceImages?），
+    返回 {ok, imageUrl?|error}。拆解自动出图链与批量出图任务共用。"""
+    # flow 载荷只认 {type,name,description,visual_notes,reference_images?,search_query?}：
+    # rid 不能进 payload（会被渲染进出图提示词）。
+    # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
+    # 组件里 json.loads 会报 Invalid control character
+    def flat(value: Any) -> str:
+        return " ".join(str(value or "").split())
+
+    payload: Dict[str, Any] = {
+        "type": flat(shot.get("assetType") or "scene"),
+        "name": flat(shot.get("name") or "资产"),
+        "description": flat(shot.get("description")),
+    }
+    if shot.get("visual_notes"):
+        payload["visual_notes"] = flat(shot["visual_notes"])
+    # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
+    # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）
+    ref_images = [
+        AGENT_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
+        if u.startswith(("/agent-service/assets/", "/assets/"))
+        else str(u)
+        for u in (shot.get("referenceImages") or [])
+        if str(u).strip()
+    ]
+    if ref_images:
+        payload["reference_images"] = ref_images
+    try:
+        raw = await run_flow_blocking(
+            IMAGEGEN_FLOW_ID,
+            tweaks={
+                "BatchAssetSheet-img02": {
+                    "assets_payload": json.dumps(
+                        {"assets": [payload]}, ensure_ascii=False
+                    ),
+                    "api_key": DMX_API_KEY,
+                }
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "error": str(e)[:200]}
+    url = _extract_image_url(raw)
+    if url:
+        return {"ok": True, "imageUrl": url}
+    return {"ok": False, "error": raw[:200]}
+
+
 async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
     """启动分镜行批量出图任务（直连 imagegen flow，并发 3，不经聊天）。
 
@@ -429,54 +747,9 @@ async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
 
     async def one(shot: Dict[str, Any]) -> None:
         rid = str(shot.get("rid", ""))
-        # flow 载荷只认 {type,name,description,visual_notes,reference_images?,search_query?}：
-        # rid 不能进 payload（会被渲染进出图提示词）。
-        # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
-        # 组件里 json.loads 会报 Invalid control character
-        def flat(value: Any) -> str:
-            return " ".join(str(value or "").split())
-
-        payload: Dict[str, Any] = {
-            "type": flat(shot.get("assetType") or "scene"),
-            "name": flat(shot.get("name") or rid or "镜头"),
-            "description": flat(shot.get("description")),
-        }
-        if shot.get("visual_notes"):
-            payload["visual_notes"] = flat(shot["visual_notes"])
-        # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
-        # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）
-        ref_images = [
-            AGENT_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
-            if u.startswith(("/agent-service/assets/", "/assets/"))
-            else str(u)
-            for u in (shot.get("referenceImages") or [])
-            if str(u).strip()
-        ]
-        if ref_images:
-            payload["reference_images"] = ref_images
         async with sem:
-            result: Dict[str, Any]
-            try:
-                raw = await run_flow_blocking(
-                    IMAGEGEN_FLOW_ID,
-                    tweaks={
-                        "BatchAssetSheet-img02": {
-                            "assets_payload": json.dumps(
-                                {"assets": [payload]}, ensure_ascii=False
-                            ),
-                            "api_key": DMX_API_KEY,
-                        }
-                    },
-                )
-            except Exception as e:  # noqa: BLE001
-                result = {"rid": rid, "ok": False, "error": str(e)[:200]}
-            else:
-                url = _extract_image_url(raw)
-                if url:
-                    result = {"rid": rid, "ok": True, "imageUrl": url}
-                else:
-                    result = {"rid": rid, "ok": False, "error": raw[:200]}
-            STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = result
+            result = await _generate_single_image(shot)
+        STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = {"rid": rid, **result}
 
     async def run() -> None:
         try:

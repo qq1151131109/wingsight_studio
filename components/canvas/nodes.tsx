@@ -826,11 +826,14 @@ function TextCard({
   id,
   selected,
   editorial,
+  footer,
 }: {
   data: WingNodeData;
   id: string;
   selected: boolean;
   editorial?: boolean;
+  /** 卡底附加操作条（剧本卡的拆解/分镜按钮用），渲染在正文之下 */
+  footer?: React.ReactNode;
 }) {
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
   const [forceEdit, setForceEdit] = useState(false);
@@ -917,6 +920,7 @@ function TextCard({
           {genBtn("video", "生视频")}
         </div>
       ) : null}
+      {footer}
     </CardShell>
   );
 }
@@ -925,14 +929,139 @@ function NoteCard({ data, id, selected }: NodeProps) {
   return <TextCard data={data as WingNodeData} id={id} selected={selected} />;
 }
 
-/** 剧本卡：正文可滚 + 衬线编辑风（承载剧本全文） */
+/** 剧本卡：正文可滚 + 衬线编辑风（承载剧本全文）+ 卡底操作条。
+ *  管线起点：拆解资产→组框建在左侧；拆分镜表→右侧建/复用分镜表卡并
+ *  自动触发生成（autoGenerate 旗标） */
 function ScriptCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const [decomposing, setDecomposing] = useState(false);
+  const [decomposeMsg, setDecomposeMsg] = useState("");
+  const [genError, setGenError] = useState("");
+  // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
+  if (!d || typeof d.nodeType !== "string") return null;
+  const body = d.body ?? "";
+  const empty = !body.trim();
+  // 场数：按「第 X 场/幕」行头粗算（无场标的剧本不显示）
+  const sceneCount = (
+    body.match(/^\s*第[0-9一二三四五六七八九十百]+[场幕]/gm) ?? []
+  ).length;
+
+  // 按钮直读 store：正文 blur 保存可能晚于点击，props 里的 body 会 stale
+  const freshBody = () =>
+    (
+      useCanvasStore.getState().nodes.find((n) => n.id === id)?.data.body ?? ""
+    ).trim();
+
+  /** 拆解资产：共享实现 runAssetDecompose，锚点=本卡（资产组建在左侧） */
+  const decompose = () => {
+    if (decomposing) return;
+    const scriptSource = freshBody();
+    if (!scriptSource) return;
+    setDecomposeMsg("");
+    setGenError("");
+    setDecomposing(true);
+    void runAssetDecompose({
+      anchorId: id,
+      scriptSource,
+      onMsg: setDecomposeMsg,
+      onError: setGenError,
+    }).finally(() => setDecomposing(false));
+  };
+
+  /** 拆分镜表：找/建本卡下游分镜表卡 → 置 autoGenerate 旗标远程触发生成 */
+  const genShotlist = () => {
+    if (!freshBody()) return;
+    const st = useCanvasStore.getState();
+    const tid0 = st.edges.find(
+      (e) =>
+        e.source === id &&
+        st.nodes.find((n) => n.id === e.target)?.data.nodeType === "shotlist",
+    )?.target;
+    const tid = tid0 ?? createConnectedNode(id, "shotlist");
+    if (!tid) return;
+    useCanvasStore.getState().updateNodeData(tid, { autoGenerate: true });
+    window.dispatchEvent(
+      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [tid] } }),
+    );
+  };
+
+  const exportMd = () => {
+    const text = freshBody();
+    if (!text) return;
+    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${(d.title || "剧本").slice(0, 40)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   return (
     <TextCard
-      data={data as WingNodeData}
+      data={d}
       id={id}
       selected={selected}
       editorial
+      footer={
+        <>
+          <div className="ws-detail nodrag nowheel mt-1.5 flex items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
+            <span
+              className="min-w-0 shrink tabular-nums text-text-4"
+              title={body.slice(0, 120)}
+            >
+              {body.length} 字
+              {sceneCount > 0 ? ` · ${sceneCount} 场` : ""}
+            </span>
+            <span className="flex-1" />
+            <button
+              type="button"
+              disabled={empty}
+              title="把剧本正文导出为 .md 文件"
+              className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={(e) => {
+                e.stopPropagation();
+                exportMd();
+              }}
+            >
+              <Download className="h-3 w-3" />
+              导出
+            </button>
+            <button
+              type="button"
+              disabled={empty || decomposing}
+              title="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡左侧。出分镜图前先给资产出设定图，一致性最好"
+              className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={(e) => {
+                e.stopPropagation();
+                decompose();
+              }}
+            >
+              {decomposing ? "拆解中…" : "拆解资产"}
+            </button>
+            <button
+              type="button"
+              disabled={empty}
+              title="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
+              className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-accent bg-accent-dim px-2 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
+              onClick={(e) => {
+                e.stopPropagation();
+                genShotlist();
+              }}
+            >
+              <Film className="h-3 w-3" />
+              拆分镜表
+            </button>
+          </div>
+          {decomposeMsg ? (
+            <p className="ws-detail mt-1 text-[10px] text-text-3">
+              {decomposeMsg}
+            </p>
+          ) : null}
+          {genError ? (
+            <p className="ws-detail mt-1 text-[10px] text-danger">{genError}</p>
+          ) : null}
+        </>
+      }
     />
   );
 }
@@ -2678,44 +2807,6 @@ function GroupCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 拆成分镜卡：每行一张 storyboard 卡按序连线，首张连回分镜表（右键菜单入口） */
-export function splitShotlistToNodes(node: WingNode) {
-  const rows = (node.data.rows ?? []).filter((r) => (r.action ?? "").trim());
-  if (rows.length === 0) return;
-  const st = useCanvasStore.getState();
-  st.commitHistory();
-  const abs = absolutePosition(st.nodes, node);
-  const fp = NODE_FOOTPRINT.storyboard;
-  let prevId = "";
-  const created: string[] = [];
-  rows.forEach((r, i) => {
-    const sid = st.addNode({
-      position: {
-        x: abs.x + (i % 4) * (fp.w + 60),
-        y: abs.y + Math.floor(i / 4) * (fp.h + 60),
-      },
-      data: {
-        nodeType: "storyboard",
-        title: `第 ${i + 1} 镜`,
-        body: r.action ?? "",
-        shotNumber: String(i + 1).padStart(2, "0"),
-        shotSize: r.shotSize,
-        cameraMove: r.cameraMove,
-        duration: r.duration,
-        dialogue: r.dialogue,
-      },
-    });
-    created.push(sid);
-    if (prevId) st.connect({ source: prevId, target: sid });
-    else st.connect({ source: node.id, target: sid });
-    prevId = sid;
-  });
-  st.selectNodes(created);
-  window.dispatchEvent(
-    new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: created } }),
-  );
-}
-
 /** 分镜行出图提示词合成（八段式轻量版；finalPrompt 有值时由调用方直用）。
  *  全局视觉风格收尾（novanova visualStyle 段），供合成与批量出图共用 */
 function composeShotPrompt(r: ShotRow, visualStyle: string): string {
@@ -2730,7 +2821,236 @@ function composeShotPrompt(r: ShotRow, visualStyle: string): string {
   return `${seg.join("。")}。`;
 }
 
-/** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆成分镜卡链与镜头级出图 */
+/** 拆解资产共享实现（ShotListCard 与 ScriptCard 的「拆解资产」都走这里）：
+ *  直连拆解 flow，角色/场景/道具各成一个组框建在锚点卡左侧（同名跳过）。
+ *  锚点是分镜表时才做遗留 分镜表→资产 边的翻转；内部自捕获异常并经 onError
+ *  上报，永不 reject，调用方只需管 busy 态 */
+async function runAssetDecompose(opts: {
+  anchorId: string;
+  scriptSource: string;
+  onMsg: (msg: string) => void;
+  onError: (msg: string) => void;
+}) {
+  const { anchorId, scriptSource } = opts;
+  try {
+    const nodes = useCanvasStore.getState().nodes;
+    // 画布已有资产名单喂给拆解 flow：同指资产沿用旧名（跨次拆解可去重合并）
+    const existing = nodes
+      .filter(
+        (n) =>
+          ["character", "scene", "prop"].includes(String(n.data.nodeType)) &&
+          n.data.title,
+      )
+      .map((n) => ({ type: String(n.data.nodeType), name: n.data.title as string }));
+    // 全自动（juben 范式）：拆解后 agent 直接跑角色出图链（定妆照→逐 Look），
+    // 项目画风注入每张图；阶段进度经 onMsg 显示在卡上
+    const { assets, errors: decompErrors } = await decomposeAssets(
+      scriptSource,
+      existing,
+      {
+        autoLooks: true,
+        visualStyle: useCanvasStore.getState().projectStyle ?? "",
+        onPhase: ({ phase, progress }) => {
+          if (phase === "images" && progress?.total)
+            opts.onMsg(`拆解完成，自动出图中 ${progress.done}/${progress.total}…`);
+        },
+      },
+    );
+    const chars = assets;
+    if (chars.length === 0) {
+      opts.onMsg("剧本里没拆出可用资产");
+      return;
+    }
+    const st = useCanvasStore.getState();
+    const src = st.nodes.find((n) => n.id === anchorId);
+    if (!src) return;
+    const abs = absolutePosition(st.nodes, src);
+    // 排布（novanova 资产分组范式）：角色/场景/道具各成一个组框，
+    // 组内 2 列网格；三个组从左到右排开（整组矩形一次性避让找空地，
+    // 逐卡避让会散）。重复拆解时同名卡跳过、组框按需补建
+    const KIND_ORDER = [
+      { type: "character" as const, label: "角色" },
+      { type: "scene" as const, label: "场景" },
+      { type: "prop" as const, label: "道具" },
+    ];
+    const created: string[] = [];
+    const groupIds: string[] = [];
+    const kindCounts: Record<string, number> = {};
+    let existed = 0;
+    // 资产卡放锚点卡左侧（推导方向：左入右出），组框贴着左缘往左排
+    let groupRight = abs.x - 80;
+    const anchorY = abs.y;
+    for (const { type, label } of KIND_ORDER) {
+      const cur = useCanvasStore.getState();
+      const items = chars.filter((a) => a.type === type);
+      const fresh = items.filter(
+        (a) =>
+          !cur.nodes.some(
+            (n) => n.data.nodeType === type && n.data.title === a.name,
+          ),
+      );
+      existed += items.length - fresh.length;
+      if (fresh.length === 0) continue;
+      kindCounts[type] = fresh.length;
+      const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
+      const kcols = Math.min(2, fresh.length);
+      const kw = kcols * (fp.w + 60) - 60;
+      const kh = Math.ceil(fresh.length / kcols) * (fp.h + 54) - 54;
+      const origin = findFreePosition(cur.nodes, { x: groupRight - kw, y: anchorY }, {
+        w: kw,
+        h: kh,
+      });
+      const ids: string[] = [];
+      fresh.forEach((a, i) => {
+        const st2 = useCanvasStore.getState();
+        const nid = st2.addNode({
+          position: {
+            x: origin.x + (i % kcols) * (fp.w + 60),
+            y: origin.y + Math.floor(i / kcols) * (fp.h + 54),
+          },
+          data: {
+            nodeType: type,
+            title: a.name,
+            body: [a.description, a.visual_notes ? `视觉：${a.visual_notes}` : ""]
+              .filter(Boolean)
+              .join("\n"),
+            // 全自动出图产物：角色卡建卡即带定妆照与 Look 变体（可点击设主图）
+            ...(a.image_url
+              ? {
+                  imageUrl: a.image_url,
+                  status: "ready" as const,
+                  looks: (a.looks ?? [])
+                    .filter((l) => l.image_url)
+                    .map((l) => ({
+                      label: l.label,
+                      imageUrl: l.image_url as string,
+                    })),
+                }
+              : {}),
+          },
+        });
+        ids.push(nid);
+      });
+      const gid = useCanvasStore.getState().groupNodes(ids, label);
+      if (gid) groupIds.push(gid);
+      created.push(...ids);
+      groupRight = origin.x - 80;
+    }
+    if (created.length > 0) {
+      const end = useCanvasStore.getState();
+      const focusIds = groupIds.length > 0 ? groupIds : created;
+      end.selectNodes(groupIds.length > 0 ? groupIds : created);
+      end.flashNodes(created);
+      window.dispatchEvent(
+        new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: focusIds } }),
+      );
+    }
+    if (created.length === 0 && existed > 0) {
+      // 全部已存在：把混在通用组框（「资产」/「分组」等旧命名）里的卡解散，
+      // 连同散卡一起按类型收拢重排、各自成组；已在类型组内的不动
+      const end = useCanvasStore.getState();
+      const matched = end.nodes.filter((n) =>
+        chars.some((a) => a.type === n.data.nodeType && a.name === n.data.title),
+      );
+      const KIND_TITLES = KIND_ORDER.map((k) => k.label);
+      const genericGroups = [
+        ...new Set(matched.map((n) => n.parentId).filter(Boolean)),
+      ]
+        .map((pid) => end.nodes.find((n) => n.id === pid))
+        .filter(
+          (g): g is WingNode =>
+            Boolean(g) &&
+            g!.data.nodeType === "group" &&
+            !KIND_TITLES.includes(g!.data.title ?? ""),
+        );
+      for (const g of genericGroups) end.ungroupNode(g.id);
+      let groupRight2 = abs.x - 80;
+      const newGroups: string[] = [];
+      for (const { type, label } of KIND_ORDER) {
+        const cur = useCanvasStore.getState();
+        const items = cur.nodes.filter(
+          (n) =>
+            n.data.nodeType === type &&
+            !n.parentId &&
+            chars.some((a) => a.type === type && a.name === n.data.title),
+        );
+        if (items.length === 0) continue;
+        const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
+        const kcols = Math.min(2, items.length);
+        const kw = kcols * (fp.w + 60) - 60;
+        const kh = Math.ceil(items.length / kcols) * (fp.h + 54) - 54;
+        const origin = findFreePosition(cur.nodes, { x: groupRight2 - kw, y: anchorY }, {
+          w: kw,
+          h: kh,
+        });
+        useCanvasStore.setState((s) => ({
+          nodes: s.nodes.map((n) => {
+            const idx = items.findIndex((m) => m.id === n.id);
+            if (idx === -1) return n;
+            return {
+              ...n,
+              position: {
+                x: origin.x + (idx % kcols) * (fp.w + 60),
+                y: origin.y + Math.floor(idx / kcols) * (fp.h + 54),
+              },
+            };
+          }),
+        }));
+        const gid = useCanvasStore
+          .getState()
+          .groupNodes(items.map((m) => m.id), label);
+        if (gid) newGroups.push(gid);
+        groupRight2 = origin.x - 80;
+      }
+      // 历史遗留的 分镜表→资产 边统一翻转为 资产→分镜表（仅分镜表锚点做：
+      // 剧本卡锚点下翻成 资产→剧本 无意义）
+      const anchorType = useCanvasStore
+        .getState()
+        .nodes.find((n) => n.id === anchorId)?.data.nodeType;
+      if (anchorType === "shotlist") {
+        const matchedIds = new Set(matched.map((m) => m.id));
+        useCanvasStore.setState((s) => ({
+          edges: s.edges.map((e) =>
+            e.source === anchorId && matchedIds.has(e.target)
+              ? { ...e, source: e.target, target: anchorId }
+              : e,
+          ),
+        }));
+      }
+      if (newGroups.length > 0) {
+        useCanvasStore.getState().selectNodes(newGroups);
+        window.dispatchEvent(
+          new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: newGroups } }),
+        );
+      }
+      opts.onMsg(
+        newGroups.length > 0
+          ? `${existed} 项资产均已存在：已按 角色/场景/道具 收拢成组`
+          : `${existed} 项资产均已存在（已在类型组内，不重排）`,
+      );
+      return;
+    }
+    const kindSummary = KIND_ORDER.filter((k) => kindCounts[k.type])
+      .map((k) => `${k.label} ${kindCounts[k.type]}`)
+      .join("・");
+    const failNote = Object.entries(decompErrors)
+      .map(([t, e]) => `${t}：${e}`)
+      .join("；");
+    opts.onMsg(
+      created.length > 0
+        ? `拆出 ${chars.length} 项资产：新建 ${created.length} 张` +
+            (kindSummary ? `（${kindSummary}）` : "") +
+            (existed ? `，${existed} 项已存在跳过` : "") +
+            (failNote ? `｜部分类型失败：${failNote}` : "")
+        : `${existed} 项资产均已存在，未新建` +
+            (failNote ? `｜部分类型失败：${failNote}` : ""),
+    );
+  } catch (exc) {
+    opts.onError(exc instanceof Error ? exc.message : "拆解失败");
+  }
+}
+
+/** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
@@ -2755,6 +3075,16 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     rect: { left: number; top: number; bottom: number };
   } | null>(null);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  // 剧本卡「拆分镜表」的一次性远程触发（hook 须在 early return 之前）：
+  // 剧本卡给本卡置位 autoGenerate 旗标 → 消费并走本卡 generate（带镜头数/
+  // 风格/名单注入/refIds 绑定全套参数），避免跨卡直调的挂载时序问题。
+  // generate 在 guard 之后定义，经 ref 间接引用
+  const genRef = useRef<() => void>(() => {});
+  const autoGen = d?.autoGenerate === true;
+  useEffect(() => {
+    if (!autoGen) return;
+    genRef.current();
+  }, [autoGen]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const rows = d.rows ?? [];
@@ -2798,6 +3128,19 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           ]
             .filter(Boolean)
             .join("；") || undefined,
+        // 硬约束 + @引用名单（ai-moive-studio 范式）：分镜只用画布已有资产，
+        // 行内提到它们时用 @名称
+        assets: nodes
+          .filter(
+            (n) =>
+              ["character", "scene", "prop", "costume"].includes(
+                String(n.data.nodeType),
+              ) && n.data.title,
+          )
+          .map((n) => ({
+            type: String(n.data.nodeType),
+            name: n.data.title as string,
+          })),
       });
       if (next.length === 0) {
         setGenError("生成结果为空");
@@ -2814,18 +3157,22 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           )
           .map((n) => [n.data.title as string, n.id]),
       );
+      // @名称 后面直接跟正文（无分隔符），按最长前缀匹配资产名
       const bound = next.map((r) => {
-        const ids = [
-          ...new Set(
-            (r.action ?? "")
-              .split("@")
-              .slice(1)
-              .map((seg) => seg.trim())
-              .map((name) => titleToId.get(name))
-              .filter((v): v is string => Boolean(v)),
-          ),
-        ];
-        return ids.length > 0 ? { ...r, refIds: ids } : r;
+        const action = r.action ?? "";
+        const ids = new Set<string>();
+        let i = action.indexOf("@");
+        while (i !== -1) {
+          for (const [t, id] of titleToId) {
+            if (t && action.startsWith(t, i + 1)) {
+              ids.add(id);
+              i += t.length;
+              break;
+            }
+          }
+          i = action.indexOf("@", i + 1);
+        }
+        return ids.size > 0 ? { ...r, refIds: [...ids] } : r;
       });
       update({ rows: bound, status: "ready" });
     } catch (exc) {
@@ -2929,203 +3276,25 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       .filter((n): n is WingNode => Boolean(n));
   };
 
-  /** 拆解资产（novanova「分镜同时出资产清单」的独立化）：直连拆解 flow，
-   *  角色自动建角色卡（同名跳过）并连线回本卡；场景/道具不建卡——其描述
-   *  已在剧本/行文本里，出图提示词会带视觉风格与设定 */
+  /** 拆解资产（novanova「分镜同时出资产清单」的独立化）：共享实现
+   *  runAssetDecompose，锚点=本卡（资产组建在左侧） */
   const decompose = async () => {
     if (decomposing || !scriptSource) return;
     setDecomposing(true);
     setDecomposeMsg("");
-    try {
-      // 画布已有资产名单喂给拆解 flow：同指资产沿用旧名（跨次拆解可去重合并）
-      const existing = nodes
-        .filter(
-          (n) =>
-            ["character", "scene", "prop"].includes(String(n.data.nodeType)) &&
-            n.data.title,
-        )
-        .map((n) => ({ type: String(n.data.nodeType), name: n.data.title as string }));
-      const { assets, errors: decompErrors } = await decomposeAssets(
-        scriptSource,
-        existing,
-      );
-      const chars = assets;
-      if (chars.length === 0) {
-        setDecomposeMsg("剧本里没拆出可用资产");
-        return;
-      }
-      const st = useCanvasStore.getState();
-      const src = st.nodes.find((n) => n.id === id);
-      if (!src) return;
-      const abs = absolutePosition(st.nodes, src);
-      // 排布（novanova 资产分组范式）：角色/场景/道具各成一个组框，
-      // 组内 2 列网格；三个组从左到右排开（整组矩形一次性避让找空地，
-      // 逐卡避让会散）。重复拆解时同名卡跳过、组框按需补建
-      const KIND_ORDER = [
-        { type: "character" as const, label: "角色" },
-        { type: "scene" as const, label: "场景" },
-        { type: "prop" as const, label: "道具" },
-      ];
-      const created: string[] = [];
-      const groupIds: string[] = [];
-      const kindCounts: Record<string, number> = {};
-      let existed = 0;
-      // 资产卡放分镜表左侧（连入左把手），组框贴着左缘往左排
-      let groupRight = abs.x - 80;
-      const anchorY = abs.y;
-      for (const { type, label } of KIND_ORDER) {
-        const cur = useCanvasStore.getState();
-        const items = chars.filter((a) => a.type === type);
-        const fresh = items.filter(
-          (a) =>
-            !cur.nodes.some(
-              (n) => n.data.nodeType === type && n.data.title === a.name,
-            ),
-        );
-        existed += items.length - fresh.length;
-        if (fresh.length === 0) continue;
-        kindCounts[type] = fresh.length;
-        const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
-        const kcols = Math.min(2, fresh.length);
-        const kw = kcols * (fp.w + 60) - 60;
-        const kh = Math.ceil(fresh.length / kcols) * (fp.h + 54) - 54;
-        const origin = findFreePosition(cur.nodes, { x: groupRight - kw, y: anchorY }, {
-          w: kw,
-          h: kh,
-        });
-        const ids: string[] = [];
-        fresh.forEach((a, i) => {
-          const st2 = useCanvasStore.getState();
-          const nid = st2.addNode({
-            position: {
-              x: origin.x + (i % kcols) * (fp.w + 60),
-              y: origin.y + Math.floor(i / kcols) * (fp.h + 54),
-            },
-            data: {
-              nodeType: type,
-              title: a.name,
-              body: [a.description, a.visual_notes ? `视觉：${a.visual_notes}` : ""]
-                .filter(Boolean)
-                .join("\n"),
-            },
-          });
-          // 分镜表 → 资产卡：资产卡是拆解的派生产物（与「拆成分镜卡」同向），
-          // 反向连会混进 scriptSource 的上游来源列表
-          ids.push(nid);
-        });
-        const gid = useCanvasStore.getState().groupNodes(ids, label);
-        if (gid) groupIds.push(gid);
-        created.push(...ids);
-        groupRight = origin.x - 80;
-      }
-      if (created.length > 0) {
-        const end = useCanvasStore.getState();
-        const focusIds = groupIds.length > 0 ? groupIds : created;
-        end.selectNodes(groupIds.length > 0 ? groupIds : created);
-        end.flashNodes(created);
-        window.dispatchEvent(
-          new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: focusIds } }),
-        );
-      }
-      if (created.length === 0 && existed > 0) {
-        // 全部已存在：把混在通用组框（「资产」/「分组」等旧命名）里的卡解散，
-        // 连同散卡一起按类型收拢重排、各自成组；已在类型组内的不动
-        const end = useCanvasStore.getState();
-        const matched = end.nodes.filter((n) =>
-          chars.some((a) => a.type === n.data.nodeType && a.name === n.data.title),
-        );
-        const KIND_TITLES = KIND_ORDER.map((k) => k.label);
-        const genericGroups = [
-          ...new Set(matched.map((n) => n.parentId).filter(Boolean)),
-        ]
-          .map((pid) => end.nodes.find((n) => n.id === pid))
-          .filter(
-            (g): g is WingNode =>
-              Boolean(g) &&
-              g!.data.nodeType === "group" &&
-              !KIND_TITLES.includes(g!.data.title ?? ""),
-          );
-        for (const g of genericGroups) end.ungroupNode(g.id);
-        let groupRight2 = abs.x - 80;
-        const newGroups: string[] = [];
-        for (const { type, label } of KIND_ORDER) {
-          const cur = useCanvasStore.getState();
-          const items = cur.nodes.filter(
-            (n) =>
-              n.data.nodeType === type &&
-              !n.parentId &&
-              chars.some((a) => a.type === type && a.name === n.data.title),
-          );
-          if (items.length === 0) continue;
-          const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
-          const kcols = Math.min(2, items.length);
-          const kw = kcols * (fp.w + 60) - 60;
-          const kh = Math.ceil(items.length / kcols) * (fp.h + 54) - 54;
-          const origin = findFreePosition(cur.nodes, { x: groupRight2 - kw, y: anchorY }, {
-            w: kw,
-            h: kh,
-          });
-          useCanvasStore.setState((s) => ({
-            nodes: s.nodes.map((n) => {
-              const idx = items.findIndex((m) => m.id === n.id);
-              if (idx === -1) return n;
-              return {
-                ...n,
-                position: {
-                  x: origin.x + (idx % kcols) * (fp.w + 60),
-                  y: origin.y + Math.floor(idx / kcols) * (fp.h + 54),
-                },
-              };
-            }),
-          }));
-          const gid = useCanvasStore
-            .getState()
-            .groupNodes(items.map((m) => m.id), label);
-          if (gid) newGroups.push(gid);
-          groupRight2 = origin.x - 80;
-        }
-        // 历史遗留的 分镜表→资产 边统一翻转为 资产→分镜表
-        const matchedIds = new Set(matched.map((m) => m.id));
-        useCanvasStore.setState((s) => ({
-          edges: s.edges.map((e) =>
-            e.source === id && matchedIds.has(e.target)
-              ? { ...e, source: e.target, target: id }
-              : e,
-          ),
-        }));
-        if (newGroups.length > 0) {
-          useCanvasStore.getState().selectNodes(newGroups);
-          window.dispatchEvent(
-            new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: newGroups } }),
-          );
-        }
-        setDecomposeMsg(
-          newGroups.length > 0
-            ? `${existed} 项资产均已存在：已按 角色/场景/道具 收拢成组`
-            : `${existed} 项资产均已存在（已在类型组内，不重排）`,
-        );
-        return;
-      }
-      const kindSummary = KIND_ORDER.filter((k) => kindCounts[k.type])
-        .map((k) => `${k.label} ${kindCounts[k.type]}`)
-        .join("・");
-      const failNote = Object.entries(decompErrors)
-        .map(([t, e]) => `${t}：${e}`)
-        .join("；");
-      setDecomposeMsg(
-        created.length > 0
-          ? `拆出 ${chars.length} 项资产：新建 ${created.length} 张` +
-              (kindSummary ? `（${kindSummary}）` : "") +
-              (existed ? `，${existed} 项已存在跳过` : "") +
-              (failNote ? `｜部分类型失败：${failNote}` : "")
-          : `${existed} 项资产均已存在，未新建` +
-              (failNote ? `｜部分类型失败：${failNote}` : ""),
-      );
-    } catch (exc) {
-      setGenError(exc instanceof Error ? exc.message : "拆解失败");
-    } finally {
-      setDecomposing(false);
-    }
+    await runAssetDecompose({
+      anchorId: id,
+      scriptSource,
+      onMsg: setDecomposeMsg,
+      onError: setGenError,
+    });
+    setDecomposing(false);
+  };
+
+  // autoGenerate 消费体：先清旗标（防重入）再触发生成
+  genRef.current = () => {
+    update({ autoGenerate: undefined });
+    void generate();
   };
 
   /** 批量物化镜头图（novanova 分镜视频的图片版）：选中行 → 画布右侧双列

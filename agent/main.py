@@ -325,81 +325,33 @@ def api_compose(pid: str, req: dict, user: auth.CurrentUser):
 # ---------- 分镜表生成（shotlist 卡按钮直连 langflow；剧本→rows）----------
 
 
-def _parse_shot_rows(text: str) -> list[dict]:
-    """从 flow 输出文本中解析分镜 JSON 数组（容错：剥围栏、截取首尾括号）。"""
-    t = text.strip()
-    if t.startswith("```"):
-        t = t.strip("`").lstrip()
-        if t.startswith("json"):
-            t = t[4:].lstrip()
-    start, end = t.find("["), t.rfind("]")
-    if start == -1 or end <= start:
-        raise ValueError("输出里没有 JSON 数组")
-    arr = json.loads(t[start : end + 1])
-    rows = []
-    for i, it in enumerate(arr):
-        if not isinstance(it, dict):
-            continue
-        rows.append(
-            {
-                "rid": f"r{i + 1}",
-                "shotSize": str(it.get("shotSize") or ""),
-                "cameraMove": str(it.get("cameraMove") or ""),
-                "duration": str(it.get("duration") or ""),
-                "action": str(it.get("action") or ""),
-                "lighting": str(it.get("lighting") or ""),
-                "sound": str(it.get("sound") or ""),
-                "dialogue": str(it.get("dialogue") or ""),
-            }
-        )
-    return rows
-
-
 @app.post("/storyboard/generate")
 async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
+    """分镜表生成：启动异步任务立即返回 jobId（代理 30s 限制，前端轮询）。"""
     script = str(req.get("script") or "").strip()
     if not script:
         return Response(status_code=400, content="剧本内容为空", media_type="text/plain")
-    flow_id = os.environ.get("LANGFLOW_SHOTLIST_FLOW_ID", "")
-    if not flow_id:
-        return Response(
-            status_code=503,
-            content="未配置 LANGFLOW_SHOTLIST_FLOW_ID（flow 见 agent/flows/shotlist-generate.json）",
-            media_type="text/plain",
-        )
-    parts = []
-    if req.get("shotCount"):
-        parts.append(f"镜头数：{int(req['shotCount'])}")
-    if req.get("durationSeconds"):
-        parts.append(f"单镜时长：{int(req['durationSeconds'])} 秒")
-    if str(req.get("visualStyle") or "").strip():
-        parts.append(f"全局视觉风格：{str(req['visualStyle']).strip()}")
-    # 已有资产名单（类型化）：供分镜 @名称 引用与角色约束
-    assets = req.get("assets") if isinstance(req.get("assets"), list) else []
-    if assets:
-        label = {"character": "角色", "scene": "场景", "prop": "道具", "costume": "服饰"}
-        entries = [
-            f"- [{label.get(a.get('type'), a.get('type'))}] {a.get('name')}"
-            for a in assets
-            if str(a.get("name") or "").strip()
-        ]
-        if entries:
-            parts.append("已有资产名单：")
-            parts.extend(entries)
-    parts.append("剧本：")
-    parts.append(script)
-    text = await skills.run_flow_blocking(flow_id, input_value="\n".join(parts))
     try:
-        rows = _parse_shot_rows(text)
-    except (ValueError, json.JSONDecodeError) as exc:
-        return Response(
-            status_code=502,
-            content=f"分镜解析失败（{exc}）：{text[:200]}",
-            media_type="text/plain",
+        job_id = await skills.start_storyboard_gen_job(
+            script,
+            shot_count=req.get("shotCount"),
+            duration_seconds=req.get("durationSeconds"),
+            visual_style=str(req.get("visualStyle") or ""),
+            assets=req.get("assets") if isinstance(req.get("assets"), list) else None,
         )
-    if not rows:
-        return Response(status_code=502, content="分镜解析为空", media_type="text/plain")
-    return {"rows": rows}
+    except RuntimeError as exc:
+        return Response(status_code=503, content=str(exc), media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@app.get("/storyboard/generate/{job_id}")
+async def api_storyboard_generate_status(job_id: str, user: auth.CurrentUser):
+    job = skills.get_storyboard_gen_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="任务不存在", media_type="text/plain")
+    if job["status"] == "done" and job.get("error"):
+        return {"status": "done", "error": job["error"], "rows": None}
+    return {"status": job["status"], "rows": job.get("rows")}
 
 
 @app.post("/storyboard/images")
@@ -430,23 +382,44 @@ async def api_storyboard_images_status(job_id: str, user: auth.CurrentUser):
 
 @app.post("/assets/decompose")
 async def api_assets_decompose(req: dict, user: auth.CurrentUser):
-    """剧本/分镜稿 → 结构化资产清单（直连拆解 flow，不经聊天 LLM）。
+    """剧本/分镜稿 → 结构化资产清单（异步任务：Next 代理 30s 掐断长请求，
+    三路拆解 flow 并发跑不完 30s）。立即返回 jobId，前端轮询
+    GET /assets/decompose/{jobId}。不经聊天 LLM。
 
-    req: {script: str}
-    返回 {assets: [{type: character|scene|prop, name, description, visual_notes}]}
+    req: {script: str, existing?: [{type, name}], auto_looks?: bool,
+          visual_style?: str}
+    auto_looks=True：拆解后自动跑角色出图链（定妆照 → 逐 Look），
+    整链可能数分钟，前端按 phase/progress 显示进度。
     """
     script = str(req.get("script") or "").strip()
     if not script:
         return Response(status_code=400, content="script 为空", media_type="text/plain")
     existing = req.get("existing") if isinstance(req.get("existing"), list) else None
+    auto_looks = bool(req.get("auto_looks"))
+    visual_style = str(req.get("visual_style") or "")
     try:
-        assets, errors = await skills.decompose_script_assets(script, existing=existing)
+        job_id = await skills.start_decompose_job(
+            script, existing=existing, auto_looks=auto_looks, visual_style=visual_style
+        )
     except RuntimeError as exc:
         return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")
-    if not assets:
-        detail = "；".join(f"{t}: {e}" for t, e in errors.items()) or "剧本里没有拆出任何资产"
-        return Response(status_code=502, content=detail[:300], media_type="text/plain")
-    return {"assets": assets, "errors": errors}
+    return {"jobId": job_id}
+
+
+@app.get("/assets/decompose/{job_id}")
+async def api_assets_decompose_status(job_id: str, user: auth.CurrentUser):
+    job = skills.get_decompose_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="任务不存在", media_type="text/plain")
+    if job["status"] == "done" and job.get("error"):
+        return {"status": "done", "phase": "done", "error": job["error"], "assets": None}
+    return {
+        "status": job["status"],
+        "phase": job.get("phase"),
+        "progress": job.get("progress"),
+        "assets": job.get("assets"),
+        "errors": job.get("errors"),
+    }
 
 
 # ---------- 协作者（owner/admin 管理；协作者与 owner 同权编辑）----------
