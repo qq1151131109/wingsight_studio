@@ -1,0 +1,3361 @@
+{
+  "data": {
+    "nodes": [
+      {
+        "data": {
+          "id": "FeishuDocComponent-Source",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "app_id": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "app_id",
+                "value": "feishu_app_id",
+                "display_name": "App ID",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [],
+                "dynamic": false,
+                "info": "飞书自建应用 App ID（支持引用全局变量）",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "app_secret": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "app_secret",
+                "value": "feishu_app_secret",
+                "display_name": "App Secret",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [],
+                "dynamic": false,
+                "info": "飞书自建应用 App Secret（支持引用全局变量）",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "base_url": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "https://open.feishu.cn",
+                  "https://open.larksuite.com"
+                ],
+                "options_metadata": [],
+                "combobox": false,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "base_url",
+                "value": "https://open.feishu.cn",
+                "display_name": "平台",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "飞书（中国版）或 Lark（国际版）的开放平台接入点",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "\"\"\"飞书（Lark）文档读取组件：粘贴文档链接，输出标题与正文。\n\n移植自 Wingsight（juben）``lib/feishu/link_parser.py`` 与 ``client.py`` 的\n最小子集：链接解析为纯函数；HTTP 客户端用注入 transport 的 httpx，便于\n测试以 ``httpx.MockTransport`` 模拟飞书开放平台。仅支持新版文档\n（``/docx/``）与知识库节点（``/wiki/``），旧版文档/表格等明确报不支持。\n\"\"\"\n\nfrom __future__ import annotations\n\nimport re\nimport time\nfrom dataclasses import dataclass\nfrom typing import Any\nfrom urllib.parse import urlparse\n\nimport httpx\n\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.io import DropdownInput, MessageTextInput, Output, SecretStrInput\nfrom lfx.schema.message import Message\nfrom lfx.utils.secrets import secret_value_to_str\n\nFEISHU_BASE_URL = \"https://open.feishu.cn\"\nLARK_BASE_URL = \"https://open.larksuite.com\"\n\n# 旧版文档与表格等走别的接口族，明确拒绝而不是静默失败\n_UNSUPPORTED_DOC_TYPES: dict[str, str] = {\n    \"docs\": \"旧版文档（doc）\",\n    \"sheets\": \"电子表格\",\n    \"file\": \"云空间文件\",\n    \"base\": \"多维表格\",\n    \"slides\": \"幻灯片\",\n    \"board\": \"画板\",\n    \"minutes\": \"妙记\",\n}\n\n_TOKEN_PATTERN = re.compile(r\"^[A-Za-z0-9_-]{8,64}$\")\n\n\nclass FeishuLinkError(ValueError):\n    \"\"\"链接无法解析为受支持的飞书文档；``str(exc)`` 直接面向用户展示。\"\"\"\n\n\nclass FeishuApiError(RuntimeError):\n    \"\"\"飞书开放平台调用失败；中文 message 直接面向用户展示。\"\"\"\n\n\n@dataclass(frozen=True)\nclass FeishuDocRef:\n    url: str\n    doc_type: str  # \"docx\" | \"wiki\"\n    token: str\n    platform: str  # \"feishu\" | \"lark\"\n\n\ndef _platform_of_host(host: str) -> str | None:\n    lowered = host.lower()\n    if lowered == \"feishu.cn\" or lowered.endswith(\".feishu.cn\"):\n        return \"feishu\"\n    if (\n        lowered == \"larksuite.com\"\n        or lowered.endswith(\".larksuite.com\")\n        or lowered == \"larkoffice.com\"\n        or lowered.endswith(\".larkoffice.com\")\n    ):\n        return \"lark\"\n    return None\n\n\ndef parse_feishu_url(url: str) -> FeishuDocRef:\n    \"\"\"把用户粘贴的飞书链接解析为文档引用；不支持时抛 :class:`FeishuLinkError`。\"\"\"\n    raw = (url or \"\").strip()\n    if not raw:\n        msg = \"飞书链接不能为空\"\n        raise FeishuLinkError(msg)\n    parsed = urlparse(raw if \"://\" in raw else f\"https://{raw}\")\n    platform = _platform_of_host(parsed.netloc.lower())\n    if platform is None:\n        msg = f\"不是飞书文档链接（域名应为 *.feishu.cn / *.larksuite.com / *.larkoffice.com）：{raw}\"\n        raise FeishuLinkError(msg)\n\n    segments = [seg for seg in parsed.path.split(\"/\") if seg]\n    if not segments:\n        msg = f\"链接里没有文档路径（应为 /docx/<token> 或 /wiki/<token>）：{raw}\"\n        raise FeishuLinkError(msg)\n\n    doc_type = segments[0].lower()\n    if doc_type in _UNSUPPORTED_DOC_TYPES:\n        label = _UNSUPPORTED_DOC_TYPES[doc_type]\n        msg = f\"暂不支持{label}链接，仅支持新版文档（/docx/）与知识库（/wiki/）：{raw}\"\n        raise FeishuLinkError(msg)\n    if doc_type not in (\"docx\", \"wiki\"):\n        msg = f\"无法识别的飞书文档类型 /{doc_type}/，仅支持 /docx/ 与 /wiki/：{raw}\"\n        raise FeishuLinkError(msg)\n\n    if len(segments) < 2 or not _TOKEN_PATTERN.match(segments[1]):\n        msg = f\"链接里的文档 token 不合法：{raw}\"\n        raise FeishuLinkError(msg)\n\n    return FeishuDocRef(url=raw, doc_type=doc_type, token=segments[1], platform=platform)\n\n\n_TOKEN_EXPIRY_MARGIN_SECONDS = 300.0\n_HTTP_TIMEOUT_SECONDS = 20.0\n# 飞书 envelope 业务码里表示\"无权限\"的常见值（HTTP 200 + code!=0 的老风格）\n_FORBIDDEN_ENVELOPE_CODES = frozenset({\"1770002\", \"230002\"})\n\n\nclass FeishuClient:\n    \"\"\"飞书开放平台只读客户端：tenant token 管理 + wiki 解析 + 正文/标题读取。\n\n    构造器注入 ``transport`` 供测试用 ``httpx.MockTransport`` 换实现；\n    每次请求独立短连接，token 仅在单次 ``fetch_document`` 内复用。\n    \"\"\"\n\n    def __init__(\n        self,\n        app_id: str,\n        app_secret: str,\n        base_url: str = FEISHU_BASE_URL,\n        transport: httpx.AsyncBaseTransport | None = None,\n    ) -> None:\n        if not app_id or not app_secret:\n            msg = \"飞书应用凭证缺失：请在组件上填写 app_id 与 app_secret（或引用全局变量）\"\n            raise FeishuApiError(msg)\n        self._app_id = app_id\n        self._app_secret = app_secret\n        self._base_url = base_url.rstrip(\"/\")\n        self._transport = transport\n        self._token: str | None = None\n        self._token_expires_at: float = 0.0\n\n    async def _send(\n        self,\n        method: str,\n        path: str,\n        *,\n        params: dict[str, str] | None = None,\n        json_body: dict[str, Any] | None = None,\n        auth: bool = True,\n    ) -> httpx.Response:\n        headers: dict[str, str] = {\"Content-Type\": \"application/json; charset=utf-8\"}\n        if auth:\n            headers[\"Authorization\"] = f\"Bearer {await self._get_token()}\"\n        kwargs: dict[str, Any] = {\"params\": params, \"headers\": headers}\n        if json_body is not None:\n            kwargs[\"json\"] = json_body\n        async with httpx.AsyncClient(\n            timeout=_HTTP_TIMEOUT_SECONDS,\n            transport=self._transport,\n        ) as client:\n            return await client.request(method, f\"{self._base_url}{path}\", **kwargs)\n\n    async def _get_token(self) -> str:\n        now = time.monotonic()\n        if self._token and now < self._token_expires_at:\n            return self._token\n        response = await self._send(\n            \"POST\",\n            \"/open-apis/auth/v3/tenant_access_token/internal\",\n            json_body={\"app_id\": self._app_id, \"app_secret\": self._app_secret},\n            auth=False,\n        )\n        payload = _safe_json(response)\n        token = str(payload.get(\"tenant_access_token\") or \"\")\n        if response.status_code != 200 or payload.get(\"code\") not in (0, None) or not token:\n            reason = str(payload.get(\"msg\") or f\"HTTP {response.status_code}\")\n            msg = f\"飞书应用凭证校验失败（app_id/app_secret 无效或应用未发布）：{reason}\"\n            raise FeishuApiError(msg)\n        self._token = token\n        try:\n            ttl = max(float(payload.get(\"expire\") or 0), 60.0)\n        except (TypeError, ValueError):\n            ttl = 7200.0\n        self._token_expires_at = now + ttl - _TOKEN_EXPIRY_MARGIN_SECONDS\n        return self._token\n\n    async def _api_json(\n        self,\n        method: str,\n        path: str,\n        *,\n        params: dict[str, str] | None = None,\n    ) -> dict[str, Any]:\n        response = await self._send(method, path, params=params)\n        status = response.status_code\n        if status == 401:\n            msg = \"飞书应用凭证校验失败（tenant_access_token 无效，请核对 app_id/app_secret）\"\n            raise FeishuApiError(msg)\n        if status == 403:\n            msg = \"应用没有该文档的访问权限：请在飞书文档里把应用机器人加为协作者，或把文档放进已授权给应用的知识库\"\n            raise FeishuApiError(msg)\n        if status == 404:\n            msg = \"飞书文档不存在或已被删除\"\n            raise FeishuApiError(msg)\n        if status >= 400:\n            payload = _safe_json(response)\n            reason = str(payload.get(\"msg\") or f\"HTTP {status}\")\n            msg = f\"飞书接口调用失败：{reason}\"\n            raise FeishuApiError(msg)\n        payload = _safe_json(response)\n        code = payload.get(\"code\")\n        if code not in (0, None):\n            reason = str(payload.get(\"msg\") or f\"code {code}\")\n            if str(code) in _FORBIDDEN_ENVELOPE_CODES:\n                msg = \"应用没有该文档的访问权限：请在飞书文档里把应用机器人加为协作者，或把文档放进已授权给应用的知识库\"\n                raise FeishuApiError(msg)\n            msg = f\"飞书接口调用失败：{reason}\"\n            raise FeishuApiError(msg)\n        data = payload.get(\"data\")\n        return data if isinstance(data, dict) else {}\n\n    async def fetch_document(self, doc_url: str) -> tuple[str, str]:\n        \"\"\"解析链接并返回 ``(title, content)``；wiki 链接先换成文档 id。\n\n        传输层异常（DNS 失败、连接拒绝、超时等 httpx.HTTPError 子类）统一\n        包装为中文 :class:`FeishuApiError`，不外泄英文原始异常。\n        \"\"\"\n        try:\n            return await self._fetch_document(doc_url)\n        except httpx.HTTPError as exc:\n            reason = str(exc) or type(exc).__name__\n            msg = f\"网络连接失败（无法访问飞书开放平台）：{reason}\"\n            raise FeishuApiError(msg) from exc\n\n    async def _fetch_document(self, doc_url: str) -> tuple[str, str]:\n        ref = parse_feishu_url(doc_url)\n        title: str | None = None\n        if ref.doc_type == \"wiki\":\n            data = await self._api_json(\n                \"GET\",\n                \"/open-apis/wiki/v2/spaces/get_node\",\n                params={\"token\": ref.token, \"obj_type\": \"wiki\"},\n            )\n            node = data.get(\"node\")\n            if not isinstance(node, dict) or not node.get(\"obj_token\"):\n                msg = \"知识库节点不存在或已被删除\"\n                raise FeishuApiError(msg)\n            if node.get(\"obj_type\") != \"docx\":\n                msg = \"知识库节点指向的不是新版文档（docx），暂不支持\"\n                raise FeishuApiError(msg)\n            document_id = str(node[\"obj_token\"])\n            # wiki 节点响应自带标题，无需再查文档信息\n            title = str(node.get(\"title\") or \"\").strip() or None\n        else:\n            document_id = ref.token\n\n        if title is None:\n            # 官方文档信息接口是 GET /docx/v1/documents/:id（无 basic_info 后缀，\n            # 那条路径在飞书网关上不存在，会 404）\n            info = await self._api_json(\"GET\", f\"/open-apis/docx/v1/documents/{document_id}\")\n            document = info.get(\"document\")\n            doc_title = document.get(\"title\") if isinstance(document, dict) else None\n            title = str(doc_title or \"\").strip() or document_id\n        raw = await self._api_json(\"GET\", f\"/open-apis/docx/v1/documents/{document_id}/raw_content\")\n        content = str(raw.get(\"content\") or \"\")\n        if not content.strip():\n            msg = f\"文档「{title}」正文为空（可能是空文档或应用无权限读取内容）\"\n            raise FeishuApiError(msg)\n        return title, content\n\n\ndef _safe_json(response: httpx.Response) -> dict[str, Any]:\n    try:\n        payload = response.json()\n    except ValueError:\n        return {}\n    return payload if isinstance(payload, dict) else {}\n\n\nclass FeishuDocComponent(Component):\n    display_name = \"飞书文档\"\n    description = \"粘贴飞书（Lark）文档链接，读取标题与正文。仅支持新版文档（/docx/）与知识库节点（/wiki/）。\"\n    icon = \"FileText\"\n    name = \"FeishuDoc\"\n\n    inputs = [\n        MessageTextInput(\n            name=\"doc_url\",\n            display_name=\"文档链接\",\n            info=\"飞书文档链接，支持 *.feishu.cn/docx/<token>、/wiki/<token>，\"\n            \"国际版 larksuite.com / larkoffice.com 同理\",\n            required=True,\n        ),\n        SecretStrInput(\n            name=\"app_id\",\n            display_name=\"App ID\",\n            info=\"飞书自建应用 App ID（支持引用全局变量）\",\n            required=True,\n        ),\n        SecretStrInput(\n            name=\"app_secret\",\n            display_name=\"App Secret\",\n            info=\"飞书自建应用 App Secret（支持引用全局变量）\",\n            required=True,\n        ),\n        DropdownInput(\n            name=\"base_url\",\n            display_name=\"平台\",\n            options=[FEISHU_BASE_URL, LARK_BASE_URL],\n            value=FEISHU_BASE_URL,\n            info=\"飞书（中国版）或 Lark（国际版）的开放平台接入点\",\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"文档\", name=\"document\", method=\"fetch_document\"),\n    ]\n\n    def _build_client(self) -> FeishuClient:\n        # 全局凭证变量下发的值可能是 pydantic SecretStr，str() 只会得到掩码，\n        # 必须先解包再交给客户端；base_url 来自 DropdownInput，始终是明文。\n        return FeishuClient(\n            app_id=secret_value_to_str(self.app_id) or \"\",\n            app_secret=secret_value_to_str(self.app_secret) or \"\",\n            base_url=str(self.base_url or FEISHU_BASE_URL),\n        )\n\n    async def fetch_document(self) -> Message:\n        title, content = await self._build_client().fetch_document(self.doc_url)\n        text = f\"{title}\\n\\n{content}\"\n        self.status = text\n        return Message(text=text)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "doc_url": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": true,
+                "placeholder": "",
+                "show": true,
+                "name": "doc_url",
+                "value": "https://wingsight.feishu.cn/wiki/NWUowE88zixno6kzxeIcUBYOnsb",
+                "display_name": "文档链接",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "飞书文档链接，支持 *.feishu.cn/docx/<token>、/wiki/<token>，国际版 larksuite.com / larkoffice.com 同理",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              }
+            },
+            "description": "粘贴飞书（Lark）文档链接，读取标题与正文。仅支持新版文档（/docx/）与知识库节点（/wiki/）。",
+            "icon": "FileText",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "飞书文档",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "document",
+                "display_name": "文档",
+                "method": "fetch_document",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.tools.feishu_doc.FeishuDocComponent",
+              "dependencies": {
+                "total_dependencies": 2,
+                "dependencies": [
+                  {
+                    "name": "httpx",
+                    "version": "0.28.1"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.12.0"
+          },
+          "type": "FeishuDocComponent",
+          "selected_output": "document"
+        },
+        "id": "FeishuDocComponent-Source",
+        "dragging": false,
+        "position": {
+          "x": -1483.992910891074,
+          "y": 634.0799832601203
+        },
+        "positionAbsolute": {
+          "x": 420,
+          "y": 0
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 469
+        }
+      },
+      {
+        "data": {
+          "id": "PromptTemplate-Writer",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "brief": {
+                "field_type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "",
+                "fileTypes": [],
+                "file_path": "",
+                "name": "brief",
+                "display_name": "brief",
+                "advanced": false,
+                "api_editable": true,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false,
+                "type": "str"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from typing import Any\n\nfrom lfx.base.prompts.api_utils import process_prompt_template\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.inputs.input_mixin import FieldTypes\nfrom lfx.inputs.inputs import DefaultPromptField\nfrom lfx.io import BoolInput, MessageTextInput, Output, PromptInput\nfrom lfx.log.logger import logger\nfrom lfx.schema.dotdict import dotdict\nfrom lfx.schema.message import Message\nfrom lfx.template.utils import update_template_values\nfrom lfx.utils.mustache_security import validate_mustache_template\n\n\nclass PromptComponent(Component):\n    display_name: str = \"Prompt Template\"\n    description: str = \"Create a prompt template with dynamic variables.\"\n    documentation: str = \"https://docs.langflow.org/components-prompts\"\n    icon = \"prompts\"\n    trace_type = \"prompt\"\n    name = \"Prompt Template\"\n\n    inputs = [\n        PromptInput(name=\"template\", display_name=\"Template\"),\n        BoolInput(\n            name=\"use_double_brackets\",\n            display_name=\"Use Double Brackets\",\n            value=False,\n            advanced=True,\n            info=\"Use {{variable}} syntax instead of {variable}.\",\n            real_time_refresh=True,\n        ),\n        MessageTextInput(\n            name=\"tool_placeholder\",\n            display_name=\"Tool Placeholder\",\n            tool_mode=True,\n            advanced=True,\n            show=False,\n            info=\"A placeholder input for tool mode.\",\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Prompt\", name=\"prompt\", method=\"build_prompt\"),\n    ]\n\n    def update_build_config(self, build_config: dotdict, field_value: Any, field_name: str | None = None) -> dotdict:\n        \"\"\"Update the template field type based on the selected mode.\"\"\"\n        if field_name == \"use_double_brackets\":\n            # Change the template field type based on mode\n            is_mustache = field_value is True\n            if is_mustache:\n                build_config[\"template\"][\"type\"] = FieldTypes.MUSTACHE_PROMPT.value\n            else:\n                build_config[\"template\"][\"type\"] = FieldTypes.PROMPT.value\n\n            # Re-process the template to update variables when mode changes\n            template_value = build_config.get(\"template\", {}).get(\"value\", \"\")\n            if template_value:\n                # Ensure custom_fields is properly initialized\n                if \"custom_fields\" not in build_config:\n                    build_config[\"custom_fields\"] = {}\n\n                # Clean up fields from the OLD mode before processing with NEW mode\n                # This ensures we don't keep fields with wrong syntax even if validation fails\n                old_custom_fields = build_config[\"custom_fields\"].get(\"template\", [])\n                for old_field in list(old_custom_fields):\n                    # Remove the field from custom_fields and template\n                    if old_field in old_custom_fields:\n                        old_custom_fields.remove(old_field)\n                    build_config.pop(old_field, None)\n\n                # Try to process template with new mode to add new variables\n                # If validation fails, at least we cleaned up old fields\n                try:\n                    # Validate mustache templates for security\n                    if is_mustache:\n                        validate_mustache_template(template_value)\n\n                    # Re-process template with new mode to add new variables\n                    _ = process_prompt_template(\n                        template=template_value,\n                        name=\"template\",\n                        custom_fields=build_config[\"custom_fields\"],\n                        frontend_node_template=build_config,\n                        is_mustache=is_mustache,\n                    )\n                except ValueError as e:\n                    # If validation fails, we still updated the mode and cleaned old fields\n                    # User will see error when they try to save\n                    logger.debug(\"Template validation failed during mode switch\", exc_info=e)\n        return build_config\n\n    async def build_prompt(self) -> Message:\n        use_double_brackets = self.use_double_brackets if hasattr(self, \"use_double_brackets\") else False\n        template_format = \"mustache\" if use_double_brackets else \"f-string\"\n        prompt = await Message.from_template_and_variables(template_format=template_format, **self._attributes)\n        self.status = prompt.text\n        return prompt\n\n    def _update_template(self, frontend_node: dict):\n        prompt_template = frontend_node[\"template\"][\"template\"][\"value\"]\n        use_double_brackets = frontend_node[\"template\"].get(\"use_double_brackets\", {}).get(\"value\", False)\n        is_mustache = use_double_brackets is True\n\n        try:\n            # Validate mustache templates for security\n            if is_mustache:\n                validate_mustache_template(prompt_template)\n\n            custom_fields = frontend_node[\"custom_fields\"]\n            frontend_node_template = frontend_node[\"template\"]\n            _ = process_prompt_template(\n                template=prompt_template,\n                name=\"template\",\n                custom_fields=custom_fields,\n                frontend_node_template=frontend_node_template,\n                is_mustache=is_mustache,\n            )\n        except ValueError as e:\n            # If validation fails, don't add variables but allow component to be created\n            logger.debug(\"Template validation failed in _update_template\", exc_info=e)\n        return frontend_node\n\n    async def update_frontend_node(self, new_frontend_node: dict, current_frontend_node: dict):\n        \"\"\"This function is called after the code validation is done.\"\"\"\n        frontend_node = await super().update_frontend_node(new_frontend_node, current_frontend_node)\n        template = frontend_node[\"template\"][\"template\"][\"value\"]\n        use_double_brackets = frontend_node[\"template\"].get(\"use_double_brackets\", {}).get(\"value\", False)\n        is_mustache = use_double_brackets is True\n\n        try:\n            # Validate mustache templates for security\n            if is_mustache:\n                validate_mustache_template(template)\n\n            # Kept it duplicated for backwards compatibility\n            _ = process_prompt_template(\n                template=template,\n                name=\"template\",\n                custom_fields=frontend_node[\"custom_fields\"],\n                frontend_node_template=frontend_node[\"template\"],\n                is_mustache=is_mustache,\n            )\n        except ValueError as e:\n            # If validation fails, don't add variables but allow component to be updated\n            logger.debug(\"Template validation failed in update_frontend_node\", exc_info=e)\n        # Now that template is updated, we need to grab any values that were set in the current_frontend_node\n        # and update the frontend_node with those values\n        update_template_values(new_template=frontend_node, previous_template=current_frontend_node[\"template\"])\n        return frontend_node\n\n    def _get_fallback_input(self, **kwargs):\n        return DefaultPromptField(**kwargs)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "count": {
+                "field_type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "5",
+                "fileTypes": [],
+                "file_path": "",
+                "name": "count",
+                "display_name": "count",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false,
+                "type": "str"
+              },
+              "doc_content": {
+                "field_type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "",
+                "fileTypes": [],
+                "file_path": "",
+                "name": "doc_content",
+                "display_name": "doc_content",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false,
+                "type": "str"
+              },
+              "template": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "template",
+                "value": "# 任务\n\n为《{title}》写 {count} 条{platform}文案。批次：{batch_kind}。多集资料：候选以整部为主，少量下钻单集；本路侧重见系统提示词。\n\n# 宣发资料（唯一事实来源，没写的不编）\n\n{doc_content}\n\n# 平台规则（只应用当前平台 {platform} 那一段，其余整段忽略；井号格式错＝作废）\n\n【douyin 抖音】一句钩子成文；确需补充最多 1 句且必须是新事实。首句 ≤25 字，正文（去话题）≤55 字，话题 ≤5 个单井号。文案与话题不出现播出平台名；结尾不带链接。\n【channels 视频号】同抖音节奏：一句钩子成文，话题 ≤5 个单井号，不出现其他平台名；节点批次结尾补日期与播出平台。\n【weibo 微博】有效话题 ≤3 个双井号（首行 #片名#）；结尾带播出平台与日期；一个点写完，不逐条贴看点；表情最多 1 个。\n【moments 朋友圈】首行亮身份（#片名 + 一句钩子），末行收看路径（平台名 +【短链接】）。形态取 {form}：short＝四行（中间 2-3 行写同一个钩子）；long＝三段（我是谁／只展开一个看点／行动号召）；both＝两种都要，先 short 后 long、数量相同、编号连续。\n\n# 方法论（微博与朋友圈 long 形态适用；抖音/视频号一行文案只取钩子与话题两步，不硬凑步骤）\n\n抓眼球 → 给信息 → 强内容 → 引互动 → 带话题；主话题固定携带，延展话题 1-2 个。\n\n# 正例（只学语感与结构——句子短、全是看得见的东西；事实与片名不复用）\n\n## 抖音 · 日常（一句戏当钩子）\n命案目击者接受警察问询，崩溃边缘展示超绝记忆力\n#终于等到悬案王传凯出场了 #剧集悬案 #曾美慧孜\n\n## 抖音 · 日常（台词直接上台）\n王妃：在下略懂一些刀法，什么刀你别管\n#御赐小仵作2开播 #御赐小仵作2 #苏晓彤\n\n## 抖音 · 日常（一句场面）\n萧北冥一进门，桌上那份卷宗还没拆\n#定风波 #悬疑\n\n## 抖音 · 节点（卖片种不复述剧情）\n#入局开播 卧底大案层层反转\n最强烧脑，谁是终极boss\n#入局 #悬疑\n\n## 微博 · 节点（身份 + 一个点 + 收看）\n#迟到27年的无罪判决#\n等了 9778 天，从死缓等到无罪。\n8月26日爱奇艺独家播出\n\n## 朋友圈四行 · 节点\n#华夏风云人物·南宋篇开播\n翼视界出品，AI 重现岳飞一生\n爱奇艺首播，锁定观看！\n\n# 本次附加要求（用户原话，红线之内优先满足）\n\n{brief}\n\n# 输出\n\n{count} 个变体，按系统提示词的输出格式逐节给出，切入互不相同。\n",
+                "display_name": "Template",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "prompt",
+                "_input_type": "PromptInput"
+              },
+              "title": {
+                "field_type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "",
+                "fileTypes": [],
+                "file_path": "",
+                "name": "title",
+                "display_name": "title",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false,
+                "type": "str"
+              },
+              "tool_placeholder": {
+                "tool_mode": true,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "tool_placeholder",
+                "value": "",
+                "display_name": "Tool Placeholder",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "A placeholder input for tool mode.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "use_double_brackets": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "use_double_brackets",
+                "value": false,
+                "display_name": "Use Double Brackets",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Use {{variable}} syntax instead of {variable}.",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "batch_kind": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "daily",
+                  "milestone"
+                ],
+                "options_metadata": [],
+                "combobox": false,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "batch_kind",
+                "value": "daily",
+                "display_name": "批次",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "daily 日常 / milestone 节点（定档/开播/收官/捷报）",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "form": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "both",
+                  "short",
+                  "long"
+                ],
+                "options_metadata": [],
+                "combobox": false,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "form",
+                "value": "both",
+                "display_name": "形态",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "仅朋友圈：both 四行+长文都要 / short / long",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "platform": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "douyin",
+                  "channels",
+                  "weibo",
+                  "moments"
+                ],
+                "options_metadata": [],
+                "combobox": false,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "platform",
+                "value": "douyin",
+                "display_name": "平台",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "douyin 抖音 / channels 视频号 / weibo 微博 / moments 朋友圈",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              }
+            },
+            "description": "Create a prompt template with dynamic variables.",
+            "icon": "prompts",
+            "is_input": null,
+            "is_output": null,
+            "is_composition": null,
+            "base_classes": [
+              "Message"
+            ],
+            "name": "",
+            "display_name": "Prompt Template",
+            "priority": null,
+            "documentation": "https://docs.langflow.org/components-prompts",
+            "minimized": false,
+            "custom_fields": {
+              "template": [
+                "title",
+                "count",
+                "platform",
+                "batch_kind",
+                "form",
+                "doc_content",
+                "brief"
+              ]
+            },
+            "output_types": [],
+            "full_path": null,
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "prompt",
+                "hidden": null,
+                "display_name": "Prompt",
+                "method": "build_prompt",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [
+              "template",
+              "doc_content",
+              "title",
+              "platform",
+              "batch_kind",
+              "form",
+              "brief",
+              "count"
+            ],
+            "beta": false,
+            "legacy": false,
+            "replacement": null,
+            "error": null,
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.models_and_agents.prompt.PromptComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "add_tool_output": null,
+            "lf_version": "1.12.0"
+          },
+          "type": "Prompt",
+          "selected_output": "prompt"
+        },
+        "id": "PromptTemplate-Writer",
+        "dragging": false,
+        "position": {
+          "x": 409.48443386921446,
+          "y": 730.4246989471768
+        },
+        "positionAbsolute": {
+          "x": 420,
+          "y": 500
+        },
+        "selected": true,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 839
+        }
+      },
+      {
+        "data": {
+          "id": "LanguageModelComponent-DeepSeek",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "api_key": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "api_key",
+                "value": "",
+                "display_name": "API Key",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [],
+                "dynamic": false,
+                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "base_url_ibm_watsonx": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "https://us-south.ml.cloud.ibm.com",
+                  "https://eu-de.ml.cloud.ibm.com",
+                  "https://eu-gb.ml.cloud.ibm.com",
+                  "https://au-syd.ml.cloud.ibm.com",
+                  "https://jp-tok.ml.cloud.ibm.com",
+                  "https://ca-tor.ml.cloud.ibm.com"
+                ],
+                "options_metadata": [],
+                "combobox": true,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "base_url_ibm_watsonx",
+                "value": "https://us-south.ml.cloud.ibm.com",
+                "display_name": "watsonx API Endpoint",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "The base URL of the API (IBM watsonx.ai only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from lfx.base.models.model import LCModelComponent\nfrom lfx.base.models.unified_models import (\n    get_language_model_options,\n    get_llm,\n    handle_model_input_update,\n)\nfrom lfx.base.models.watsonx_constants import IBM_WATSONX_URLS\nfrom lfx.components.models_and_agents.model_selection import apply_model_overrides\nfrom lfx.field_typing.constants import LanguageModel\nfrom lfx.field_typing.range_spec import RangeSpec\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, StrInput\nfrom lfx.io import IntInput, MessageInput, ModelInput, MultilineInput, SecretStrInput, SliderInput\n\n\nclass LanguageModelComponent(LCModelComponent):\n    model_provider_policy_mode = \"delegate\"\n    display_name = \"Language Model\"\n    description = \"Runs a language model given a specified provider.\"\n    documentation: str = \"https://docs.langflow.org/components-models\"\n    icon = \"brain-circuit\"\n    category = \"models\"\n\n    inputs = [\n        ModelInput(\n            name=\"model\",\n            display_name=\"Language Model\",\n            info=\"Select your model provider\",\n            real_time_refresh=True,\n            required=True,\n        ),\n        StrInput(\n            name=\"model_name\",\n            display_name=\"Model Name Override\",\n            info=(\n                \"Optional model name to use instead of the selected model. \"\n                \"Can be set from a global variable for runtime model selection.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        StrInput(\n            name=\"provider\",\n            display_name=\"Provider Override\",\n            info=(\n                \"Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"API Key\",\n            info=\"Overrides global provider settings. Leave blank to use your pre-configured API Key.\",\n            required=False,\n            show=True,\n            real_time_refresh=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"base_url_ibm_watsonx\",\n            display_name=\"watsonx API Endpoint\",\n            info=\"The base URL of the API (IBM watsonx.ai only)\",\n            options=IBM_WATSONX_URLS,\n            value=IBM_WATSONX_URLS[0],\n            combobox=True,\n            show=False,\n            real_time_refresh=True,\n        ),\n        StrInput(\n            name=\"project_id\",\n            display_name=\"watsonx Project ID\",\n            info=\"The project ID associated with the foundation model (IBM watsonx.ai only)\",\n            show=False,\n            required=False,\n        ),\n        StrInput(\n            name=\"ollama_base_url\",\n            display_name=\"Ollama API URL\",\n            info=\"Endpoint of the Ollama API (Ollama only)\",\n            show=False,\n            real_time_refresh=True,\n        ),\n        MessageInput(\n            name=\"input_value\",\n            display_name=\"Input\",\n            info=\"The input text to send to the model\",\n        ),\n        MultilineInput(\n            name=\"system_message\",\n            display_name=\"System Message\",\n            info=\"A system message that helps set the behavior of the assistant\",\n            advanced=False,\n        ),\n        BoolInput(\n            name=\"stream\",\n            display_name=\"Stream\",\n            info=\"Whether to stream the response\",\n            value=False,\n            advanced=True,\n        ),\n        SliderInput(\n            name=\"temperature\",\n            display_name=\"Temperature\",\n            value=0.1,\n            info=\"Controls randomness in responses\",\n            range_spec=RangeSpec(min=0, max=1, step=0.01),\n            advanced=True,\n        ),\n        IntInput(\n            name=\"max_tokens\",\n            display_name=\"Max Tokens\",\n            info=\"Maximum number of tokens to generate. Field name varies by provider.\",\n            advanced=True,\n            range_spec=RangeSpec(min=1, max=128000, step=1, step_type=\"int\"),\n        ),\n    ]\n\n    def build_model(self) -> LanguageModel:\n        model = apply_model_overrides(\n            self.model,\n            model_name=getattr(self, \"model_name\", None),\n            provider=getattr(self, \"provider\", None),\n            user_id=self.user_id,\n            get_options=get_language_model_options,\n        )\n        return get_llm(\n            model=model,\n            user_id=self.user_id,\n            api_key=self.api_key,\n            temperature=self.temperature,\n            stream=self.stream,\n            max_tokens=getattr(self, \"max_tokens\", None),\n            watsonx_url=getattr(self, \"base_url_ibm_watsonx\", None),\n            watsonx_project_id=getattr(self, \"project_id\", None),\n            ollama_base_url=getattr(self, \"ollama_base_url\", None),\n        )\n\n    def update_build_config(self, build_config: dict, field_value: str, field_name: str | None = None):\n        \"\"\"Dynamically update build config with user-filtered model options.\"\"\"\n        return handle_model_input_update(self, build_config, field_value, field_name)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "input_value": {
+                "trace_as_input": true,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "Input",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The input text to send to the model",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageInput"
+              },
+              "max_tokens": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "range_spec": {
+                  "step_type": "int",
+                  "min": 1,
+                  "max": 128000,
+                  "step": 1
+                },
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "max_tokens",
+                "value": 0,
+                "display_name": "Max Tokens",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Maximum number of tokens to generate. Field name varies by provider.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "model": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "model_type": "language",
+                "external_options": {
+                  "fields": {
+                    "data": {
+                      "node": {
+                        "name": "connect_other_models",
+                        "display_name": "Connect other models",
+                        "icon": "CornerDownLeft"
+                      }
+                    }
+                  }
+                },
+                "override_skip": false,
+                "required": true,
+                "placeholder": "Setup Provider",
+                "show": true,
+                "name": "model",
+                "value": [
+                  {
+                    "name": "deepseek-v4-flash",
+                    "provider": "OpenAI",
+                    "category": "OpenAI"
+                  }
+                ],
+                "display_name": "Language Model",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "LanguageModel"
+                ],
+                "dynamic": false,
+                "info": "Select your model provider",
+                "real_time_refresh": true,
+                "refresh_button": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "model",
+                "_input_type": "ModelInput",
+                "options": [
+                  {
+                    "name": "deepseek-v4-flash",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "deepseek-v4-pro",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "deepseek-v4-flash-vision-exp",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M2",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M2-Plus",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M3",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M3-Plus",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan2-53B",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  }
+                ]
+              },
+              "model_name": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "model_name",
+                "value": "",
+                "display_name": "Model Name Override",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Optional model name to use instead of the selected model. Can be set from a global variable for runtime model selection.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "ollama_base_url": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "ollama_base_url",
+                "value": "",
+                "display_name": "Ollama API URL",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Endpoint of the Ollama API (Ollama only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "project_id": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "project_id",
+                "value": "",
+                "display_name": "watsonx Project ID",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "The project ID associated with the foundation model (IBM watsonx.ai only)",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "provider": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "provider",
+                "value": "",
+                "display_name": "Provider Override",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "stream": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "stream",
+                "value": false,
+                "display_name": "Stream",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Whether to stream the response",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "system_message": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "system_message",
+                "value": "你是平台账号的运营本人，不是文案。你发的每条帖子都像随手写的。\n\n# 硬纪律（逐条自查，违反任何一条该变体作废重写）\n\n1. 默认一行成文：钩子一句能成立就停；第二句只在带来新事实（数字/原话/物件）时才加。正文（去话题）超过两行即失败。\n2. 每句必须能拍成一帧画面（具体的人、物、动作、数字）。评价、比喻、总结、升华、对仗（「越…越…」）、抒情（「被凝视」「人性深渊」式）一律不写。\n3. 资料里没有的数字、日期、引语一个不编：资料写「70至90年代」就照写，不换算、不取整、不推算起止年份。人名只用资料写过的。\n4. 台词＝资料里明写的原话，原样引用；资料没有原话就不用台词钩子。\n5. 资料里的项目简介是给合作方的介绍文案，句子不得整句搬进帖子。\n6. 整部级钩子必须单句成立，如「5集，一集一案，13分钟一桩」。\n7. 话题井号格式按规则块当前平台段严格执行：抖音/视频号＝单井号、≤5 个（如 #香港奇案）；微博＝双井号、≤3 个；朋友圈＝单井号。格式或数量错＝作废。\n\n# 输出格式（按此解析）\n\n## 变体 1 · 钩子类型\n（文案正文，含话题标签）\n\n钩子类型（≤6 字）：数字 / 反差 / 身份反差 / 场景代入 / 悬念 / 台词 / 未解之谜 / 极端事实 / 质感 / 时间线 / 提问 / 热梗。编号从 1 递增，变体之间切入不同。不要输出变体之外的任何文字。\n\n# 本路侧重\n\n整部/系列级钩子为主：集数结构、全案跨度、系列身份；不下钻某一集的案情。",
+                "display_name": "System Message",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "A system message that helps set the behavior of the assistant",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "temperature": {
+                "tool_mode": false,
+                "min_label": "",
+                "max_label": "",
+                "min_label_icon": "",
+                "max_label_icon": "",
+                "slider_buttons": false,
+                "slider_buttons_options": [],
+                "slider_input": false,
+                "range_spec": {
+                  "step_type": "float",
+                  "min": 0,
+                  "max": 1,
+                  "step": 0.01
+                },
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "temperature",
+                "value": 0.9,
+                "display_name": "Temperature",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Controls randomness in responses",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "slider",
+                "_input_type": "SliderInput"
+              },
+              "_frontend_node_flow_id": {
+                "value": "47d564ff-4640-475c-bd8a-c35cf1b9438c"
+              },
+              "_frontend_node_folder_id": {
+                "value": "3ec9bd9f-6554-49e3-8a89-75f79332008f"
+              },
+              "is_refresh": true
+            },
+            "description": "Runs a language model given a specified provider.",
+            "icon": "brain-circuit",
+            "base_classes": [
+              "LanguageModel",
+              "Message"
+            ],
+            "display_name": "Language Model",
+            "documentation": "https://docs.langflow.org/components-models",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "text_output",
+                "hidden": null,
+                "display_name": "Model Response",
+                "method": "text_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              },
+              {
+                "types": [
+                  "LanguageModel"
+                ],
+                "selected": "LanguageModel",
+                "name": "model_output",
+                "hidden": null,
+                "display_name": "Language Model",
+                "method": "build_model",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.models_and_agents.language_model.LanguageModelComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              },
+              "model_provider_policy_mode": "delegate",
+              "keywords": [
+                "model",
+                "llm",
+                "language model",
+                "large language model"
+              ]
+            },
+            "tool_mode": false,
+            "last_updated": "2026-08-28T07:50:45.892Z",
+            "lf_version": "1.12.0"
+          },
+          "type": "LanguageModelComponent",
+          "selected_output": "text_output"
+        },
+        "id": "LanguageModelComponent-DeepSeek",
+        "dragging": false,
+        "position": {
+          "x": 833.4313404861249,
+          "y": -91.11890284864647
+        },
+        "positionAbsolute": {
+          "x": 860,
+          "y": 100
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 459
+        }
+      },
+      {
+        "data": {
+          "id": "LanguageModelComponent-DmxGpt",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "api_key": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "api_key",
+                "value": "",
+                "display_name": "API Key",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [],
+                "dynamic": false,
+                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "base_url_ibm_watsonx": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "https://us-south.ml.cloud.ibm.com",
+                  "https://eu-de.ml.cloud.ibm.com",
+                  "https://eu-gb.ml.cloud.ibm.com",
+                  "https://au-syd.ml.cloud.ibm.com",
+                  "https://jp-tok.ml.cloud.ibm.com",
+                  "https://ca-tor.ml.cloud.ibm.com"
+                ],
+                "options_metadata": [],
+                "combobox": true,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "base_url_ibm_watsonx",
+                "value": "https://us-south.ml.cloud.ibm.com",
+                "display_name": "watsonx API Endpoint",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "The base URL of the API (IBM watsonx.ai only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from lfx.base.models.model import LCModelComponent\nfrom lfx.base.models.unified_models import (\n    get_language_model_options,\n    get_llm,\n    handle_model_input_update,\n)\nfrom lfx.base.models.watsonx_constants import IBM_WATSONX_URLS\nfrom lfx.components.models_and_agents.model_selection import apply_model_overrides\nfrom lfx.field_typing.constants import LanguageModel\nfrom lfx.field_typing.range_spec import RangeSpec\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, StrInput\nfrom lfx.io import IntInput, MessageInput, ModelInput, MultilineInput, SecretStrInput, SliderInput\n\n\nclass LanguageModelComponent(LCModelComponent):\n    model_provider_policy_mode = \"delegate\"\n    display_name = \"Language Model\"\n    description = \"Runs a language model given a specified provider.\"\n    documentation: str = \"https://docs.langflow.org/components-models\"\n    icon = \"brain-circuit\"\n    category = \"models\"\n\n    inputs = [\n        ModelInput(\n            name=\"model\",\n            display_name=\"Language Model\",\n            info=\"Select your model provider\",\n            real_time_refresh=True,\n            required=True,\n        ),\n        StrInput(\n            name=\"model_name\",\n            display_name=\"Model Name Override\",\n            info=(\n                \"Optional model name to use instead of the selected model. \"\n                \"Can be set from a global variable for runtime model selection.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        StrInput(\n            name=\"provider\",\n            display_name=\"Provider Override\",\n            info=(\n                \"Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"API Key\",\n            info=\"Overrides global provider settings. Leave blank to use your pre-configured API Key.\",\n            required=False,\n            show=True,\n            real_time_refresh=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"base_url_ibm_watsonx\",\n            display_name=\"watsonx API Endpoint\",\n            info=\"The base URL of the API (IBM watsonx.ai only)\",\n            options=IBM_WATSONX_URLS,\n            value=IBM_WATSONX_URLS[0],\n            combobox=True,\n            show=False,\n            real_time_refresh=True,\n        ),\n        StrInput(\n            name=\"project_id\",\n            display_name=\"watsonx Project ID\",\n            info=\"The project ID associated with the foundation model (IBM watsonx.ai only)\",\n            show=False,\n            required=False,\n        ),\n        StrInput(\n            name=\"ollama_base_url\",\n            display_name=\"Ollama API URL\",\n            info=\"Endpoint of the Ollama API (Ollama only)\",\n            show=False,\n            real_time_refresh=True,\n        ),\n        MessageInput(\n            name=\"input_value\",\n            display_name=\"Input\",\n            info=\"The input text to send to the model\",\n        ),\n        MultilineInput(\n            name=\"system_message\",\n            display_name=\"System Message\",\n            info=\"A system message that helps set the behavior of the assistant\",\n            advanced=False,\n        ),\n        BoolInput(\n            name=\"stream\",\n            display_name=\"Stream\",\n            info=\"Whether to stream the response\",\n            value=False,\n            advanced=True,\n        ),\n        SliderInput(\n            name=\"temperature\",\n            display_name=\"Temperature\",\n            value=0.1,\n            info=\"Controls randomness in responses\",\n            range_spec=RangeSpec(min=0, max=1, step=0.01),\n            advanced=True,\n        ),\n        IntInput(\n            name=\"max_tokens\",\n            display_name=\"Max Tokens\",\n            info=\"Maximum number of tokens to generate. Field name varies by provider.\",\n            advanced=True,\n            range_spec=RangeSpec(min=1, max=128000, step=1, step_type=\"int\"),\n        ),\n    ]\n\n    def build_model(self) -> LanguageModel:\n        model = apply_model_overrides(\n            self.model,\n            model_name=getattr(self, \"model_name\", None),\n            provider=getattr(self, \"provider\", None),\n            user_id=self.user_id,\n            get_options=get_language_model_options,\n        )\n        return get_llm(\n            model=model,\n            user_id=self.user_id,\n            api_key=self.api_key,\n            temperature=self.temperature,\n            stream=self.stream,\n            max_tokens=getattr(self, \"max_tokens\", None),\n            watsonx_url=getattr(self, \"base_url_ibm_watsonx\", None),\n            watsonx_project_id=getattr(self, \"project_id\", None),\n            ollama_base_url=getattr(self, \"ollama_base_url\", None),\n        )\n\n    def update_build_config(self, build_config: dict, field_value: str, field_name: str | None = None):\n        \"\"\"Dynamically update build config with user-filtered model options.\"\"\"\n        return handle_model_input_update(self, build_config, field_value, field_name)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "input_value": {
+                "trace_as_input": true,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "Input",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The input text to send to the model",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageInput"
+              },
+              "max_tokens": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "range_spec": {
+                  "step_type": "int",
+                  "min": 1,
+                  "max": 128000,
+                  "step": 1
+                },
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "max_tokens",
+                "value": 0,
+                "display_name": "Max Tokens",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Maximum number of tokens to generate. Field name varies by provider.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "model": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "model_type": "language",
+                "external_options": {
+                  "fields": {
+                    "data": {
+                      "node": {
+                        "name": "connect_other_models",
+                        "display_name": "Connect other models",
+                        "icon": "CornerDownLeft"
+                      }
+                    }
+                  }
+                },
+                "override_skip": false,
+                "required": true,
+                "placeholder": "Setup Provider",
+                "show": true,
+                "name": "model",
+                "value": [
+                  {
+                    "name": "gpt-5.6-luna",
+                    "provider": "OpenAI Compatible",
+                    "category": "OpenAI Compatible"
+                  }
+                ],
+                "display_name": "Language Model",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "LanguageModel"
+                ],
+                "dynamic": false,
+                "info": "Select your model provider",
+                "real_time_refresh": true,
+                "refresh_button": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "model",
+                "_input_type": "ModelInput",
+                "options": [
+                  {
+                    "name": "deepseek-v4-flash",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "deepseek-v4-pro",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "deepseek-v4-flash-vision-exp",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M2",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M2-Plus",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M3",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M3-Plus",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan2-53B",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "gpt-5.6-luna",
+                    "provider": "OpenAI Compatible",
+                    "category": "OpenAI Compatible",
+                    "metadata": {
+                      "not_enabled_locally": true
+                    }
+                  }
+                ]
+              },
+              "model_name": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "model_name",
+                "value": "",
+                "display_name": "Model Name Override",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Optional model name to use instead of the selected model. Can be set from a global variable for runtime model selection.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "ollama_base_url": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "ollama_base_url",
+                "value": "",
+                "display_name": "Ollama API URL",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Endpoint of the Ollama API (Ollama only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "project_id": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "project_id",
+                "value": "",
+                "display_name": "watsonx Project ID",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "The project ID associated with the foundation model (IBM watsonx.ai only)",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "provider": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "provider",
+                "value": "",
+                "display_name": "Provider Override",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "stream": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "stream",
+                "value": false,
+                "display_name": "Stream",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Whether to stream the response",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "system_message": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "system_message",
+                "value": "你是平台账号的运营本人，不是文案。你发的每条帖子都像随手写的。\n\n# 硬纪律（逐条自查，违反任何一条该变体作废重写）\n\n1. 默认一行成文：钩子一句能成立就停；第二句只在带来新事实（数字/原话/物件）时才加。正文（去话题）超过两行即失败。\n2. 每句必须能拍成一帧画面（具体的人、物、动作、数字）。评价、比喻、总结、升华、对仗（「越…越…」）、抒情（「被凝视」「人性深渊」式）一律不写。\n3. 资料里没有的数字、日期、引语一个不编：资料写「70至90年代」就照写，不换算、不取整、不推算起止年份。人名只用资料写过的。\n4. 台词＝资料里明写的原话，原样引用；资料没有原话就不用台词钩子。\n5. 资料里的项目简介是给合作方的介绍文案，句子不得整句搬进帖子。\n6. 整部级钩子必须单句成立，如「5集，一集一案，13分钟一桩」。\n7. 话题井号格式按规则块当前平台段严格执行：抖音/视频号＝单井号、≤5 个（如 #香港奇案）；微博＝双井号、≤3 个；朋友圈＝单井号。格式或数量错＝作废。\n\n# 输出格式（按此解析）\n\n## 变体 1 · 钩子类型\n（文案正文，含话题标签）\n\n钩子类型（≤6 字）：数字 / 反差 / 身份反差 / 场景代入 / 悬念 / 台词 / 未解之谜 / 极端事实 / 质感 / 时间线 / 提问 / 热梗。编号从 1 递增，变体之间切入不同。不要输出变体之外的任何文字。\n\n# 本路侧重\n\n单集/单案钩子为主：物件级细节、身份反差、未解之谜，不写成案情通报；不同变体尽量覆盖不同集。",
+                "display_name": "System Message",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "A system message that helps set the behavior of the assistant",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "temperature": {
+                "tool_mode": false,
+                "min_label": "",
+                "max_label": "",
+                "min_label_icon": "",
+                "max_label_icon": "",
+                "slider_buttons": false,
+                "slider_buttons_options": [],
+                "slider_input": false,
+                "range_spec": {
+                  "step_type": "float",
+                  "min": 0,
+                  "max": 1,
+                  "step": 0.01
+                },
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "temperature",
+                "value": 0.9,
+                "display_name": "Temperature",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Controls randomness in responses",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "slider",
+                "_input_type": "SliderInput"
+              },
+              "_frontend_node_flow_id": {
+                "value": "47d564ff-4640-475c-bd8a-c35cf1b9438c"
+              },
+              "_frontend_node_folder_id": {
+                "value": "3ec9bd9f-6554-49e3-8a89-75f79332008f"
+              },
+              "is_refresh": false
+            },
+            "description": "Runs a language model given a specified provider.",
+            "icon": "brain-circuit",
+            "base_classes": [
+              "LanguageModel",
+              "Message"
+            ],
+            "display_name": "Language Model",
+            "documentation": "https://docs.langflow.org/components-models",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "text_output",
+                "hidden": null,
+                "display_name": "Model Response",
+                "method": "text_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              },
+              {
+                "types": [
+                  "LanguageModel"
+                ],
+                "selected": "LanguageModel",
+                "name": "model_output",
+                "hidden": null,
+                "display_name": "Language Model",
+                "method": "build_model",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.models_and_agents.language_model.LanguageModelComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              },
+              "model_provider_policy_mode": "delegate",
+              "keywords": [
+                "model",
+                "llm",
+                "language model",
+                "large language model"
+              ]
+            },
+            "tool_mode": false,
+            "last_updated": "2026-08-28T07:50:45.893Z",
+            "lf_version": "1.12.0"
+          },
+          "type": "LanguageModelComponent",
+          "selected_output": "text_output"
+        },
+        "id": "LanguageModelComponent-DmxGpt",
+        "dragging": false,
+        "position": {
+          "x": 860,
+          "y": 500
+        },
+        "positionAbsolute": {
+          "x": 860,
+          "y": 500
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 459
+        }
+      },
+      {
+        "data": {
+          "id": "LanguageModelComponent-DmxGemini",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "api_key": {
+                "load_from_db": true,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "api_key",
+                "value": "",
+                "display_name": "API Key",
+                "advanced": true,
+                "api_editable": false,
+                "input_types": [],
+                "dynamic": false,
+                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "password": true,
+                "type": "str",
+                "_input_type": "SecretStrInput"
+              },
+              "base_url_ibm_watsonx": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "options": [
+                  "https://us-south.ml.cloud.ibm.com",
+                  "https://eu-de.ml.cloud.ibm.com",
+                  "https://eu-gb.ml.cloud.ibm.com",
+                  "https://au-syd.ml.cloud.ibm.com",
+                  "https://jp-tok.ml.cloud.ibm.com",
+                  "https://ca-tor.ml.cloud.ibm.com"
+                ],
+                "options_metadata": [],
+                "combobox": true,
+                "dialog_inputs": {},
+                "toggle": false,
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "base_url_ibm_watsonx",
+                "value": "https://us-south.ml.cloud.ibm.com",
+                "display_name": "watsonx API Endpoint",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "The base URL of the API (IBM watsonx.ai only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": true,
+                "external_options": {},
+                "type": "str",
+                "_input_type": "DropdownInput"
+              },
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from lfx.base.models.model import LCModelComponent\nfrom lfx.base.models.unified_models import (\n    get_language_model_options,\n    get_llm,\n    handle_model_input_update,\n)\nfrom lfx.base.models.watsonx_constants import IBM_WATSONX_URLS\nfrom lfx.components.models_and_agents.model_selection import apply_model_overrides\nfrom lfx.field_typing.constants import LanguageModel\nfrom lfx.field_typing.range_spec import RangeSpec\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, StrInput\nfrom lfx.io import IntInput, MessageInput, ModelInput, MultilineInput, SecretStrInput, SliderInput\n\n\nclass LanguageModelComponent(LCModelComponent):\n    model_provider_policy_mode = \"delegate\"\n    display_name = \"Language Model\"\n    description = \"Runs a language model given a specified provider.\"\n    documentation: str = \"https://docs.langflow.org/components-models\"\n    icon = \"brain-circuit\"\n    category = \"models\"\n\n    inputs = [\n        ModelInput(\n            name=\"model\",\n            display_name=\"Language Model\",\n            info=\"Select your model provider\",\n            real_time_refresh=True,\n            required=True,\n        ),\n        StrInput(\n            name=\"model_name\",\n            display_name=\"Model Name Override\",\n            info=(\n                \"Optional model name to use instead of the selected model. \"\n                \"Can be set from a global variable for runtime model selection.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        StrInput(\n            name=\"provider\",\n            display_name=\"Provider Override\",\n            info=(\n                \"Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.\"\n            ),\n            advanced=True,\n            load_from_db=False,\n        ),\n        SecretStrInput(\n            name=\"api_key\",\n            display_name=\"API Key\",\n            info=\"Overrides global provider settings. Leave blank to use your pre-configured API Key.\",\n            required=False,\n            show=True,\n            real_time_refresh=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"base_url_ibm_watsonx\",\n            display_name=\"watsonx API Endpoint\",\n            info=\"The base URL of the API (IBM watsonx.ai only)\",\n            options=IBM_WATSONX_URLS,\n            value=IBM_WATSONX_URLS[0],\n            combobox=True,\n            show=False,\n            real_time_refresh=True,\n        ),\n        StrInput(\n            name=\"project_id\",\n            display_name=\"watsonx Project ID\",\n            info=\"The project ID associated with the foundation model (IBM watsonx.ai only)\",\n            show=False,\n            required=False,\n        ),\n        StrInput(\n            name=\"ollama_base_url\",\n            display_name=\"Ollama API URL\",\n            info=\"Endpoint of the Ollama API (Ollama only)\",\n            show=False,\n            real_time_refresh=True,\n        ),\n        MessageInput(\n            name=\"input_value\",\n            display_name=\"Input\",\n            info=\"The input text to send to the model\",\n        ),\n        MultilineInput(\n            name=\"system_message\",\n            display_name=\"System Message\",\n            info=\"A system message that helps set the behavior of the assistant\",\n            advanced=False,\n        ),\n        BoolInput(\n            name=\"stream\",\n            display_name=\"Stream\",\n            info=\"Whether to stream the response\",\n            value=False,\n            advanced=True,\n        ),\n        SliderInput(\n            name=\"temperature\",\n            display_name=\"Temperature\",\n            value=0.1,\n            info=\"Controls randomness in responses\",\n            range_spec=RangeSpec(min=0, max=1, step=0.01),\n            advanced=True,\n        ),\n        IntInput(\n            name=\"max_tokens\",\n            display_name=\"Max Tokens\",\n            info=\"Maximum number of tokens to generate. Field name varies by provider.\",\n            advanced=True,\n            range_spec=RangeSpec(min=1, max=128000, step=1, step_type=\"int\"),\n        ),\n    ]\n\n    def build_model(self) -> LanguageModel:\n        model = apply_model_overrides(\n            self.model,\n            model_name=getattr(self, \"model_name\", None),\n            provider=getattr(self, \"provider\", None),\n            user_id=self.user_id,\n            get_options=get_language_model_options,\n        )\n        return get_llm(\n            model=model,\n            user_id=self.user_id,\n            api_key=self.api_key,\n            temperature=self.temperature,\n            stream=self.stream,\n            max_tokens=getattr(self, \"max_tokens\", None),\n            watsonx_url=getattr(self, \"base_url_ibm_watsonx\", None),\n            watsonx_project_id=getattr(self, \"project_id\", None),\n            ollama_base_url=getattr(self, \"ollama_base_url\", None),\n        )\n\n    def update_build_config(self, build_config: dict, field_value: str, field_name: str | None = None):\n        \"\"\"Dynamically update build config with user-filtered model options.\"\"\"\n        return handle_model_input_update(self, build_config, field_value, field_name)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "input_value": {
+                "trace_as_input": true,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "Input",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The input text to send to the model",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageInput"
+              },
+              "max_tokens": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "range_spec": {
+                  "step_type": "int",
+                  "min": 1,
+                  "max": 128000,
+                  "step": 1
+                },
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "max_tokens",
+                "value": 0,
+                "display_name": "Max Tokens",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Maximum number of tokens to generate. Field name varies by provider.",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "int",
+                "_input_type": "IntInput"
+              },
+              "model": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "model_type": "language",
+                "external_options": {
+                  "fields": {
+                    "data": {
+                      "node": {
+                        "name": "connect_other_models",
+                        "display_name": "Connect other models",
+                        "icon": "CornerDownLeft"
+                      }
+                    }
+                  }
+                },
+                "override_skip": false,
+                "required": true,
+                "placeholder": "Setup Provider",
+                "show": true,
+                "name": "model",
+                "value": [
+                  {
+                    "name": "gemini-3.7-flash",
+                    "provider": "OpenAI Compatible",
+                    "category": "OpenAI Compatible"
+                  }
+                ],
+                "display_name": "Language Model",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "LanguageModel"
+                ],
+                "dynamic": false,
+                "info": "Select your model provider",
+                "real_time_refresh": true,
+                "refresh_button": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "model",
+                "_input_type": "ModelInput",
+                "options": [
+                  {
+                    "name": "deepseek-v4-flash",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "deepseek-v4-pro",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "deepseek-v4-flash-vision-exp",
+                    "icon": "OpenAI",
+                    "category": "OpenAI",
+                    "provider": "OpenAI",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M2",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M2-Plus",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M3",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan-M3-Plus",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "Baichuan2-53B",
+                    "icon": "Plug",
+                    "category": "OpenAI Compatible",
+                    "provider": "OpenAI Compatible",
+                    "metadata": {
+                      "context_length": 128000,
+                      "model_class": "ChatOpenAI",
+                      "model_name_param": "model",
+                      "api_key_param": "api_key",
+                      "max_tokens_field_name": "max_tokens",
+                      "base_url_param": "base_url"
+                    }
+                  },
+                  {
+                    "name": "gemini-3.7-flash",
+                    "provider": "OpenAI Compatible",
+                    "category": "OpenAI Compatible",
+                    "metadata": {
+                      "not_enabled_locally": true
+                    }
+                  }
+                ]
+              },
+              "model_name": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "model_name",
+                "value": "",
+                "display_name": "Model Name Override",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Optional model name to use instead of the selected model. Can be set from a global variable for runtime model selection.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "ollama_base_url": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "ollama_base_url",
+                "value": "",
+                "display_name": "Ollama API URL",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Endpoint of the Ollama API (Ollama only)",
+                "real_time_refresh": true,
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "project_id": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": false,
+                "name": "project_id",
+                "value": "",
+                "display_name": "watsonx Project ID",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "The project ID associated with the foundation model (IBM watsonx.ai only)",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "provider": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "provider",
+                "value": "",
+                "display_name": "Provider Override",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Optional provider to use with Model Name Override. Leave blank to use the selected model's provider.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "StrInput"
+              },
+              "stream": {
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "stream",
+                "value": false,
+                "display_name": "Stream",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Whether to stream the response",
+                "title_case": false,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "_input_type": "BoolInput"
+              },
+              "system_message": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "system_message",
+                "value": "你是平台账号的运营本人，不是文案。你发的每条帖子都像随手写的。\n\n# 硬纪律（逐条自查，违反任何一条该变体作废重写）\n\n1. 默认一行成文：钩子一句能成立就停；第二句只在带来新事实（数字/原话/物件）时才加。正文（去话题）超过两行即失败。\n2. 每句必须能拍成一帧画面（具体的人、物、动作、数字）。评价、比喻、总结、升华、对仗（「越…越…」）、抒情（「被凝视」「人性深渊」式）一律不写。\n3. 资料里没有的数字、日期、引语一个不编：资料写「70至90年代」就照写，不换算、不取整、不推算起止年份。人名只用资料写过的。\n4. 台词＝资料里明写的原话，原样引用；资料没有原话就不用台词钩子。\n5. 资料里的项目简介是给合作方的介绍文案，句子不得整句搬进帖子。\n6. 整部级钩子必须单句成立，如「5集，一集一案，13分钟一桩」。\n7. 话题井号格式按规则块当前平台段严格执行：抖音/视频号＝单井号、≤5 个（如 #香港奇案）；微博＝双井号、≤3 个；朋友圈＝单井号。格式或数量错＝作废。\n\n# 输出格式（按此解析）\n\n## 变体 1 · 钩子类型\n（文案正文，含话题标签）\n\n钩子类型（≤6 字）：数字 / 反差 / 身份反差 / 场景代入 / 悬念 / 台词 / 未解之谜 / 极端事实 / 质感 / 时间线 / 提问 / 热梗。编号从 1 递增，变体之间切入不同。不要输出变体之外的任何文字。\n\n# 本路侧重\n\n整部为主：至少 4 条卖整部，至多 1 条下钻单集。",
+                "display_name": "System Message",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "A system message that helps set the behavior of the assistant",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              },
+              "temperature": {
+                "tool_mode": false,
+                "min_label": "",
+                "max_label": "",
+                "min_label_icon": "",
+                "max_label_icon": "",
+                "slider_buttons": false,
+                "slider_buttons_options": [],
+                "slider_input": false,
+                "range_spec": {
+                  "step_type": "float",
+                  "min": 0,
+                  "max": 1,
+                  "step": 0.01
+                },
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "temperature",
+                "value": 0.9,
+                "display_name": "Temperature",
+                "advanced": false,
+                "api_editable": false,
+                "dynamic": false,
+                "info": "Controls randomness in responses",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "slider",
+                "_input_type": "SliderInput"
+              },
+              "_frontend_node_flow_id": {
+                "value": "47d564ff-4640-475c-bd8a-c35cf1b9438c"
+              },
+              "_frontend_node_folder_id": {
+                "value": "3ec9bd9f-6554-49e3-8a89-75f79332008f"
+              },
+              "is_refresh": true
+            },
+            "description": "Runs a language model given a specified provider.",
+            "icon": "brain-circuit",
+            "base_classes": [
+              "LanguageModel",
+              "Message"
+            ],
+            "display_name": "Language Model",
+            "documentation": "https://docs.langflow.org/components-models",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "text_output",
+                "hidden": null,
+                "display_name": "Model Response",
+                "method": "text_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              },
+              {
+                "types": [
+                  "LanguageModel"
+                ],
+                "selected": "LanguageModel",
+                "name": "model_output",
+                "hidden": null,
+                "display_name": "Language Model",
+                "method": "build_model",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "required_inputs": null,
+                "allows_loop": false,
+                "loop_types": null,
+                "group_outputs": false,
+                "options": null,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": false,
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.models_and_agents.language_model.LanguageModelComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              },
+              "model_provider_policy_mode": "delegate",
+              "keywords": [
+                "model",
+                "llm",
+                "language model",
+                "large language model"
+              ]
+            },
+            "tool_mode": false,
+            "last_updated": "2026-08-28T07:50:45.895Z",
+            "lf_version": "1.12.0"
+          },
+          "type": "LanguageModelComponent",
+          "selected_output": "text_output"
+        },
+        "id": "LanguageModelComponent-DmxGemini",
+        "dragging": false,
+        "position": {
+          "x": 876.7669632611421,
+          "y": 1074.780059750559
+        },
+        "positionAbsolute": {
+          "x": 860,
+          "y": 900
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 459
+        }
+      },
+      {
+        "data": {
+          "id": "CombineText-Merge12",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from lfx.custom.custom_component.component import Component\nfrom lfx.io import MessageTextInput, Output\nfrom lfx.schema.message import Message\n\n\nclass CombineTextComponent(Component):\n    display_name = \"Combine Text\"\n    description = \"Concatenate two text sources into a single text chunk using a specified delimiter.\"\n    icon = \"merge\"\n    name = \"CombineText\"\n    legacy: bool = True\n    replacement = [\"processing.Operations\"]\n\n    inputs = [\n        MessageTextInput(\n            name=\"text1\",\n            display_name=\"First Text\",\n            info=\"The first text input to concatenate.\",\n        ),\n        MessageTextInput(\n            name=\"text2\",\n            display_name=\"Second Text\",\n            info=\"The second text input to concatenate.\",\n        ),\n        MessageTextInput(\n            name=\"delimiter\",\n            display_name=\"Delimiter\",\n            info=\"A string used to separate the two text inputs. Defaults to a whitespace.\",\n            value=\" \",\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Combined Text\", name=\"combined_text\", method=\"combine_texts\"),\n    ]\n\n    def combine_texts(self) -> Message:\n        combined = self.delimiter.join([self.text1, self.text2])\n        self.status = combined\n        return Message(text=combined)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "delimiter": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "delimiter",
+                "value": "\n\n---\n\n",
+                "display_name": "Delimiter",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "A string used to separate the two text inputs. Defaults to a whitespace.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "text1": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "text1",
+                "value": "",
+                "display_name": "First Text",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The first text input to concatenate.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "text2": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "text2",
+                "value": "",
+                "display_name": "Second Text",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The second text input to concatenate.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              }
+            },
+            "description": "Concatenate two text sources into a single text chunk using a specified delimiter.",
+            "icon": "merge",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "Combine Text",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "combined_text",
+                "display_name": "Combined Text",
+                "method": "combine_texts",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": true,
+            "replacement": [
+              "processing.Operations"
+            ],
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.processing.combine_text.CombineTextComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.12.0"
+          },
+          "type": "CombineTextComponent",
+          "selected_output": "combined_text"
+        },
+        "id": "CombineText-Merge12",
+        "dragging": false,
+        "position": {
+          "x": 1288.956922671603,
+          "y": 136.19435296211154
+        },
+        "positionAbsolute": {
+          "x": 1300,
+          "y": 300
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 464
+        }
+      },
+      {
+        "data": {
+          "id": "CombineText-Merge123",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from lfx.custom.custom_component.component import Component\nfrom lfx.io import MessageTextInput, Output\nfrom lfx.schema.message import Message\n\n\nclass CombineTextComponent(Component):\n    display_name = \"Combine Text\"\n    description = \"Concatenate two text sources into a single text chunk using a specified delimiter.\"\n    icon = \"merge\"\n    name = \"CombineText\"\n    legacy: bool = True\n    replacement = [\"processing.Operations\"]\n\n    inputs = [\n        MessageTextInput(\n            name=\"text1\",\n            display_name=\"First Text\",\n            info=\"The first text input to concatenate.\",\n        ),\n        MessageTextInput(\n            name=\"text2\",\n            display_name=\"Second Text\",\n            info=\"The second text input to concatenate.\",\n        ),\n        MessageTextInput(\n            name=\"delimiter\",\n            display_name=\"Delimiter\",\n            info=\"A string used to separate the two text inputs. Defaults to a whitespace.\",\n            value=\" \",\n        ),\n    ]\n\n    outputs = [\n        Output(display_name=\"Combined Text\", name=\"combined_text\", method=\"combine_texts\"),\n    ]\n\n    def combine_texts(self) -> Message:\n        combined = self.delimiter.join([self.text1, self.text2])\n        self.status = combined\n        return Message(text=combined)\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "delimiter": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "delimiter",
+                "value": "\n\n---\n\n",
+                "display_name": "Delimiter",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "A string used to separate the two text inputs. Defaults to a whitespace.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "text1": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "text1",
+                "value": "",
+                "display_name": "First Text",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The first text input to concatenate.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              },
+              "text2": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "text2",
+                "value": "",
+                "display_name": "Second Text",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "The second text input to concatenate.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "type": "str",
+                "_input_type": "MessageTextInput"
+              }
+            },
+            "description": "Concatenate two text sources into a single text chunk using a specified delimiter.",
+            "icon": "merge",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "Combine Text",
+            "documentation": "",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "combined_text",
+                "display_name": "Combined Text",
+                "method": "combine_texts",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": true,
+            "replacement": [
+              "processing.Operations"
+            ],
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.processing.combine_text.CombineTextComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.12.0"
+          },
+          "type": "CombineTextComponent",
+          "selected_output": "combined_text"
+        },
+        "id": "CombineText-Merge123",
+        "dragging": false,
+        "position": {
+          "x": 1712.2748869268203,
+          "y": 493.8625565365898
+        },
+        "positionAbsolute": {
+          "x": 1300,
+          "y": 700
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 464
+        }
+      },
+      {
+        "data": {
+          "id": "TextOutputComponent-Result",
+          "node": {
+            "template": {
+              "_type": "Component",
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "from lfx.base.io.text import TextComponent\nfrom lfx.io import MultilineInput, Output\nfrom lfx.schema.message import Message\n\n\nclass TextOutputComponent(TextComponent):\n    display_name = \"Text Output\"\n    description = \"Sends text output via API.\"\n    documentation: str = \"https://docs.langflow.org/text-input-and-output\"\n    icon = \"type\"\n    name = \"TextOutput\"\n    legacy = True\n    replacement = [\"input_output.ChatOutput\"]\n\n    inputs = [\n        MultilineInput(\n            name=\"input_value\",\n            display_name=\"Inputs\",\n            info=\"Text to be passed as output.\",\n        ),\n    ]\n    outputs = [\n        Output(display_name=\"Output Text\", name=\"text\", method=\"text_response\"),\n    ]\n\n    def text_response(self) -> Message:\n        message = Message(\n            text=self.input_value,\n        )\n        self.status = self.input_value\n        return message\n",
+                "fileTypes": [],
+                "file_path": "",
+                "password": false,
+                "name": "code",
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "info": "",
+                "load_from_db": false,
+                "title_case": false
+              },
+              "input_value": {
+                "tool_mode": false,
+                "trace_as_input": true,
+                "multiline": true,
+                "ai_enabled": false,
+                "trace_as_metadata": true,
+                "load_from_db": false,
+                "list": false,
+                "list_add_label": "Add More",
+                "override_skip": false,
+                "required": false,
+                "placeholder": "",
+                "show": true,
+                "name": "input_value",
+                "value": "",
+                "display_name": "Inputs",
+                "advanced": false,
+                "api_editable": false,
+                "input_types": [
+                  "Message"
+                ],
+                "dynamic": false,
+                "info": "Text to be passed as output.",
+                "title_case": false,
+                "track_in_telemetry": false,
+                "copy_field": false,
+                "password": false,
+                "type": "str",
+                "_input_type": "MultilineInput"
+              }
+            },
+            "description": "Sends text output via API.",
+            "icon": "type",
+            "base_classes": [
+              "Message"
+            ],
+            "display_name": "Text Output",
+            "documentation": "https://docs.langflow.org/text-input-and-output",
+            "minimized": false,
+            "custom_fields": {},
+            "output_types": [],
+            "pinned": false,
+            "conditional_paths": [],
+            "frozen": false,
+            "outputs": [
+              {
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message",
+                "name": "text",
+                "display_name": "Output Text",
+                "method": "text_response",
+                "value": "__UNDEFINED__",
+                "cache": true,
+                "allows_loop": false,
+                "group_outputs": false,
+                "tool_mode": true
+              }
+            ],
+            "field_order": [],
+            "beta": false,
+            "legacy": true,
+            "replacement": [
+              "input_output.ChatOutput"
+            ],
+            "edited": false,
+            "metadata": {
+              "module": "lfx.components.input_output.text_output.TextOutputComponent",
+              "dependencies": {
+                "total_dependencies": 1,
+                "dependencies": [
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ]
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.12.0"
+          },
+          "type": "TextOutputComponent",
+          "selected_output": "text"
+        },
+        "id": "TextOutputComponent-Result",
+        "dragging": false,
+        "position": {
+          "x": 2238.7789926659298,
+          "y": 656.7497475078374
+        },
+        "positionAbsolute": {
+          "x": 1740,
+          "y": 550
+        },
+        "selected": false,
+        "type": "genericNode",
+        "measured": {
+          "width": 320,
+          "height": 284
+        }
+      },
+      {
+        "id": "ChatOutput-c1bzg",
+        "type": "genericNode",
+        "position": {
+          "x": 2797.3854418161013,
+          "y": 989.117291057161
+        },
+        "data": {
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Display a chat message in the Playground.",
+            "display_name": "Chat Output",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "edited": false,
+            "field_order": [
+              "input_value",
+              "should_store_message",
+              "sender",
+              "sender_name",
+              "session_id",
+              "context_id",
+              "data_template",
+              "clean_data"
+            ],
+            "frozen": false,
+            "icon": "MessagesSquare",
+            "legacy": false,
+            "metadata": {
+              "code_hash": "84009527d08c",
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "orjson",
+                    "version": "3.11.9"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.139.2"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 3
+              },
+              "module": "lfx.components.input_output.chat_output.ChatOutput"
+            },
+            "minimized": true,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Output Message",
+                "group_outputs": false,
+                "method": "message_response",
+                "name": "message",
+                "selected": "Message",
+                "tool_mode": true,
+                "types": [
+                  "Message"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "clean_data": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Basic Clean Data",
+                "dynamic": false,
+                "info": "Whether to clean data before converting to string.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "clean_data",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              },
+              "code": {
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "from collections.abc import Generator\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, HandleInput, MessageTextInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.schema.properties import Source\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import (\n    MESSAGE_SENDER_AI,\n    MESSAGE_SENDER_NAME_AI,\n    MESSAGE_SENDER_USER,\n)\n\n\nclass ChatOutput(ChatComponent):\n    display_name = \"Chat Output\"\n    description = \"Display a chat message in the Playground.\"\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"ChatOutput\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"Inputs\",\n            info=\"Message to be passed as output.\",\n            input_types=[\"Data\", \"JSON\", \"DataFrame\", \"Table\", \"Message\"],\n            required=True,\n        ),\n        BoolInput(\n            name=\"should_store_message\",\n            display_name=\"Store Messages\",\n            info=\"Store the message in the history.\",\n            value=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"sender\",\n            display_name=\"Sender Type\",\n            options=[MESSAGE_SENDER_AI, MESSAGE_SENDER_USER],\n            value=MESSAGE_SENDER_AI,\n            advanced=True,\n            info=\"Type of sender.\",\n        ),\n        MessageTextInput(\n            name=\"sender_name\",\n            display_name=\"Sender Name\",\n            info=\"Name of the sender.\",\n            value=MESSAGE_SENDER_NAME_AI,\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"session_id\",\n            display_name=\"Session ID\",\n            info=\"The session ID of the chat. If empty, the current session ID parameter will be used.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"data_template\",\n            display_name=\"Data Template\",\n            value=\"{text}\",\n            advanced=True,\n            info=\"Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.\",\n        ),\n        BoolInput(\n            name=\"clean_data\",\n            display_name=\"Basic Clean Data\",\n            value=True,\n            advanced=True,\n            info=\"Whether to clean data before converting to string.\",\n        ),\n    ]\n    outputs = [\n        Output(\n            display_name=\"Output Message\",\n            name=\"message\",\n            method=\"message_response\",\n        ),\n    ]\n\n    def _build_source(self, id_: str | None, display_name: str | None, source: str | None) -> Source:\n        source_dict = {}\n        if id_:\n            source_dict[\"id\"] = id_\n        if display_name:\n            source_dict[\"display_name\"] = display_name\n        if source:\n            # Handle case where source is a ChatOpenAI object\n            if hasattr(source, \"model_name\"):\n                source_dict[\"source\"] = source.model_name\n            elif hasattr(source, \"model\"):\n                source_dict[\"source\"] = str(source.model)\n            else:\n                source_dict[\"source\"] = str(source)\n        return Source(**source_dict)\n\n    async def message_response(self) -> Message:\n        # First convert the input to string if needed\n        text = self.convert_to_string()\n\n        # Get source properties\n        source, _, display_name, source_id = self.get_properties_from_source_component()\n\n        # Create or use existing Message object\n        if isinstance(self.input_value, Message) and not self.is_connected_to_chat_input():\n            message = self.input_value\n            # Update message properties\n            message.text = text\n            # Preserve existing session_id from the incoming message if it exists\n            existing_session_id = message.session_id\n        else:\n            message = Message(text=text)\n            existing_session_id = None\n\n        # Set message properties\n        message.sender = self.sender\n        message.sender_name = self.sender_name\n        # Preserve session_id from incoming message, or use component/graph session_id\n        message.session_id = (\n            self.session_id or existing_session_id or (self.graph.session_id if hasattr(self, \"graph\") else None) or \"\"\n        )\n        message.context_id = self.context_id\n        message.flow_id = self.graph.flow_id if hasattr(self, \"graph\") else None\n        message.properties.source = self._build_source(source_id, display_name, source)\n\n        # Store message if needed\n        if message.session_id and self.should_store_message:\n            stored_message = await self.send_message(message)\n            self.message.value = stored_message\n            message = stored_message\n\n        # Set accumulated token usage from all upstream LLM vertices.\n        # This must happen AFTER send_message() because streaming captures\n        # usage from chunks and would overwrite accumulated totals.\n        if hasattr(self, \"_vertex\") and self._vertex is not None:\n            accumulated_usage = self._vertex._accumulate_upstream_token_usage()  # noqa: SLF001\n            if accumulated_usage:\n                message.properties.usage = accumulated_usage\n                if self.should_store_message and message.get_id():\n                    message = await self._update_stored_message(message)\n                    await self._send_message_event(message, id_=message.get_id())\n\n        self.status = message\n        return message\n\n    def _serialize_data(self, data: Data) -> str:\n        \"\"\"Serialize Data object to JSON string.\"\"\"\n        # Convert data.data to JSON-serializable format\n        serializable_data = jsonable_encoder(data.data)\n        # Serialize with orjson, enabling pretty printing with indentation\n        json_bytes = orjson.dumps(serializable_data, option=orjson.OPT_INDENT_2)\n        # Convert bytes to string and wrap in Markdown code blocks\n        return \"```json\\n\" + json_bytes.decode(\"utf-8\") + \"\\n```\"\n\n    def _validate_input(self) -> None:\n        \"\"\"Validate the input data and raise ValueError if invalid.\"\"\"\n        if self.input_value is None:\n            msg = \"Input data cannot be None\"\n            raise ValueError(msg)\n        if isinstance(self.input_value, list) and not all(\n            isinstance(item, Message | Data | DataFrame | str) for item in self.input_value\n        ):\n            invalid_types = [\n                type(item).__name__\n                for item in self.input_value\n                if not isinstance(item, Message | Data | DataFrame | str)\n            ]\n            msg = f\"Expected Data or DataFrame or Message or str, got {invalid_types}\"\n            raise TypeError(msg)\n        if not isinstance(\n            self.input_value,\n            Message | Data | DataFrame | str | list | Generator | type(None),\n        ):\n            type_name = type(self.input_value).__name__\n            msg = f\"Expected Data or DataFrame or Message or str, Generator or None, got {type_name}\"\n            raise TypeError(msg)\n\n    def convert_to_string(self) -> str | Generator[Any, None, None]:\n        \"\"\"Convert input data to string with proper error handling.\"\"\"\n        self._validate_input()\n        if isinstance(self.input_value, list):\n            clean_data: bool = getattr(self, \"clean_data\", False)\n            return \"\\n\".join([safe_convert(item, clean_data=clean_data) for item in self.input_value])\n        if isinstance(self.input_value, Generator):\n            return self.input_value\n        return safe_convert(self.input_value)\n"
+              },
+              "context_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Context ID",
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "context_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "data_template": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Data Template",
+                "dynamic": false,
+                "info": "Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "data_template",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "{text}"
+              },
+              "input_value": {
+                "_input_type": "HandleInput",
+                "advanced": false,
+                "api_editable": false,
+                "display_name": "Inputs",
+                "dynamic": false,
+                "info": "Message to be passed as output.",
+                "input_types": [
+                  "Data",
+                  "JSON",
+                  "DataFrame",
+                  "Table",
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "input_value",
+                "override_skip": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "other",
+                "value": ""
+              },
+              "sender": {
+                "_input_type": "DropdownInput",
+                "advanced": true,
+                "api_editable": false,
+                "combobox": false,
+                "dialog_inputs": {},
+                "display_name": "Sender Type",
+                "dynamic": false,
+                "external_options": {},
+                "info": "Type of sender.",
+                "name": "sender",
+                "options": [
+                  "Machine",
+                  "User"
+                ],
+                "options_metadata": [],
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "toggle": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "str",
+                "value": "Machine"
+              },
+              "sender_name": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Sender Name",
+                "dynamic": false,
+                "info": "Name of the sender.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "sender_name",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "AI"
+              },
+              "session_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Session ID",
+                "dynamic": false,
+                "info": "The session ID of the chat. If empty, the current session ID parameter will be used.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "session_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "should_store_message": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Store Messages",
+                "dynamic": false,
+                "info": "Store the message in the history.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "should_store_message",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              }
+            },
+            "tool_mode": false
+          },
+          "showNode": false,
+          "type": "ChatOutput",
+          "id": "ChatOutput-c1bzg"
+        },
+        "selected": false,
+        "dragging": false,
+        "measured": {
+          "width": 192,
+          "height": 52
+        }
+      }
+    ],
+    "edges": [
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "FeishuDocComponent",
+            "id": "FeishuDocComponent-Source",
+            "name": "document",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "doc_content",
+            "id": "PromptTemplate-Writer",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-FeishuDocComponent-Source{œdataTypeœ:œFeishuDocComponentœ,œidœ:œFeishuDocComponent-Sourceœ,œnameœ:œdocumentœ,œoutput_typesœ:[œMessageœ]}-PromptTemplate-Writer{œfieldNameœ:œdoc_contentœ,œidœ:œPromptTemplate-Writerœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "FeishuDocComponent-Source",
+        "sourceHandle": "{œdataTypeœ:œFeishuDocComponentœ,œidœ:œFeishuDocComponent-Sourceœ,œnameœ:œdocumentœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "PromptTemplate-Writer",
+        "targetHandle": "{œfieldNameœ:œdoc_contentœ,œidœ:œPromptTemplate-Writerœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "Prompt",
+            "id": "PromptTemplate-Writer",
+            "name": "prompt",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "LanguageModelComponent-DeepSeek",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-PromptTemplate-Writer{œdataTypeœ:œPromptœ,œidœ:œPromptTemplate-Writerœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}-LanguageModelComponent-DeepSeek{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-DeepSeekœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "PromptTemplate-Writer",
+        "sourceHandle": "{œdataTypeœ:œPromptœ,œidœ:œPromptTemplate-Writerœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "LanguageModelComponent-DeepSeek",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-DeepSeekœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "Prompt",
+            "id": "PromptTemplate-Writer",
+            "name": "prompt",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "LanguageModelComponent-DmxGpt",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-PromptTemplate-Writer{œdataTypeœ:œPromptœ,œidœ:œPromptTemplate-Writerœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}-LanguageModelComponent-DmxGpt{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-DmxGptœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "PromptTemplate-Writer",
+        "sourceHandle": "{œdataTypeœ:œPromptœ,œidœ:œPromptTemplate-Writerœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "LanguageModelComponent-DmxGpt",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-DmxGptœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "Prompt",
+            "id": "PromptTemplate-Writer",
+            "name": "prompt",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "LanguageModelComponent-DmxGemini",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-PromptTemplate-Writer{œdataTypeœ:œPromptœ,œidœ:œPromptTemplate-Writerœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}-LanguageModelComponent-DmxGemini{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-DmxGeminiœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "PromptTemplate-Writer",
+        "sourceHandle": "{œdataTypeœ:œPromptœ,œidœ:œPromptTemplate-Writerœ,œnameœ:œpromptœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "LanguageModelComponent-DmxGemini",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-DmxGeminiœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "LanguageModelComponent",
+            "id": "LanguageModelComponent-DeepSeek",
+            "name": "text_output",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "text1",
+            "id": "CombineText-Merge12",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-LanguageModelComponent-DeepSeek{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-DeepSeekœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}-CombineText-Merge12{œfieldNameœ:œtext1œ,œidœ:œCombineText-Merge12œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "LanguageModelComponent-DeepSeek",
+        "sourceHandle": "{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-DeepSeekœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "CombineText-Merge12",
+        "targetHandle": "{œfieldNameœ:œtext1œ,œidœ:œCombineText-Merge12œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "LanguageModelComponent",
+            "id": "LanguageModelComponent-DmxGpt",
+            "name": "text_output",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "text2",
+            "id": "CombineText-Merge12",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-LanguageModelComponent-DmxGpt{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-DmxGptœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}-CombineText-Merge12{œfieldNameœ:œtext2œ,œidœ:œCombineText-Merge12œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "LanguageModelComponent-DmxGpt",
+        "sourceHandle": "{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-DmxGptœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "CombineText-Merge12",
+        "targetHandle": "{œfieldNameœ:œtext2œ,œidœ:œCombineText-Merge12œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "CombineTextComponent",
+            "id": "CombineText-Merge12",
+            "name": "combined_text",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "text1",
+            "id": "CombineText-Merge123",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-CombineText-Merge12{œdataTypeœ:œCombineTextComponentœ,œidœ:œCombineText-Merge12œ,œnameœ:œcombined_textœ,œoutput_typesœ:[œMessageœ]}-CombineText-Merge123{œfieldNameœ:œtext1œ,œidœ:œCombineText-Merge123œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "CombineText-Merge12",
+        "sourceHandle": "{œdataTypeœ:œCombineTextComponentœ,œidœ:œCombineText-Merge12œ,œnameœ:œcombined_textœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "CombineText-Merge123",
+        "targetHandle": "{œfieldNameœ:œtext1œ,œidœ:œCombineText-Merge123œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "LanguageModelComponent",
+            "id": "LanguageModelComponent-DmxGemini",
+            "name": "text_output",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "text2",
+            "id": "CombineText-Merge123",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-LanguageModelComponent-DmxGemini{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-DmxGeminiœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}-CombineText-Merge123{œfieldNameœ:œtext2œ,œidœ:œCombineText-Merge123œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "LanguageModelComponent-DmxGemini",
+        "sourceHandle": "{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-DmxGeminiœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "CombineText-Merge123",
+        "targetHandle": "{œfieldNameœ:œtext2œ,œidœ:œCombineText-Merge123œ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "animated": false,
+        "className": "",
+        "data": {
+          "sourceHandle": {
+            "dataType": "CombineTextComponent",
+            "id": "CombineText-Merge123",
+            "name": "combined_text",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "TextOutputComponent-Result",
+            "inputTypes": [
+              "Message"
+            ],
+            "type": "str"
+          }
+        },
+        "id": "reactflow__edge-CombineText-Merge123{œdataTypeœ:œCombineTextComponentœ,œidœ:œCombineText-Merge123œ,œnameœ:œcombined_textœ,œoutput_typesœ:[œMessageœ]}-TextOutputComponent-Result{œfieldNameœ:œinput_valueœ,œidœ:œTextOutputComponent-Resultœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "selected": false,
+        "source": "CombineText-Merge123",
+        "sourceHandle": "{œdataTypeœ:œCombineTextComponentœ,œidœ:œCombineText-Merge123œ,œnameœ:œcombined_textœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "TextOutputComponent-Result",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œTextOutputComponent-Resultœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}"
+      },
+      {
+        "source": "TextOutputComponent-Result",
+        "sourceHandle": "{œdataTypeœ:œTextOutputComponentœ,œidœ:œTextOutputComponent-Resultœ,œnameœ:œtextœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "ChatOutput-c1bzg",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-c1bzgœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
+        "data": {
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "ChatOutput-c1bzg",
+            "inputTypes": [
+              "Data",
+              "JSON",
+              "DataFrame",
+              "Table",
+              "Message"
+            ],
+            "type": "other"
+          },
+          "sourceHandle": {
+            "dataType": "TextOutputComponent",
+            "id": "TextOutputComponent-Result",
+            "name": "text",
+            "output_types": [
+              "Message"
+            ]
+          }
+        },
+        "id": "xy-edge__TextOutputComponent-Result{œdataTypeœ:œTextOutputComponentœ,œidœ:œTextOutputComponent-Resultœ,œnameœ:œtextœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-c1bzg{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-c1bzgœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
+        "selected": false,
+        "animated": false,
+        "className": ""
+      }
+    ],
+    "viewport": {
+      "x": 170.83933550124215,
+      "y": -226.02811304512738,
+      "zoom": 0.5638843354532188
+    }
+  },
+  "description": "飞书文档 → 平台规则写作 → 三路 LLM 并行候选",
+  "name": "宣发文案生成"
+}

@@ -1,0 +1,288 @@
+import type React from "react";
+import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import IconComponent from "@/components/common/genericIconComponent";
+import ShadTooltip from "@/components/common/shadTooltipComponent";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+} from "@/components/ui/select";
+import { useUpdateSessionName } from "@/controllers/API/queries/messages/use-rename-session";
+import { useGetFlowId } from "@/modals/IOModal/hooks/useGetFlowId";
+import useFlowStore from "@/stores/flowStore";
+import { useVoiceStore } from "@/stores/voiceStore";
+import { cn } from "@/utils/utils";
+
+export default function SessionSelector({
+  deleteSession,
+  session,
+  toggleVisibility,
+  isVisible,
+  inspectSession,
+  updateVisibleSession,
+  selectedView,
+  setSelectedView,
+  playgroundPage,
+  setActiveSession,
+  menuOpen,
+  onMenuOpenChange,
+}: {
+  deleteSession: (session: string) => void;
+  session: string;
+  toggleVisibility: () => void;
+  isVisible: boolean;
+  inspectSession: (session: string) => void;
+  updateVisibleSession: (session: string) => void;
+  selectedView?: { type: string; id: string };
+  setSelectedView: (view: { type: string; id: string } | undefined) => void;
+  playgroundPage: boolean;
+  setActiveSession: (session: string) => void;
+  menuOpen?: boolean;
+  onMenuOpenChange?: (open: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const currentFlowId = useGetFlowId();
+  const [isEditing, setIsEditing] = useState(false);
+  const [editedSession, setEditedSession] = useState(session);
+  const { mutate: updateSessionName } = useUpdateSessionName();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const _setNewChatOnPlayground = useFlowStore(
+    (state) => state.setNewChatOnPlayground,
+  );
+
+  useEffect(() => {
+    setEditedSession(session);
+  }, [session]);
+
+  const handleEditClick = (e?: React.MouseEvent<HTMLDivElement>) => {
+    e?.stopPropagation();
+    setIsEditing(true);
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setEditedSession(e.target.value);
+  };
+
+  const handleConfirm = () => {
+    setIsEditing(false);
+    if (editedSession.trim() !== session) {
+      updateSessionName(
+        { old_session_id: session, new_session_id: editedSession.trim() },
+        {
+          onSuccess: () => {
+            if (isVisible) {
+              updateVisibleSession(editedSession.trim());
+            }
+            if (
+              selectedView?.type === "Session" &&
+              selectedView?.id === session
+            ) {
+              setSelectedView({ type: "Session", id: editedSession.trim() });
+            }
+          },
+        },
+      );
+    }
+  };
+
+  const handleCancel = () => {
+    setIsEditing(false);
+    setEditedSession(session);
+  };
+
+  const handleSelectChange = (value: string) => {
+    switch (value) {
+      case "rename":
+        handleEditClick();
+        break;
+      case "messageLogs":
+        inspectSession(session);
+        break;
+      case "delete":
+        deleteSession(session);
+        break;
+    }
+  };
+
+  const handleOnBlur = (e: React.FocusEvent<HTMLInputElement>) => {
+    if (
+      !e.relatedTarget ||
+      e.relatedTarget.getAttribute("data-confirm") !== "true"
+    ) {
+      handleCancel();
+    }
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      handleConfirm();
+    }
+  };
+
+  const setNewSessionCloseVoiceAssistant = useVoiceStore(
+    (state) => state.setNewSessionCloseVoiceAssistant,
+  );
+
+  return (
+    <div
+      data-testid="session-selector"
+      onClick={(e) => {
+        setNewSessionCloseVoiceAssistant(true);
+        if (isEditing) e.stopPropagation();
+        else toggleVisibility();
+      }}
+      className={cn(
+        "file-component-accordion-div group cursor-pointer rounded-md text-left text-mmd hover:bg-secondary-hover",
+        isVisible ? "bg-secondary-hover font-semibold" : "font-normal",
+      )}
+    >
+      <div className="flex w-full items-center justify-between overflow-hidden px-2 py-1 align-middle">
+        <div
+          className="flex w-full min-w-0 items-center"
+          role={isEditing ? undefined : "button"}
+          tabIndex={isEditing ? undefined : 0}
+          aria-pressed={isEditing ? undefined : isVisible}
+          onKeyDown={(e) => {
+            if (isEditing || e.target !== e.currentTarget) return;
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setNewSessionCloseVoiceAssistant(true);
+              toggleVisibility();
+            }
+          }}
+        >
+          {isEditing ? (
+            <div className="flex items-center">
+              <Input
+                ref={inputRef}
+                value={editedSession}
+                onKeyDown={onKeyDown}
+                onChange={handleInputChange}
+                onBlur={handleOnBlur}
+                autoFocus
+                aria-label={t("chat.renameSessionLabel")}
+                className="h-6 flex-grow px-1 py-0"
+              />
+              <button
+                onClick={handleCancel}
+                aria-label={t("chat.cancelRename")}
+                className="hover:text-status-red-hover ml-2 text-status-red"
+              >
+                <IconComponent name="X" className="h-4 w-4" ariaHidden />
+              </button>
+              <button
+                onClick={handleConfirm}
+                data-confirm="true"
+                aria-label={t("chat.confirmRename")}
+                className="ml-2 text-accent-emerald-foreground hover:text-accent-emerald-foreground/80"
+              >
+                <IconComponent name="Check" className="h-4 w-4" ariaHidden />
+              </button>
+            </div>
+          ) : (
+            <ShadTooltip styleClasses="z-50" content={session}>
+              <div className="relative w-full overflow-hidden">
+                <span className="w-full truncate">
+                  {session === currentFlowId ? "Default Session" : session}
+                </span>
+                <div
+                  className={cn(
+                    "pointer-events-none absolute left-0 right-0 top-0 h-full whitespace-nowrap",
+                  )}
+                >
+                  <div
+                    className={cn(
+                      "h-full w-full group-hover:truncate-secondary-hover",
+                      isVisible
+                        ? "truncate-secondary-hover"
+                        : "truncate-muted dark:truncate-canvas",
+                    )}
+                  ></div>
+                </div>
+              </div>
+            </ShadTooltip>
+          )}
+        </div>
+        <Select
+          value={""}
+          onValueChange={handleSelectChange}
+          open={menuOpen}
+          onOpenChange={onMenuOpenChange}
+        >
+          <ShadTooltip
+            styleClasses="z-50"
+            side="right"
+            content={t("chat.options")}
+          >
+            <SelectTrigger
+              variant="plain"
+              onClick={(e) => {
+                e.stopPropagation();
+              }}
+              onFocusCapture={() => {
+                inputRef.current?.focus();
+              }}
+              data-confirm="true"
+              aria-label={t("chat.options")}
+              className={cn(
+                "h-8 w-fit border-none bg-transparent p-2 focus:ring-0",
+                isVisible
+                  ? "opacity-100"
+                  : "pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
+              )}
+            >
+              <IconComponent
+                name="MoreHorizontal"
+                className="h-4 w-4"
+                ariaHidden
+              />
+            </SelectTrigger>
+          </ShadTooltip>
+          <SelectContent
+            side="right"
+            align="start"
+            className="min-w-[11.5rem] p-0"
+          >
+            <SelectItem
+              variant="plain"
+              value="rename"
+              className="cursor-pointer px-3 py-2 focus:bg-muted"
+            >
+              <div className="flex items-center">
+                <IconComponent name="SquarePen" className="mr-2 h-4 w-4" />
+                Rename
+              </div>
+            </SelectItem>
+            <SelectItem
+              variant="plain"
+              value="messageLogs"
+              className="cursor-pointer px-3 py-2 focus:bg-muted"
+            >
+              <div className="flex w-full items-center justify-between">
+                <div className="flex items-center">
+                  <IconComponent name="Scroll" className="mr-2 h-4 w-4" />
+                  Message logs
+                </div>
+              </div>
+            </SelectItem>
+            <SelectItem
+              variant="plain"
+              value="delete"
+              className="cursor-pointer px-3 py-2 focus:bg-muted"
+            >
+              <div className="flex items-center text-status-red hover:text-status-red">
+                <IconComponent name="Trash2" className="mr-2 h-4 w-4" />
+                Delete
+              </div>
+            </SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+    </div>
+  );
+}
