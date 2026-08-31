@@ -3129,9 +3129,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     setDecomposing(false);
   };
 
-  /** 批量物化镜头图（novanova 分镜视频的图片版）：选中行 → 画布右侧双列
-   *  网格建图片卡（已有关联卡则原卡重跑）+ 自动连线 + 直连 imagegen flow
-   *  批量生成（并发 3，不经聊天 LLM），结果回填各节点。行缩略图读关联节点 */
+  /** 批量物化镜头图（novanova 分镜视频的图片版）：选中行 → 画布右侧
+   *  √n 列近似方阵网格建图片卡（已有关联卡则原卡重跑）+ 自动连线 + 直连
+   *  imagegen flow 批量生成（并发 3，不经聊天 LLM），结果回填各节点。
+   *  行缩略图读关联节点 */
   const genShotImages = async (targets: { row: ShotRow; seq: number }[]) => {
     if (imgGenerating || targets.length === 0) return;
     // 画风闸（juben 硬闸同款）：只认全局画风——风格唯一入口在底部坞「画风」，
@@ -3167,13 +3168,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     const src = st.nodes.find((n) => n.id === id);
     if (!src) return;
     setImgGenerating(true);
-    // 网格锚点：整块区域 findFreePosition 避让已有卡，块内双列铺开
+    // 网格锚点：整块区域 findFreePosition 避让已有卡，块内按 √n 取列数
+    // 铺成近似方阵（固定双列在镜头多时纵向拉得过长；空位只是画布留白不可见）
     const abs = absolutePosition(st.nodes, src);
     const sz = nodeSize(src);
     const fp = NODE_FOOTPRINT.image;
     const colW = fp.w + 54;
     const rowH = fp.h + 54;
-    const cols = Math.min(2, targets.length);
+    const cols = Math.min(targets.length, Math.ceil(Math.sqrt(targets.length)));
     const origin = findFreePosition(st.nodes, { x: abs.x + sz.w + 80, y: abs.y }, {
       w: cols * colW - 54,
       h: Math.ceil(targets.length / cols) * rowH - 54,
