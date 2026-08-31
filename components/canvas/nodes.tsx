@@ -1216,7 +1216,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
   return (
     <CardShell id={id} data={d} selected={selected} aspect={Boolean(d.imageUrl)}>
       <div
-        className={`ws-detail mt-1.5 flex min-h-40 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+        className={`mt-1.5 flex min-h-40 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -2080,7 +2080,7 @@ function AudioCard({ data, id, selected }: NodeProps) {
 
   return (
     <CardShell id={id} data={d} selected={selected}>
-      <div className="ws-detail mt-1.5 flex min-h-14 w-full flex-1 items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5">
+      <div className="mt-1.5 flex min-h-14 w-full flex-1 items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5">
         {d.audioUrl ? (
           <AudioPlayer src={d.audioUrl} title={d.title ?? ""} />
         ) : (
