@@ -9,19 +9,18 @@ import {
   MoreHorizontal,
   Pencil,
   Search,
-  ShieldCheck,
   Trash2,
   Users,
 } from "lucide-react";
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
+import AccountMenu from "@/components/shell/AccountMenu";
 import {
   WorkspaceErrorState,
   WorkspaceLoadingState,
   WorkspaceState,
 } from "@/components/shell/WorkspaceState";
 import CollaboratorsDialog from "@/components/home/CollaboratorsDialog";
-import { getAuthSession } from "@/lib/auth-session";
 import {
   createProject,
   deleteProject,
@@ -61,7 +60,6 @@ function HomeInner() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortKey>("recent_edit");
   const [creating, setCreating] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
   const [menuPid, setMenuPid] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ProjectMeta | null>(null);
   const [collabFor, setCollabFor] = useState<ProjectMeta | null>(null);
@@ -94,9 +92,6 @@ function HomeInner() {
         }
       }
     })();
-    void getAuthSession().then((s) => {
-      if (alive) setIsAdmin(s.role === "admin");
-    });
     return () => {
       alive = false;
     };
@@ -157,16 +152,6 @@ function HomeInner() {
             </h1>
             <p className="text-[11px] leading-tight text-text-3">AI 影视创作画布</p>
           </div>
-          {isAdmin ? (
-            <button
-              type="button"
-              onClick={() => router.push("/admin")}
-              className="flex items-center gap-1.5 rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-            >
-              <ShieldCheck className="h-3.5 w-3.5" />
-              管理后台
-            </button>
-          ) : null}
           <button
             type="button"
             onClick={() => void create()}
@@ -180,6 +165,7 @@ function HomeInner() {
             )}
             新建项目
           </button>
+          <AccountMenu />
         </div>
       </header>
 

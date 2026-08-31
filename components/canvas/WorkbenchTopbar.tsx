@@ -3,7 +3,7 @@
 /**
  * 工作台轻顶栏（对标即梦式布局的顶栏层）：
  *   左：项目名（点击行内改名，改名同步 store → ActivityBar 下拉联动）
- *   右：协作者头像组 + 「分享」按钮（复用首页 CollaboratorsDialog 邀请/管理协作者）
+ *   右：协作者头像组 + 「分享」+ 主题切换 + 账户菜单（AccountMenu）
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -13,14 +13,7 @@ import { useThemeStore } from "@/lib/theme";
 import { renameProject } from "@/lib/projects";
 import { listCollaborators } from "@/lib/admin";
 import CollaboratorsDialog from "@/components/home/CollaboratorsDialog";
-
-/** 用户名 → 稳定头像色（oklch 色相环 8 色轮换，无头像系统时的占位方案） */
-const AVATAR_HUES = [30, 80, 140, 180, 220, 270, 320, 5];
-function avatarColor(name: string): string {
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-  return `oklch(0.62 0.11 ${AVATAR_HUES[h % AVATAR_HUES.length]})`;
-}
+import AccountMenu, { avatarColor } from "@/components/shell/AccountMenu";
 
 export default function WorkbenchTopbar() {
   const projectId = useCanvasStore((s) => s.projectId);
@@ -149,6 +142,8 @@ export default function WorkbenchTopbar() {
         <UserPlus className="h-3.5 w-3.5" />
         分享
       </button>
+
+      <AccountMenu />
 
       {sharing && projectId ? (
         <CollaboratorsDialog

@@ -12,6 +12,8 @@ import { fetchAuthStatus, getToken } from "@/lib/auth";
 export interface AuthSession {
   /** 认证是否开启 */
   enabled: boolean;
+  /** verify 的登录名；未登录/离线时为 null，认证关闭时为匿名占位 "local" */
+  username: string | null;
   /** verify 角色；认证关闭时服务端匿名 admin，这里同样拿到 "admin" */
   role: string | null;
   /** 守卫判定：关闭认证 / token 校验通过 / 服务不可达离线放行 */
@@ -23,11 +25,12 @@ export interface AuthSession {
 let pending: Promise<AuthSession> | null = null;
 let settled: AuthSession | null = null;
 
-async function roleFrom(r: Response): Promise<string | null> {
+async function whoFrom(r: Response): Promise<{ username: string | null; role: string | null }> {
   try {
-    return ((await r.json()) as { role?: string }).role ?? null;
+    const d = (await r.json()) as { role?: string; username?: string };
+    return { role: d.role ?? null, username: d.username ?? null };
   } catch {
-    return null;
+    return { role: null, username: null };
   }
 }
 
@@ -38,42 +41,36 @@ export function getAuthSession(): Promise<AuthSession> {
       const status = await fetchAuthStatus();
       if (!status) {
         // 服务不可达：离线放行，但不缓存（结果带 reachable=false）
-        return { enabled: false, role: null, pass: true, reachable: false };
+        return { enabled: false, username: null, role: null, pass: true, reachable: false };
       }
       if (!status.enabled) {
         // 关闭认证：仍取一次角色（服务端匿名 admin），供首页/管理后台判定
         try {
           const r = await fetch("/api/v1/auth/verify");
-          return {
-            enabled: false,
-            role: r.ok ? await roleFrom(r) : null,
-            pass: true,
-            reachable: true,
-          };
+          const who = r.ok ? await whoFrom(r) : { username: null, role: null };
+          return { enabled: false, ...who, pass: true, reachable: true };
         } catch {
-          return { enabled: false, role: null, pass: true, reachable: true };
+          return { enabled: false, username: null, role: null, pass: true, reachable: true };
         }
       }
       const token = getToken();
       if (!token) {
-        return { enabled: true, role: null, pass: false, reachable: true };
+        return { enabled: true, username: null, role: null, pass: false, reachable: true };
       }
       try {
         const r = await fetch("/api/v1/auth/verify", {
           headers: { Authorization: `Bearer ${token}` },
         });
         if (r.status === 401) {
-          return { enabled: true, role: null, pass: false, reachable: true };
+          return { enabled: true, username: null, role: null, pass: false, reachable: true };
         }
-        return {
-          enabled: true,
-          role: r.ok ? await roleFrom(r) : null,
-          pass: true,
-          reachable: true,
-        };
+        const who = r.ok
+          ? await whoFrom(r)
+          : { username: null, role: null };
+        return { enabled: true, ...who, pass: true, reachable: true };
       } catch {
         // verify 网络失败（status 已可达）：离线放行，不缓存
-        return { enabled: true, role: null, pass: true, reachable: false };
+        return { enabled: true, username: null, role: null, pass: true, reachable: false };
       }
     })();
   const chained = fetchOnce.then((s) => {

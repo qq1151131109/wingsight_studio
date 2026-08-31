@@ -161,11 +161,19 @@ check("owner 移除协作者", r.status_code == 200 and "bob" not in r.json()["c
 r = client.get("/projects", headers=bearer(bob_token))
 check("移除后 bob 失去可见性", not any(p["id"] == pid for p in r.json()))
 
-print("== 场景 5：存量项目全员可见（向后兼容）==")
+print("== 场景 5：存量项目归 admin，普通成员不可见 ==")
 r = client.post("/projects", json={"name": "legacy"}, headers=bearer(admin_token))
 legacy_pid = r.json()["id"]
 r = client.get("/projects", headers=bearer(bob_token))
-check("owner=default 的存量项目 bob 可见", any(p["id"] == legacy_pid for p in r.json()))
+check("owner=default 的存量项目 bob 不可见（隔离）", not any(p["id"] == legacy_pid for p in r.json()))
+r = client.put(
+    f"/projects/{legacy_pid}/canvas",
+    json={"nodes": [], "edges": [], "viewport": {}},
+    headers=bearer(bob_token),
+)
+check("bob 直存存量项目画布 → 404（防枚举）", r.status_code == 404)
+r = client.get("/projects", headers=bearer(admin_token))
+check("admin 自己仍可见存量项目", any(p["id"] == legacy_pid for p in r.json()))
 
 print("== 场景 6：API Key ==")
 r = client.post("/api/v1/api-keys", json={"name": "ci"}, headers=bearer(alice_token))

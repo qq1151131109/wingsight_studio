@@ -57,6 +57,11 @@ class RegisterRequest(BaseModel):
     password: str = Field(min_length=1)
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=8)
+
+
 class RegisterResponse(TokenResponse):
     user: UserInfo
 
@@ -177,6 +182,27 @@ async def verify(current_user: auth.CurrentUser):
     return VerifyResponse(
         valid=True, username=current_user.sub, role=current_user.role, id=current_user.id
     )
+
+
+@router.post("/auth/change-password")
+async def change_password(req: ChangePasswordRequest, user: auth.CurrentUser):
+    """自助改密（仅 JWT 身份）：验当前密码后换 hash。
+
+    admin（id=default）拒绝：其登录凭据优先走 env（check_credentials 的
+    env 分支先于库），改库 hash 不生效——改 .env.local 的 AUTH_PASSWORD
+    重启 agent 才是真的。"""
+    _require_jwt_auth(user)
+    if user.id == auth.DEFAULT_USER_ID:
+        raise HTTPException(
+            status_code=422, detail="admin 密码由服务端 .env.local 的 AUTH_PASSWORD 管理"
+        )
+    row = auth.user_get_by_username(user.sub, include_hash=True)
+    if row is None or not auth.verify_password(
+        req.current_password, row.get("password_hash") or ""
+    ):
+        raise HTTPException(status_code=400, detail="当前密码不正确")
+    auth.user_update_fields(row["id"], password_hash=auth.hash_password(req.new_password))
+    return {"ok": True}
 
 
 # ==================== 用户管理 ====================

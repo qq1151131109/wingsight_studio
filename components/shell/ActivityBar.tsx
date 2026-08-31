@@ -1,16 +1,13 @@
 "use client";
 
-import { useState } from "react";
 import {
   Drama,
   House,
   LayoutGrid,
-  LogOut,
   ScrollText,
   Settings,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { clearToken, getToken } from "@/lib/auth";
 
 const ITEMS = [
   { id: "canvas", label: "画布", icon: LayoutGrid, enabled: true },
@@ -20,12 +17,10 @@ const ITEMS = [
 ] as const;
 
 /** 左侧活动栏：只放画布工作台的上下文工具。
- *  项目级操作（切换 / 新建）统一收在项目首页——这里是唯一回口，
- *  画布内不放重复入口（对标 novanova / open-ai-canvas 的返回箭头）。 */
+ *  项目级操作（切换 / 新建）统一收在项目首页，账户菜单（身份/改密/退出）
+ *  在顶栏右侧（AccountMenu）——这里不放重复入口。 */
 export default function ActivityBar() {
   const router = useRouter();
-  // 登录/登出都是整页跳转，token 在本页生命周期内不变；AuthGate 保证仅在客户端挂载
-  const [hasToken] = useState(() => Boolean(getToken()));
 
   return (
     <aside className="flex w-14 shrink-0 flex-col items-center border-r border-hairline bg-surface-1/60 py-3 backdrop-blur">
@@ -61,21 +56,6 @@ export default function ActivityBar() {
           </button>
         ))}
       </nav>
-      {hasToken ? (
-        <button
-          type="button"
-          title="退出登录"
-          onClick={() => {
-            clearToken();
-            // 故意整页跳转：登出必须清掉全部内存态（store/缓存），router.push 不卸载模块
-            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
-            window.location.href = "/login";
-          }}
-          className="flex h-9 w-9 items-center justify-center rounded-lg text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-        >
-          <LogOut className="h-4 w-4" />
-        </button>
-      ) : null}
     </aside>
   );
 }
