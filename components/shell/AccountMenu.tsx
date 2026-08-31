@@ -117,13 +117,9 @@ export default function AccountMenu() {
               label="Langflow"
               onClick={() => {
                 setOpen(false);
-                // langflow 独立端口（setup-langflow.sh 起在 7860），绑同机；
-                // 用当前 host 拼地址：本机 dev= localhost:7860，服务器内网= 内网IP:7860
-                window.open(
-                  `${location.protocol}//${location.hostname}:7860/`,
-                  "_blank",
-                  "noopener",
-                );
+                // 同源子路径（前端 BASENAME=/langflow 构建，Next 代理剥前缀转发
+                // 7860）——不再暴露独立端口
+                window.open("/langflow", "_blank", "noopener");
               }}
             />
           ) : null}

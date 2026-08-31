@@ -4,6 +4,10 @@ const nextConfig: NextConfig = {
   // 关掉左下角的 N 开发指示器（纯开发态装饰，与产品 UI 无关）
   devIndicators: false,
 
+  // langflow 代理（app/langflow/[[...path]]/route.ts）要求路径原样到达处理器：
+  // Next 默认把 /a/ 308 成 /a，会吃掉 langflow API 依赖的尾斜杠
+  skipTrailingSlashRedirect: true,
+
   // dev 服务器默认只信任 localhost 来源；放行本机回环/局域网/远程隧道域名
   // （192.168.100.204 = 本机，192.168.31.150 = wingsight 服务器部署内网 IP）
   allowedDevOrigins: [
