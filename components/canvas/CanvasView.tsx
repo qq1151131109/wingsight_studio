@@ -50,6 +50,7 @@ import {
   dispatchFocusEdit,
   FOCUS_NODES_EVENT,
   NODE_INFO_EVENT,
+  OPEN_STYLE_EVENT,
   type FocusNodesDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
@@ -555,6 +556,13 @@ function BottomDock({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [stylePanel, imagegenPanel]);
+
+  // 画风闸拦截（出图类操作未选画风）→ 自动弹出项目画风设定弹窗
+  useEffect(() => {
+    const onOpen = () => setStylePanel(true);
+    window.addEventListener(OPEN_STYLE_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_STYLE_EVENT, onOpen);
+  }, []);
 
   const saveLabel =
     saveState === "saving"
@@ -1195,17 +1203,17 @@ export default function CanvasView() {
   // 运行期节点数变化不再触碰这个 prop
   const [fitOnMount] = useState(nodes.length > 0);
 
-  // 滚轮设备启发式（对标 open-ai-canvas）：外接鼠标滚轮是离散步进（≈100/120
-  // 的整数倍），触控板双指是连续小步进。鼠标轮=缩放、双指=平移，动态切换
-  // panOnScroll/zoomOnScroll；捏合与 ⌘+滚在两种模式下都是缩放，不参与判定。
-  const [wheelMode, setWheelMode] = useState<"trackpad" | "mouse">("trackpad");
+  // 滚轮语义对标 Figma，不做鼠标/触控板设备判定（ReactFlow props 处：
+  // 滚轮/双指=平移、⌘+滚/捏合=缩放，全走 xyflow 原生分支）。曾试过按
+  // deltaY 量级猜设备再切 zoomOnScroll/panOnScroll——触控板快扫/惯性
+  // 步进会落进"鼠标"窗口，平移中途误缩放，已删。
   const onWheelCapture = useCallback(
     (e: React.WheelEvent) => {
       // nowheel 动态化：xyflow 对 .nowheel 元素整体跳过滚轮，但我们把它贴在
-      // 大量未必可滚动的容器上（文本区/行列表/选择器），导致节点上无法缩放。
+      // 大量未必可滚动的容器上（文本区/行列表/选择器），导致节点上无法平移。
       // 这里在 capture 阶段先行判定——目标链上有任一 nowheel 元素「真的可
       // 滚动」才滚内容；否则现场摘类（setTimeout 还原），赶在 xyflow 的
-      // closest('.nowheel') 判定之前放行缩放
+      // closest('.nowheel') 判定之前放行平移
       let el = e.target as HTMLElement | null;
       const nws: HTMLElement[] = [];
       while (el && !el.classList.contains("react-flow")) {
@@ -1224,19 +1232,8 @@ export default function CanvasView() {
           setTimeout(() => nw.classList.add("nowheel"), 0);
         }
       }
-      if (e.ctrlKey || e.metaKey) return;
-      const dy = Math.abs(e.deltaY);
-      const m = dy % 100;
-      const looksMouse =
-        e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL ||
-        (dy >= 80 && (m <= 20 || m >= 80));
-      const next: "mouse" | "trackpad" = looksMouse ? "mouse" : "trackpad";
-      if (next === wheelMode) return;
-      setWheelMode(next);
-      // 切换后的首个事件仍挂在旧配置的 d3 处理器上，丢弃以免误平移/误缩放
-      e.stopPropagation();
     },
-    [wheelMode],
+    [],
   );
 
   // Alt+拖拽复制（Figma 手势）：拖动开始时原位克隆选区，后续拖动帧在 store
@@ -1741,8 +1738,13 @@ export default function CanvasView() {
         selectionMode={SelectionMode.Partial}
         // 1px 阈值区分点击与拖动，避免单击手抖污染撤销历史
         nodeDragThreshold={1}
-        zoomOnScroll={wheelMode === "mouse"}
-        panOnScroll={wheelMode === "trackpad"}
+        // 滚轮=平移（panOnScrollSpeed=1 物理跟速；默认 0.5 会显拖沓）。
+        // ⌘+滚=缩放：zoomActivationKeyCode 默认 mac=Meta，按住时 xyflow 把
+        // wheel 处理器从平移重绑回 d3 缩放；捏合走 panOnScroll 处理器的
+        // ctrlKey 分支（zoomOnPinch 默认开）
+        zoomOnScroll={false}
+        panOnScroll
+        panOnScrollSpeed={1}
         zoomOnDoubleClick={false}
         snapToGrid={snapEnabled}
         snapGrid={[16, 16]}

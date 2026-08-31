@@ -30,8 +30,10 @@ if [ ! -f langflow/.env ]; then
   cat > langflow/.env <<'EOF'
 # langflow 运行配置（无密钥；模型/对象存储/飞书等出站域名过 SSRF 防护需在此放行）
 LANGFLOW_SSRF_ALLOWED_HOSTS=www.dmxapi.cn,*.dmxapi.cn,*.amazonaws.com,pre-signed-firefly-prod.s3-accelerate.amazonaws.com,open.feedcoopapi.com,api.deepseek.com,api.openai.com,open.bigmodel.cn,dashscope.aliyuncs.com,*.volces.com,volces.com
+# 免登录：身份把关在宿主代理（app/langflow/[[...path]]/route.ts，仅平台 admin 放行）
+LANGFLOW_AUTO_LOGIN=true
 EOF
-  echo "✓ 已生成 langflow/.env（默认 SSRF 白名单）"
+  echo "✓ 已生成 langflow/.env（默认 SSRF 白名单 + AUTO_LOGIN）"
 fi
 
 # ---------- 3) 启动 ----------

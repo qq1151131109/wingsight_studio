@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { clearToken } from "@/lib/auth";
+import { clearToken, getToken, syncAuthCookie } from "@/lib/auth";
 import { getAuthSession, peekAuthSession } from "@/lib/auth-session";
 
 /**
@@ -26,6 +26,10 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
         window.location.href = `/login?from=${encodeURIComponent("/")}`;
         return;
       }
+      // 存量会话自愈：cookie 机制上线前登录的标签页没有 cookie，补种一次
+      // （服务端代理如 /langflow 守卫读 cookie，不读 localStorage）
+      const t = getToken();
+      if (t) syncAuthCookie(t);
       setState("pass");
     });
     return () => {

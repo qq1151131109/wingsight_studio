@@ -8,11 +8,12 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Loader2, Sparkles, Star, X } from "lucide-react";
+import { ChevronDown, Loader2, Sparkles, Star, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import {
   ADD_REF_EVENT,
   FOCUS_NODES_EVENT,
+  OPEN_STYLE_EVENT,
   PROMPT_PICK_EVENT,
   type AddRefDetail,
   type PromptPickDetail,
@@ -25,6 +26,12 @@ import {
 } from "@/lib/imagegen";
 import { toggleFavorite } from "@/lib/prompt-library";
 import { optimizePrompt } from "@/lib/prompt-optimize";
+import {
+  findTextModelOption,
+  TEXT_MODEL_DEFAULT_ID,
+  useTextModels,
+} from "@/lib/textmodels";
+import { useDismissOnOutside } from "@/lib/useDismiss";
 import { Lightbox } from "./Lightbox";
 
 /** 卡片输入条上的"直接生成"事件 */
@@ -106,6 +113,9 @@ export default function PromptBar({
 }) {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
+  const nodeType = useCanvasStore(
+    (s) => s.nodes.find((n) => n.id === nodeId)?.data.nodeType,
+  );
   // 出图/生视频的生成基准=卡上正文（空提示词时桥接层回退「标题+正文」），
   // 预填出来让用户看得见、可改；文本/分镜面板是「下指令」，不预填
   const self = nodes.find((n) => n.id === nodeId);
@@ -181,7 +191,7 @@ export default function PromptBar({
     const ta = taRef.current;
     if (!ta) return;
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, variant === "floating" ? 200 : 120)}px`;
+    ta.style.height = `${Math.min(ta.scrollHeight, variant === "floating" ? 260 : 120)}px`;
   }, [text, variant]);
 
   const runAssist = async () => {
@@ -269,9 +279,10 @@ export default function PromptBar({
 
   const submit = () => {
     const prompt = text.trim();
-    // 画风闸：出图直连管线与非聊天出图同规，未选画风就地拦下
+    // 画风闸：出图直连管线与非聊天出图同规，未选画风拦下并自动弹画风弹窗
     if (kind === "image" && !projectStyle.trim()) {
-      setPanelError("未选画风：请先在底部坞「画风」选项目画风，再出图");
+      setPanelError("未选画风：请在弹出的「项目画风」里设定，再出图");
+      window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
       return;
     }
     setPanelError("");
@@ -370,34 +381,12 @@ export default function PromptBar({
           })}
         </div>
       ) : null}
-      {kind === "image" && floating ? (
-        <div className="mb-1 flex items-center gap-1 px-1">
-          <span className="text-[10px] text-text-4">候选</span>
-          {[1, 2, 4].map((n) => (
-            <button
-              key={n}
-              type="button"
-              className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-                count === n
-                  ? "border-accent bg-accent-dim text-text"
-                  : "border-hairline text-text-3 hover:text-text"
-              }`}
-              onClick={() => setCount(n)}
-            >
-              {n} 张
-            </button>
-          ))}
-          {/* 卡片级出图模型/档位（写本卡 data.gen，缺省跟随项目）：
-              批量/重跑/聊天入口生成此卡时全部生效 */}
-          <ImagegenChips nodeId={nodeId} />
-        </div>
-      ) : null}
-      {/* 输入区独占一行 + 随内容增高；动作行在下方右对齐（长提示词可完整阅读） */}
+      {/* 输入区独占一行 + 随内容增高；参数/模型在底栏左侧，发送在右侧 */}
       <div className="relative">
         <textarea
           ref={taRef}
           value={text}
-          rows={floating ? 3 : 2}
+          rows={floating ? 4 : 2}
           placeholder={placeholder ?? KIND_PLACEHOLDER[kind]}
           className={`w-full resize-none overflow-y-auto bg-transparent leading-relaxed text-text outline-none placeholder:text-text-4 ${
             floating ? "px-1 py-1 text-sm" : "px-1 py-0.5 text-xs"
@@ -443,7 +432,39 @@ export default function PromptBar({
           }}
         />
       </div>
-      <div className="mt-1 flex items-center justify-end gap-1">
+      {/* 底栏：左侧 = 生成参数（出图候选/模型、文本模型），右侧 = 辅助/收藏/发送
+          （对标竞品 composer：模型左下、发送右下圆钮） */}
+      <div className="mt-1 flex items-center gap-1">
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          {kind === "image" ? (
+            <>
+              <span className="shrink-0 text-[10px] text-text-4">候选</span>
+              {[1, 2, 4].map((n) => (
+                <button
+                  key={n}
+                  type="button"
+                  className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] transition-colors ${
+                    count === n
+                      ? "bg-accent-dim text-text"
+                      : "text-text-3 hover:bg-surface-2 hover:text-text"
+                  }`}
+                  onClick={() => setCount(n)}
+                >
+                  {n} 张
+                </button>
+              ))}
+              {/* 卡片级出图模型/档位（写本卡 data.gen，缺省跟随项目）：
+                  批量/重跑/聊天入口生成此卡时全部生效 */}
+              <ImagegenChips nodeId={nodeId} />
+            </>
+          ) : null}
+          {nodeType === "script" || nodeType === "shotlist" ? (
+            /* 卡片级文本模型（写本卡 data.textModel，缺省跟随出厂默认）：
+                拆解资产/生成分镜表等 flow 生成全部生效；聊天撰写不经此 */
+            <TextModelChip nodeId={nodeId} />
+          ) : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
         {kind === "image" || kind === "video" ? (
           <button
             type="button"
@@ -457,8 +478,8 @@ export default function PromptBar({
                 ? "AI 优化提示词：保留主体意图扩写成完整出图提示词，结果回填可再改"
                 : "看图反推：AI 按卡上图/参考图写出出图提示词，结果回填可再改"
             }
-            className={`flex shrink-0 items-center gap-1 rounded-md border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40 ${
-              floating ? "h-8 px-2 text-xs" : "h-7 px-1.5 text-[11px]"
+            className={`flex shrink-0 items-center gap-1 border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40 ${
+              floating ? "h-8 rounded-full px-3 text-xs" : "h-7 rounded-md px-1.5 text-[11px]"
             }`}
             onClick={(e) => {
               e.stopPropagation();
@@ -476,8 +497,8 @@ export default function PromptBar({
         <button
           type="button"
           data-tip={favSaved ? "已收藏" : "收藏当前输入到提示词库"} aria-label={favSaved ? "已收藏" : "收藏当前输入到提示词库"}
-          className={`grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
-            floating ? "h-8 w-8" : "h-7 w-7"
+          className={`grid shrink-0 place-items-center border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
+            floating ? "h-8 w-8 rounded-full" : "h-7 w-7 rounded-md"
           } ${favSaved ? "text-warn" : "text-text-2"}`}
           onClick={() => {
             const t = text.trim();
@@ -504,14 +525,15 @@ export default function PromptBar({
                 ? "让 AI 修改分镜表（Ctrl+Enter）"
                 : "生成（Ctrl+Enter）；清空提示词=按卡片标题与正文重生成"
           }
-          className={`flex shrink-0 items-center gap-1 rounded-md bg-accent font-medium text-white transition-opacity hover:opacity-85 ${
-            floating ? "h-8 px-3 text-xs" : "h-7 px-2 text-[11px]"
+          className={`flex shrink-0 items-center gap-1 bg-accent font-medium text-white transition-opacity hover:opacity-85 ${
+            floating ? "h-8 rounded-full px-4 text-xs" : "h-7 rounded-md px-2 text-[11px]"
           }`}
           onClick={submit}
         >
           <Sparkles className={floating ? "h-3.5 w-3.5" : "h-3 w-3"} />
           {kind === "text" ? "撰写" : kind === "shotlist" ? "修改" : "生成"}
         </button>
+        </div>
         {mention && candidates.length > 0 ? (
           <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-64 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">            {candidates.map((c, i) => (
               <button
@@ -561,6 +583,100 @@ export default function PromptBar({
   );
 }
 
+/** 文本模型 chip（输入条 · 选中剧本/分镜表卡时出现）：卡片级覆盖存
+ *  data.textModel，空=跟随出厂默认（agent/models.py，deepseek-v4-flash）。
+ *  驱动范围：剧本卡=拆解资产；分镜表卡=生成分镜 + 本卡拆解。
+ *  聊天「撰写/修改」走聊天主循环模型，不经此 chip */
+function TextModelChip({ nodeId }: { nodeId: string }) {
+  const data = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId)?.data);
+  const { models } = useTextModels();
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  useDismissOnOutside(wrapRef, open, () => setOpen(false));
+  const current = String(data?.textModel ?? "").trim();
+  const option = findTextModelOption(current, models);
+  const defaultOption = findTextModelOption(TEXT_MODEL_DEFAULT_ID, models);
+  const effectiveLabel = current
+    ? (option?.label ?? current)
+    : (defaultOption?.label ?? "DeepSeek V4 Flash");
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <span ref={wrapRef} className="relative shrink-0">
+      <button
+        type="button"
+        data-tip={`文本模型（生成分镜/拆解的 LLM）：${effectiveLabel}${
+          current ? "" : "（跟随默认）"
+        }`}
+        aria-label="文本模型"
+        className={`flex items-center gap-0.5 whitespace-nowrap rounded px-1.5 py-1 text-[11px] transition-colors hover:bg-surface-2 ${
+          current ? "text-text" : "text-text-2"
+        }`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        {effectiveLabel}
+        <ChevronDown className="h-3 w-3 text-text-4" />
+      </button>
+      {open ? (
+        <span
+          className="absolute bottom-full left-0 z-30 mb-1.5 block w-64 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="block text-[10px] font-medium text-text-4">
+            文本模型（生成分镜 / 拆解资产）
+          </span>
+          <span className="mt-1 block max-h-44 space-y-0.5 overflow-y-auto">
+            <button
+              type="button"
+              className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
+                current === "" ? "bg-accent-dim" : "hover:bg-surface-2"
+              }`}
+              onClick={() =>
+                useCanvasStore.getState().updateNodeData(nodeId, { textModel: undefined })
+              }
+            >
+              <span className="block text-[11px] text-text">跟随默认</span>
+              <span className="block text-[9px] text-text-4">
+                DeepSeek V4 Flash · 快 · 便宜
+              </span>
+            </button>
+            {models === null ? (
+              <span className="block px-1.5 py-1 text-[10px] text-text-4">
+                加载模型目录…
+              </span>
+            ) : (
+              models.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
+                    m.id === current ? "bg-accent-dim" : "hover:bg-surface-2"
+                  }`}
+                  onClick={() =>
+                    useCanvasStore.getState().updateNodeData(nodeId, { textModel: m.id })
+                  }
+                >
+                  <span className="block text-[11px] text-text">{m.label}</span>
+                  <span className="block text-[9px] text-text-4">{m.tag}</span>
+                </button>
+              ))
+            )}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 /** 卡片级出图模型/档位 chips（open-storyboard-canvas 模型 chip 范式）：
  *  显示本卡生效配置（data.gen 覆盖，缺省跟随项目级 store.imagegen），
  *  点击弹出选择器写回卡上 data.gen——生成本卡图片的所有入口（面板直连/
@@ -573,6 +689,8 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
   const cardGen = saneGen(node?.data.gen);
   const effective = cardGen ?? project;
   const option = findModelOption(effective.model, models);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  useDismissOnOutside(wrapRef, open, () => setOpen(false));
   const pick = (patch: Partial<ImagegenParams>) => {
     const base = cardGen ?? project;
     const modelId = patch.model ?? base.model;
@@ -593,7 +711,7 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
   }, [open]);
 
   return (
-    <div className="relative ml-auto flex items-center">
+    <div ref={wrapRef} className="relative ml-auto flex items-center">
       <button
         type="button"
         data-tip={
@@ -605,14 +723,13 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
             ? `本卡覆盖：${effective.model} · ${effective.resolution}（点击修改；可回退跟随项目）`
             : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位）`
         }
-        className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-          cardGen
-            ? "border-accent text-text"
-            : "border-hairline text-text-3 hover:text-text"
+        className={`flex items-center gap-0.5 whitespace-nowrap rounded px-1.5 py-1 text-[11px] transition-colors hover:bg-surface-2 ${
+          cardGen ? "text-text" : "text-text-2"
         }`}
         onClick={() => setOpen((v) => !v)}
       >
         {option?.label ?? effective.model} · {effective.resolution}
+        <ChevronDown className="h-3 w-3 text-text-4" />
       </button>
       {open ? (
         <div className="absolute bottom-full right-0 z-30 mb-1.5 w-64 rounded-md border border-hairline bg-surface-1 p-2 shadow-lg">

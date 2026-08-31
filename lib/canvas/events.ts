@@ -58,6 +58,10 @@ export const PROMPT_PICK_EVENT = "wingsight:prompt-pick";
 
 export type PromptPickDetail = { text: string };
 
+/** 画风闸拦截（出图类操作未选画风）→ 请求打开底部坞「项目画风」弹窗：
+ *  与其让用户找底坞入口，不如拦下的同时把设定弹窗递到眼前 */
+export const OPEN_STYLE_EVENT = "wingsight:open-style";
+
 /** 分镜表标注重绘 → 桥接层转聊天指令（原图+标注图双参考，只改标注区域） */
 export const MASK_REDRAW_EVENT = "wingsight:mask-redraw";
 

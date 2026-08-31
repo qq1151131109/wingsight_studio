@@ -7,6 +7,22 @@
  */
 
 const TOKEN_KEY = "wingsight_studio_token";
+// 同名 cookie：服务端代理（/langflow 守卫）读不到 localStorage，登录时同步种下
+const COOKIE_KEY = "wingsight_studio_token";
+const COOKIE_MAX_AGE = 7 * 24 * 3600; // 与 JWT 有效期一致
+
+/** token 变更时同步 cookie（服务端代理鉴权用；无 token 即清除） */
+export function syncAuthCookie(token: string | null): void {
+  try {
+    if (token) {
+      document.cookie = `${COOKIE_KEY}=${token}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
+    } else {
+      document.cookie = `${COOKIE_KEY}=; path=/; max-age=0; SameSite=Lax`;
+    }
+  } catch {
+    /* 隐私模式等忽略 */
+  }
+}
 
 export function getToken(): string | null {
   try {
@@ -22,6 +38,7 @@ export function setToken(token: string): void {
   } catch {
     /* 隐私模式等忽略 */
   }
+  syncAuthCookie(token);
 }
 
 export function clearToken(): void {
@@ -30,6 +47,7 @@ export function clearToken(): void {
   } catch {
     /* 忽略 */
   }
+  syncAuthCookie(null);
 }
 
 export function authHeaders(): Record<string, string> {

@@ -73,6 +73,7 @@ import {
   FOCUS_NODES_EVENT,
   FRAME_ANALYSIS_EVENT,
   NODE_INFO_EVENT,
+  OPEN_STYLE_EVENT,
   type FocusEditDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
@@ -91,7 +92,7 @@ import {
   type DecomposedLook,
   type ShotImageResult,
 } from "@/lib/shotlist";
-import { findTextModelOption, useTextModels } from "@/lib/textmodels";
+import { useDismissOnOutside } from "@/lib/useDismiss";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 
@@ -1032,9 +1033,9 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       editorial
       footer={
         <>
-          <div className="ws-detail nodrag nowheel mt-1.5 flex items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
+          <div className="ws-detail nodrag nowheel mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
             <span
-              className="min-w-0 shrink tabular-nums text-text-4"
+              className="whitespace-nowrap tabular-nums text-text-4"
               title={body.slice(0, 120)}
             >
               {body.length} 字
@@ -1054,7 +1055,6 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               <Download className="h-3 w-3" />
               导出
             </button>
-            <TextModelChip nodeId={id} />
             <button
               type="button"
               disabled={empty || decomposing}
@@ -1070,7 +1070,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             {missingAssetCount > 0 ? (
               <button
                 type="button"
-                disabled={fillingAssets}
+                disabled={empty || fillingAssets}
                 data-tip="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
@@ -1160,9 +1160,10 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const genLook = async () => {
     if (imgJob) return;
     // 画风闸（juben image_style_required 同款）：设定图是全片一致性锚点，
-    // 无画风出图 = 风格随机漂移，拦下并引导底部坞
+    // 无画风出图 = 风格随机漂移，拦下并自动弹出画风设定弹窗
     if (!projectStyle.trim()) {
-      setStyleHint("未选画风：请先在底部坞「画风」选项目画风，再 AI 出图");
+      setStyleHint("未选画风：请在弹出的「项目画风」里设定，再 AI 出图");
+      window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
       return;
     }
     setStyleHint("");
@@ -1306,7 +1307,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           type="button"
           disabled={imgJob}
           data-tip={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`} aria-label={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`}
-          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-dashed border-hairline px-2 py-1 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text disabled:opacity-40"
+          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-accent bg-accent-dim px-2 py-1 text-[10px] font-medium text-text transition-colors hover:bg-accent-soft disabled:opacity-40"
           onClick={(e) => {
             e.stopPropagation();
             void genLook();
@@ -2784,92 +2785,6 @@ async function runAssetDecompose(opts: {
   }
 }
 
-/** 文本模型 chip（剧本/分镜表卡底栏）：卡片级覆盖存 data.textModel，
- *  空=跟随出厂默认（agent/models.py，deepseek-v4-flash）。
- *  驱动范围：剧本卡=拆解资产；分镜表卡=生成分镜 + 本卡拆解 */
-function TextModelChip({ nodeId }: { nodeId: string }) {
-  const data = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId)?.data);
-  const { models } = useTextModels();
-  const [open, setOpen] = useState(false);
-  const current = String(data?.textModel ?? "").trim();
-  const option = findTextModelOption(current, models);
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
-  return (
-    <span className="relative">
-      <button
-        type="button"
-        data-tip={`文本模型（生成分镜/拆解的 LLM）：${
-          current ? (option?.label ?? current) : "跟随默认 DeepSeek V4 Flash"
-        }`}
-        aria-label="文本模型"
-        className={`nodrag shrink-0 rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
-          current ? "border-accent" : "border-hairline"
-        }`}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((v) => !v);
-        }}
-      >
-        {current ? (option?.label ?? current) : "默认模型"}
-      </button>
-      {open ? (
-        <span
-          className="absolute bottom-full left-0 z-30 mb-1.5 block w-64 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <span className="block text-[10px] font-medium text-text-4">
-            文本模型（生成分镜 / 拆解资产）
-          </span>
-          <span className="mt-1 block max-h-44 space-y-0.5 overflow-y-auto">
-            <button
-              type="button"
-              className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
-                current === "" ? "bg-accent-dim" : "hover:bg-surface-2"
-              }`}
-              onClick={() =>
-                useCanvasStore.getState().updateNodeData(nodeId, { textModel: undefined })
-              }
-            >
-              <span className="block text-[11px] text-text">跟随默认</span>
-              <span className="block text-[9px] text-text-4">
-                DeepSeek V4 Flash · 快 · 便宜
-              </span>
-            </button>
-            {models === null ? (
-              <span className="block px-1.5 py-1 text-[10px] text-text-4">
-                加载模型目录…
-              </span>
-            ) : (
-              models.map((m) => (
-                <button
-                  key={m.id}
-                  type="button"
-                  className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
-                    m.id === current ? "bg-accent-dim" : "hover:bg-surface-2"
-                  }`}
-                  onClick={() =>
-                    useCanvasStore.getState().updateNodeData(nodeId, { textModel: m.id })
-                  }
-                >
-                  <span className="block text-[11px] text-text">{m.label}</span>
-                  <span className="block text-[9px] text-text-4">{m.tag}</span>
-                </button>
-              ))
-            )}
-          </span>
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 /** 分镜表卡出图设置（ShotGenSettings 写入的数据，随卡持久化）：画幅 w:h、
  *  每镜候选张数、模型覆盖。批量出图/补缺图从这里取参 */
 const ASPECT_OPTIONS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
@@ -2887,6 +2802,8 @@ function ShotGenSettings({ nodeId }: { nodeId: string }) {
   const cardGen = saneGen(data?.gen);
   const effective = cardGen ?? project;
   const option = findModelOption(effective.model, models);
+  const wrapRef = useRef<HTMLSpanElement | null>(null);
+  useDismissOnOutside(wrapRef, open, () => setOpen(false));
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -2908,14 +2825,14 @@ function ShotGenSettings({ nodeId }: { nodeId: string }) {
   };
 
   return (
-    <span className="relative">
+    <span ref={wrapRef} className="relative shrink-0">
       <button
         type="button"
         data-tip={`本卡出图设置：画幅 ${aspect} · 每镜候选 ${genCount} 张 · 模型 ${
           cardGen ? (option?.label ?? effective.model) : `跟随项目（${option?.label ?? effective.model}）`
         }`}
         aria-label="本卡出图设置"
-        className={`nodrag shrink-0 rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
+        className={`nodrag whitespace-nowrap rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
           cardGen ? "border-accent" : "border-hairline"
         }`}
         onClick={(e) => {
@@ -3077,16 +2994,18 @@ async function composeFromCard(composeId: string) {
   else st.updateNodeData(composeId, { status: "error", errorMessage: "合成失败（源文件不兼容或服务端异常），可重试" });
 }
 
-/** 补资产图：收集画布上没有设定图的资产卡一键批量出图（novanova 资产
- *  批量范式）。画风闸内；返回 null=无缺图/用户取消，否则返回汇报文案 */
-async function fillAssetImages(): Promise<string | null> {
+/** 补资产图：收集本卡（assetSource=sourceId）拆解出的缺设定图资产卡批量出图
+ *  （novanova 资产批量范式）。画风闸内；返回 null=无缺图/用户取消，否则返回汇报文案 */
+async function fillAssetImages(sourceId: string): Promise<string | null> {
   const st = useCanvasStore.getState();
   const projectStyle = st.projectStyle.trim();
   if (!projectStyle) {
-    return "未选画风：请先在底部坞「画风」选项目画风，再补资产图";
+    window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
+    return "未选画风：已在弹出的「项目画风」里，选好后再补资产图";
   }
   const targets = st.nodes.filter(
     (n) =>
+      n.data.assetSource === sourceId &&
       ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
       (n.data.title as string)?.trim() &&
       (n.data.body as string)?.trim() &&
@@ -3445,9 +3364,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const genShotImages = async (targets: { row: ShotRow; seq: number }[]) => {
     if (imgGenerating || targets.length === 0) return;
     // 画风闸（juben 硬闸同款）：只认全局画风——风格唯一入口在底部坞「画风」，
-    // 否则同批镜头图风格必然漂移
+    // 否则同批镜头图风格必然漂移；拦下同时自动弹出画风设定弹窗
     if (!projectStyle.trim()) {
-      setGenError("未选画风：请先在底部坞「画风」选项目画风再出图");
+      setGenError("未选画风：请在弹出的「项目画风」里设定，再出图");
+      window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
       return;
     }
     // 软闸（asset-first 守护）：无参考行将纯文生图、一致性打折；合并大额
@@ -4035,7 +3955,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       ) : null}
       {/* 底栏 = 统计 + 行操作 + 管线动作（左→右即管线顺序：拆解资产 → 出图；
           出图降级样式+无参考行/大额确认防误触） */}
-      <div className="mt-1.5 flex items-center justify-between border-t border-hairline pt-1.5 text-[10px] text-text-4">
+      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 border-t border-hairline pt-1.5 text-[10px] text-text-4">
         <span className="min-w-0 truncate">
           {rows.length} 镜 · 总时长约 {totalDur > 0 ? `${Math.round(totalDur * 10) / 10}s` : "—"}
           {imgAgg.ready + imgAgg.loading + imgAgg.error > 0 ? (
@@ -4078,7 +3998,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             {missingAssetCount > 0 ? (
               <button
                 type="button"
-                disabled={fillingAssets}
+                disabled={!scriptSource || fillingAssets}
                 data-tip="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
@@ -4089,13 +4009,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
               </button>
             ) : null}
-          <TextModelChip nodeId={id} />
           <ShotGenSettings nodeId={id} />
           <button
             type="button"
             disabled={imgGenerating || selectedGenRows.length === 0}
             data-tip="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认" aria-label="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
-            className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-1.5 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
             onClick={(e) => {
               e.stopPropagation();
               void genShotImages(selectedGenRows.map((row) => ({ row, seq: rows.indexOf(row) })));

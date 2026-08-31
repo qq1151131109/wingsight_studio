@@ -1,5 +1,7 @@
-//Langflow Desktop Base URL（axios 基址：子路径部署，见 config-constants.ts 说明）
-export const baseURL = "/langflow";
+//Langflow Desktop Base URL
+// 注意：子路径部署的 /langflow 前缀由 BASE_URL_API 常量携带（config-constants.ts），
+// axios baseURL 必须保持空串——两处叠加会拼出 /langflow/langflow/... 双前缀
+export const baseURL = "";
 
 export const customDefaultShortcuts = [
   {

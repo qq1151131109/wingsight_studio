@@ -16,6 +16,10 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `prompt-optimize.json` | 提示词优化 | 出图提示词 AI 辅助（面板 ✦ 双态）：优化扩写（deepseek-v4-flash）/ 看图反推（gemini-2.5-flash 视觉；deepseek 经 DMX 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
 | `promo-copy.json` | 宣发文案生成 | 飞书宣发资料 → 三路大模型并行 → 合并文案 | `LANGFLOW_SKILLS_JSON`（技能注册内含 flowId） | `PromptTemplate-Writer`（title/count/platform/batch_kind/brief/form） |
 | `shotlist-generate.json` | 分镜表生成 | 剧本 → 分镜 rows（景别/运镜/时长/画面/台词） | `LANGFLOW_SHOTLIST_FLOW_ID` | 无（参数走 input_value 文本头注入） |
+| `topic-triage.json` | 选题研判 | 原始信号条目 → 聚类+判垂类(history/crime)+价值排序的短名单（选题池管线第 1 步） | `LANGFLOW_TOPIC_TRIAGE_FLOW_ID` | 无（载荷走 input_value JSON） |
+| `topic-research-plan.json` | 选题调研规划 | 热点+研判线索 → ≤4 条覆盖证据面的检索查询（第 2 步） | `LANGFLOW_TOPIC_PLAN_FLOW_ID` | 无（同上） |
+| `topic-research-followup.json` | 选题调研追查 | 已执行检索记录 → 判断证据是否足够，不足给 ≤3 条追加查询（第 3 步） | `LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID` | 无（同上） |
+| `topic-verdict.json` | 选题两级结论 | 研判线索+调研证据 → 建议卡或观察卡（证据驱动，信源纪律；第 4 步） | `LANGFLOW_TOPIC_VERDICT_FLOW_ID` | 无（同上） |
 
 注：三个分类型拆解 flow 由 agent 三路并发调用（`/assets/decompose`），各自
 输出小、按类型定制提示词、单类失败不拖累其他；未配置三类变量时回落到
@@ -28,6 +32,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | 端点 | 复用 flow | 说明 |
 |---|---|---|
 | `POST /storyboard/generate` + `GET /storyboard/generate/{jobId}` | 分镜表生成 | 剧本(+镜头数/时长/视觉风格/资产名单) → rows。**异步任务**：POST 返回 jobId，前端轮询 |
+| `POST /topics/refresh`（轮询 `GET /topics` 的 refreshing） | 选题四 flow | 选题池策展刷新：材料窗口采集(80 条) → 研判 → 逐簇迭代取证 → 两级结论，单飞后台任务，一轮约 15 分钟。编排见 `agent/topic_pool.py`，路由 `agent/topic_routes.py` |
 | `POST /assets/decompose` + `GET /assets/decompose/{jobId}` | 三路拆解（或合并版） | 剧本(+已有资产名单) → 类型化资产清单。**异步任务**：三路 flow 并发也常超 30s，阻塞等完必 500 |
 | `POST /storyboard/images` + `GET /storyboard/images/{jobId}` | 单资产出图 | 分镜行批量出图：起任务立即返回 jobId，前端轮询（每张完成即写回任务状态）。**必须异步**——Next 同源代理约 30s 掐断长请求，阻塞等完必 500 |
 
@@ -59,4 +64,11 @@ curl -s --compressed -X POST http://localhost:7860/api/v1/flows/ \
   元数据（export.sh 已处理），避免残留旧 flow 引用
 - agent 经 **v1 阻塞 API**（`/api/v1/run/{flow_id}`）调用，参数用 tweaks 按
   **节点 id** 注入；Prompt 模板变量只收字符串（传 int 会 500）
+- 文本模型切换走**组件名注入**（非节点 id，删节点重建不失效）：
+  `tweaks={"LanguageModelComponent": {"model_name": "<models.py TEXT_MODELS id>"}}`——
+  LM 组件的 model_name 覆盖字段留空即用 flow 保存的模型，运行时覆盖经此通道；
+  prompt-optimize 的自定义组件同理（`PromptOptimize-main` → model_name）。
+  目录与校验唯一事实源 `agent/models.py`（TEXT_MODELS，DMX chat 探针验证），
+  `GET /models/text` 下发；分镜表生成（model）/拆解（text_model）/提示词优化（model）
+  三个端点透传，非法 id 400 明报
 - 修改 flow 后：先在 langflow UI 调试，再 `export.sh` 回写本目录，保持两处一致

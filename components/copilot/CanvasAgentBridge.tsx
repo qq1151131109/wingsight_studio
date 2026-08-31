@@ -25,6 +25,7 @@ import {
   FOCUS_NODES_EVENT,
   FRAME_ANALYSIS_EVENT,
   MASK_REDRAW_EVENT,
+  OPEN_STYLE_EVENT,
   ROW_GENERATE_EVENT,
   type FrameAnalysisDetail,
   type MaskRedrawDetail,
@@ -51,8 +52,9 @@ async function directImagegen(
   if (!projectStyle) {
     st.updateNodeData(nodeId, {
       status: "error",
-      errorMessage: "未选画风：请先在底部坞「画风」选项目画风，再出图",
+      errorMessage: "未选画风：请在弹出的「项目画风」里设定，再出图",
     });
+    window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
     return;
   }
   // 参考 = 手动 @ 引用 + 上游连线卡（与面板 chip 展示一致），带图才收
