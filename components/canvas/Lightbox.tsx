@@ -1,10 +1,24 @@
 "use client";
 
-/** 全屏图片灯箱：滚轮/双指缩放、拖拽平移、左右翻页、Esc 关闭。
- *  从 nodes.tsx 抽出共享：图片卡放大与 PromptBar 引用 chip 预览共用。 */
+/** 全屏图片灯箱：滚轮/双指缩放、拖拽平移、左右翻页、Esc 关闭；
+ *  底部操作条：下载 / 复制图片 / 复制链接 / 新标签打开（对标竞品
+ *  novanova 详情弹窗、juben FileViewer）。图片卡放大与 PromptBar
+ *  引用 chip 预览共用。 */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { X } from "lucide-react";
+import {
+  Copy,
+  Download,
+  ExternalLink,
+  Link2,
+  Loader2,
+  X,
+} from "lucide-react";
 import OverlayModal from "./OverlayModal";
+import {
+  copyImageToClipboard,
+  copyImageUrl,
+  downloadMedia,
+} from "@/lib/download";
 
 export function Lightbox({
   images,
@@ -29,6 +43,9 @@ export function Lightbox({
   const rafRef = useRef<number | null>(null);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const movedRef = useRef(false);
+  const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
+  const [flash, setFlash] = useState("");
+  const [busy, setBusy] = useState("");
 
   const applyTransform = useCallback(() => {
     const img = imageRef.current;
@@ -136,12 +153,22 @@ export function Lightbox({
     };
   }, [pointOnImage, applyTransform]);
 
+  // 翻页统一走 go：切换时顺带清掉上一张的尺寸读数与操作反馈
+  const go = useCallback(
+    (i: number) => {
+      setDims(null);
+      setFlash("");
+      onIndex(i);
+    },
+    [onIndex],
+  );
+
   // 百分比读数与键盘翻页/关闭
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
-      if (e.key === "ArrowRight" && index < images.length - 1) onIndex(index + 1);
+      if (e.key === "ArrowLeft" && index > 0) go(index - 1);
+      if (e.key === "ArrowRight" && index < images.length - 1) go(index + 1);
     };
     window.addEventListener("keydown", onKey);
     const t = setInterval(() => setPct(displayScale()), 250);
@@ -149,14 +176,39 @@ export function Lightbox({
       window.removeEventListener("keydown", onKey);
       clearInterval(t);
     };
-  }, [onClose, onIndex, index, images.length, displayScale]);
-  // 切换图片时复位视图
+  }, [onClose, go, index, images.length, displayScale]);
+  // 切换图片时复位视图（index 由父组件控制，翻页动作统一走 go）
   useEffect(() => {
     resetView();
     movedRef.current = false;
   }, [index, resetView]);
+  // 操作反馈文案自动消退
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(""), 1600);
+    return () => clearTimeout(t);
+  }, [flash]);
+
+  /** 操作条动作统一跑：busy 防重入，成功/失败都闪一条反馈 */
+  const runAction = useCallback(
+    async (key: string, done: string, fn: () => Promise<void>) => {
+      if (busy) return;
+      setBusy(key);
+      try {
+        await fn();
+        setFlash(done);
+      } catch (e) {
+        setFlash(`${done}失败${e instanceof Error && e.message ? `：${e.message}` : ""}`);
+      } finally {
+        setBusy("");
+      }
+    },
+    [busy],
+  );
 
   const cur = images[index];
+  const actionBtn =
+    "rounded-full p-1.5 text-white/80 hover:bg-white/20 hover:text-white disabled:opacity-40";
   return (
     <OverlayModal
       ref={containerRef}
@@ -183,6 +235,7 @@ export function Lightbox({
         onLoad={() => {
           const img = imageRef.current;
           if (!img?.naturalWidth || !img.offsetWidth || !img.offsetHeight) return;
+          setDims({ w: img.naturalWidth, h: img.naturalHeight });
           const ratio = img.naturalWidth / img.naturalHeight;
           const boxRatio = img.offsetWidth / img.offsetHeight;
           cssScaleRef.current =
@@ -214,7 +267,7 @@ export function Lightbox({
             className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
             onClick={(e) => {
               e.stopPropagation();
-              onIndex(index - 1);
+              go(index - 1);
             }}
           >
             ‹
@@ -226,7 +279,7 @@ export function Lightbox({
             className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
             onClick={(e) => {
               e.stopPropagation();
-              onIndex(index + 1);
+              go(index + 1);
             }}
           >
             ›
@@ -238,6 +291,12 @@ export function Lightbox({
       ) : null}
       <div className="absolute bottom-4 left-4 flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/80">
         <span className="tabular-nums">{pct}%</span>
+        {dims ? (
+          <>
+            <span className="text-white/40">·</span>
+            <span className="tabular-nums">{dims.w}×{dims.h}</span>
+          </>
+        ) : null}
         <button
           type="button"
           className="text-white/70 underline-offset-2 hover:text-white hover:underline"
@@ -250,13 +309,82 @@ export function Lightbox({
         </button>
         <span className="text-white/40">滚轮缩放 · 拖拽平移</span>
       </div>
-      <button
-        type="button"
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-        onClick={onClose}
-      >
-        <X className="h-5 w-5" />
-      </button>
+      {/* 操作条（对标竞品详情弹窗）：下载/复制图片/复制链接/新标签打开，
+           与关闭聚在右上角同一视觉区 */}
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <div className="flex items-center gap-0.5 rounded-full bg-black/50 px-1.5 py-0.5">
+          {flash ? <span className="mr-1 px-1 text-xs text-white/90">{flash}</span> : null}
+          <button
+            type="button"
+            data-tip="下载" aria-label="下载"
+            disabled={busy === "dl"}
+            className={actionBtn}
+            onClick={(e) => {
+              e.stopPropagation();
+              runAction("dl", "已下载", () =>
+                downloadMedia(cur.src, cur.title || "image"),
+              );
+            }}
+          >
+            {busy === "dl" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Download className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            data-tip="复制图片" aria-label="复制图片"
+            disabled={busy === "cp"}
+            className={actionBtn}
+            onClick={(e) => {
+              e.stopPropagation();
+              runAction("cp", "图片已复制", () => copyImageToClipboard(cur.src));
+            }}
+          >
+            {busy === "cp" ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Copy className="h-4 w-4" />
+            )}
+          </button>
+          <button
+            type="button"
+            data-tip="复制链接" aria-label="复制链接"
+            disabled={busy === "lk"}
+            className={actionBtn}
+            onClick={(e) => {
+              e.stopPropagation();
+              runAction("lk", "链接已复制", () => copyImageUrl(cur.src));
+            }}
+          >
+            <Link2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            data-tip="新标签打开" aria-label="新标签打开"
+            className={actionBtn}
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(cur.src, "_blank", "noopener");
+            }}
+          >
+            <ExternalLink className="h-4 w-4" />
+          </button>
+        </div>
+        <button
+          type="button"
+          className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+          onClick={onClose}
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
+      {cur?.title ? (
+        <span className="absolute left-4 top-4 max-w-72 truncate rounded-full bg-black/50 px-3 py-1 text-xs text-white/80">
+          {cur.title}
+        </span>
+      ) : null}
     </OverlayModal>
   );
 }

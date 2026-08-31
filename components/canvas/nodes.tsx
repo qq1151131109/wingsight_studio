@@ -67,6 +67,7 @@ import {
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { isLookCard, resolveRowRefIds } from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
+import { downloadMedia } from "@/lib/download";
 import {
   dispatchFocusEdit,
   FOCUS_EDIT_EVENT,
@@ -1701,13 +1702,16 @@ function ImageCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 视频放大播放：点击遮罩或 Esc 关闭 */
+/** 视频放大播放：点击遮罩或 Esc 关闭；右上角下载（blob 落盘，同 Lightbox） */
 function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
+  const [dl, setDl] = useState<"idle" | "busy" | "done" | "error">("idle");
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+  const base =
+    decodeURIComponent(src.split("?")[0].split("/").pop() ?? "") || "视频";
   return (
     <OverlayModal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
@@ -1721,13 +1725,41 @@ function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
         className="max-h-full max-w-full rounded-lg object-contain shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       />
-      <button
-        type="button"
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-        onClick={onClose}
-      >
-        <X className="h-5 w-5" />
-      </button>
+      <div className="absolute right-4 top-4 flex items-center gap-2">
+        <button
+          type="button"
+          data-tip="下载" aria-label="下载"
+          disabled={dl === "busy"}
+          className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-40"
+          onClick={async (e) => {
+            e.stopPropagation();
+            if (dl === "busy") return;
+            setDl("busy");
+            try {
+              await downloadMedia(src, base);
+              setDl("done");
+            } catch {
+              setDl("error");
+            }
+            setTimeout(() => setDl("idle"), 1600);
+          }}
+        >
+          {dl === "busy" ? (
+            <Loader2 className="h-5 w-5 animate-spin" />
+          ) : dl === "done" ? (
+            <Check className="h-5 w-5" />
+          ) : (
+            <Download className="h-5 w-5" />
+          )}
+        </button>
+        <button
+          type="button"
+          className="rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
+          onClick={onClose}
+        >
+          <X className="h-5 w-5" />
+        </button>
+      </div>
     </OverlayModal>
   );
 }
@@ -3108,6 +3140,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const [imgGenerating, setImgGenerating] = useState(false);
   // 行选择：null = 全选（默认全选，取消勾选即收窄到子集）
   const [selRows, setSelRows] = useState<Set<string> | null>(null);
+  // 行缩略图放大：url + 行号（点击行内大缩略图开灯箱）
+  const [rowZoom, setRowZoom] = useState<{ url: string; seq: number } | null>(null);
   // 行列表滚动容器：加一行（按钮在顶部）后滚到新行
   const [fillingAssets, setFillingAssets] = useState(false);
   const rowsScrollRef = useRef<HTMLDivElement>(null);
@@ -3724,73 +3758,91 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               key={r.rid}
               className="group/row rounded-md border border-hairline bg-surface-2/60 px-1 py-1"
             >
-              <div className="flex items-stretch gap-1">
-                <input
-                  type="checkbox"
-                  className="nodrag mt-0.5 h-3 w-3 shrink-0 cursor-pointer accent-[var(--color-accent)]"
-                  checked={selRows === null || selRows.has(r.rid)}
-                  title="勾选参与批量出图"
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={() => {
-                    setSelRows((cur) => {
-                      const base = cur ?? new Set(rows.map((x) => x.rid));
-                      const next = new Set(base);
-                      if (next.has(r.rid)) next.delete(r.rid);
-                      else next.add(r.rid);
-                      return next;
-                    });
-                  }}
-                />
-                <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded bg-accent-dim text-[10px] font-semibold tabular-nums text-text">
-                  {i + 1}
-                </span>
-                {thumbUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={thumbUrl}
-                    alt=""
-                    className="h-10 w-14 shrink-0 rounded object-cover"
-                  />
-                ) : (
-                  <button
-                    type="button"
-                    data-tip={
-                      thumbLoading
-                        ? "正在出图…"
-                        : thumbError
-                          ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
-                          : refImagesFor(r).length === 0
-                            ? "为这个镜头出图。注意：此镜未引用已出图的资产设定图，将纯文生图、一致性弱（可先拆解资产并出图，或行内 @资产名）"
-                            : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
-                    } aria-label={
-                      thumbLoading
-                        ? "正在出图…"
-                        : thumbError
-                          ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
-                          : refImagesFor(r).length === 0
-                            ? "为这个镜头出图。注意：此镜未引用已出图的资产设定图，将纯文生图、一致性弱（可先拆解资产并出图，或行内 @资产名）"
-                            : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
-                    }
-                    className={`nodrag grid h-10 w-14 shrink-0 place-items-center rounded border border-dashed transition-colors hover:border-accent hover:text-text-2 ${
-                      thumbError
-                        ? "border-danger/60 text-danger"
-                        : "border-hairline text-text-4"
-                    }`}
-                    disabled={thumbLoading}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void genShotImages([{ row: r, seq: i }]);
-                    }}
-                  >
-                    {thumbLoading ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : thumbError ? (
-                      <RefreshCw className="h-3.5 w-3.5" />
-                    ) : (
-                      <ImageIcon className="h-3.5 w-3.5" />
-                    )}
-                  </button>
-                )}
+              <div className="flex items-start gap-1">
+                {/* 左轨：勾选+序号在上（贴左），缩略图吊在其下 */}
+                <div className="flex shrink-0 flex-col items-start gap-1">
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      className="nodrag h-3 w-3 shrink-0 cursor-pointer accent-[var(--color-accent)]"
+                      checked={selRows === null || selRows.has(r.rid)}
+                      title="勾选参与批量出图"
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={() => {
+                        setSelRows((cur) => {
+                          const base = cur ?? new Set(rows.map((x) => x.rid));
+                          const next = new Set(base);
+                          if (next.has(r.rid)) next.delete(r.rid);
+                          else next.add(r.rid);
+                          return next;
+                        });
+                      }}
+                    />
+                    <span className="grid h-5 w-5 shrink-0 place-items-center rounded bg-accent-dim text-[10px] font-semibold tabular-nums text-text">
+                      {i + 1}
+                    </span>
+                  </div>
+                  {thumbUrl ? (
+                    <button
+                      type="button"
+                      data-tip="点击放大" aria-label="点击放大"
+                      className="nodrag block"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRowZoom({ url: thumbUrl, seq: i });
+                      }}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={thumbUrl}
+                        alt=""
+                        className="aspect-video w-28 cursor-zoom-in rounded border border-hairline object-cover"
+                      />
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-tip={
+                        thumbLoading
+                          ? "正在出图…"
+                          : thumbError
+                            ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
+                            : refImagesFor(r).length === 0
+                              ? "为这个镜头出图。注意：此镜未引用已出图的资产设定图，将纯文生图、一致性弱（可先拆解资产并出图，或行内 @资产名）"
+                              : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
+                      } aria-label={
+                        thumbLoading
+                          ? "正在出图…"
+                          : thumbError
+                            ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
+                            : refImagesFor(r).length === 0
+                              ? "为这个镜头出图。注意：此镜未引用已出图的资产设定图，将纯文生图、一致性弱（可先拆解资产并出图，或行内 @资产名）"
+                              : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
+                      }
+                      className={`nodrag flex aspect-video w-28 flex-col items-center justify-center gap-0.5 rounded border border-dashed transition-colors hover:border-accent hover:text-text-2 ${
+                        thumbError
+                          ? "border-danger/60 text-danger"
+                          : "border-hairline text-text-4"
+                      }`}
+                      disabled={thumbLoading}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void genShotImages([{ row: r, seq: i }]);
+                      }}
+                    >
+                      {thumbLoading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : thumbError ? (
+                        <RefreshCw className="h-4 w-4" />
+                      ) : (
+                        <ImageIcon className="h-4 w-4" />
+                      )}
+                      <span className="text-[9px]">
+                        {thumbLoading ? "出图中…" : thumbError ? "出图失败·重试" : "出图"}
+                      </span>
+                    </button>
+                  )}
+                </div>
                 <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex flex-wrap items-center gap-1">
                     <ShotSelect label="景别" value={r.shotSize ?? ""} options={SHOT_SIZES} onSave={(v) => setRow(r.rid, { shotSize: v })} />
@@ -3848,21 +3900,26 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     className="min-w-0 max-h-9 flex-1 overflow-auto border-l-2 border-hairline pl-1.5 text-[11px] italic leading-relaxed text-text-3"
                   />
                   </div>
-                  {overridden ? (
-                    <div className="flex items-start gap-1 rounded border border-hairline-soft bg-surface-2/40 p-1">
-                      <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">出图</span>
-                      <Editable
-                        value={r.finalPrompt!}
-                        onSave={(finalPrompt) =>
-                          setRow(r.rid, {
-                            finalPrompt: finalPrompt.trim() ? finalPrompt : undefined,
-                          })
-                        }
-                        multiline
-                        always
-                        placeholder="出图提示词"
-                        className="max-h-28 min-h-0 flex-1 overflow-auto text-[10px] leading-relaxed text-text-3"
-                      />
+                  {/* 出图提示词与画面/旁白同列对齐；未覆盖时显示按本行字段
+                      自动合成的结果（等于自动值不落 finalPrompt，不留冗余覆盖） */}
+                  <div className="flex items-start gap-1 rounded border border-hairline-soft bg-surface-2/40 p-1">
+                    <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">出图</span>
+                    <Editable
+                      value={r.finalPrompt ?? autoPrompt}
+                      onSave={(finalPrompt) =>
+                        setRow(r.rid, {
+                          finalPrompt:
+                            finalPrompt.trim() && finalPrompt.trim() !== autoPrompt.trim()
+                              ? finalPrompt
+                              : undefined,
+                        })
+                      }
+                      multiline
+                      always
+                      placeholder="出图提示词（默认按本行字段自动合成，可直接改）"
+                      className="max-h-28 min-h-0 flex-1 overflow-auto text-[10px] leading-relaxed text-text-3"
+                    />
+                    {overridden ? (
                       <button
                         type="button"
                         data-tip="清除自定义，恢复按本行字段自动合成" aria-label="清除自定义，恢复按本行字段自动合成"
@@ -3874,21 +3931,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       >
                         <RotateCcw className="h-3 w-3" />
                       </button>
-                    </div>
-                  ) : (
-                    <button
-                      type="button"
-                      data-tip="自定义发给图像模型的提示词（默认按本行字段自动合成，一般不用手写）" aria-label="自定义发给图像模型的提示词（默认按本行字段自动合成，一般不用手写）"
-                      className="nodrag flex w-fit items-center gap-1 rounded border border-dashed border-hairline px-1.5 py-0.5 text-[10px] text-text-4 transition-colors hover:border-accent hover:text-text"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setRow(r.rid, { finalPrompt: autoPrompt });
-                      }}
-                    >
-                      <Sparkles className="h-3 w-3" />
-                      自定义出图提示词
-                    </button>
-                  )}
+                    ) : null}
+                  </div>
                 </div>
                 <div className="flex shrink-0 items-start gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
                   <button
@@ -3929,6 +3973,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           })}
         </div>
       </div>
+      {rowZoom ? (
+        <Lightbox
+          images={[{ src: rowZoom.url, title: `镜头 ${rowZoom.seq + 1}` }]}
+          index={0}
+          onIndex={() => undefined}
+          onClose={() => setRowZoom(null)}
+        />
+      ) : null}
       {generating ? (
         <div className="ws-detail nodrag nowheel mt-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1.5 text-[10px] text-text-3">
           <div className="flex items-center gap-1.5">
