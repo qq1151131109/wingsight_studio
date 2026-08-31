@@ -1,0 +1,138 @@
+import { useRef } from "react";
+import { useTranslation } from "react-i18next";
+import { ForwardedIconComponent } from "@/components/common/genericIconComponent";
+import { Button } from "@/components/ui/button";
+import {
+  Command,
+  CommandGroup,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContentWithoutPortal,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { useIsFlowReadOnly } from "@/contexts/permissionsContext";
+import useFlowStore from "@/stores/flowStore";
+import ShadTooltip from "../../../../components/common/shadTooltipComponent";
+import {
+  focusCommandListOnOpen,
+  refocusSelectedCommandItemOnNavigate,
+} from "../../../../components/core/parameterRenderComponent/utils/focus-command-list-on-open";
+import type { outputComponentType } from "../../../../types/components";
+import { cn } from "../../../../utils/utils";
+
+export default function OutputComponent({
+  frozen = false,
+  nodeId,
+  outputs,
+  name,
+  proxy,
+  isToolMode = false,
+  handleSelectOutput,
+  outputName,
+}: outputComponentType) {
+  const { t } = useTranslation();
+  const nodeType = useFlowStore(
+    (state) => state.nodes.find((node) => node.id === nodeId)?.data?.type,
+  );
+  const currentFlowId = useFlowStore((state) => state.currentFlow?.id);
+  const isReadOnly = useIsFlowReadOnly(currentFlowId);
+
+  const displayProxy = (children) => {
+    if (proxy) {
+      return (
+        <ShadTooltip content={<span>{proxy.nodeDisplayName}</span>}>
+          {children}
+        </ShadTooltip>
+      );
+    } else {
+      return children;
+    }
+  };
+
+  const singleOutput = displayProxy(
+    <span
+      className={cn(
+        "px-2 py-1 text-sm font-medium",
+        isToolMode && "text-secondary",
+        frozen ? "text-ice" : "",
+      )}
+    >
+      {name}
+    </span>,
+  );
+
+  const hasLoopOutput = outputs?.some?.((output) => output.allows_loop);
+  const hasGroupOutputs = outputs?.some?.((output) => output.group_outputs);
+  const isConditionalRouter = nodeType === "ConditionalRouter";
+  const hasOutputs = outputs.length > 1;
+  const refButton = useRef<HTMLButtonElement>(null);
+
+  const shouldShowDropdown =
+    hasOutputs && !hasLoopOutput && !hasGroupOutputs && !isConditionalRouter;
+
+  return (
+    <div>
+      {shouldShowDropdown ? (
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button
+              unstyled
+              role="combobox"
+              ref={refButton}
+              className="focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-2 group flex items-center gap-2 disabled:cursor-not-allowed disabled:opacity-50"
+              data-testid={`dropdown-output-${outputName?.toLowerCase()}`}
+              disabled={isReadOnly}
+              aria-label={t("flow.outputSelector")}
+            >
+              <div className="flex items-center gap-1 truncate rounded-md px-2 py-1 text-sm font-medium group-hover:bg-primary/10">
+                {name}
+                <ForwardedIconComponent
+                  name="ChevronDown"
+                  className="h-4 w-4 text-muted-foreground"
+                />
+              </div>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContentWithoutPortal
+            side="bottom"
+            align="end"
+            onOpenAutoFocus={focusCommandListOnOpen}
+            className="noflow nowheel nopan nodelete nodrag w-full min-w-[200px] max-w-[250px] p-0"
+          >
+            <Command onKeyDown={refocusSelectedCommandItemOnNavigate}>
+              <CommandList>
+                <CommandGroup defaultChecked={false} className="p-0">
+                  {outputs.map((output) => (
+                    <CommandItem
+                      key={output.name}
+                      data-testid={`dropdown-item-output-${outputName?.toLowerCase()}-${output.display_name?.toLowerCase()}`}
+                      className="cursor-pointer justify-between rounded-none px-3 py-2"
+                      onSelect={() => {
+                        if (!isReadOnly) {
+                          handleSelectOutput?.(output);
+                        }
+                      }}
+                      value={output.name}
+                    >
+                      <span className="truncate text-[13px]">
+                        {output.display_name ?? output.name}
+                      </span>
+                      <span className="ml-4 text-[13px] text-muted-foreground">
+                        {output.types.join(", ")}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </CommandList>
+            </Command>
+          </PopoverContentWithoutPortal>
+        </Popover>
+      ) : (
+        singleOutput
+      )}
+    </div>
+  );
+}

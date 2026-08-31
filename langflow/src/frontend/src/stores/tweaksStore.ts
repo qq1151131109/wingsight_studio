@@ -1,0 +1,93 @@
+import { create } from "zustand";
+import { getChangesType } from "@/modals/apiModal/utils/get-changes-types";
+import { getNodesWithDefaultValue } from "@/modals/apiModal/utils/get-nodes-with-default-value";
+import { isFieldExposable } from "@/modals/apiModal/utils/is-field-exposable";
+import type { AllNodeType, NodeDataType } from "@/types/flow";
+import type { TweaksStoreType } from "../types/zustand/tweaks";
+import useFlowStore from "./flowStore";
+
+export const useTweaksStore = create<TweaksStoreType>((set, get) => ({
+  tweaks: {},
+  nodes: [],
+  setNodes: (change) => {
+    const newChange =
+      typeof change === "function" ? change(get().nodes) : change;
+
+    set({
+      nodes: newChange,
+    });
+    get().updateTweaks();
+  },
+  setNode: (id, change) => {
+    const newChange =
+      typeof change === "function"
+        ? change(get().nodes.find((node) => node.id === id)!)
+        : change;
+    get().setNodes((oldNodes) =>
+      oldNodes.map((node) => {
+        if (node.id === id) {
+          if ((node.data as NodeDataType).node?.frozen) {
+            (newChange.data as NodeDataType).node!.frozen = false;
+          }
+          return newChange;
+        }
+        return node;
+      }),
+    );
+  },
+  getNode: (id: string) => {
+    return get().nodes.find((node) => node.id === id);
+  },
+  currentFlowId: "",
+  initialSetup: (nodes: AllNodeType[], flowId: string) => {
+    // LE-1810: the lf_tweaks_* localStorage scratch state was retired in
+    // favor of the persisted per-field api_editable flag. Clear any orphaned
+    // keys left behind by older builds (intentionally no migration — the old
+    // state was per-browser scratch, not flow data).
+    try {
+      Object.keys(window.localStorage)
+        .filter((key) => key.startsWith("lf_tweaks_"))
+        .forEach((key) => window.localStorage.removeItem(key));
+    } catch {
+      // localStorage unavailable (SSR/embedded) — nothing to clean.
+    }
+    useFlowStore.getState().unselectAll();
+    set({
+      currentFlowId: flowId,
+    });
+    set({
+      nodes: getNodesWithDefaultValue(
+        nodes,
+        useFlowStore.getState().edges ?? [],
+      ),
+    });
+    get().updateTweaks();
+  },
+  updateTweaks: () => {
+    const nodes = get().nodes;
+    const edges = useFlowStore.getState().edges ?? [];
+    const tweak = {};
+    nodes.forEach((node) => {
+      const nodeTemplate = node.data?.node?.template;
+      if (nodeTemplate && node.type === "genericNode") {
+        const currentTweak = {};
+        Object.keys(nodeTemplate).forEach((name) => {
+          // Single exposure predicate (LE-1810): api_editable AND on-node AND
+          // not connected AND not tool-mode-disabled — see is-field-exposable.
+          if (isFieldExposable(node, name, edges)) {
+            currentTweak[name] = getChangesType(
+              nodeTemplate[name].value,
+              nodeTemplate[name],
+            );
+          }
+        });
+        if (Object.keys(currentTweak).length > 0) {
+          tweak[node.id] = currentTweak;
+        }
+      }
+    });
+    set({
+      tweaks: tweak,
+    });
+  },
+}));
