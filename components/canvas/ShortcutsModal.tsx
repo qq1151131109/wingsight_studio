@@ -33,7 +33,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { keys: ["双指滚动"], title: "平移（触控板）", group: "画布" },
   { keys: ["⌘+滚轮 / 捏合"], title: "缩放", group: "画布" },
   { keys: ["双击空白"], title: "添加节点选择器", group: "节点" },
-  { keys: ["右键空白"], title: "上传 / 大纲 / 建卡菜单", group: "节点" },
+  { keys: ["右键空白"], title: "上传 / 导航 / 建卡菜单", group: "节点" },
   { keys: ["Alt+拖卡"], title: "原位克隆", group: "节点" },
   { keys: ["双击标题/正文"], title: "就地编辑", group: "节点" },
   { keys: ["拖动加号"], title: "卡片间连线", group: "节点" },

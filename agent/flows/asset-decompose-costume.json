@@ -1,6 +1,6 @@
 {
-  "name": "角色拆解",
-  "description": null,
+  "name": "资产拆解-服饰",
+  "description": "剧本 → 服饰（costume）JSON，分类型拆解四路之一",
   "icon": null,
   "icon_bg_color": null,
   "gradient": null,
@@ -432,7 +432,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "system_message",
-                "value": "你是影视选角导演与角色设定师。阅读剧本，盘点其中出场的人物（含动物角色），并规划每个角色的造型（Look）变化，只输出 JSON。\n\n规则：\n- 只输出 character 类型的资产：所有出场角色都要盘点，不得发明剧本外的角色\n- 若输入含「已有资产名单」：与名单中同一对象的，type 与 name 必须原样沿用名单条目（便于系统合并），不得另起新名\n- 名称用剧本原名；description 写外形与身份要点（服饰年代、材质、体态、年龄感）；visual_notes 写视觉要点（色彩、材质、光线、氛围）\n- looks 规划该角色在剧本中的造型/服饰变化：label 用简短造型名（如 常服/冬装/校服/雨夜装），description 写该造型的服饰细节（款式、材质、色彩、配饰）；costume 填该造型的核心服装名（与剧本中的服装称呼一致，如 庭审西装）；剧本中角色只有一种造型时只给一项（label=常服）；最多 4 项，没有剧本依据不得硬凑\n- 按出场重要性排序\n- 只输出 JSON，不要任何其他文字：\n{{\"assets\":[{{\"type\":\"character\",\"name\":\"...\",\"description\":\"...\",\"visual_notes\":\"...\",\"looks\":[{{\"label\":\"...\",\"description\":\"...\",\"costume\":\"...\"}}]}}]}}",
+                "value": "你是影视服装师与造型师。阅读剧本，盘点人物的**核心服装/造型套装**（支撑全片造型一致性的服饰：主角多套换装、重要配角的标志性着装；群演杂着不必盘点），只输出 JSON。\n\n规则：\n- 只输出 costume 类型的资产\n- 若输入含「已有资产名单」：与名单中同一对象的，type 与 name 必须原样沿用名单条目（便于系统合并），不得另起新名\n- 名称用「服装名」（如 庭审西装、街头混混常服、女童院校服），不要带人名；description 写形制、材质、配色与工艺（款式结构、面料质感、时代感、新旧磨损）；visual_notes 写视觉要点（主色调、材质质感、光线下的观感）\n- 按叙事重要性排序\n- 只输出 JSON，不要任何其他文字：\n{{\"assets\":[{{\"type\":\"costume\",\"name\":\"...\",\"description\":\"...\",\"visual_notes\":\"...\"}}]}}",
                 "display_name": "System Message",
                 "advanced": false,
                 "api_editable": false,
@@ -1258,10 +1258,11 @@
       "x": -161.5002262163336,
       "y": -72.64137289871104,
       "zoom": 0.7149827279753261
-    }
+    },
+    "name": "资产拆解-服饰"
   },
   "is_component": false,
-  "updated_at": "2026-08-30T13:01:17+00:00",
+  "updated_at": "2026-08-30T13:00:36+00:00",
   "webhook": false,
   "endpoint_name": null,
   "tags": null,
@@ -1273,7 +1274,7 @@
   "flow_type": "workflow",
   "a2a_enabled": false,
   "a2a_card_overrides": null,
-  "id": "1741b3fb-319c-4207-aeaf-46b58e6528b7",
+  "id": "63cdc00f-1007-48b1-9651-c7c989992366",
   "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
   "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
   "workspace_id": null,

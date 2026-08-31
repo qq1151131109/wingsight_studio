@@ -99,7 +99,6 @@ export default function ProjectManager() {
         edges: s.edges,
         viewport: s.viewport,
         meta: { visualStyle: s.projectStyle },
-        revision: s.rev > 0 ? s.rev : undefined,
       });
     }, SYNC_DEBOUNCE_MS);
     return () => {
@@ -113,13 +112,11 @@ export default function ProjectManager() {
       if (!timer.current) return;
       const s = useCanvasStore.getState();
       if (s.projectId && s.hydrated) {
-        if (useCanvasStore.getState().saveState === "conflict") return; // 冲突未处理前不自动覆盖
         void persist(s.projectId, {
           nodes: s.nodes,
           edges: s.edges,
           viewport: s.viewport,
           meta: { visualStyle: s.projectStyle },
-          revision: s.rev > 0 ? s.rev : undefined,
         });
       }
     };
@@ -138,13 +135,9 @@ async function persist(
     edges: unknown[];
     viewport: unknown;
     meta?: { visualStyle?: string };
-    revision?: number;
-    force?: boolean;
   },
 ) {
   const run = saveChain.then(async () => {
-    // 冲突未处理前停止自动保存（避免反复 409 与静默覆盖）
-    if (useCanvasStore.getState().saveState === "conflict" && !payload.force) return;
     // 会话瞬态（选中/拖拽中）不落盘：否则重载项目会恢复上次的旧选区
     const nodes = payload.nodes.map((n) => {
       if (!n || typeof n !== "object") return n;
@@ -167,17 +160,8 @@ async function persist(
       const res = await saveCanvas(pid, clean);
       // 仅当仍在本项目时更新状态（快速切换项目不被旧请求覆盖）
       if (useCanvasStore.getState().projectId !== pid) return;
-      if (res.conflict) {
-        // 乐观锁命中：服务器有更新的画布。停止自动保存，等用户在底部坞选择
-        // 「载入服务器版本」或「强制覆盖」
-        useCanvasStore.getState().setSaveState("conflict");
-        return;
-      }
       if (res.ok) {
-        useCanvasStore.setState({
-          rev: res.revision ?? useCanvasStore.getState().rev,
-          saveState: "saved",
-        });
+        useCanvasStore.getState().setSaveState("saved");
       } else {
         useCanvasStore.getState().setSaveState("offline");
       }
@@ -216,7 +200,6 @@ async function activateProject(p: ProjectMeta) {
       );
       useCanvasStore.setState({
         projectStyle: String((canvas as { meta?: { visualStyle?: string } }).meta?.visualStyle ?? ""),
-        rev: canvas.revision ?? 0,
       });
       if (!p.name) {
         const list = await listProjects();

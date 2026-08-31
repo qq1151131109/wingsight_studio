@@ -48,17 +48,19 @@ export async function generateShotlist(
 export type DecomposedLook = {
   label: string;
   description: string;
+  /** 该造型的核心服装名（与服饰卡按名对上后连 服饰→Look 边） */
+  costume?: string;
   /** 全自动出图链产物：定妆照生成后 Look 图的 /agent-service/assets/ 路径 */
   image_url?: string;
   error?: string;
 };
 
 export type DecomposedAsset = {
-  type: "character" | "scene" | "prop";
+  type: "character" | "scene" | "prop" | "costume";
   name: string;
   description: string;
   visual_notes: string;
-  /** 全自动出图链产物：角色定妆照 */
+  /** 全自动出图链产物：角色定妆照 / 场景概念图 / 道具与服饰的设定图 */
   image_url?: string;
   /** 角色拆解 flow 输出的造型/服饰变化计划（juben look 范式） */
   looks?: DecomposedLook[];
@@ -78,7 +80,11 @@ export async function decomposeAssets(
       progress?: { done: number; total: number };
     }) => void;
   },
-): Promise<{ assets: DecomposedAsset[]; errors: Record<string, string> }> {
+): Promise<{
+  assets: DecomposedAsset[];
+  errors: Record<string, string>;
+  imagesNote?: string;
+}> {
   // 异步任务 + 轮询（代理 30s 掐断长请求，三路拆解 flow 并发也常超 30s）
   const start = await apiFetch("/agent-service/assets/decompose", {
     method: "POST",
@@ -109,13 +115,18 @@ export async function decomposeAssets(
       assets?: DecomposedAsset[] | null;
       errors?: Record<string, string>;
       error?: string;
+      images_note?: string;
     };
     if (data.phase) {
       opts?.onPhase?.({ phase: data.phase, progress: data.progress ?? undefined });
     }
     if (data.status === "done") {
       if (data.error) throw new Error(data.error);
-      return { assets: data.assets ?? [], errors: data.errors ?? {} };
+      return {
+        assets: data.assets ?? [],
+        errors: data.errors ?? {},
+        imagesNote: data.images_note,
+      };
     }
     if (Date.now() > deadline) throw new Error("拆解超时");
   }
@@ -141,6 +152,10 @@ export type ShotImageResult = {
   error?: string;
 };
 
+/** 任务表在 agent 内存里：agent 重启后旧 jobId 查无此任务（区别于网络
+ *  抖动，调用方可据此把 loading 图卡置败、清除断点旗标） */
+export class ShotJobGoneError extends Error {}
+
 /** 启动批量出图任务：Next 同源代理 30s 掐断长请求，必须异步任务 + 轮询 */
 export async function startShotImageJob(
   shots: ShotImageRequest[],
@@ -164,6 +179,7 @@ export async function getShotImageJob(jobId: string): Promise<{
   images: ShotImageResult[];
 }> {
   const r = await apiFetch(`/agent-service/storyboard/images/${jobId}`);
+  if (r.status === 404) throw new ShotJobGoneError("出图任务不存在（agent 可能已重启）");
   if (!r.ok) throw new Error(`出图任务查询失败（${r.status}）`);
   return (await r.json()) as { status: "running" | "done"; images: ShotImageResult[] };
 }

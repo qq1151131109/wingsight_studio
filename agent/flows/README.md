@@ -11,6 +11,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `asset-decompose-character.json` | 角色拆解 | 剧本 → 角色 JSON（单类型专用提示词），额外输出 `looks:[{label,description}]` 造型规划（拆解→自动出图链用，juben look 范式） | `LANGFLOW_DECOMPOSE_CHARACTER_FLOW_ID` | `LanguageModelComponent-nFbmO`（system_message） |
 | `asset-decompose-scene.json` | 场景拆解 | 剧本 → 场景 JSON（含大纲推断主要发生地） | `LANGFLOW_DECOMPOSE_SCENE_FLOW_ID` | 同上 |
 | `asset-decompose-prop.json` | 道具拆解 | 剧本 → 道具 JSON | `LANGFLOW_DECOMPOSE_PROP_FLOW_ID` | 同上 |
+| `asset-decompose-costume.json` | 服饰拆解 | 剧本 → 服饰 JSON（核心服装/造型套装，支撑造型一致性） | `LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID` | 同上 |
 | `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 豆包出图 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload） |
 | `promo-copy.json` | 宣发文案生成 | 飞书宣发资料 → 三路大模型并行 → 合并文案 | `LANGFLOW_SKILLS_JSON`（技能注册内含 flowId） | `PromptTemplate-Writer`（title/count/platform/batch_kind/brief/form） |
 | `shotlist-generate.json` | 分镜表生成 | 剧本 → 分镜 rows（景别/运镜/时长/画面/台词） | `LANGFLOW_SHOTLIST_FLOW_ID` | 无（参数走 input_value 文本头注入） |

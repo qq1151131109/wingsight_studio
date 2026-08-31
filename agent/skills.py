@@ -27,6 +27,7 @@ DECOMPOSE_FLOW_IDS = {
     "character": os.environ.get("LANGFLOW_DECOMPOSE_CHARACTER_FLOW_ID", ""),
     "scene": os.environ.get("LANGFLOW_DECOMPOSE_SCENE_FLOW_ID", ""),
     "prop": os.environ.get("LANGFLOW_DECOMPOSE_PROP_FLOW_ID", ""),
+    "costume": os.environ.get("LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID", ""),
 }
 
 def _parse_shot_rows(text: str) -> list[dict]:
@@ -197,10 +198,12 @@ async def run_flow_blocking(flow_id: str, input_value: str = "", tweaks: Optiona
 class AssetLook(BaseModel):
     label: str = Field(min_length=1)
     description: str = ""
+    # 该造型的核心服装名（与服饰拆解 flow 的产出按名对上后，服饰图作参考图2）
+    costume: str = ""
 
 
 class Asset(BaseModel):
-    type: Literal["character", "scene", "prop"]
+    type: Literal["character", "scene", "prop", "costume"]
     name: str = Field(min_length=1)
     description: str = ""
     visual_notes: str = ""
@@ -227,6 +230,7 @@ class Asset(BaseModel):
             good.append({
                 "label": label[:40],
                 "description": str(item.get("description") or "").strip(),
+                "costume": str(item.get("costume") or "").strip(),
             })
         return {**data, "looks": good}
 
@@ -283,35 +287,34 @@ async def decompose_script_assets(
 ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
     """拆解剧本为结构化资产清单（直连端点用）。
 
-    配置了三个分类型 flow 时三路并发调用（各拆一类，单类失败记入
-    errors 不拖累其他）；否则回落到单一合并 flow。existing：画布已有
-    资产 [{type, name}]，注入名单让 LLM 沿用旧名（跨次拆解去重合并）。
-    返回 (assets, errors)；assets 为空时 errors 至少含一条。
+    已配置的分类型 flow 各拆一类、并行调用（character/scene/prop/costume
+    四路；单类失败记入 errors 不拖累其他；未配置的类型直接跳过，不回退整
+    条 legacy）。existing：画布已有资产 [{type, name}]，注入名单让 LLM
+    沿用旧名（跨次拆解去重合并）。返回 (assets, errors)。
     """
+    configured = {t: fid for t, fid in DECOMPOSE_FLOW_IDS.items() if fid}
+    if not configured:
+        return await _decompose_legacy(script, existing)
+
     rosters = {
-        t: [e for e in existing or [] if e.get("type") == t]
-        for t in DECOMPOSE_FLOW_IDS
+        t: [e for e in existing or [] if e.get("type") == t] for t in configured
     }
-    if all(DECOMPOSE_FLOW_IDS[t] for t in DECOMPOSE_FLOW_IDS):
 
-        async def one(ttype: str) -> List[Dict[str, Any]]:
-            return await _decompose_one_type(
-                DECOMPOSE_FLOW_IDS[ttype], ttype, script, rosters[ttype]
-            )
-
-        results = await asyncio.gather(
-            *[one(t) for t in DECOMPOSE_FLOW_IDS], return_exceptions=True
+    async def one(ttype: str) -> List[Dict[str, Any]]:
+        return await _decompose_one_type(
+            configured[ttype], ttype, script, rosters[ttype]
         )
-        merged: List[Dict[str, Any]] = []
-        errors: Dict[str, str] = {}
-        for ttype, res in zip(DECOMPOSE_FLOW_IDS, results):
-            if isinstance(res, BaseException):
-                errors[ttype] = str(res)[:200]
-            else:
-                merged.extend(res)
-        return merged, errors
 
-    merged, errors = await _decompose_legacy(script, existing)
+    results = await asyncio.gather(
+        *[one(t) for t in configured], return_exceptions=True
+    )
+    merged: List[Dict[str, Any]] = []
+    errors: Dict[str, str] = {}
+    for ttype, res in zip(configured, results):
+        if isinstance(res, BaseException):
+            errors[ttype] = str(res)[:200]
+        else:
+            merged.extend(res)
     return merged, errors
 
 
@@ -360,15 +363,14 @@ async def start_decompose_job(
                     state["images_note"] = "未提供画风，已跳过自动出图"
                 else:
                     state["phase"] = "images"
-                    # 名单同名 = 画布已有同名卡（flow 会沿用旧名）：其卡不受本次
-                    # 建卡影响，自动出图产物没有落点，跳过省成本
-                    existed_names = {
-                        str(e.get("name") or "").strip()
+                    # 已有同名卡（flow 沿用旧名）的类型化跳过：其卡不受本次建卡
+                    # 影响，自动出图产物没有落点，跳过省成本
+                    existed = {
+                        (str(e.get("type") or ""), str(e.get("name") or "").strip())
                         for e in existing or []
-                        if str(e.get("type") or "") == "character"
                     }
-                    await _auto_look_images(
-                        assets, state, visual_style, existed_names
+                    state["images_note"] = await _auto_asset_images(
+                        assets, state, visual_style, existed
                     )
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
@@ -384,76 +386,176 @@ async def start_decompose_job(
     return job_id
 
 
-async def _auto_look_images(
+_AUTO_CAPS = {"character": 8, "scene": 8, "prop": 8, "costume": 8}
+_AUTO_LOOK_CAP = 4
+
+
+async def _auto_asset_images(
     assets: List[Dict[str, Any]],
     state: Dict[str, Any],
     visual_style: str,
-    skip_names: Optional[set[str]] = None,
-) -> None:
-    """角色出图自动链（juben collect_pending_character_materials 范式）：
-    每个角色定妆照 → 完成后逐 Look 并发出图（参考图1=定妆照，身份锚点
-    协议与前端手动 Look 相同）。结果写回条目；单张失败记 error 不拖累
-    其他。并发 3；角色上限 8、每角色 Look 上限 4（防大成本失控）。
-    skip_names（画布已有角色名）整卡跳过——出图没有落点。"""
-    chars = [
-        a
-        for a in assets
-        if a.get("type") == "character"
-        and str(a.get("name") or "").strip() not in (skip_names or set())
-    ][:8]
-    total = len(chars) + sum(min(len(a.get("looks") or []), 4) for a in chars)
-    done = [0]
-    state["progress"] = {"done": 0, "total": total}
+    existed: Optional[set] = None,
+) -> str:
+    """资产图自动链（juben collect_pending_character_materials 泛化）：
+    ① 服饰结构图先行（Look 的一致性锚点之二）
+    ② 角色定妆照 / 场景概念图 / 道具设定图 并发
+    ③ 角色 Look 造型图（参考图1=定妆照身份锚点，参考图2=绑定服饰的结构图）
+    结果写回 asset 条目（image_url / looks[i].image_url）；单张失败记 error
+    不拖累其他。并发 3；每类上限 8、每角色 Look 上限 4（防成本失控）。
+    existed：画布已有 (type, name) 集合，命中跳过。返回汇报 note。"""
+    existed = existed or set()
     sem = asyncio.Semaphore(3)
     style_note = f"全局视觉风格：{visual_style}" if visual_style.strip() else ""
+    total_done = [0]
+    total_target = [0]
+
+    def capped(ttype: str) -> List[Dict[str, Any]]:
+        fresh = [
+            a
+            for a in assets
+            if a.get("type") == ttype
+            and (ttype, str(a.get("name") or "").strip()) not in existed
+        ]
+        return fresh[: _AUTO_CAPS[ttype]]
 
     async def gen(shot: Dict[str, Any]) -> Dict[str, Any]:
         async with sem:
             r = await _generate_single_image(shot)
-        done[0] += 1
-        state["progress"] = {"done": done[0], "total": total}
+        total_done[0] += 1
+        state["progress"] = {"done": total_done[0], "total": total_target[0]}
         return r
 
-    async def one_char(a: Dict[str, Any]) -> None:
+    async def gen_main(a: Dict[str, Any], asset_type: str) -> None:
         desc = f"{a.get('name', '')}。{a.get('description', '')}"
         if a.get("visual_notes"):
             desc += f"（视觉：{a['visual_notes']}）"
-        sheet = await gen({
-            "name": a.get("name") or "角色",
+        r = await gen({
+            "name": a.get("name") or "资产",
             "description": desc,
-            "assetType": "character",
+            "assetType": asset_type,
             "visualNotes": style_note,
         })
-        looks = (a.get("looks") or [])[:4]
-        if not sheet.get("ok") or not sheet.get("imageUrl"):
+        if r.get("ok") and r.get("imageUrl"):
+            a["image_url"] = r["imageUrl"]
+        else:
+            a["error"] = str(r.get("error") or "出图失败")[:200]
+
+    async def one_costume(a: Dict[str, Any]) -> None:
+        # 服饰结构图按道具契约（4:3 单件平铺）
+        await gen_main(a, "prop")
+
+    async def one_char(a: Dict[str, Any]) -> None:
+        await gen_main(a, "character")
+        if not a.get("image_url"):
             # 没有定妆照就没有身份锚点，Look 退化成纯文生图一致性差：跳过
-            for l in looks:
+            for l in a.get("looks") or []:
                 l["error"] = "定妆照生成失败，Look 已跳过"
             return
-        a["image_url"] = sheet["imageUrl"]
 
         async def one_look(l: Dict[str, Any]) -> None:
+            # 参考图2：绑定的服饰卡结构图（按名模糊对上才加）
+            refs = [a["image_url"]]
+            cname = str(l.get("costume") or "").strip()
+            costume_img = next(
+                (
+                    c["image_url"]
+                    for c in assets
+                    if c.get("type") == "costume"
+                    and c.get("image_url")
+                    and cname
+                    and (cname in str(c.get("name") or "") or str(c.get("name") or "") in cname)
+                ),
+                None,
+            )
+            if costume_img:
+                refs.append(costume_img)
+            protocol = [
+                f"生成角色「{a.get('name', '')}」的造型定妆图：{l.get('label', '')}。",
+                f"角色设定：{a.get('description', '')}。",
+                "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，"
+                "保持完全不变；忽略其服装、配饰、姿态与背景。",
+            ]
+            if costume_img:
+                protocol.append(
+                    "参考图2（服饰结构参考）：形制、材质、配色以该服饰图为准。"
+                )
+            protocol.append(f"造型要求：{l.get('description', '')}。")
             r = await gen({
                 "name": f"{a.get('name', '')}·{l.get('label', '造型')}",
-                "description": " ".join([
-                    f"生成角色「{a.get('name', '')}」的造型定妆图：{l.get('label', '')}。",
-                    f"角色设定：{a.get('description', '')}。",
-                    "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，"
-                    "保持完全不变；忽略其服装、配饰、姿态与背景。",
-                    f"造型要求：{l.get('description', '')}。",
-                ]),
+                "description": " ".join(protocol),
                 "assetType": "character",
                 "visualNotes": style_note,
-                "referenceImages": [sheet["imageUrl"]],
+                "referenceImages": refs,
             })
             if r.get("ok") and r.get("imageUrl"):
                 l["image_url"] = r["imageUrl"]
             else:
                 l["error"] = str(r.get("error") or "出图失败")[:200]
 
+        looks = (a.get("looks") or [])[:_AUTO_LOOK_CAP]
         await asyncio.gather(*[one_look(l) for l in looks])
 
-    await asyncio.gather(*[one_char(a) for a in chars])
+    # 总量先算好再跑（进度条闭环）
+    costumes = capped("costume")
+    chars = capped("character")
+    scenes = capped("scene")
+    props = capped("prop")
+    total_target[0] = (
+        len(costumes)
+        + len(chars)
+        + len(scenes)
+        + len(props)
+        + sum(min(len(a.get("looks") or []), _AUTO_LOOK_CAP) for a in chars)
+    )
+    state["progress"] = {"done": 0, "total": total_target[0]}
+
+    # ① 服饰先行（Look 的参考图2）② 角色定妆照(+Looks)/场景/道具 并发
+    await asyncio.gather(*[one_costume(a) for a in costumes])
+    await asyncio.gather(
+        *([one_char(a) for a in chars] + [gen_main(a, "scene") for a in scenes] + [gen_main(a, "prop") for a in props])
+    )
+
+    imaged = {
+        t: sum(1 for a in assets if a.get("type") == t and a.get("image_url"))
+        for t in ("character", "scene", "prop", "costume")
+    }
+    looks_done = sum(
+        1
+        for a in assets
+        if a.get("type") == "character"
+        for l in a.get("looks") or []
+        if l.get("image_url")
+    )
+    parts = [
+        f"{label} {imaged[t]}"
+        for t, label in (
+            ("character", "角色"),
+            ("costume", "服饰"),
+            ("scene", "场景"),
+            ("prop", "道具"),
+        )
+        if imaged[t]
+    ]
+    note = "已自动出图：" + ("、".join(parts) if parts else "无")
+    if looks_done:
+        note += f"（含 Look {looks_done} 张）"
+    skipped = sum(
+        1
+        for a in assets
+        if a.get("type") in _AUTO_CAPS
+        and (a.get("type"), str(a.get("name") or "").strip()) in existed
+    )
+    over = sum(
+        len([a for a in assets if a.get("type") == t])
+        - len(capped(t))
+        - sum(1 for a in assets if a.get("type") == t and (t, str(a.get("name") or "").strip()) in existed)
+        for t in _AUTO_CAPS
+    )
+    if skipped:
+        note += f"；画布已有同名 {skipped} 项跳过"
+    if over > 0:
+        note += f"；超上限 {over} 项未出图（可在卡上单独出图）"
+    return note
 
 
 async def _decompose_one_type(
@@ -493,7 +595,11 @@ async def _decompose_one_type(
         for item, a in zip(out, asset_list.assets):
             if a.looks:
                 item["looks"] = [
-                    {"label": l.label, "description": l.description}
+                    {
+                        "label": l.label,
+                        "description": l.description,
+                        "costume": l.costume,
+                    }
                     for l in a.looks
                 ]
     return out

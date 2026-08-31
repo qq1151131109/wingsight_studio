@@ -12,6 +12,7 @@
     "@ag-ui/client": "^0.0.57",
     "@copilotkit/react-core": "^1.69.3",
     "@copilotkit/react-ui": "^1.69.3",
+    "@copilotkit/runtime-client-gql": "1.69.3",
     "@fontsource-variable/noto-serif-sc": "^5.3.0",
     "@fontsource/fraunces": "^5.3.0",
     "@xyflow/react": "^12.11.5",
@@ -31,6 +32,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.3.3",
+    "playwright": "^1.62.1",
     "tailwindcss": "^4",
     "typescript": "^5"
   },

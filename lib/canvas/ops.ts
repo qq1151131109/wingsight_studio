@@ -77,6 +77,16 @@ export type UpdateNodeOp = {
     dialogue?: string;
     imageUrl?: string;
   };
+  /** 分镜表：整表重写（agent 对话式「压缩到 N 行/重新生成」用），整组替换 */
+  rows?: {
+    rid?: string;
+    shotSize?: string;
+    cameraMove?: string;
+    duration?: string;
+    action?: string;
+    dialogue?: string;
+    imageUrl?: string;
+  }[];
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长 / 台词 */
   shotNumber?: string;
   shotSize?: string;
@@ -279,6 +289,31 @@ export function applyOps(rawOps: unknown): OpResult {
               ? { itemIds: op.itemIds.slice(0, 20).map(String) }
               : {}),
             ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
+            ...(Array.isArray(op.rows)
+              ? {
+                  rows: op.rows.slice(0, 60).map((r, i) => ({
+                    rid: String(r.rid ?? `m${i + 1}`),
+                    ...(r.shotSize !== undefined
+                      ? { shotSize: String(r.shotSize).slice(0, 20) }
+                      : {}),
+                    ...(r.cameraMove !== undefined
+                      ? { cameraMove: String(r.cameraMove).slice(0, 20) }
+                      : {}),
+                    ...(r.duration !== undefined
+                      ? { duration: String(r.duration).slice(0, 20) }
+                      : {}),
+                    ...(r.action !== undefined
+                      ? { action: String(r.action).slice(0, 500) }
+                      : {}),
+                    ...(r.dialogue !== undefined
+                      ? { dialogue: String(r.dialogue).slice(0, 500) }
+                      : {}),
+                    ...(r.imageUrl !== undefined
+                      ? { imageUrl: String(r.imageUrl) }
+                      : {}),
+                  })),
+                }
+              : {}),
             ...(op.row && typeof op.row.rid === "string"
               ? {
                   rows: (() => {

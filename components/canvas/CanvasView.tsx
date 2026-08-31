@@ -53,8 +53,7 @@ import {
   type FocusNodesDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
-import { loadCanvas, saveCanvas, uploadAsset } from "@/lib/projects";
-import { sanitizeCanvas } from "@/lib/canvas/sanitize";
+import { uploadAsset } from "@/lib/projects";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import { nodeTypes, NodeInfoModal } from "./nodes";
 import CanvasShortcuts from "./CanvasShortcuts";
@@ -537,65 +536,19 @@ function BottomDock({
   const zoom = useCanvasStore((s) => s.viewport.zoom);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const [stylePanel, setStylePanel] = useState(false);
-  const [conflictPanel, setConflictPanel] = useState(false);
-  const [resolving, setResolving] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
 
   // 弹窗开着时 Esc 关闭（弹窗经 portal 挂 body，画布的全局 Esc 管不到这里）
   useEffect(() => {
-    if (!stylePanel && !conflictPanel) return;
+    if (!stylePanel) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       setStylePanel(false);
-      setConflictPanel(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stylePanel, conflictPanel]);
+  }, [stylePanel]);
 
-  /** 保存冲突两种解法：载入服务器版本（丢弃本地未保存改动）/ 强制覆盖 */
-  const resolveConflict = async (mode: "reload" | "force") => {
-    const st = useCanvasStore.getState();
-    if (resolving || !st.projectId) return;
-    setResolving(true);
-    try {
-      if (mode === "reload") {
-        const canvas = await loadCanvas(st.projectId);
-        if (canvas) {
-          const clean = sanitizeCanvas(canvas.nodes as never, canvas.edges as never);
-          st.replaceCanvas(
-            clean.nodes as never,
-            clean.edges as never,
-            (canvas.viewport ?? { x: 0, y: 0, zoom: 1 }) as never,
-          );
-          useCanvasStore.setState({
-            rev: canvas.revision ?? 0,
-            projectStyle: String(canvas.meta?.visualStyle ?? ""),
-            saveState: "saved",
-          });
-        }
-      } else {
-        const res = await saveCanvas(st.projectId, {
-          nodes: st.nodes.map((n) => {
-            const rest = { ...(n as Record<string, unknown>) };
-            delete rest.selected;
-            delete rest.dragging;
-            return rest;
-          }),
-          edges: st.edges,
-          viewport: st.viewport,
-          meta: { visualStyle: st.projectStyle },
-          force: true,
-        });
-        if (res.ok) {
-          useCanvasStore.setState({ rev: res.revision ?? st.rev, saveState: "saved" });
-          setConflictPanel(false);
-        }
-      }
-    } finally {
-      setResolving(false);
-    }
-  };
   const saveLabel =
     saveState === "saving"
       ? "保存中…"
@@ -609,7 +562,7 @@ function BottomDock({
       <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
       <button
         type="button"
-        title="素材库（生成历史自动入库，点击放回画布）"
+        title="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenAssets}
       >
@@ -618,7 +571,7 @@ function BottomDock({
       </button>
       <button
         type="button"
-        title="提示词库（点击追加到生成输入区）"
+        title="提示词常用语：选中卡片后点选，自动追加进生成输入框"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenPrompts}
       >
@@ -627,12 +580,12 @@ function BottomDock({
       </button>
       <button
         type="button"
-        title="画布大纲（按类型浏览节点，点击定位）"
+        title="画布导航（按类型列出全部卡片，点击运镜定位）"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenOutline}
       >
         <ListTree className="h-4 w-4" />
-        大纲
+        导航
       </button>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
       {/* 项目画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
@@ -678,19 +631,7 @@ function BottomDock({
       <DockBtn title="适应视图" onClick={() => void fitView({ duration: 300, padding: 0.15 })}>
         <Maximize className="h-4 w-4" />
       </DockBtn>
-      {saveState === "conflict" ? (
-        <>
-          <span className="mx-0.5 h-5 w-px bg-hairline" />
-          <button
-            type="button"
-            title="其他会话更新了画布，点击处理"
-            className="rounded bg-danger px-1.5 py-0.5 text-[10px] font-medium text-white"
-            onClick={() => setConflictPanel(true)}
-          >
-            保存冲突
-          </button>
-        </>
-      ) : saveLabel ? (
+      {saveLabel ? (
         <>
           <span className="mx-0.5 h-5 w-px bg-hairline" />
           <span
@@ -703,40 +644,6 @@ function BottomDock({
         </>
       ) : null}
       </div>
-      {conflictPanel ? (
-        <OverlayModal
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
-          onClick={() => setConflictPanel(false)}
-        >
-          <div
-            className="w-[26rem] rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <p className="text-sm font-semibold text-danger">保存冲突</p>
-            <p className="mt-1.5 text-xs leading-5 text-text-2">
-              另一个会话保存了更新版本的画布。本地改动尚未写入服务器，请选择处理方式：
-            </p>
-            <div className="mt-3 flex flex-col gap-2">
-              <button
-                type="button"
-                disabled={resolving}
-                className="rounded-md border border-accent bg-accent-dim px-3 py-1.5 text-xs font-medium text-text transition-colors hover:bg-accent-soft disabled:opacity-40"
-                onClick={() => void resolveConflict("reload")}
-              >
-                载入服务器版本（丢弃本地未保存改动）
-              </button>
-              <button
-                type="button"
-                disabled={resolving}
-                className="rounded-md border border-hairline px-3 py-1.5 text-xs text-text-2 transition-colors hover:border-danger hover:text-danger disabled:opacity-40"
-                onClick={() => void resolveConflict("force")}
-              >
-                强制覆盖服务器（以本地为准）
-              </button>
-            </div>
-          </div>
-        </OverlayModal>
-      ) : null}
       {stylePanel ? (
         <OverlayModal
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"

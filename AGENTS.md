@@ -29,12 +29,14 @@ cd agent && uv run uvicorn main:app --port 8123 --host 127.0.0.1   # agent
 pnpm exec tsc --noEmit && pnpm exec eslint components lib app       # 检查
 node scripts/agui-client-test.mjs               # 两轮工具调用闭环（需 agent 在跑）
 node scripts/script-to-canvas-test.mjs          # 剧本→建卡全链路
+node scripts/shotlist-resume-compose-test.mjs   # 分镜表断点恢复/补缺图/一键成片（自建测试项目+mock，不出真实图）
 python agent/auth-smoke-test.py                 # 认证冒烟
 ```
 
 ## 架构铁律
 
-- **画风闸（juben image_style_required 范式）**：出图类操作（分镜批量出图 / 资产卡 AI 出图 / 拆解自动出图链）要求画风已选——全局画风或分镜表卡自身风格任一有值即可；无画风只拦视觉产物，文字流程（拆解/分镜表生成）与聊天自由出图不拦。前端三入口拦截 + `start_decompose_job` 兜底（visual_style 为空记 images_note）
+- **不做 fallback、不兼容历史版本**：除非用户主动提出，失败就报错让用户决策，不要静默降级/兜底方案；改数据结构、API、字段时直接改到位并迁移，不保留旧字段/旧格式的兼容读取（历史遗留值一律清除而非静默叠加）
+- **画风闸（juben image_style_required 范式）**：出图类操作（分镜批量出图 / 资产卡 AI 出图 / 拆解自动出图链）要求画风已选——唯一入口 = 底部坞「画风」（全局）。无画风只拦视觉产物，文字流程（拆解/分镜表生成）与聊天自由出图不拦。前端三入口拦截 + `start_decompose_job` 兜底（visual_style 为空记 images_note）。分镜表卡原 visualStyle 字段已无 UI，遗留值静默叠加不参与闸
 - 前端与 agent 间一切流量走**同源代理**（`next.config.ts` rewrites：`/agent-service*`、`/api/v1/*` → 127.0.0.1:8123）。密钥（AGENT/LANGFLOW/DMX key）只存在根目录 `.env.local`（agent 经 dotenv 读取），**绝不下发浏览器、绝不提交**
 - 主 Agent 是**瘦编排者**：系统提示只放"宪法"（`graph.py` SYSTEM_PROMPT），任务知识一律放 Langflow 技能或工具 docstring。新增能力 = 新工具/技能，不是加提示词
 - **LLM 生成类能力一律走 Langflow**（做成 flow，不在 agent 代码里直调模型/写死提示词）；唯一例外是聊天主循环本身（`graph.py` LangGraph 直连 DeepSeek）。约定与清单见下节「Langflow 工作流」

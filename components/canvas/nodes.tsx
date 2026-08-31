@@ -3,7 +3,6 @@
 import {
   Fragment,
   memo,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -44,6 +43,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  RotateCcw,
   ScanSearch,
   Shirt,
   Trash2,
@@ -75,6 +75,7 @@ import {
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
 import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
+import { Lightbox } from "./Lightbox";
 import { createPortal } from "react-dom";
 import OverlayModal from "./OverlayModal";
 import { composeVideos, uploadAsset } from "@/lib/projects";
@@ -84,7 +85,9 @@ import {
   getShotImageJob,
   startCharacterImageJob,
   startShotImageJob,
+  ShotJobGoneError,
   type DecomposedLook,
+  type ShotImageResult,
 } from "@/lib/shotlist";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
@@ -1305,264 +1308,6 @@ function AssetCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 图片放大预览：翻页 + 滚轮缩放（光标为锚）+ 拖拽平移 + 百分比读数
- *  （变换实现移植自 references/Storyboard-Copilot 的 useImageViewerTransform，
- *  直接内联以满足 react-hooks/refs 对 ref 访问位置的约束） */
-function Lightbox({
-  images,
-  index,
-  onIndex,
-  onClose,
-}: {
-  images: { src: string; title: string }[];
-  index: number;
-  onIndex: (i: number) => void;
-  onClose: () => void;
-}) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
-  const [dragging, setDragging] = useState(false);
-  const [pct, setPct] = useState(100);
-  const cssScaleRef = useRef(1);
-  const imgScaleRef = useRef(1);
-  const imgPosRef = useRef({ x: 0, y: 0 });
-  const tgtScaleRef = useRef(1);
-  const tgtPosRef = useRef({ x: 0, y: 0 });
-  const rafRef = useRef<number | null>(null);
-  const dragStartRef = useRef({ x: 0, y: 0 });
-  const movedRef = useRef(false);
-
-  const applyTransform = useCallback(() => {
-    const img = imageRef.current;
-    if (!img) return;
-    const s = imgScaleRef.current;
-    const p = imgPosRef.current;
-    img.style.transform = `scale(${s}) translate(${p.x / s}px, ${p.y / s}px)`;
-  }, []);
-
-  const resetView = useCallback(() => {
-    imgScaleRef.current = 1;
-    imgPosRef.current = { x: 0, y: 0 };
-    tgtScaleRef.current = 1;
-    tgtPosRef.current = { x: 0, y: 0 };
-    applyTransform();
-  }, [applyTransform]);
-
-  const displayScale = useCallback(
-    () => Math.round(cssScaleRef.current * imgScaleRef.current * 100),
-    [],
-  );
-
-  /** 点击坐标是否落在图片内容上（object-contain 的留白不算） */
-  const pointOnImage = useCallback((cx: number, cy: number): boolean => {
-    const img = imageRef.current;
-    if (!img?.naturalWidth || !img.naturalHeight) return false;
-    const rect = img.getBoundingClientRect();
-    const imgRatio = img.naturalWidth / img.naturalHeight;
-    const boxRatio = rect.width / rect.height;
-    let w: number;
-    let h: number;
-    let ox: number;
-    let oy: number;
-    if (imgRatio > boxRatio) {
-      w = rect.width;
-      h = rect.width / imgRatio;
-      ox = 0;
-      oy = (rect.height - h) / 2;
-    } else {
-      h = rect.height;
-      w = rect.height * imgRatio;
-      oy = 0;
-      ox = (rect.width - w) / 2;
-    }
-    const x = cx - rect.left;
-    const y = cy - rect.top;
-    return x >= ox && x <= ox + w && y >= oy && y <= oy + h;
-  }, []);
-
-  // 滚轮缩放（rAF 平滑逼近目标值）
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const isMac = /mac/i.test(navigator.userAgent);
-    const onWheel = (e: WheelEvent) => {
-      if (!pointOnImage(e.clientX, e.clientY)) return;
-      e.preventDefault();
-      if (!rafRef.current) {
-        tgtScaleRef.current = imgScaleRef.current;
-        tgtPosRef.current = imgPosRef.current;
-      }
-      const dm = e.deltaMode === 1 ? 0.05 : e.deltaMode ? 1 : 0.002;
-      let ns = tgtScaleRef.current * Math.pow(2, -e.deltaY * dm * (e.ctrlKey && isMac ? 10 : 1));
-      ns = Math.max(0.1, Math.min(10, ns));
-      const rect = container.getBoundingClientRect();
-      const mx = e.clientX - rect.left - rect.width / 2;
-      const my = e.clientY - rect.top - rect.height / 2;
-      const k = ns / tgtScaleRef.current;
-      tgtScaleRef.current = ns;
-      tgtPosRef.current = {
-        x: mx * (1 - k) + tgtPosRef.current.x * k,
-        y: my * (1 - k) + tgtPosRef.current.y * k,
-      };
-      if (!rafRef.current) {
-        const loop = () => {
-          const ts = tgtScaleRef.current;
-          const tp = tgtPosRef.current;
-          imgScaleRef.current += (ts - imgScaleRef.current) * 0.3;
-          imgPosRef.current = {
-            x: imgPosRef.current.x + (tp.x - imgPosRef.current.x) * 0.3,
-            y: imgPosRef.current.y + (tp.y - imgPosRef.current.y) * 0.3,
-          };
-          applyTransform();
-          const settled =
-            Math.abs(imgScaleRef.current - ts) < 0.001 &&
-            Math.abs(imgPosRef.current.x - tp.x) < 0.1 &&
-            Math.abs(imgPosRef.current.y - tp.y) < 0.1;
-          if (settled) {
-            imgScaleRef.current = ts;
-            imgPosRef.current = tp;
-            applyTransform();
-            rafRef.current = null;
-          } else {
-            rafRef.current = requestAnimationFrame(loop);
-          }
-        };
-        rafRef.current = requestAnimationFrame(loop);
-      }
-    };
-    container.addEventListener("wheel", onWheel, { passive: false });
-    return () => {
-      container.removeEventListener("wheel", onWheel);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-    };
-  }, [pointOnImage, applyTransform]);
-
-  // 百分比读数与键盘翻页/关闭
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft" && index > 0) onIndex(index - 1);
-      if (e.key === "ArrowRight" && index < images.length - 1) onIndex(index + 1);
-    };
-    window.addEventListener("keydown", onKey);
-    const t = setInterval(() => setPct(displayScale()), 250);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      clearInterval(t);
-    };
-  }, [onClose, onIndex, index, images.length, displayScale]);
-  // 切换图片时复位视图
-  useEffect(() => {
-    resetView();
-    movedRef.current = false;
-  }, [index, resetView]);
-
-  const cur = images[index];
-  return (
-    <OverlayModal
-      ref={containerRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
-      onMouseMove={(e) => {
-        if (!dragging) return;
-        movedRef.current = true;
-        const p = { x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y };
-        imgPosRef.current = p;
-        tgtPosRef.current = p;
-        applyTransform();
-      }}
-      onMouseUp={() => setDragging(false)}
-      onClick={() => {
-        if (!movedRef.current) onClose();
-        movedRef.current = false;
-      }}
-    >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        ref={imageRef}
-        src={cur?.src}
-        alt={cur?.title}
-        onLoad={() => {
-          const img = imageRef.current;
-          if (!img?.naturalWidth || !img.offsetWidth || !img.offsetHeight) return;
-          const ratio = img.naturalWidth / img.naturalHeight;
-          const boxRatio = img.offsetWidth / img.offsetHeight;
-          cssScaleRef.current =
-            (ratio > boxRatio ? img.offsetWidth : img.offsetHeight * ratio) /
-            img.naturalWidth;
-          resetView();
-        }}
-        onMouseDown={(e) => {
-          if (e.button !== 0 || !pointOnImage(e.clientX, e.clientY)) return;
-          e.preventDefault();
-          setDragging(true);
-          dragStartRef.current = {
-            x: e.clientX - imgPosRef.current.x,
-            y: e.clientY - imgPosRef.current.y,
-          };
-        }}
-        className={`max-h-full max-w-full rounded-lg object-contain shadow-2xl will-change-transform ${
-          dragging ? "cursor-grabbing" : "cursor-grab"
-        }`}
-        onClick={(e) => e.stopPropagation()}
-        draggable={false}
-      />
-      {images.length > 1 ? (
-        <>
-          <button
-            type="button"
-            title="上一张"
-            disabled={index === 0}
-            className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
-            onClick={(e) => {
-              e.stopPropagation();
-              onIndex(index - 1);
-            }}
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            title="下一张"
-            disabled={index === images.length - 1}
-            className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
-            onClick={(e) => {
-              e.stopPropagation();
-              onIndex(index + 1);
-            }}
-          >
-            ›
-          </button>
-          <span className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-3 py-1 text-xs text-white/80">
-            {index + 1} / {images.length}
-          </span>
-        </>
-      ) : null}
-      <div className="absolute bottom-4 left-4 flex items-center gap-1.5 rounded-full bg-black/50 px-3 py-1 text-xs text-white/80">
-        <span className="tabular-nums">{pct}%</span>
-        <button
-          type="button"
-          className="text-white/70 underline-offset-2 hover:text-white hover:underline"
-          onClick={(e) => {
-            e.stopPropagation();
-            resetView();
-          }}
-        >
-          重置
-        </button>
-        <span className="text-white/40">滚轮缩放 · 拖拽平移</span>
-      </div>
-      <button
-        type="button"
-        className="absolute right-4 top-4 rounded-full bg-white/10 p-2 text-white hover:bg-white/20"
-        onClick={onClose}
-      >
-        <X className="h-5 w-5" />
-      </button>
-    </OverlayModal>
-  );
-}
-
 /**
  * 生成进度（对标 viedeo-workflow 的"诚实进度"）：
  * elapsed/预期时长 推算百分比、封顶 95%（真实完成由 agent 回填 ready），
@@ -1739,8 +1484,10 @@ function ImageCard({ data, id, selected }: NodeProps) {
 
   return (
     <CardShell id={id} data={d} selected={selected} aspect={d.status === "ready"}>
+      {/* 媒体区弹性伸缩（flex-1 + min-h-0）：卡被拖小（Look 卡/手动缩放）
+          时跟着缩，object-contain 保图完整，内容永不溢出卡体 */}
       <div
-        className={`mt-1.5 flex h-36 min-h-36 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+        className={`mt-1.5 flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -2345,7 +2092,6 @@ function ComposeCard({ data, id, selected }: NodeProps) {
   const update = makeUpdater(id);
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
-  const projectId = useCanvasStore((s) => s.projectId);
   // 连线进来的视频源（video/compose 且有产物），新连的自动追加到序列尾
   const sources = useMemo(() => {
     const out: { sid: string; node: WingNode }[] = [];
@@ -2394,16 +2140,8 @@ function ComposeCard({ data, id, selected }: NodeProps) {
     }));
   };
 
-  const runCompose = async () => {
-    if (items.length === 0 || !projectId) {
-      update({ status: "error", errorMessage: projectId ? "没有可合成的视频源" : "无项目上下文，无法合成" });
-      return;
-    }
-    update({ status: "loading", errorMessage: undefined });
-    const res = await composeVideos(projectId, items.map((s) => s.node.data.videoUrl as string));
-    if (res?.url) update({ videoUrl: res.url, status: "ready" });
-    else update({ status: "error", errorMessage: "合成失败（源文件不兼容或服务端异常），可重试" });
-  };
+  // 合成走共用实现（与分镜表「一键成片」同一份取源/排序/落盘逻辑）
+  const runCompose = () => composeFromCard(id);
 
   return (
     <CardShell id={id} data={d} selected={selected}>
@@ -2681,8 +2419,9 @@ async function runAssetDecompose(opts: {
     const existing = nodes
       .filter(
         (n) =>
-          ["character", "scene", "prop"].includes(String(n.data.nodeType)) &&
-          n.data.title,
+          ["character", "scene", "prop", "costume"].includes(
+            String(n.data.nodeType),
+          ) && n.data.title,
       )
       .map((n) => ({ type: String(n.data.nodeType), name: n.data.title as string }));
     // 全自动（juben 范式）：拆解后 agent 直接跑角色出图链（定妆照→逐 Look），
@@ -2691,7 +2430,7 @@ async function runAssetDecompose(opts: {
     const styleReady = Boolean(
       (useCanvasStore.getState().projectStyle ?? "").trim(),
     );
-    const { assets, errors: decompErrors } = await decomposeAssets(
+    const { assets, errors: decompErrors, imagesNote } = await decomposeAssets(
       scriptSource,
       existing,
       {
@@ -2706,6 +2445,7 @@ async function runAssetDecompose(opts: {
     const styleNote = styleReady
       ? ""
       : "｜未选画风，未自动出图（底部坞「画风」选好后可在资产卡上单独出图）";
+    const imageNote = imagesNote ? `｜${imagesNote}` : "";
     const chars = assets;
     if (chars.length === 0) {
       opts.onMsg("剧本里没拆出可用资产");
@@ -2722,9 +2462,18 @@ async function runAssetDecompose(opts: {
       { type: "character" as const, label: "角色" },
       { type: "scene" as const, label: "场景" },
       { type: "prop" as const, label: "道具" },
+      { type: "costume" as const, label: "服饰" },
     ];
     const created: string[] = [];
     const groupIds: string[] = [];
+    // （角色迭代的）Look 卡登记：卡在角色迭代内建，服饰→Look 边等四类卡
+    // 全部建完后再连（服饰卡在角色之后才建，创建时连不上）
+    const lookJobs: {
+      charId: string;
+      charName: string;
+      looks: DecomposedLook[];
+    }[] = [];
+    const lookEdges: { lookId: string; costume: string }[] = [];
     const kindCounts: Record<string, number> = {};
     let existed = 0;
     // 资产卡放锚点卡左侧（推导方向：左入右出），组框贴着左缘往左排
@@ -2751,11 +2500,6 @@ async function runAssetDecompose(opts: {
         h: kh,
       });
       const ids: string[] = [];
-      const lookJobs: {
-        charId: string;
-        charName: string;
-        looks: DecomposedLook[];
-      }[] = [];
       fresh.forEach((a, i) => {
         const st2 = useCanvasStore.getState();
         const nid = st2.addNode({
@@ -2784,7 +2528,8 @@ async function runAssetDecompose(opts: {
       // 角色组框右侧竖排 Look 卡（findFreePosition 整块避让锚点卡等已有内容）
       for (const { charId, charName, looks } of lookJobs) {
         const st2 = useCanvasStore.getState();
-        const lfp = { w: 176, h: 132 };
+        // 尺寸与普通图片卡一致（用户要求通用容器）：特殊小卡会让媒体区溢出卡体
+        const lfp = NODE_FOOTPRINT.image;
         const lcols = Math.min(2, looks.length);
         const low = lcols * (lfp.w + 32) - 32;
         const loh = Math.ceil(looks.length / lcols) * (lfp.h + 32) - 32;
@@ -2813,12 +2558,29 @@ async function runAssetDecompose(opts: {
           // 只进 created（选中/闪烁用），不进 ids——ids 会成为角色组框的
           // 子节点（坐标转相对），Look 卡是画布层卡，不归组
           created.push(lid);
+          lookEdges.push({ lookId: lid, costume: (l.costume ?? "").trim() });
         });
       }
       const gid = useCanvasStore.getState().groupNodes(ids, label);
       if (gid) groupIds.push(gid);
       created.push(...ids);
       groupRight = origin.x - 80;
+    }
+    // 服饰绑定：Look 造型卡与服饰卡按名对上（互含即算）→ 连 服饰→Look 边，
+    // 表达「该造型的衣着结构以服饰卡为准」（juben 参考图2 协议的画布化）。
+    // 放在四类卡全部建完之后：服饰卡在角色之后才建，建 Look 时还不存在
+    for (const { lookId, costume } of lookEdges) {
+      if (!costume) continue;
+      const st4 = useCanvasStore.getState();
+      const cid = st4.nodes.find(
+        (n) =>
+          n.data.nodeType === "costume" &&
+          (() => {
+            const cn = (n.data.title ?? "").trim();
+            return Boolean(cn) && (cn.includes(costume) || costume.includes(cn));
+          })(),
+      );
+      if (cid) st4.connect({ source: cid.id, target: lookId });
     }
     if (created.length > 0) {
       const end = useCanvasStore.getState();
@@ -2926,7 +2688,8 @@ async function runAssetDecompose(opts: {
             (kindSummary ? `（${kindSummary}）` : "") +
             (existed ? `，${existed} 项已存在跳过` : "") +
             (failNote ? `｜部分类型失败：${failNote}` : "") +
-            styleNote
+            styleNote +
+            imageNote
         : `${existed} 项资产均已存在，未新建` +
             (failNote ? `｜部分类型失败：${failNote}` : "") +
             styleNote,
@@ -2934,6 +2697,96 @@ async function runAssetDecompose(opts: {
   } catch (exc) {
     opts.onError(exc instanceof Error ? exc.message : "拆解失败");
   }
+}
+
+/** 轮询批量出图任务：每张完成即回调 onItem。返回 done/timeout/gone
+ *  （gone=agent 重启丢内存任务表）。单次网络抖动不判死，超 deadline 才放弃。
+ *  批量出图与刷新恢复共用 */
+async function pollShotImageJob(
+  jobId: string,
+  onItem: (item: ShotImageResult) => void,
+  deadlineMs = 10 * 60 * 1000,
+): Promise<"done" | "timeout" | "gone"> {
+  const deadline = Date.now() + deadlineMs;
+  const applied = new Set<string>();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    let job;
+    try {
+      job = await getShotImageJob(jobId);
+    } catch (exc) {
+      if (exc instanceof ShotJobGoneError) return "gone";
+      if (Date.now() > deadline) return "timeout";
+      continue;
+    }
+    for (const item of job.images) {
+      if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
+      applied.add(item.rid);
+      onItem(item);
+    }
+    if (job.status === "done") return "done";
+    if (Date.now() > deadline) return "timeout";
+  }
+}
+
+/** 批量出图单张结果回填：rid → 行的 imageNodeId 节点置 ready/error。
+ *  行数据读 live store（批量轮询与刷新恢复共用，防闭包过期） */
+function applyShotImageItem(cardId: string, item: ShotImageResult) {
+  const st = useCanvasStore.getState();
+  const card = st.nodes.find((n) => n.id === cardId);
+  const rows = (card?.data.rows as ShotRow[] | undefined) ?? [];
+  const targetId = rows.find((r) => r.rid === item.rid)?.imageNodeId;
+  if (!targetId || !st.nodes.some((n) => n.id === targetId)) return;
+  st.updateNodeData(
+    targetId,
+    item.ok && item.imageUrl
+      ? { imageUrl: item.imageUrl, status: "ready" }
+      : { status: "error", errorMessage: item.error || "出图失败" },
+  );
+}
+
+/** agent 重启丢任务：把本卡所有停在 loading 的图卡置败（不静默悬挂）并清旗标 */
+function failLoadingShotImages(cardId: string, message: string) {
+  const st = useCanvasStore.getState();
+  const card = st.nodes.find((n) => n.id === cardId);
+  const rows = (card?.data.rows as ShotRow[] | undefined) ?? [];
+  for (const r of rows) {
+    if (!r.imageNodeId) continue;
+    const n = st.nodes.find((x) => x.id === r.imageNodeId);
+    if (n?.data.status === "loading")
+      st.updateNodeData(r.imageNodeId, { status: "error", errorMessage: message });
+  }
+  st.updateNodeData(cardId, { imageJobId: undefined });
+}
+
+/** 执行成片卡合成：按 itemIds 顺序取连线视频源 → compose → 产物写回卡上
+ *  （ComposeCard 按钮与分镜表「一键成片」共用） */
+async function composeFromCard(composeId: string) {
+  const st = useCanvasStore.getState();
+  const card = st.nodes.find((n) => n.id === composeId);
+  if (!card) return;
+  const order = (card.data.itemIds as string[] | undefined) ?? [];
+  const sources = st.edges
+    .filter((e) => e.target === composeId)
+    .map((e) => st.nodes.find((n) => n.id === e.source))
+    .filter((n): n is WingNode => Boolean(n?.data.videoUrl));
+  const items = [
+    ...sources
+      .filter((s) => order.includes(s.id))
+      .sort((a, b) => order.indexOf(a.id) - order.indexOf(b.id)),
+    ...sources.filter((s) => !order.includes(s.id)),
+  ];
+  if (items.length === 0 || !st.projectId) {
+    st.updateNodeData(composeId, {
+      status: "error",
+      errorMessage: st.projectId ? "没有可合成的视频源" : "无项目上下文，无法合成",
+    });
+    return;
+  }
+  st.updateNodeData(composeId, { status: "loading", errorMessage: undefined });
+  const res = await composeVideos(st.projectId, items.map((s) => s.data.videoUrl as string));
+  if (res?.url) st.updateNodeData(composeId, { videoUrl: res.url, status: "ready" });
+  else st.updateNodeData(composeId, { status: "error", errorMessage: "合成失败（源文件不兼容或服务端异常），可重试" });
 }
 
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
@@ -2944,13 +2797,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
-  const [shotCount, setShotCount] = useState(0);
-  const [durationSec, setDurationSec] = useState(0);
   const [rowSeq, setRowSeq] = useState(0);
-  const [openRows, setOpenRows] = useState<Set<string>>(() => new Set());
   const [imgGenerating, setImgGenerating] = useState(false);
   // 行选择：null = 全选（默认全选，取消勾选即收窄到子集）
   const [selRows, setSelRows] = useState<Set<string> | null>(null);
+  // 行列表滚动容器：加一行（按钮在顶部）后滚到新行
+  const rowsScrollRef = useRef<HTMLDivElement>(null);
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
   // 行内 @引用候选：rid=正在输入的行，draft=@ 后的过滤词，
@@ -2971,6 +2823,27 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     if (!autoGen) return;
     genRef.current();
   }, [autoGen]);
+  // 断点恢复：imageJobId 还在卡上 = 上一批出图没收尾（出图中刷新/关标签过）。
+  // 挂载后自动续轮询把结果收回来；agent 重启丢任务表（gone）→ 图卡置败不悬挂
+  const imageJobId = d?.imageJobId as string | undefined;
+  const resumeRef = useRef(false);
+  useEffect(() => {
+    if (!imageJobId || resumeRef.current || imgGenerating) return;
+    resumeRef.current = true;
+    setImgGenerating(true);
+    void (async () => {
+      const outcome = await pollShotImageJob(imageJobId, (item) =>
+        applyShotImageItem(id, item),
+      );
+      if (outcome === "gone")
+        failLoadingShotImages(id, "出图任务已失效（agent 重启），请重试失败镜头");
+      else if (outcome === "timeout")
+        failLoadingShotImages(id, "出图超时，请补缺图重试");
+      useCanvasStore.getState().updateNodeData(id, { imageJobId: undefined });
+      setImgGenerating(false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imageJobId, id]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const rows = d.rows ?? [];
@@ -3004,8 +2877,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     setGenError("");
     try {
       const next = await generateShotlist(scriptSource, {
-        shotCount: shotCount || undefined,
-        durationSeconds: durationSec || undefined,
         // 项目画风打底 + 分镜表风格叠加
         visualStyle:
           [
@@ -3078,6 +2949,13 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     setRowSeq(n);
     update({
       rows: [...rows, { rid: `m${n}`, action: "" }],
+    });
+    // 加一行按钮在列表顶部，新行落在末尾：滚过去让结果可见
+    requestAnimationFrame(() => {
+      rowsScrollRef.current?.scrollTo({
+        top: rowsScrollRef.current.scrollHeight,
+        behavior: "smooth",
+      });
     });
   };
   const removeRow = (rid: string) => {
@@ -3208,13 +3086,34 @@ function ShotListCard({ data, id, selected }: NodeProps) {
    *  批量生成（并发 3，不经聊天 LLM），结果回填各节点。行缩略图读关联节点 */
   const genShotImages = async (targets: { row: ShotRow; seq: number }[]) => {
     if (imgGenerating || targets.length === 0) return;
-    // 画风闸（juben 硬闸 / novanova 画布线「请先填写视觉风格」同款）：
-    // 全局画风或本卡风格至少有一，否则同批镜头图风格必然漂移
-    if (!projectStyle.trim() && !(d.visualStyle ?? "").trim()) {
-      setGenError(
-        "未选画风：请先在底部坞「画风」选项目画风（或在本卡「分镜表风格」填写）再出图",
-      );
+    // 画风闸（juben 硬闸同款）：只认全局画风——风格唯一入口在底部坞「画风」，
+    // 否则同批镜头图风格必然漂移
+    if (!projectStyle.trim()) {
+      setGenError("未选画风：请先在底部坞「画风」选项目画风再出图");
       return;
+    }
+    // 软闸（asset-first 守护）：无参考行将纯文生图、一致性打折；合并大额
+    // 确认为一次弹窗。空镜/氛围镜头属合法场景，故警告不硬拦
+    const unrefCount = targets.filter(
+      (t) => refImagesFor(t.row).length === 0,
+    ).length;
+    if (unrefCount > 0 || targets.length > 8) {
+      const parts: string[] = [];
+      if (unrefCount > 0)
+        parts.push(
+          `有 ${unrefCount} 镜没有可参考的资产设定图（未拆解/资产未出图/未@引用），将纯文生图、角色一致性打折`,
+        );
+      if (targets.length > 8)
+        parts.push(
+          `将批量出图 ${targets.length} 张（每张需数十秒并消耗出图额度）`,
+        );
+      const ask =
+        parts.join("；") +
+        "。" +
+        (unrefCount > 0
+          ? "建议先「拆解资产」并给资产出设定图。仍要继续？"
+          : "确认开始？");
+      if (!window.confirm(ask)) return;
     }
     const st = useCanvasStore.getState();
     const src = st.nodes.find((n) => n.id === id);
@@ -3297,34 +3196,16 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           };
         }),
       );
+      // jobId 落卡：出图中刷新/关标签后挂载续轮询收尾（完事即清）
+      useCanvasStore.getState().updateNodeData(id, { imageJobId: jobId });
       // 轮询任务：每张完成即点亮对应节点（ready/error），全部完成才收尾
-      const applied = new Set<string>();
-      const deadline = Date.now() + 10 * 60 * 1000;
-      for (;;) {
-        await new Promise((r) => setTimeout(r, 2500));
-        let job;
-        try {
-          job = await getShotImageJob(jobId);
-        } catch {
-          // 单次轮询失败（网络/代理抖动）不判死，超时兜底
-          if (Date.now() > deadline) break;
-          continue;
-        }
-        const ust = useCanvasStore.getState();
-        for (const item of job.images) {
-          if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
-          applied.add(item.rid);
-          const j = jobs.find((x) => x.rid === item.rid);
-          if (!j) continue;
-          ust.updateNodeData(
-            j.nodeId,
-            item.ok && item.imageUrl
-              ? { imageUrl: item.imageUrl, status: "ready" }
-              : { status: "error", errorMessage: item.error || "出图失败" },
-          );
-        }
-        if (job.status === "done" || Date.now() > deadline) break;
-      }
+      const outcome = await pollShotImageJob(jobId, (item) =>
+        applyShotImageItem(id, item),
+      );
+      if (outcome === "gone")
+        failLoadingShotImages(id, "出图任务已失效（agent 重启），请重试失败镜头");
+      else if (outcome === "timeout")
+        failLoadingShotImages(id, "出图超时（部分镜头可能仍在跑），可补缺图重试");
     } catch (exc) {
       const msg = exc instanceof Error ? exc.message : "批量出图失败";
       setGenError(msg);
@@ -3333,29 +3214,15 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         ust.updateNodeData(j.nodeId, { status: "error", errorMessage: msg });
       }
     } finally {
+      useCanvasStore.getState().updateNodeData(id, { imageJobId: undefined });
       setImgGenerating(false);
     }
   };
 
   /** 展开态切换（收起光影/音效/最终提示词等完整字段） */
-  const toggleRow = (rid: string) => {
-    setOpenRows((prev) => {
-      const next = new Set(prev);
-      if (next.has(rid)) next.delete(rid);
-      else next.add(rid);
-      return next;
-    });
-  };
 
   /** 按本行字段合成最终提示词（novanova 八段式的轻量版；已有则确认覆盖，
    *  与竞品一致：不自动联动，手动触发） */
-  const synthRow = (rid: string) => {
-    const r = rows.find((x) => x.rid === rid);
-    if (!r) return;
-    if (r.finalPrompt?.trim() && !window.confirm("已有最终提示词，覆盖合成？"))
-      return;
-    setRow(rid, { finalPrompt: composeShotPrompt(r, (d.visualStyle ?? "").trim()) });
-  };
 
   const copyRow = (rid: string) => {
     const i = rows.findIndex((r) => r.rid === rid);
@@ -3390,13 +3257,102 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const selectedGenRows =
     selRows === null ? genableRows : genableRows.filter((r) => selRows.has(r.rid));
 
+  // 批次聚合：行的图卡实时状态汇总（批量出图/单镜重跑/刷新恢复共用一份数据）
+  const imgAgg = (() => {
+    let ready = 0;
+    let loading = 0;
+    let error = 0;
+    for (const r of rows) {
+      const n = r.imageNodeId ? nodes.find((x) => x.id === r.imageNodeId) : null;
+      if (!n) continue;
+      if (n.data.status === "loading") loading++;
+      else if (n.data.status === "error") error++;
+      else if (n.data.status === "ready") ready++;
+    }
+    return { ready, loading, error };
+  })();
+  // 缺图行 = 可出图但没图卡/图卡失败（补缺图一键只打这些，跳过已完成的）
+  const missingRows = genableRows.filter((r) => {
+    const n = r.imageNodeId ? nodes.find((x) => x.id === r.imageNodeId) : null;
+    return !n || (n.data.status !== "ready" && n.data.status !== "loading");
+  });
+  // 相邻镜头视频（双向连线、有产物；成片卡除外），画布从左到右即镜头序
+  const videoSources = (() => {
+    const seen = new Set<string>();
+    const out: { id: string; x: number; y: number }[] = [];
+    for (const e of edges) {
+      if (e.source !== id && e.target !== id) continue;
+      const other = e.source === id ? e.target : e.source;
+      if (seen.has(other)) continue;
+      seen.add(other);
+      const n = nodes.find((x) => x.id === other);
+      if (!n || !n.data.videoUrl || n.data.nodeType === "compose") continue;
+      out.push({ id: n.id, x: n.position.x, y: n.position.y });
+    }
+    return out.sort((a, b) => a.x - b.x || a.y - b.y);
+  })();
+
+  /** 一键成片：相邻镜头视频按画布从左到右 → 建/复用成片卡依序连线 → 立即合成
+   *  （画布阅读序即镜头序，viedeo-workflow 同款；顺序可在成片卡里微调） */
+  const composeShots = async () => {
+    if (videoSources.length < 2) {
+      setGenError("成片至少要 2 段镜头视频：把视频卡连到本卡（双向连线均可）再试");
+      return;
+    }
+    const st = useCanvasStore.getState();
+    // 相邻已有成片卡就复用，否则本卡右侧新建
+    let composeId: string | null = null;
+    for (const e of st.edges) {
+      if (e.source !== id && e.target !== id) continue;
+      const other = e.source === id ? e.target : e.source;
+      const n = st.nodes.find((x) => x.id === other);
+      if (n?.data.nodeType === "compose") {
+        composeId = n.id;
+        break;
+      }
+    }
+    if (!composeId) {
+      const created = createConnectedNode(id, "compose");
+      if (!created) return;
+      composeId = created;
+    }
+    const ordered = videoSources.map((v) => v.id);
+    const cst = useCanvasStore.getState();
+    for (const vid of ordered) {
+      if (!cst.edges.some((e) => e.source === vid && e.target === composeId))
+        cst.connect({ source: vid, target: composeId });
+    }
+    cst.updateNodeData(composeId, { itemIds: ordered });
+    cst.selectNodes([composeId]);
+    cst.flashNodes([composeId]);
+    window.dispatchEvent(
+      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [composeId] } }),
+    );
+    setGenError("");
+    await composeFromCard(composeId);
+  };
+
   return (
     <CardShell id={id} data={d} selected={selected}>
-      <div className="ws-detail nowheel min-h-0 flex-1 overflow-auto">
+      {/* 行编辑工具条（贴列表顶部）：加一行是编辑动作，跟着列表走 */}
+      <div className="ws-detail nodrag nowheel mb-1 flex items-center">
+        <button
+          type="button"
+          className="nodrag flex items-center gap-0.5 rounded border border-dashed border-hairline px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text"
+          onClick={(e) => {
+            e.stopPropagation();
+            addRow();
+          }}
+        >
+          <Plus className="h-3 w-3" />
+          加一行
+        </button>
+      </div>
+      <div ref={rowsScrollRef} className="ws-detail nowheel min-h-0 flex-1 overflow-auto">
         <div className="flex flex-col gap-1">
           {rows.length === 0 ? (
             <p className="rounded-md border border-dashed border-hairline px-2 py-4 text-center text-[11px] text-text-4">
-              连线剧本卡后点下方「生成分镜」，或手动「加一行」
+              从剧本卡「拆分镜表」生成、在下方对话框让 AI 写，或手动「加一行」
             </p>
           ) : null}
           {rows.map((r, i) => {
@@ -3407,6 +3363,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               (r.imageUrl as string | undefined) ??
               (linked?.data.imageUrl as string | undefined);
             const thumbLoading = linked?.data.status === "loading";
+            // 出图提示词预览：手写覆盖优先，否则按本行字段实时合成（改动字段即联动）
+            const autoPrompt = composeShotPrompt(r, (d.visualStyle ?? "").trim());
+            const overridden = (r.finalPrompt ?? "").trim() !== "";
             const thumbError = linked?.data.status === "error";
             return (
             <div
@@ -3448,7 +3407,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                         ? "正在出图…"
                         : thumbError
                           ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
-                          : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
+                          : refImagesFor(r).length === 0
+                            ? "为这个镜头出图。注意：此镜未引用已出图的资产设定图，将纯文生图、一致性弱（可先拆解资产并出图，或行内 @资产名）"
+                            : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
                     }
                     className={`nodrag grid h-10 w-14 shrink-0 place-items-center rounded border border-dashed transition-colors hover:border-accent hover:text-text-2 ${
                       thumbError
@@ -3475,9 +3436,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     <ShotSelect label="景别" value={r.shotSize ?? ""} options={SHOT_SIZES} onSave={(v) => setRow(r.rid, { shotSize: v })} />
                     <ShotChip label="运镜" value={r.cameraMove ?? ""} onSave={(v) => setRow(r.rid, { cameraMove: v })} />
                     <ShotChip label="时长" value={r.duration ?? ""} onSave={(v) => setRow(r.rid, { duration: v })} />
-                    {r.lighting ? <ShotChip label="光影" value={r.lighting} onSave={(v) => setRow(r.rid, { lighting: v })} /> : null}
+                    <ShotChip label="光影" value={r.lighting ?? ""} onSave={(v) => setRow(r.rid, { lighting: v })} />
+                    <ShotChip label="音效" value={r.sound ?? ""} onSave={(v) => setRow(r.rid, { sound: v })} />
                   </div>
-                  <Editable
+                  <div className="flex items-start gap-1">
+                    <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">画面</span>
+                    <Editable
                     value={r.action ?? ""}
                     onSave={(action) => {
                       setRow(r.rid, { action });
@@ -3510,181 +3474,129 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     multiline
                     always
                     placeholder="画面描述（谁、在哪、做什么，@资产名 引用角色）"
-                    className="max-h-14 overflow-auto text-[11px] leading-relaxed text-text-2"
+                    className="min-w-0 max-h-14 flex-1 overflow-auto text-[11px] leading-relaxed text-text-2"
                   />
-
-                  <Editable
+                  </div>
+                  <div className="flex items-start gap-1">
+                    <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">旁白</span>
+                    <Editable
                     value={r.dialogue ?? ""}
                     onSave={(dialogue) => setRow(r.rid, { dialogue })}
                     multiline
                     always
                     placeholder="台词 / 旁白"
-                    className="max-h-9 overflow-auto border-l-2 border-hairline pl-1.5 text-[11px] italic leading-relaxed text-text-3"
+                    className="min-w-0 max-h-9 flex-1 overflow-auto border-l-2 border-hairline pl-1.5 text-[11px] italic leading-relaxed text-text-3"
                   />
-                </div>
-                <div className="flex shrink-0 items-start gap-1">
-                  <button
-                    type="button"
-                    title={openRows.has(r.rid) ? "收起完整字段" : "展开完整字段（光影/音效/最终提示词）"}
-                    className={`nodrag mt-1 shrink-0 transition-colors hover:text-text ${
-                      openRows.has(r.rid) || r.lighting || r.sound || r.finalPrompt?.trim()
-                        ? "text-accent"
-                        : "text-text-4"
-                    }`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleRow(r.rid);
-                    }}
-                  >
-                    {openRows.has(r.rid) ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
-                  </button>
-                  <div className="flex flex-col items-center gap-0.5 opacity-0 transition-opacity group-hover/row:opacity-100">
-                    <button
-                      type="button"
-                      title={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"}
-                      className="nodrag text-text-4 hover:text-accent"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void genShotImages([{ row: r, seq: i }]);
-                      }}
-                    >
-                      <RefreshCw className="h-3 w-3" />
-                    </button>
-                    <button
-                      type="button"
-                      title="删除此行"
-                      className="nodrag text-text-4 hover:text-danger"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        removeRow(r.rid);
-                      }}
-                    >
-                      <X className="h-3 w-3" />
-                    </button>
                   </div>
-                </div>
-              </div>
-              {openRows.has(r.rid) ? (
-                <div className="mt-1 flex flex-col gap-1 border-t border-hairline-soft pt-1">
-                  <div className="flex flex-wrap items-center gap-1">
-                    <ShotChip label="光影氛围" value={r.lighting ?? ""} onSave={(v) => setRow(r.rid, { lighting: v })} />
-                    <ShotChip label="音效" value={r.sound ?? ""} onSave={(v) => setRow(r.rid, { sound: v })} />
-                    <span className="text-[9px] text-text-4">
-                      画面描述里 @角色名 可直连角色卡做一致性参考
-                    </span>
-                  </div>
-                  <div className="flex items-start gap-1">
-                    <Editable
-                      value={r.finalPrompt ?? ""}
-                      onSave={(finalPrompt) => setRow(r.rid, { finalPrompt })}
-                      multiline
-                      always
-                      placeholder="最终提示词（手写，或点右侧按本行字段合成）"
-                      className="max-h-28 min-h-0 flex-1 overflow-auto text-[11px] leading-relaxed text-text-2"
-                    />
+                  {overridden ? (
+                    <div className="flex items-start gap-1 rounded border border-hairline-soft bg-surface-2/40 p-1">
+                      <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">出图</span>
+                      <Editable
+                        value={r.finalPrompt!}
+                        onSave={(finalPrompt) =>
+                          setRow(r.rid, {
+                            finalPrompt: finalPrompt.trim() ? finalPrompt : undefined,
+                          })
+                        }
+                        multiline
+                        always
+                        placeholder="出图提示词"
+                        className="max-h-28 min-h-0 flex-1 overflow-auto text-[10px] leading-relaxed text-text-3"
+                      />
+                      <button
+                        type="button"
+                        title="清除自定义，恢复按本行字段自动合成"
+                        className="nodrag mt-0.5 shrink-0 text-text-4 transition-colors hover:text-accent"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setRow(r.rid, { finalPrompt: undefined });
+                        }}
+                      >
+                        <RotateCcw className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ) : (
                     <button
                       type="button"
-                      title="按本行字段合成最终提示词（已有则询问覆盖）"
-                      className="nodrag mt-0.5 shrink-0 text-text-4 transition-colors hover:text-accent"
+                      title="自定义发给图像模型的提示词（默认按本行字段自动合成，一般不用手写）"
+                      className="nodrag flex w-fit items-center gap-1 rounded border border-dashed border-hairline px-1.5 py-0.5 text-[10px] text-text-4 transition-colors hover:border-accent hover:text-text"
                       onClick={(e) => {
                         e.stopPropagation();
-                        synthRow(r.rid);
+                        setRow(r.rid, { finalPrompt: autoPrompt });
                       }}
                     >
                       <Sparkles className="h-3 w-3" />
+                      自定义出图提示词
                     </button>
-                  </div>
-                  <div className="flex items-center gap-2 text-text-4">
-                    <button type="button" title="复制此行（排到下一行，不带出图）" className="nodrag flex items-center gap-0.5 text-[10px] transition-colors hover:text-text" onClick={(e) => { e.stopPropagation(); copyRow(r.rid); }}>
-                      <Copy className="h-3 w-3" /> 复制
-                    </button>
-                    <button type="button" title="上移" className="nodrag transition-colors hover:text-text disabled:opacity-30" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, -1); }}>
-                      <ChevronUp className="h-3 w-3" />
-                    </button>
-                    <button type="button" title="下移" className="nodrag transition-colors hover:text-text disabled:opacity-30" disabled={i === rows.length - 1} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, 1); }}>
-                      <ChevronDown className="h-3 w-3" />
-                    </button>
-                  </div>
+                  )}
                 </div>
-              ) : null}
+                <div className="flex shrink-0 items-start gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
+                  <button
+                    type="button"
+                    title={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"}
+                    className="nodrag text-text-4 hover:text-accent"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void genShotImages([{ row: r, seq: i }]);
+                    }}
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                  </button>
+                  <button type="button" title="复制此行（排到下一行，不带出图）" className="nodrag text-text-4 hover:text-text" onClick={(e) => { e.stopPropagation(); copyRow(r.rid); }}>
+                    <Copy className="h-3 w-3" />
+                  </button>
+                  <button type="button" title="上移" className="nodrag text-text-4 hover:text-text disabled:opacity-30" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, -1); }}>
+                    <ChevronUp className="h-3 w-3" />
+                  </button>
+                  <button type="button" title="下移" className="nodrag text-text-4 hover:text-text disabled:opacity-30" disabled={i === rows.length - 1} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, 1); }}>
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    title="删除此行"
+                    className="nodrag text-text-4 hover:text-danger"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeRow(r.rid);
+                    }}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              </div>
             </div>
             );
           })}
         </div>
       </div>
-      {/* 一键生成分镜（open-ai-canvas 的卡内 composer 模式）：来源=连线剧本卡
-          或本卡正文；视觉风格全局约束；参数镜头数/单镜时长，直连 langflow 写回 rows */}
-      <div className="ws-detail nodrag nowheel mt-1.5 flex items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
-        <Sparkles className="h-3 w-3 shrink-0 text-accent" />
-        <span className="min-w-0 flex-1 truncate text-text-4" title={scriptSource.slice(0, 120)}>
-          {scriptSource ? "已连剧本" : "连接剧本卡或在本卡正文粘贴文本"}
-        </span>
-        <input
-          value={d.visualStyle ?? ""}
-          onChange={(e) => update({ visualStyle: e.target.value })}
-          placeholder="分镜表风格（可选）"
-          title="本表视觉风格，叠加在项目画风之上（底部坞「画风」可设全局风格）"
-          className="nodrag nowheel w-24 shrink-0 rounded border border-hairline bg-surface-1 px-1 py-0.5 text-[10px] text-text-2 outline-none focus:border-accent placeholder:text-text-4"
-        />
-        <select
-          value={shotCount}
-          onChange={(e) => setShotCount(Number(e.target.value))}
-          className="nodrag nowheel rounded border border-hairline bg-surface-1 px-1 py-0.5 text-[10px] text-text-2 outline-none"
-          title="期望镜头数（自动=由 AI 按剧情密度决定）"
-        >
-          <option value={0}>镜头·自动</option>
-          <option value={4}>4 镜</option>
-          <option value={6}>6 镜</option>
-          <option value={8}>8 镜</option>
-          <option value={12}>12 镜</option>
-        </select>
-        <select
-          value={durationSec}
-          onChange={(e) => setDurationSec(Number(e.target.value))}
-          className="nodrag nowheel rounded border border-hairline bg-surface-1 px-1 py-0.5 text-[10px] text-text-2 outline-none"
-          title="单镜时长（自动=3~8 秒按镜头节奏）"
-        >
-          <option value={0}>时长·自动</option>
-          <option value={3}>3s</option>
-          <option value={5}>5s</option>
-          <option value={8}>8s</option>
-        </select>
-        <button
-          type="button"
-          disabled={decomposing || !scriptSource}
-          title="用拆解技能从剧本提取角色/场景/道具 → 自动建资产卡并连线回本卡。出分镜图前先给资产出设定图，一致性最好"
-          className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-          onClick={(e) => {
-            e.stopPropagation();
-            void decompose();
-          }}
-        >
-          {decomposing ? "拆解中…" : "拆解资产"}
-        </button>
-        <button
-          type="button"
-          disabled={!scriptSource || generating}
-          className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-2 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
-          onClick={(e) => {
-            e.stopPropagation();
-            void generate();
-          }}
-        >
-          {generating ? "生成中…" : rows.length > 0 ? "重新生成" : "生成分镜"}
-        </button>
-      </div>
+      {generating ? (
+        <div className="ws-detail nodrag nowheel mt-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
+          分镜生成中…（从剧本卡「拆分镜表」或下方对话框触发）
+        </div>
+      ) : null}
       {decomposeMsg ? (
         <p className="ws-detail mt-1 text-[10px] text-text-3">{decomposeMsg}</p>
       ) : null}
       {genError ? (
         <p className="ws-detail mt-1 text-[10px] text-danger">{genError}</p>
       ) : null}
+      {/* 底栏 = 统计 + 行操作 + 管线动作（左→右即管线顺序：拆解资产 → 出图；
+          出图降级样式+无参考行/大额确认防误触） */}
       <div className="mt-1.5 flex items-center justify-between border-t border-hairline pt-1.5 text-[10px] text-text-4">
         <span className="min-w-0 truncate">
           {rows.length} 镜 · 总时长约 {totalDur > 0 ? `${Math.round(totalDur * 10) / 10}s` : "—"}
+          {imgAgg.ready + imgAgg.loading + imgAgg.error > 0 ? (
+            <>
+              {" · "}
+              已出图 {imgAgg.ready}
+              {imgAgg.loading > 0 ? ` · 出图中 ${imgAgg.loading}` : ""}
+              {imgAgg.error > 0 ? (
+                <span className="text-danger"> · 失败 {imgAgg.error}</span>
+              ) : null}
+            </>
+          ) : null}
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
-          {/* 行级操作区：勾选行批量出图 / 加行（与行勾选列同一语义层） */}
           <label
             className="flex cursor-pointer items-center gap-1 transition-colors hover:text-text"
             title={selRows === null ? "全选（取消勾选可自选行）" : "全选"}
@@ -3697,11 +3609,24 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             />
             全选
           </label>
+          <span className="mx-0.5 h-3.5 w-px bg-hairline" />
+          <button
+            type="button"
+            disabled={decomposing || !scriptSource}
+            title="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡并出资产图（画风闸内自动链）。出分镜图前先给资产出设定图，一致性最好"
+            className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            onClick={(e) => {
+              e.stopPropagation();
+              void decompose();
+            }}
+          >
+            {decomposing ? "拆解中…" : "拆解资产"}
+          </button>
           <button
             type="button"
             disabled={imgGenerating || selectedGenRows.length === 0}
-            title="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）"
-            className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-1.5 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
+            title="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
+            className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             onClick={(e) => {
               e.stopPropagation();
               void genShotImages(selectedGenRows.map((row) => ({ row, seq: rows.indexOf(row) })));
@@ -3709,19 +3634,36 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           >
             {imgGenerating ? "出图中…" : `出图·${selectedGenRows.length} 镜`}
           </button>
+          {missingRows.length > 0 ? (
+            <button
+              type="button"
+              disabled={imgGenerating}
+              title={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`}
+              className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={(e) => {
+                e.stopPropagation();
+                void genShotImages(missingRows.map((row) => ({ row, seq: rows.indexOf(row) })));
+              }}
+            >
+              补缺图·{missingRows.length}
+            </button>
+          ) : null}
           <button
             type="button"
-            className="nodrag flex items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text"
+            disabled={videoSources.length < 2}
+            title="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
+            className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             onClick={(e) => {
               e.stopPropagation();
-              addRow();
+              void composeShots();
             }}
           >
-            <Plus className="h-3 w-3" />
-            加一行
+            <Combine className="mr-0.5 inline h-3 w-3 align-[-1px]" />
+            成片
           </button>
         </span>
       </div>
+
       {mention
         ? createPortal(
             <div
@@ -3761,7 +3703,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       <img
                         src={n.data.imageUrl}
                         alt=""
-                        className="h-6 w-8 rounded object-cover"
+                        className="h-6 w-8 rounded bg-surface-2 object-contain"
                       />
                     ) : (
                       <span className="grid h-6 w-8 place-items-center rounded bg-surface-2 text-[8px] text-text-4">

@@ -1,8 +1,8 @@
 "use client";
 
 /**
- * 画布节点大纲面板（对标 novanova canvas-navigation-panel）：按类型分组的
- * 节点清单 + 计数，点击选中并运镜定位；搜索过滤。补足小地图之外的结构化导航。
+ * 画布导航面板（对标 novanova canvas-navigation-panel）：按类型分组的
+ * 卡片清单 + 计数，点击选中并运镜定位；搜索过滤。补足小地图之外的结构化导航。
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -96,7 +96,6 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
       st.replaceCanvas(clean.nodes, clean.edges, st.viewport);
       useCanvasStore.setState({
         projectStyle: String(data.visualStyle ?? ""),
-        rev: 0, // 导入视为覆盖意图：自动保存跳过乐观检直接写回服务器
         saveState: "idle",
       });
       reportError(
@@ -123,7 +122,7 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
       <div className="flex items-center justify-between gap-2">
         <h3 className="flex items-center gap-1.5 text-xs font-semibold text-text">
           <ListTree className="h-3.5 w-3.5" />
-          画布大纲
+          画布导航
         </h3>
         <button
           type="button"

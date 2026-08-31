@@ -17,6 +17,9 @@ importers:
       '@copilotkit/react-ui':
         specifier: ^1.69.3
         version: 1.69.3(@ag-ui/core@0.0.57)(@types/mdast@4.0.4)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(graphql@16.14.2)(micromark-util-types@2.0.2)(micromark@4.0.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(zod@3.25.76)
+      '@copilotkit/runtime-client-gql':
+        specifier: 1.69.3
+        version: 1.69.3(@ag-ui/core@0.0.57)(graphql@16.14.2)(react@19.2.8)
       '@fontsource-variable/noto-serif-sc':
         specifier: ^5.3.0
         version: 5.3.0
@@ -69,6 +72,9 @@ importers:
       eslint-config-next:
         specifier: 16.3.3
         version: 16.3.3(@typescript-eslint/parser@8.68.0(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3))(eslint@9.39.5(jiti@2.7.0))(typescript@5.9.3)
+      playwright:
+        specifier: ^1.62.1
+        version: 1.62.1
       tailwindcss:
         specifier: ^4
         version: 4.3.3
@@ -2149,6 +2155,11 @@ packages:
     resolution: {integrity: sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==}
     engines: {node: '>=0.4.x'}
 
+  fsevents@2.3.2:
+    resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
+    engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
+    os: [darwin]
+
   function-bind@1.1.2:
     resolution: {integrity: sha512-7XHNxH7qX9xG5mIwxkhumTox/MIRNcOgDrxWsMt2pAr23WHp6MrRlN7FBSFpCpr+oVO0F744iUgR82nJMfG2SA==}
 
@@ -3128,6 +3139,16 @@ packages:
   picomatch@4.0.7:
     resolution: {integrity: sha512-qcJu88Q2IWqJsDD529JKMdwGm/dvInW4HvQnRwiH9JtihJvzGOscDtHE3x1pBKeUOTysQ8kVmLnJ2kJu7yhcGA==}
     engines: {node: '>=12'}
+
+  playwright-core@1.62.1:
+    resolution: {integrity: sha512-wPYSwEBJY9GHraISXqyqtx0na0LpO3XEX7jNDhntbex7tzUS7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw==}
+    engines: {node: '>=20'}
+    hasBin: true
+
+  playwright@1.62.1:
+    resolution: {integrity: sha512-0M+L3LAD8/nm554LOla9Ayx0j0tmFZ0FBcoQ7F1VuVHpM/XpiC8RcDzBQB8W5+hA8L22THxELzeF+2WcUzvcLg==}
+    engines: {node: '>=20'}
+    hasBin: true
 
   points-on-curve@0.2.0:
     resolution: {integrity: sha512-0mYKnYYe9ZcqMCWhUjItv/oHjvgEsfKvnUTg8sAtnHr3GVy7rGkXCb6d5cSyqrWqL4k81b9CPg3urd+T7aop3A==}
@@ -6187,6 +6208,9 @@ snapshots:
 
   format@0.2.2: {}
 
+  fsevents@2.3.2:
+    optional: true
+
   function-bind@1.1.2: {}
 
   function.prototype.name@1.2.0:
@@ -7554,6 +7578,14 @@ snapshots:
   picomatch@2.3.2: {}
 
   picomatch@4.0.7: {}
+
+  playwright-core@1.62.1: {}
+
+  playwright@1.62.1:
+    dependencies:
+      playwright-core: 1.62.1
+    optionalDependencies:
+      fsevents: 2.3.2
 
   points-on-curve@0.2.0: {}
 

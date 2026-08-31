@@ -4,9 +4,11 @@ import { useEffect, useRef, useState } from "react";
 import {
   useCoAgent,
   useCopilotAction,
+  useCopilotChat,
   useCopilotChatHeadless_c,
   useCopilotReadable,
 } from "@copilotkit/react-core";
+import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
 import {
@@ -131,6 +133,9 @@ export default function CanvasAgentBridge() {
 
   // image 卡"点击重试" → 转成聊天指令让 agent 重新生成该资产
   const { sendMessage, isLoading } = useCopilotChatHeadless_c();
+  // 文本指令发送走 v1 开源钩子：_c 的 sendMessage 对纯文本消息静默不跑
+  // （Intelligence 层特性门控），侧栏纯文本也走的 v1 通道（ChatInput onSend）
+  const { appendMessage } = useCopilotChat();
 
   // 生成中断恢复（对标 viedeo-workflow useGenerationRecovery）：刷新页面会杀掉
   // agent 运行。挂载后聊天空闲时，把仍在 loading 的卡标记为"生成中断"，
@@ -160,18 +165,17 @@ export default function CanvasAgentBridge() {
         status: "loading",
         errorMessage: undefined,
       });
-      void sendMessage(
-        {
+      void appendMessage(
+        new TextMessage({
           id: `retry_${nodeId}_${Date.now()}`,
-          role: "user",
+          role: Role.User,
           content: `重新生成「${node.data.title}」的${what}`,
-        },
-        { followUp: true },
+        }),
       );
     };
     window.addEventListener(RETRY_GENERATION_EVENT, onRetry);
     return () => window.removeEventListener(RETRY_GENERATION_EVENT, onRetry);
-  }, [sendMessage]);
+  }, [appendMessage]);
 
   // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
   useEffect(() => {
@@ -191,6 +195,47 @@ export default function CanvasAgentBridge() {
             `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 300)}`,
         )
         .join("\n");
+      if (node.data.nodeType === "shotlist") {
+        // 分镜表修改指令（对话式重生成/增删行）：带当前行清单与上游剧本，
+        // agent 用分镜生成技能重写或 canvas_ops 直接改 rows
+        const rows = (node.data.rows ?? []) as { action?: string }[];
+        const rowLines = rows
+          .slice(0, 20)
+          .map((r, i) => `${i + 1}. ${(r.action ?? "").slice(0, 60)}`)
+          .join("\n");
+        const scriptUp = st.edges
+          .filter((e2) => e2.target === nodeId)
+          .map((e2) => st.nodes.find((n) => n.id === e2.source))
+          .filter((n): n is NonNullable<typeof n> => Boolean(n))
+          .find((n) => n.data.nodeType === "script");
+        const content = [
+          `【分镜表修改】针对分镜表卡 nodeId=${nodeId}（共 ${rows.length} 行）：`,
+          rowLines ? `当前分镜行：\n${rowLines}${rows.length > 20 ? "\n…" : ""}` : "（空表）",
+          scriptUp
+            ? `上游剧本（整表重写时以此为源）：\n${(scriptUp.data.body ?? "").slice(0, 4000)}`
+            : "",
+          refIds
+            .map((rid) => st.nodes.find((n) => n.id === rid))
+            .filter((n): n is NonNullable<typeof n> => Boolean(n))
+            .map(
+              (n) =>
+                `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」`,
+            )
+            .join("\n"),
+          `用户指令：${prompt || "按剧本重新生成整表"}`,
+          "整表重写时调用分镜生成技能，完成后用 canvas_ops update_node 把新 rows 写回该卡；小幅增删改直接 canvas_ops update_node 修改 rows，不要动其他卡。",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        void appendMessage(
+          new TextMessage({
+            id: `shotlist_gen_${nodeId}_${Date.now()}`,
+            role: Role.User,
+            content,
+          }),
+        );
+        return;
+      }
       if (kind === "text") {
         // 正文撰写：不置 loading（文本卡无该状态），agent 直接 update_node 写 body
         const refLines = refIds
@@ -214,13 +259,12 @@ export default function CanvasAgentBridge() {
         ]
           .filter(Boolean)
           .join("\n");
-        void sendMessage(
-          {
+        void appendMessage(
+          new TextMessage({
             id: `gen_${nodeId}_${Date.now()}`,
-            role: "user",
+            role: Role.User,
             content,
-          },
-          { followUp: true },
+          }),
         );
         return;
       }
@@ -271,18 +315,17 @@ export default function CanvasAgentBridge() {
       ]
         .filter(Boolean)
         .join("\n");
-      void sendMessage(
-        {
+      void appendMessage(
+        new TextMessage({
           id: `gen_${nodeId}_${Date.now()}`,
-          role: "user",
+          role: Role.User,
           content,
-        },
-        { followUp: true },
+        }),
       );
     };
     window.addEventListener(GENERATE_EVENT, onGenerate);
     return () => window.removeEventListener(GENERATE_EVENT, onGenerate);
-  }, [sendMessage]);
+  }, [appendMessage]);
 
   // 视频卡"AI 拉片"→ 抽帧已上传，组装逐帧分析指令（视觉模型看图，文本模型读 URL 清单）
   useEffect(() => {
@@ -339,18 +382,17 @@ export default function CanvasAgentBridge() {
       ]
         .filter(Boolean)
         .join("\n");
-      void sendMessage(
-        {
+      void appendMessage(
+        new TextMessage({
           id: `rowgen_${nodeId}_${rid}_${Date.now()}`,
-          role: "user",
+          role: Role.User,
           content,
-        },
-        { followUp: true },
+        }),
       );
     };
     window.addEventListener(ROW_GENERATE_EVENT, onRowGen);
     return () => window.removeEventListener(ROW_GENERATE_EVENT, onRowGen);
-  }, [sendMessage]);
+  }, [appendMessage]);
 
   // 标注重绘：原图+红笔标注合成图双参考，只改标注区域（图生图）
   useEffect(() => {
@@ -384,14 +426,17 @@ export default function CanvasAgentBridge() {
         "生成时严格保持标注区域以外的画面内容、构图与光线不变；以上下游一致的方式重绘红色区域。",
         `完成后用 canvas_ops update_node 把 ${nodeId} 置为 {status:"ready", imageUrl:<新图url>}；失败置 {status:"error", errorMessage:<原因>}。`,
       ].join("\n");
-      void sendMessage(
-        { id: `mask_${nodeId}_${Date.now()}`, role: "user", content },
-        { followUp: true },
+      void appendMessage(
+        new TextMessage({
+          id: `mask_${nodeId}_${Date.now()}`,
+          role: Role.User,
+          content,
+        }),
       );
     };
     window.addEventListener(MASK_REDRAW_EVENT, onMaskRedraw);
     return () => window.removeEventListener(MASK_REDRAW_EVENT, onMaskRedraw);
-  }, [sendMessage]);
+  }, [appendMessage]);
 
   useCopilotAction({
     name: "canvas_ops",

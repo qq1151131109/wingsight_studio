@@ -15,17 +15,20 @@ import PromptBar from "./PromptBar";
 
 const KIND_BY_TYPE: Record<
   string,
-  "image" | "video" | "text" | null
+  "image" | "video" | "text" | "shotlist" | null
 > = {
   note: "text",
   script: "text",
   character: "image",
+  scene: "image",
+  prop: "image",
+  costume: "image",
   image: "image",
   video: "video",
+  shotlist: "shotlist",
   storyboard: null,
   audio: null,
   compose: null,
-  shotlist: null,
   group: null,
 };
 
