@@ -282,9 +282,29 @@ body {
     border-color: var(--color-accent-2);
     box-shadow: 0 0 0 1px var(--color-accent-2);
 }
-.react-flow__edge.ws-edge-related .react-flow__edge-path {
+.react-flow .react-flow__edge.ws-edge-related .react-flow__edge-path {
     stroke: var(--color-accent-2);
-    stroke-width: 2;
+    stroke-width: 3;
+}
+
+/* 拖线中的落点反馈（对标 open-ai-canvas target 态 / AIGCCanvasFlow handle 变绿）：
+   connectionindicator = 拖线期间全部可作落点的 handle（柔和光环提示「可以放」），
+   connectingto = 正被拖到的落点（强调填充，提示「就这里」） */
+.react-flow .react-flow__handle.connectionindicator {
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 4px var(--color-accent-soft);
+}
+.react-flow .react-flow__handle.connectingto {
+    border-color: var(--color-accent);
+    background: var(--color-accent-dim);
+    box-shadow: 0 0 0 5px var(--color-accent-soft);
+}
+
+/* 系统「减弱动态效果」时停掉连线流动动画（对标 osc 的无障碍处理） */
+@media (prefers-reduced-motion: reduce) {
+    .react-flow .react-flow__edge.animated .react-flow__edge-path {
+        animation: none;
+    }
 }
 
 /* 桌面文件拖入画布的接收态 */
@@ -314,22 +334,26 @@ body {
 .react-flow__handle:hover { border-color: var(--color-accent); }
 .react-flow__handle-connecting { border-color: var(--color-accent); }
 
-.react-flow__edge-path {
-    stroke: var(--color-hairline-strong);
-    stroke-width: 1.5;
+/* 连线走 xyflow 的 CSS 变量定宽/定色；状态覆盖用 .react-flow 前缀提高特异性
+   ——xyflow base.css 在本文件之后加载，同特异性规则会被它压掉（教训：
+   旧写法 .react-flow__edge-path { stroke-width: 1.5 } 从未生效过） */
+.react-flow {
+    --xy-edge-stroke: var(--color-hairline-strong);
+    --xy-edge-stroke-width: 2.5;
+    --xy-edge-stroke-selected: var(--color-accent);
 }
-.react-flow__edge:hover .react-flow__edge-path {
+.react-flow .react-flow__edge:hover .react-flow__edge-path {
     stroke: var(--color-text-4);
 }
-.react-flow__edge.selected .react-flow__edge-path {
+.react-flow .react-flow__edge.selected .react-flow__edge-path {
     stroke: var(--color-accent);
-    stroke-width: 2;
+    stroke-width: 3.5;
 }
 
 /* 生成中的连线：目标节点 loading 时前端标 animated，强调色流动虚线（对标 S-Copilot） */
-.react-flow__edge.animated .react-flow__edge-path {
+.react-flow .react-flow__edge.animated .react-flow__edge-path {
     stroke: var(--color-accent);
-    stroke-width: 2;
+    stroke-width: 3;
     stroke-dasharray: 8 8;
     animation: ws-edge-flow 0.8s linear infinite;
 }

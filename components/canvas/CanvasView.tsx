@@ -56,6 +56,7 @@ import {
 import { uploadAsset } from "@/lib/projects";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import { nodeTypes, NodeInfoModal } from "./nodes";
+import DeletableEdge from "./edges";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
 import NodeInputPanel from "./NodeInputPanel";
@@ -963,6 +964,10 @@ function EmptyState() {
   );
 }
 
+/** 自定义边类型：覆盖内置 default（存量边无 type 字段正好像中）。
+ *  必须放组件外保持引用稳定，否则 xyflow 每帧重建边组件 */
+const edgeTypes = { default: DeletableEdge };
+
 export default function CanvasView() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
@@ -1497,11 +1502,18 @@ export default function CanvasView() {
         nodes={displayNodes}
         edges={displayEdges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onConnectEnd={onConnectEnd}
         isValidConnection={isValidConnection}
+        // 拖线中的连线样式：强调色虚线（落点 handle 高亮见 globals.css）
+        connectionLineStyle={{
+          stroke: "var(--color-accent)",
+          strokeWidth: 2.5,
+          strokeDasharray: "6 6",
+        }}
         onReconnect={onReconnect}
         edgesReconnectable
         onMoveEnd={onMoveEnd}
@@ -1529,8 +1541,11 @@ export default function CanvasView() {
         multiSelectionKeyCode={["Shift", "Meta"]}
         // 拖边端点重接线的命中半径（默认 10 太小不好抓）
         reconnectRadius={24}
-        // 选中的边抬升到卡片之上：交叉密集时好点好拖
-        elevateEdgesOnSelect
+        // 连线永远在卡片下层。xyflow 默认 zIndexMode="basic" 会把边 z 算成
+        // 「边自身 z + max(两端节点 z)」——两端置顶过的卡(z≥1)的连线会压过
+        // 全部普通卡(z=0)横穿卡面；manual 模式边 z 恒取自身值(0)。
+        // 选中/拖拽中卡片的上浮是节点自身层级（1000/1001），不受影响。
+        zIndexMode="manual"
         // 左拖=框选的前提：panOnDrag 必须非 true（xyflow 12.11 守卫），中键=平移；
         // 右键拖不启用——macOS 的 contextmenu 在 mousedown 即触发，右拖平移会和
         // 右键菜单打架。平移途径：双指滚动 / Space+拖 / 中键拖。
