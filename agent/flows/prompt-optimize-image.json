@@ -1,9 +1,5 @@
 {
-  "name": "提示词优化",
-  "description": "出图提示词 AI 辅助：优化扩写 / 看图反推（双态）",
-  "icon": null,
-  "icon_bg_color": null,
-  "gradient": null,
+  "description": "出图提示词 AI 辅助（看图反推态）：参考图 → 反推出图提示词（单用途自定义组件，gemini 视觉经 DMX）",
   "data": {
     "nodes": [
       {
@@ -25,7 +21,7 @@
         },
         "data": {
           "id": "PromptOptimize-main",
-          "type": "PromptOptimizerComponent",
+          "type": "PromptImageReverseComponent",
           "selected_output": "result",
           "node": {
             "base_classes": [
@@ -39,8 +35,8 @@
             "conditional_paths": [],
             "custom_fields": {},
             "documentation": "",
-            "description": "出图提示词 AI 辅助：优化扩写 / 看图反推",
-            "display_name": "提示词优化",
+            "description": "出图提示词 AI 辅助：按参考图反推",
+            "display_name": "看图反推",
             "edited": false,
             "icon": "sparkles",
             "lf_version": "1.12.0",
@@ -58,18 +54,13 @@
             ],
             "outputs": [
               {
+                "display_name": "反推结果",
+                "name": "result",
+                "method": "run_reverse",
                 "types": [
                   "Message"
                 ],
-                "selected": "Message",
-                "name": "result",
-                "display_name": "优化结果",
-                "method": "run_optimize",
-                "value": "__UNDEFINED__",
-                "cache": true,
-                "allows_loop": false,
-                "group_outputs": false,
-                "tool_mode": false
+                "selected": "Message"
               }
             ],
             "template": {
@@ -81,7 +72,7 @@
                 "list": false,
                 "show": true,
                 "multiline": true,
-                "value": "\"\"\"提示词优化（AI 辅助出图提示词）：优化/扩写 + 看图反推。\n\n双态（novanova + viedeo-workflow 范式）：\n- 「当前提示词」非空 → 优化扩写：保留主体/身份/服装/构图意图，补全画面要素；\n- 为空且带参考图 → 看图反推：写出同款画面的出图提示词。\n「上下文设定」（@引用资产描述、画风）作硬约束注入。只输出提示词文本本身，\n产物回填前端面板草稿框（用户可改，点「生成」才落卡）。\n\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport json\nfrom typing import Any\n\nimport httpx\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.inputs.inputs import MessageTextInput, MultilineInput, SecretStrInput\nfrom lfx.schema.message import Message\nfrom lfx.template.field.base import Output\n\nSYSTEM_PROMPT = \"\"\"你是资深影视出图提示词工程师，为 AI 绘图打磨中文提示词。\n规则：\n- 若「当前提示词」非空：在保留主体、身份、服装与构图意图的前提下，把它扩写成完整的出图提示词，补全环境、光线、镜头与材质细节，不得偏离画面本意。\n- 若「当前提示词」为空且给了参考图：看图反推——写出能生成同类画面的出图提示词（主体、构图、光线、风格、质感）。\n- 「上下文设定」中的角色身份、服装、画风等设定必须遵守并自然融入。\n- 输出：简体中文，不超过 160 字，只输出提示词本身，不要解释、引号或任何前缀。\"\"\"\n\n\nclass PromptOptimizerComponent(Component):\n    display_name = \"提示词优化\"\n    description = \"出图提示词 AI 辅助：优化扩写 / 看图反推\"\n    icon = \"sparkles\"\n\n    inputs = [\n        MultilineInput(\n            name=\"payload\",\n            display_name=\"任务载荷\",\n            info='JSON：{\"prompt\":\"当前提示词(可空)\",\"image_urls\":[\"参考图URL\"],\"context_notes\":\"上下文设定\"}',\n            required=True,\n        ),\n        MessageTextInput(name=\"model_name\", display_name=\"模型\", value=\"deepseek-v4-flash\", advanced=True),\n        MessageTextInput(name=\"vision_model_name\", display_name=\"看图模型\", value=\"gemini-2.5-flash\", advanced=True),\n        MessageTextInput(name=\"base_url\", display_name=\"Base URL\", value=\"https://www.dmxapi.cn/v1\", advanced=True),\n        SecretStrInput(name=\"api_key\", display_name=\"API Key\", advanced=True),\n    ]\n\n    outputs = [Output(display_name=\"优化结果\", name=\"result\", method=\"run_optimize\")]\n\n    async def run_optimize(self) -> Message:\n        raw = str(self.payload or \"\").strip()\n        if not raw:\n            raise ValueError(\"payload 为空：需要 {prompt, image_urls, context_notes} JSON\")\n        data: dict[str, Any] = json.loads(raw)\n        prompt = str(data.get(\"prompt\") or \"\").strip()\n        image_urls = [str(u) for u in (data.get(\"image_urls\") or []) if str(u).strip()][:4]\n        context = str(data.get(\"context_notes\") or \"\").strip()\n        if not prompt and not image_urls:\n            raise ValueError(\"当前提示词为空且无参考图：没有可优化的对象\")\n\n        user_text = f\"【上下文设定】\\n{context or '（无）'}\\n\\n【当前提示词】\\n{prompt or '（空，请按参考图反推）'}\"\n        content: list[dict[str, Any]] = [{\"type\": \"text\", \"text\": user_text}]\n\n        def _to_data_url(url: str) -> str:\n            \"\"\"本地/远程 URL → base64 data URL（DMX 云端拉不到内网地址）\"\"\"\n            if url.startswith(\"data:\"):\n                return url\n            resp = httpx.get(url, timeout=30, follow_redirects=True)\n            resp.raise_for_status()\n            head = resp.headers.get(\"content-type\", \"image/png\").split(\";\")[0].strip()\n            import base64\n            return f\"data:{head};base64,{base64.b64encode(resp.content).decode()}\"\n\n        for u in image_urls:\n            data_url = await asyncio.to_thread(_to_data_url, u)\n            content.append({\"type\": \"image_url\", \"image_url\": {\"url\": data_url}})\n        # 带图走看图模型（deepseek 经 DMX 中转带大图会丢图/401，gemini 稳定）\n        model = str(self.vision_model_name or \"gemini-2.5-flash\") if image_urls else str(self.model_name or \"deepseek-v4-flash\")\n        body = {\n            \"model\": model,\n            \"messages\": [\n                {\"role\": \"system\", \"content\": SYSTEM_PROMPT},\n                {\"role\": \"user\", \"content\": content},\n            ],\n            \"temperature\": 0.6,\n        }\n        base = str(self.base_url or \"https://www.dmxapi.cn/v1\").rstrip(\"/\")\n        headers = {\"Authorization\": f\"Bearer {self.api_key}\", \"Content-Type\": \"application/json\"}\n\n        def _call() -> str:\n            resp = httpx.post(f\"{base}/chat/completions\", json=body, headers=headers, timeout=90)\n            resp.raise_for_status()\n            out = resp.json()\n            return str(out[\"choices\"][0][\"message\"][\"content\"] or \"\").strip()\n\n        text = await asyncio.to_thread(_call)\n        text = text.strip().strip('\"').strip(\"“”\")\n        if not text:\n            raise ValueError(\"模型返回空结果\")\n        self.status = f\"优化完成（{len(text)} 字）\"\n        return Message(text=text)\n",
+                "value": "\"\"\"看图反推（AI 辅助出图提示词）：按参考图写出出图提示词。\n\n单用途组件（从旧「提示词优化」双态组件拆出，模式由调用方显式路由）：\ngemini 视觉反推——deepseek 经 DMX 中转带大图会丢图/401，故直连 gemini。\n「上下文设定」（@引用资产描述、画风）作硬约束注入。只输出提示词文本本身，\n产物回填前端面板草稿框（用户可改，点「生成」才落卡）。\n\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport base64\nimport json\nfrom typing import Any\n\nimport httpx\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.inputs.inputs import MessageTextInput, MultilineInput, SecretStrInput\nfrom lfx.schema.message import Message\nfrom lfx.template.field.base import Output\n\nSYSTEM_PROMPT = \"\"\"你是资深影视出图提示词工程师。按参考图反推出图提示词：写出能生成同类画面的出图提示词（主体、构图、光线、风格、质感）。\n\n规则：\n- 「上下文设定」中的角色身份、服装、画风等设定必须遵守并自然融入\n- 输出：简体中文，不超过 160 字，只输出提示词本身，不要解释、引号或任何前缀\"\"\"\n\n\nclass PromptImageReverseComponent(Component):\n    display_name = \"看图反推\"\n    description = \"出图提示词 AI 辅助：按参考图反推\"\n    icon = \"sparkles\"\n\n    inputs = [\n        MultilineInput(\n            name=\"payload\",\n            display_name=\"任务载荷\",\n            info='JSON：{\"image_urls\":[\"参考图URL\"],\"context_notes\":\"上下文设定\"}',\n            required=True,\n        ),\n        MessageTextInput(name=\"model_name\", display_name=\"看图模型\", value=\"gemini-2.5-flash\", advanced=True),\n        MessageTextInput(name=\"base_url\", display_name=\"Base URL\", value=\"https://www.dmxapi.cn/v1\", advanced=True),\n        SecretStrInput(name=\"api_key\", display_name=\"API Key\", advanced=True),\n    ]\n\n    outputs = [Output(display_name=\"反推结果\", name=\"result\", method=\"run_reverse\")]\n\n    async def run_reverse(self) -> Message:\n        raw = str(self.payload or \"\").strip()\n        if not raw:\n            raise ValueError(\"payload 为空：需要 {image_urls, context_notes} JSON\")\n        data: dict[str, Any] = json.loads(raw)\n        image_urls = [str(u) for u in (data.get(\"image_urls\") or []) if str(u).strip()][:4]\n        context = str(data.get(\"context_notes\") or \"\").strip()\n        if not image_urls:\n            raise ValueError(\"看图反推需要至少一张参考图\")\n\n        content: list[dict[str, Any]] = [\n            {\"type\": \"text\", \"text\": f\"【上下文设定】\\n{context or '（无）'}\"}\n        ]\n\n        def _to_data_url(url: str) -> str:\n            \"\"\"本地/远程 URL → base64 data URL（DMX 云端拉不到内网地址）\"\"\"\n            if url.startswith(\"data:\"):\n                return url\n            resp = httpx.get(url, timeout=30, follow_redirects=True)\n            resp.raise_for_status()\n            head = resp.headers.get(\"content-type\", \"image/png\").split(\";\")[0].strip()\n            return f\"data:{head};base64,{base64.b64encode(resp.content).decode()}\"\n\n        for u in image_urls:\n            data_url = await asyncio.to_thread(_to_data_url, u)\n            content.append({\"type\": \"image_url\", \"image_url\": {\"url\": data_url}})\n        body = {\n            \"model\": str(self.model_name or \"gemini-2.5-flash\"),\n            \"messages\": [\n                {\"role\": \"system\", \"content\": SYSTEM_PROMPT},\n                {\"role\": \"user\", \"content\": content},\n            ],\n            \"temperature\": 0.6,\n        }\n        base = str(self.base_url or \"https://www.dmxapi.cn/v1\").rstrip(\"/\")\n        headers = {\"Authorization\": f\"Bearer {self.api_key}\", \"Content-Type\": \"application/json\"}\n\n        def _call() -> str:\n            resp = httpx.post(f\"{base}/chat/completions\", json=body, headers=headers, timeout=90)\n            resp.raise_for_status()\n            out = resp.json()\n            return str(out[\"choices\"][0][\"message\"][\"content\"] or \"\").strip()\n\n        text = await asyncio.to_thread(_call)\n        text = text.strip().strip('\"').strip(\"\\u201c\\u201d\")\n        if not text:\n            raise ValueError(\"模型返回空结果\")\n        self.status = f\"反推完成（{len(text)} 字）\"\n        return Message(text=text)\n",
                 "name": "code",
                 "display_name": "code",
                 "advanced": true,
@@ -150,23 +141,10 @@
                 "_input_type": "SecretStrInput",
                 "load_from_db": false,
                 "dynamic": false
-              },
-              "vision_model_name": {
-                "type": "str",
-                "required": false,
-                "placeholder": "",
-                "list": false,
-                "show": true,
-                "multiline": false,
-                "value": "gemini-2.5-flash",
-                "name": "vision_model_name",
-                "display_name": "看图模型",
-                "advanced": true,
-                "info": "带参考图时使用的视觉模型",
-                "load_from_db": false
               }
             }
-          }
+          },
+          "showNode": true
         }
       },
       {
@@ -484,24 +462,8 @@
         "id": "edge-optimize-out",
         "source": "PromptOptimize-main",
         "target": "PromptOptimize-out",
-        "sourceHandle": {
-          "dataType": "PromptOptimizerComponent",
-          "id": "PromptOptimize-main",
-          "name": "result",
-          "output_types": [
-            "Message"
-          ]
-        },
-        "targetHandle": {
-          "fieldName": "input_value",
-          "id": "PromptOptimize-out",
-          "inputTypes": [
-            "Data",
-            "Message",
-            "str"
-          ],
-          "type": "str"
-        },
+        "sourceHandle": "{œidœ:œPromptOptimize-mainœ,œnameœ:œresultœ,œoutput_typesœ:[œMessageœ],œdataTypeœ:œPromptOptimizerComponentœ}",
+        "targetHandle": "{œtypeœ:œotherœ,œfieldNameœ:œinput_valueœ,œidœ:œPromptOptimize-outœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ]}",
         "data": {
           "sourceHandle": {
             "dataType": "PromptOptimizerComponent",
@@ -532,22 +494,8 @@
       "zoom": 1
     }
   },
-  "is_component": false,
-  "updated_at": "2026-08-31T04:14:09+00:00",
-  "webhook": false,
-  "endpoint_name": "prompt-optimize",
-  "tags": null,
-  "locked": false,
-  "mcp_enabled": false,
-  "action_name": null,
-  "action_description": null,
-  "access_type": "PRIVATE",
-  "flow_type": "workflow",
-  "a2a_enabled": false,
-  "a2a_card_overrides": null,
-  "id": "bb8da14b-d94d-4c5a-8c36-802ca2a559f5",
-  "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
-  "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
-  "workspace_id": null,
-  "name_key": null
+  "gradient": null,
+  "name": "提示词优化-看图反推",
+  "icon_bg_color": null,
+  "icon": null
 }

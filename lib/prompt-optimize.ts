@@ -1,13 +1,15 @@
-/** 提示词 AI 辅助 API：面板 ✦ 双态按钮（优化扩写 / 看图反推）。
- *  直连「提示词优化」flow 不经聊天；产物回填面板输入框草稿，
+/** 提示词 AI 辅助 API：面板 ✦ 双态按钮（优化扩写 / 看图反推），mode 由前端
+ *  按按钮态显式路由到各自 flow。直连不经聊天；产物回填面板输入框草稿，
  *  用户确认后随「生成」才落卡。链路：前端 → /agent-service → agent
- *  /prompt/optimize（异步任务）→ langflow flow（deepseek/gemini 视觉）。 */
+ *  /prompt/optimize（异步任务）→ langflow flow（deepseek 文本 / gemini 视觉）。 */
 import { apiFetch } from "@/lib/auth";
 
 export async function optimizePrompt(opts: {
-  /** 当前提示词（空 = 看图反推，需带 imageUrls） */
+  /** optimize=优化扩写（prompt 必填）；reversal=看图反推（imageUrls 必填） */
+  mode: "optimize" | "reversal";
+  /** 当前提示词（optimize 态必填） */
   prompt: string;
-  /** 参考图 URL（卡上当前图 / @引用与连线的资产设定图） */
+  /** 参考图 URL（卡上当前图 / @引用与连线的资产设定图）；reversal 态必填 */
   imageUrls: string[];
   /** 上下文设定（引用卡描述、画风等），AI 必须遵守 */
   contextNotes: string;

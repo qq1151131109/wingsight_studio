@@ -367,24 +367,30 @@ async def api_storyboard_generate_status(job_id: str, user: auth.CurrentUser):
 
 @app.post("/prompt/optimize")
 async def api_prompt_optimize(req: dict, user: auth.CurrentUser):
-    """提示词 AI 辅助（面板 ✦ 双态按钮）：优化扩写 / 看图反推，直连 flow
+    """提示词 AI 辅助（面板 ✦ 双态按钮）：mode 由前端显式路由，直连对应 flow
     不经聊天。异步任务（Next 代理 30s 掐断长请求），前端轮询 GET。
 
-    req: {prompt?: str, imageUrls?: [str], contextNotes?: str}
-    prompt 空=看图反推（imageUrls 必须非空）。
+    req: {mode: "optimize"|"reversal", prompt?, imageUrls?, contextNotes?, model?}
+    mode=optimize 优化扩写：prompt 必填（model 可覆盖文本模型）；
+    mode=reversal 看图反推：imageUrls 必填。
     """
+    mode = str(req.get("mode") or "").strip()
     prompt = str(req.get("prompt") or "").strip()
     image_urls = req.get("imageUrls") if isinstance(req.get("imageUrls"), list) else []
     context_notes = str(req.get("contextNotes") or "")
-    if not prompt and not image_urls:
-        return Response(status_code=400, content="提示词为空且无参考图", media_type="text/plain")
+    if mode not in ("optimize", "reversal"):
+        return Response(status_code=400, content="mode 必须是 optimize 或 reversal", media_type="text/plain")
+    if mode == "optimize" and not prompt:
+        return Response(status_code=400, content="优化扩写需要非空提示词", media_type="text/plain")
+    if mode == "reversal" and not image_urls:
+        return Response(status_code=400, content="看图反推需要至少一张参考图", media_type="text/plain")
     try:
         text_model = models.resolve_text_model(req.get("model"))
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:
         job_id = await skills.start_prompt_optimize_job(
-            prompt, image_urls, context_notes, model=text_model or ""
+            mode, prompt, image_urls, context_notes, model=text_model or ""
         )
     except RuntimeError as exc:
         return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")

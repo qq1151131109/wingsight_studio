@@ -152,7 +152,7 @@ export type ShotImageRequest = {
   name: string;
   description: string;
   visualNotes?: string;
-  assetType?: "character" | "scene" | "prop";
+  assetType?: "character" | "scene" | "prop" | "shot";
   referenceImages?: string[];
   aspect?: string;
   params?: { model: string; resolution: string };

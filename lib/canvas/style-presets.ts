@@ -1,6 +1,6 @@
 /** 画风预设库（单一真相源）：移植自 juben `lib/style_templates.py` + 中文
  *  名称/简介（`lib/i18n/zh/templates.py`）+ 封面图（`public/style-thumbnails/`，
- *  原图 1024px 压至 320px JPEG），共 86 条。
+ *  原 1024px 压至 320px JPEG）；另有本仓自研的强约束预设，共 87 条。
  *  category：真人影像（实拍质感）/ 动画（漫剧美术）/ 纪录片美术（史料再现）。
  *  prompt 已剥「画风：」前缀——注入时统一加「全局视觉风格：」等前缀。 */
 export interface StylePreset {
@@ -15,6 +15,17 @@ export interface StylePreset {
 }
 
 export const STYLE_PRESETS: StylePreset[] = [
+  {
+    id: "live_photoreal_guard",
+    name: "真人实拍·强约束",
+    tagline: "photorealistic 开关 · 显式排除动漫/3D",
+    category: "真人影像",
+    // 按 gpt-image 官方指南设计：开头模式开关词直接触发写实模式，
+    // 具体材质语言（皮肤纹理/毛孔/织物），末尾显式排除句压插画/3D 先验
+    // （对「俊美古装人物」这类高插画先验主体尤其有效）
+    prompt: "实拍真人照片，photorealistic photograph：真实演员出演，真实皮肤纹理与毛孔、真实发丝与织物细节；古装纪录片影像，35mm/50mm 电影摄影感，实景光源与柔和反射光，克制写实调色。严禁动漫、插画、漫画、3D 渲染、CG、游戏画质；禁止塑料皮肤、过度磨皮、网红脸、偶像滤镜与影楼写真感",
+    cover: "/style-thumbnails/live_cinematic_ancient.jpg",
+  },
   {
     id: "live_cinematic_ancient",
     name: "精品古装",

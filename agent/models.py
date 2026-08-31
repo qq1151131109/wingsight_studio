@@ -11,8 +11,11 @@ OpenAI images 调用形态）：images/generations 与 images/edits（参考图
 - doubao-seedream-4-5：有最小像素约束（≥3686400 px）1K 档全灭、
   4:3 幅面 2K 档（1920x1440=2.76M）也不够——16:9 幅面 2K 档恰好
   3686400 压线通过；收 2K/4K，道具/服饰（4:3）用此模型请选 4K
-- 未收录（images 接口）：gemini-3-pro-image 等（DMX 仅 chat 出图）、
-  qwen-image 系 / seedream-5.0-lite / z-image / wan（404）
+- 未收录（images 接口）：qwen-image 系 / seedream-5.0-lite / z-image / wan（404）
+- gemini-3.1-flash-image：DMX 走 v1beta generateContent 出图（Nano Banana 2，
+  认证 x-goog-api-key——Authorization Bearer 会挂起），flow 侧
+  _GEMINI_MODEL_PREFIXES 分流到 generate_image_gemini 原语；幅面/分辨率由
+  imageConfig 接口参数精确控制（14 种比例 × 1K/2K/4K）
 
 doubao-seedream-5-0-pro 走 /v1/responses 多图融合接口（2~10 参考图
 融合成一张，flow 组件按模型名前缀分流，见 asset-imagegen.json 的
@@ -37,6 +40,13 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "recommended": True,
     },
     {
+        "id": "gpt-image-2-ssvip",
+        "label": "GPT Image 2 SSVIP",
+        "tag": "同 03 · DMX 推荐通道 · 服务更稳响应更快",
+        "resolutions": ["1K", "2K", "4K"],
+        "default_resolution": "1K",
+    },
+    {
         "id": "doubao-seedream-4-0-250828",
         "label": "Seedream 4.0",
         "tag": "中文影视审美强 · 支持参考图 · 1K/2K/4K",
@@ -55,6 +65,13 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Seedream 5.0 Pro",
         "tag": "多图融合 · 最多 10 张参考图合成 · 1K/2K",
         "resolutions": ["1K", "2K"],
+        "default_resolution": "1K",
+    },
+    {
+        "id": "gemini-3.1-flash-image",
+        "label": "Gemini 3.1 Flash Image",
+        "tag": "谷歌系 Nano Banana 2 · 幅面/分辨率接口级精确 · 1K/2K/4K",
+        "resolutions": ["1K", "2K", "4K"],
         "default_resolution": "1K",
     },
 ]

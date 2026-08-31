@@ -12,8 +12,13 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `asset-decompose-scene.json` | 场景拆解 | 剧本 → 场景 JSON（含大纲推断主要发生地） | `LANGFLOW_DECOMPOSE_SCENE_FLOW_ID` | 同上 |
 | `asset-decompose-prop.json` | 道具拆解 | 剧本 → 道具 JSON | `LANGFLOW_DECOMPOSE_PROP_FLOW_ID` | 同上 |
 | `asset-decompose-costume.json` | 服饰拆解 | 剧本 → 服饰 JSON（核心服装/造型套装，支撑造型一致性） | `LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID` | 同上 |
-| `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 出图；`reference_images` 一致性锚点图会下载作参考。模型分流在组件内：seedream 5.x 前缀走 `/v1/responses` 多图融合（`generate_image_responses`，2~10 参考图合成一张），其余走 OpenAI images 接口 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload / model_name / resolution） |
-| `prompt-optimize.json` | 提示词优化 | 出图提示词 AI 辅助（面板 ✦ 双态）：优化扩写（deepseek-v4-flash）/ 看图反推（gemini-2.5-flash 视觉；deepseek 经 DMX 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
+| `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 出图；`reference_images` 一致性锚点图会下载作参考。布局契约四类：`character` 四格定妆 / `scene` 无人空镜勘景 / `prop` 单件平铺（服饰卡按此契约）/ `shot` 剧情剧照（分镜行出图，有人物有剧情）。模型分流在组件内按模型名前缀：`doubao-seedream-5*` → `/v1/responses` 多图融合（`generate_image_responses`，2~10 参考图合成一张）；`gemini*` → v1beta `generateContent`（`generate_image_gemini`，Nano Banana 2：imageConfig 精确幅面/分辨率 1K/2K/4K、参考图 inlineData、认证 x-goog-api-key——Bearer 会挂起；**DMX 网关 aspectRatio 按「高:宽」解析，原语内已做翻转补偿，DMX 修正后需移除**）；其余走 OpenAI images 接口 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload / model_name / resolution） |
+| `prompt-optimize-text.json` | 提示词优化-扩写 | 出图提示词 AI 辅助（✦ 优化扩写态）：当前提示词 → 扩写成完整出图提示词。纯原生链（ChatInput→LLM→ChatOutput），prompt 在 system_message，参数走 input_value 文本头 | `LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
+| `prompt-optimize-image.json` | 提示词优化-看图反推 | 出图提示词 AI 辅助（✦ 看图反推态）：参考图 → 反推出图提示词。单用途自定义组件 `PromptImageReverseComponent`（gemini-2.5-flash 视觉经 DMX；deepseek 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
+
+注：两态由前端按按钮态显式路由（请求体 `mode: optimize\|reversal`，agent
+端点校验各态必填项），不再混装单 flow——旧双态组件 `PromptOptimizerComponent`
+（组件内按 prompt 空否判态）已废弃删除。
 | `promo-copy.json` | 宣发文案生成 | 飞书宣发资料 → 三路大模型并行 → 合并文案 | `LANGFLOW_SKILLS_JSON`（技能注册内含 flowId） | `PromptTemplate-Writer`（title/count/platform/batch_kind/brief/form） |
 | `shotlist-generate.json` | 分镜表生成 | 剧本 → 分镜 rows（景别/运镜/时长/画面/台词） | `LANGFLOW_SHOTLIST_FLOW_ID` | 无（参数走 input_value 文本头注入） |
 | `topic-triage.json` | 选题研判 | 原始信号条目 → 聚类+判垂类(history/crime)+价值排序的短名单（选题池管线第 1 步） | `LANGFLOW_TOPIC_TRIAGE_FLOW_ID` | 无（载荷走 input_value JSON） |
@@ -67,7 +72,7 @@ curl -s --compressed -X POST http://localhost:7860/api/v1/flows/ \
 - 文本模型切换走**组件名注入**（非节点 id，删节点重建不失效）：
   `tweaks={"LanguageModelComponent": {"model_name": "<models.py TEXT_MODELS id>"}}`——
   LM 组件的 model_name 覆盖字段留空即用 flow 保存的模型，运行时覆盖经此通道；
-  prompt-optimize 的自定义组件同理（`PromptOptimize-main` → model_name）。
+  看图反推是视觉模型（gemini 固定，组件 model_name），不走此通道。
   目录与校验唯一事实源 `agent/models.py`（TEXT_MODELS，DMX chat 探针验证），
   `GET /models/text` 下发；分镜表生成（model）/拆解（text_model）/提示词优化（model）
   三个端点透传，非法 id 400 明报

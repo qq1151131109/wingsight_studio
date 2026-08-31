@@ -117,7 +117,8 @@ FLOWS = {
     "asset-decompose-costume.json": "LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID",
     "asset-decompose.json": "LANGFLOW_DECOMPOSE_FLOW_ID",
     "asset-imagegen.json": "LANGFLOW_IMAGEGEN_FLOW_ID",
-    "prompt-optimize.json": "LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID",
+    "prompt-optimize-text.json": "LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID",
+    "prompt-optimize-image.json": "LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID",
     "shotlist-generate.json": "LANGFLOW_SHOTLIST_FLOW_ID",
     "promo-copy.json": None,
 }

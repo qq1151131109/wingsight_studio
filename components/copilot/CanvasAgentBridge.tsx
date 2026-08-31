@@ -77,6 +77,19 @@ async function directImagegen(
     `全局视觉风格：${projectStyle}`,
   ].join("；");
   const isCharacterLook = refNodes.some((n) => n.data.nodeType === "character");
+  // 资产卡按自身类型出设定图（角色=四格定妆契约、服饰按道具契约、场景/道具
+  // 同名）——此前只看引用卡里有没有角色卡，角色资产卡不带角色引用时被误标
+  // 成 scene，提示词渲染成「无人空镜」出空场景
+  const targetType = String(node.data.nodeType);
+  const targetAssetType =
+    targetType === "character"
+      ? "character"
+      : targetType === "costume"
+        ? "prop"
+        : targetType === "scene" || targetType === "prop"
+          ? targetType
+          : undefined;
+  const assetType = targetAssetType ?? (isCharacterLook ? "character" : "scene");
   // 手动 @ 引用落成连线（viedeo-workflow「mention=边」范式）：生成后面板
   // chips 持续可见，不随本会话的输入框状态消失
   for (const rid of new Set(opts.refIds)) {
@@ -108,7 +121,7 @@ async function directImagegen(
         rid: `${nodeId}#${i}`,
         name: (node.data.title as string) || "图片",
         description,
-        assetType: isCharacterLook ? "character" : "scene",
+        assetType,
         visualNotes,
         referenceImages,
       })),

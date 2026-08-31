@@ -3503,6 +3503,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           const base = {
             name: `镜头${t.seq + 1}`,
             description: composeRowPrompt(t.row),
+            // 镜头剧照契约（flow 侧 shot 布局：有人物有剧情，区别于场景空镜）
+            assetType: "shot" as const,
             visualNotes: [refNotesFor(t.row), ...styleStack]
               .filter(Boolean)
               .join("；"),

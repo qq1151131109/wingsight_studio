@@ -137,7 +137,6 @@ async def start_storyboard_gen_job(
     asyncio.create_task(run())
     return job_id
 IMAGEGEN_FLOW_ID = os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID", "")
-PROMPT_OPTIMIZE_FLOW_ID = os.environ.get("LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID", "")
 DMX_API_KEY = os.environ.get("DMX_API_KEY", "")
 VOLC_SEARCH_API_KEY = os.environ.get("VOLC_SEARCH_API_KEY", "")
 # 出图参考图回给 langflow 下载用的本机地址（/assets 未鉴权、文件名随机 hex）
@@ -456,7 +455,7 @@ async def _auto_asset_images(
             "name": a.get("name") or "资产",
             "description": desc,
             "assetType": asset_type,
-            "visualNotes": style_note,
+            "visual_notes": style_note,
         })
         if r.get("ok") and r.get("imageUrl"):
             a["image_url"] = r["imageUrl"]
@@ -507,7 +506,7 @@ async def _auto_asset_images(
                 "name": f"{a.get('name', '')}·{l.get('label', '造型')}",
                 "description": " ".join(protocol),
                 "assetType": "character",
-                "visualNotes": style_note,
+                "visual_notes": style_note,
                 "referenceImages": refs,
             })
             if r.get("ok") and r.get("imageUrl"):
@@ -692,6 +691,33 @@ async def _decompose_legacy(
 # ---------- 资产出图 ----------
 
 
+def _project_style_from_config(config: Any = None) -> str:
+    """聊天线程 → 所属项目 → 画布 meta 的全局画风。
+
+    服务端以 DB 为准解析（novanova 模式：前端只传 ID，约束不可被模型改写）。
+    非聊天路径、未知线程或读库失败时返回空串（不阻塞出图）。"""
+    try:
+        thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+        if not thread_id:
+            return ""
+        import sqlite3
+
+        db_path = Path(__file__).resolve().parent / "data" / "wingsight.db"
+        db = sqlite3.connect(str(db_path))
+        try:
+            row = db.execute(
+                "select c.meta from canvases c join chat_threads t"
+                " on c.project_id = t.project_id where t.id = ?",
+                (thread_id,),
+            ).fetchone()
+        finally:
+            db.close()
+        meta = json.loads(row[0]) if row and row[0] else {}
+        return str(meta.get("visualStyle") or "")
+    except Exception:
+        return ""
+
+
 async def generate_asset_images(
     assets: List[Dict[str, Any]], config: Any = None, params: Optional[Dict[str, str]] = None
 ) -> str:
@@ -707,6 +733,9 @@ async def generate_asset_images(
         return "（资产列表为空，没有可生成的资产）"
     if not DMX_API_KEY:
         return "（未配置 DMX_API_KEY，出图不可用）"
+    # 项目画风（服务端按线程→项目→画布 meta 解析）：并进每张资产的
+    # visual_notes，写实媒介时 _generate_single_image 会自动加主体锚点
+    style = _project_style_from_config(config)
 
     # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
     # 搜索 key，剥掉后走纯文生图（参考图是增强项，不影响出图）
@@ -723,21 +752,26 @@ async def generate_asset_images(
 
     async def one(asset: Dict[str, Any]) -> str:
         name = str(asset.get("name", "?"))
-        async with sem:
-            raw = await run_flow_blocking(
-                IMAGEGEN_FLOW_ID,
-                tweaks={
-                    "BatchAssetSheet-img02": {
-                        "assets_payload": json.dumps(
-                            {"assets": [asset]}, ensure_ascii=False
-                        ),
-                        "api_key": DMX_API_KEY,
-                        **(params or {}),
-                    }
-                },
+        # LLM 构建的资产用 type 字段（与工具 docstring 一致），归一到 assetType；
+        # 项目画风并进 visual_notes → _generate_single_image 统一注入锚点/拍平
+        shot = {
+            **asset,
+            "assetType": str(asset.get("type") or asset.get("assetType") or "scene"),
+        }
+        if style:
+            shot["visual_notes"] = "；".join(
+                filter(
+                    None,
+                    [str(shot.get("visual_notes") or ""), f"全局视觉风格：{style}"],
+                )
             )
+        async with sem:
+            result = await _generate_single_image(shot, params=params)
         done[0] += 1
-        line = _format_asset_result(name, raw)
+        if result.get("ok") and result.get("imageUrl"):
+            line = f"✓ {name}｜image_url={result['imageUrl']}"
+        else:
+            line = f"✗ {name}｜出图失败：{str(result.get('error') or '未知')[:100]}"
         if config is not None:
             try:
                 await _emit_progress(config, f"出图 {done[0]}/{total}：{line}")
@@ -833,13 +867,30 @@ async def _generate_single_image(
     def flat(value: Any) -> str:
         return " ".join(str(value or "").split())
 
+    # 媒介条件式主体锚点（t5 实验结论）：画风声明真人/实拍时，把「真实演员
+    # 出镜」写进主体描述开头——gpt-image 的写实模式跟随主体内部声明，放
+    # 视觉要点末尾只是部分缓解；动漫画风不含关键词则不注入，互不影响
+    # 兼容驼峰/下划线：直连端点历史用 visualNotes，flow 载荷用 visual_notes
+    visual_flat = flat(shot.get("visual_notes") or shot.get("visualNotes"))
+    description = flat(shot.get("description"))
+    shot_type = flat(shot.get("assetType") or "scene")
+    if visual_flat and any(
+        kw in visual_flat for kw in ("实拍", "真人", "真实演员", "photoreal")
+    ):
+        # 媒介锚点按类型分级：角色=具名演员出镜；场景/道具/服饰/镜头=仅媒介
+        # 质感前缀（空镜契约禁人物，镜头更不能「饰演镜头1」）
+        medium = "实拍真人照片，photorealistic photograph 质感"
+        if shot_type == "character":
+            description = f"{medium}：由真实演员饰演「{flat(shot.get('name'))}」本人出镜。{description}"
+        else:
+            description = f"{medium}。{description}"
     payload: Dict[str, Any] = {
-        "type": flat(shot.get("assetType") or "scene"),
+        "type": shot_type,
         "name": flat(shot.get("name") or "资产"),
-        "description": flat(shot.get("description")),
+        "description": description,
     }
-    if shot.get("visual_notes"):
-        payload["visual_notes"] = flat(shot["visual_notes"])
+    if visual_flat:
+        payload["visual_notes"] = visual_flat
     # 资产级画幅覆写（分镜图幅面：9:16/21:9 等）；格式校验在 flow 侧，
     # 不合法会得到中文报错并落到该图卡的 error 上
     if shot.get("aspect"):
@@ -1051,8 +1102,12 @@ async def run_skill(
 
 
 # ── 提示词 AI 辅助（面板 ✦ 双态按钮：优化扩写 / 看图反推）──────────────────────
-# 直连「提示词优化」flow（deepseek-v4-flash 视觉，DMX），不经聊天 LLM。
+# 直连两个单用途 flow（前端已知态显式路由，不经聊天 LLM）：
+#   optimize  = 扩写（纯原生链，deepseek 文本）；reversal = 看图反推（gemini 视觉经 DMX）。
 # 产物回填面板输入框草稿，用户确认后才随生成落卡。
+
+PROMPT_OPTIMIZE_TEXT_FLOW_ID = os.environ.get("LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID", "")
+PROMPT_OPTIMIZE_IMAGE_FLOW_ID = os.environ.get("LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID", "")
 
 PROMPT_OPTIMIZE_JOBS: Dict[str, Dict[str, Any]] = {}
 
@@ -1070,43 +1125,63 @@ def _normalize_asset_url(url: str) -> str:
 
 
 async def start_prompt_optimize_job(
-    prompt: str, image_urls: Optional[List[str]], context_notes: str, model: str = ""
+    mode: str,
+    prompt: str,
+    image_urls: Optional[List[str]],
+    context_notes: str,
+    model: str = "",
 ) -> str:
-    """model：文本模型覆盖（PromptOptimizerComponent 的 model_name 字段按名注入，
-    空=组件默认 deepseek-v4-flash）。"""
-    if not PROMPT_OPTIMIZE_FLOW_ID:
-        raise RuntimeError(
-            "未配置 LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID（flow 见 agent/flows/prompt-optimize.json）"
+    """mode：调用方（前端按按钮态）显式路由——
+    "optimize" 优化扩写（prompt 必填，纯文本，model 可覆盖文本模型，空=出厂 deepseek-v4-flash）；
+    "reversal" 看图反推（参考图必填，gemini 视觉）。"""
+    if mode == "optimize":
+        if not PROMPT_OPTIMIZE_TEXT_FLOW_ID:
+            raise RuntimeError(
+                "未配置 LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID（flow 见 agent/flows/prompt-optimize-text.json）"
+            )
+        text = " ".join(str(prompt or "")[:2000].split())
+        if not text:
+            raise RuntimeError("优化扩写需要非空提示词")
+        context = " ".join(str(context_notes or "")[:1200].split())
+        input_value = f"【上下文设定】\n{context or '（无）'}\n\n【当前提示词】\n{text}"
+        tweaks = (
+            {"LanguageModelComponent": {"model_name": model}} if model else None
         )
-    if not DMX_API_KEY:
-        raise RuntimeError("未配置 DMX_API_KEY，提示词优化不可用")
-    prompt = str(prompt or "").strip()
-    urls = [_normalize_asset_url(u) for u in (image_urls or []) if str(u).strip()][:4]
-    if not prompt and not urls:
-        raise RuntimeError("提示词为空且无参考图：没有可优化的对象")
-    # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
-    # 组件里 json.loads 会报 Invalid control character（imagegen 同款防坑）
-    payload = {
-        "prompt": " ".join(prompt[:2000].split()),
-        "image_urls": urls,
-        "context_notes": " ".join(str(context_notes or "")[:1200].split()),
-    }
+    elif mode == "reversal":
+        if not PROMPT_OPTIMIZE_IMAGE_FLOW_ID:
+            raise RuntimeError(
+                "未配置 LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID（flow 见 agent/flows/prompt-optimize-image.json）"
+            )
+        if not DMX_API_KEY:
+            raise RuntimeError("未配置 DMX_API_KEY，看图反推不可用")
+        urls = [_normalize_asset_url(u) for u in (image_urls or []) if str(u).strip()][:4]
+        if not urls:
+            raise RuntimeError("看图反推需要至少一张参考图")
+        # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
+        # 组件里 json.loads 会报 Invalid control character（imagegen 同款防坑）
+        payload = {
+            "image_urls": urls,
+            "context_notes": " ".join(str(context_notes or "")[:1200].split()),
+        }
+        input_value = ""
+        tweaks = {
+            "PromptOptimize-main": {
+                "payload": json.dumps(payload, ensure_ascii=False),
+                "api_key": DMX_API_KEY,
+            }
+        }
+    else:
+        raise RuntimeError(f"未知 mode：{mode}（可选 optimize / reversal）")
 
     job_id = uuid.uuid4().hex[:12]
     PROMPT_OPTIMIZE_JOBS[job_id] = {"status": "running", "result": None, "error": None}
 
     async def run() -> None:
         try:
-            raw = await run_flow_blocking(
-                PROMPT_OPTIMIZE_FLOW_ID,
-                tweaks={
-                    "PromptOptimize-main": {
-                        "payload": json.dumps(payload, ensure_ascii=False),
-                        "api_key": DMX_API_KEY,
-                        **({"model_name": model} if model else {}),
-                    }
-                },
+            flow_id = (
+                PROMPT_OPTIMIZE_TEXT_FLOW_ID if mode == "optimize" else PROMPT_OPTIMIZE_IMAGE_FLOW_ID
             )
+            raw = await run_flow_blocking(flow_id, input_value=input_value, tweaks=tweaks)
             if raw.startswith("（"):
                 PROMPT_OPTIMIZE_JOBS[job_id].update(status="done", error=raw.strip("（）"))
             else:

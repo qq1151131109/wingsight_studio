@@ -200,6 +200,7 @@ export default function PromptBar({
     setPanelError("");
     try {
       const out = await optimizePrompt({
+        mode: text.trim() ? "optimize" : "reversal",
         prompt: text.trim(),
         imageUrls: assistImages,
         contextNotes: assistContext,
