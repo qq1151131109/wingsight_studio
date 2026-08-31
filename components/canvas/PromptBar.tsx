@@ -8,7 +8,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Sparkles, Star, X } from "lucide-react";
+import { Loader2, Sparkles, Star, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import {
   ADD_REF_EVENT,
@@ -18,6 +18,7 @@ import {
   type PromptPickDetail,
 } from "@/lib/canvas/events";
 import { toggleFavorite } from "@/lib/prompt-library";
+import { optimizePrompt } from "@/lib/prompt-optimize";
 import { Lightbox } from "./Lightbox";
 
 /** 卡片输入条上的"直接生成"事件 */
@@ -100,7 +101,14 @@ export default function PromptBar({
 }) {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
-  const [text, setText] = useState("");
+  // 出图/生视频的生成基准=卡上正文（空提示词时桥接层回退「标题+正文」），
+  // 预填出来让用户看得见、可改；文本/分镜面板是「下指令」，不预填
+  const self = nodes.find((n) => n.id === nodeId);
+  const selfBody =
+    kind === "image" || kind === "video"
+      ? ((self?.data.body as string) ?? "").trim()
+      : "";
+  const [text, setText] = useState(selfBody);
   const [refs, setRefs] = useState<WingNode[]>([]);
   const [mention, setMention] = useState<{ start: number; q: string } | null>(
     null,
@@ -108,9 +116,12 @@ export default function PromptBar({
   const [hi, setHi] = useState(0);
   const [count, setCount] = useState(1);
   const [favSaved, setFavSaved] = useState(false);
+  // 画风闸（出图直连管线与非聊天出图同规）：未选画风在本面板内联报错
+  const [panelError, setPanelError] = useState("");
   // 引用 chip 缩略图点击 → 大图预览（灯箱翻页仅限有图的引用）
   const [preview, setPreview] = useState<number | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const projectStyle = useCanvasStore((s) => s.projectStyle);
 
   // 连线即引用（open-ai-canvas「已连接素材」/ novanova「mention 来自连线」）：
   // 上游连进来的卡本来就参与生成（桥接层 upstreamLines 注入），这里如实亮出
@@ -143,6 +154,49 @@ export default function PromptBar({
   const previewImgs = shownRefs
     .filter((r) => Boolean(r.data.imageUrl))
     .map((r) => ({ src: r.data.imageUrl as string, title: r.data.title ?? "" }));
+
+  // AI 提示词辅助（✦ 双态：优化扩写 / 看图反推；产物回填草稿可再改）
+  const [aiBusy, setAiBusy] = useState(false);
+  const assistImages = [self?.data.imageUrl, ...previewImgs.map((p) => p.src)]
+    .filter((u): u is string => Boolean(u))
+    .slice(0, 4);
+  const assistContext = [
+    ...shownRefs.map(
+      (n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150),
+    ),
+    projectStyle.trim() ? `全局视觉风格：${projectStyle.trim()}` : "",
+  ]
+    .filter(Boolean)
+    .join("；");
+  const aiLabel = text.trim() ? "优化" : "看图反推";
+  const canAssist = Boolean(text.trim()) || assistImages.length > 0;
+
+  // 输入框随内容自动增高（预填的长提示词完整可读，封顶后内部滚动）
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, variant === "floating" ? 200 : 120)}px`;
+  }, [text, variant]);
+
+  const runAssist = async () => {
+    if (aiBusy || !canAssist) return;
+    setAiBusy(true);
+    setPanelError("");
+    try {
+      const out = await optimizePrompt({
+        prompt: text.trim(),
+        imageUrls: assistImages,
+        contextNotes: assistContext,
+      });
+      setText(out);
+      taRef.current?.focus();
+    } catch (exc) {
+      setPanelError(exc instanceof Error ? exc.message : "AI 辅助失败");
+    } finally {
+      setAiBusy(false);
+    }
+  };
 
   // 提示词库点选 → 追加到输入框
   useEffect(() => {
@@ -210,7 +264,15 @@ export default function PromptBar({
 
   const submit = () => {
     const prompt = text.trim();
-    if (!prompt && refs.length === 0) return;
+    // 画风闸：出图直连管线与非聊天出图同规，未选画风就地拦下
+    if (kind === "image" && !projectStyle.trim()) {
+      setPanelError("未选画风：请先在底部坞「画风」选项目画风，再出图");
+      return;
+    }
+    setPanelError("");
+    // 出图/生视频允许空提示词（=按卡上标题与正文重生成）；下指令类必须有问题
+    if (!prompt && refs.length === 0 && (kind === "text" || kind === "shotlist"))
+      return;
     window.dispatchEvent(
       new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
         detail: {
@@ -322,13 +384,14 @@ export default function PromptBar({
           ))}
         </div>
       ) : null}
-      <div className="relative flex items-end gap-1">
+      {/* 输入区独占一行 + 随内容增高；动作行在下方右对齐（长提示词可完整阅读） */}
+      <div className="relative">
         <textarea
           ref={taRef}
           value={text}
           rows={floating ? 3 : 2}
           placeholder={placeholder ?? KIND_PLACEHOLDER[kind]}
-          className={`w-full resize-none bg-transparent leading-relaxed text-text outline-none placeholder:text-text-4 ${
+          className={`w-full resize-none overflow-y-auto bg-transparent leading-relaxed text-text outline-none placeholder:text-text-4 ${
             floating ? "px-1 py-1 text-sm" : "px-1 py-0.5 text-xs"
           }`}
           onChange={(e) => {
@@ -371,10 +434,37 @@ export default function PromptBar({
             }
           }}
         />
+      </div>
+      <div className="mt-1 flex items-center justify-end gap-1">
+        {kind === "image" || kind === "video" ? (
+          <button
+            type="button"
+            disabled={aiBusy || !canAssist}
+            title={
+              text.trim()
+                ? "AI 优化提示词：保留主体意图扩写成完整出图提示词，结果回填可再改"
+                : "看图反推：AI 按卡上图/参考图写出出图提示词，结果回填可再改"
+            }
+            className={`flex shrink-0 items-center gap-1 rounded-md border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40 ${
+              floating ? "h-8 px-2 text-xs" : "h-7 px-1.5 text-[11px]"
+            }`}
+            onClick={(e) => {
+              e.stopPropagation();
+              void runAssist();
+            }}
+          >
+            {aiBusy ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className={floating ? "h-3.5 w-3.5" : "h-3 w-3"} />
+            )}
+            {aiBusy ? "AI…" : aiLabel}
+          </button>
+        ) : null}
         <button
           type="button"
           title={favSaved ? "已收藏" : "收藏当前输入到提示词库"}
-          className={`mb-0.5 grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
+          className={`grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
             floating ? "h-8 w-8" : "h-7 w-7"
           } ${favSaved ? "text-warn" : "text-text-2"}`}
           onClick={() => {
@@ -394,14 +484,15 @@ export default function PromptBar({
               ? "让 AI 撰写（Ctrl+Enter）"
               : kind === "shotlist"
                 ? "让 AI 修改分镜表（Ctrl+Enter）"
-                : "生成（Ctrl+Enter）"
+                : "生成（Ctrl+Enter）；清空提示词=按卡片标题与正文重生成"
           }
-          className={`mb-0.5 grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text ${
-            floating ? "h-8 w-8" : "h-7 w-7"
+          className={`flex shrink-0 items-center gap-1 rounded-md bg-accent font-medium text-white transition-opacity hover:opacity-85 ${
+            floating ? "h-8 px-3 text-xs" : "h-7 px-2 text-[11px]"
           }`}
           onClick={submit}
         >
-          <Sparkles className={floating ? "h-4 w-4" : "h-3.5 w-3.5"} />
+          <Sparkles className={floating ? "h-3.5 w-3.5" : "h-3 w-3"} />
+          {kind === "text" ? "撰写" : kind === "shotlist" ? "修改" : "生成"}
         </button>
         {mention && candidates.length > 0 ? (
           <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-64 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">            {candidates.map((c, i) => (
@@ -435,6 +526,11 @@ export default function PromptBar({
           </div>
         ) : null}
       </div>
+      {panelError ? (
+        <p className="mt-1 px-1 text-[10px] leading-relaxed text-danger">
+          {panelError}
+        </p>
+      ) : null}
       {preview !== null && previewImgs.length > 0 ? (
         <Lightbox
           images={previewImgs}

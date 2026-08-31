@@ -125,10 +125,14 @@ async def start_storyboard_gen_job(
     asyncio.create_task(run())
     return job_id
 IMAGEGEN_FLOW_ID = os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID", "")
+PROMPT_OPTIMIZE_FLOW_ID = os.environ.get("LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID", "")
 DMX_API_KEY = os.environ.get("DMX_API_KEY", "")
 VOLC_SEARCH_API_KEY = os.environ.get("VOLC_SEARCH_API_KEY", "")
 # 出图参考图回给 langflow 下载用的本机地址（/assets 未鉴权、文件名随机 hex）
 AGENT_BASE_URL = os.environ.get("AGENT_BASE_URL", "http://127.0.0.1:8123")
+# 本 agent 服务的资产基地址（/assets 未鉴权）。注意 AGENT_BASE_URL 是
+# DeepSeek 聊天 API 的地址，别混用——历史上曾把参考图拼到 deepseek 域名上
+ASSET_BASE_URL = os.environ.get("ASSET_BASE_URL", "http://127.0.0.1:8123")
 
 # 生成图片的对外暴露目录（main.py 挂 /assets 端点，前端经 /agent-service/assets/ 访问）
 ASSETS_DIR = Path(__file__).resolve().parent / "static" / "assets"
@@ -803,7 +807,7 @@ async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
     # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
     # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）
     ref_images = [
-        AGENT_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
+        ASSET_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
         if u.startswith(("/agent-service/assets/", "/assets/"))
         else str(u)
         for u in (shot.get("referenceImages") or [])
@@ -987,3 +991,72 @@ async def run_skill(
     if len(text) > MAX_RESULT_CHARS:
         text = text[:MAX_RESULT_CHARS] + "…（已截断）"
     return text
+
+
+# ── 提示词 AI 辅助（面板 ✦ 双态按钮：优化扩写 / 看图反推）──────────────────────
+# 直连「提示词优化」flow（deepseek-v4-flash 视觉，DMX），不经聊天 LLM。
+# 产物回填面板输入框草稿，用户确认后才随生成落卡。
+
+PROMPT_OPTIMIZE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_prompt_optimize_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return PROMPT_OPTIMIZE_JOBS.get(job_id)
+
+
+def _normalize_asset_url(url: str) -> str:
+    """/agent-service/assets/ 相对路径 → agent 本机绝对 URL（组件要 httpx 下载）"""
+    u = str(url or "").strip()
+    if u.startswith(("/agent-service/assets/", "/assets/")):
+        return ASSET_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
+    return u
+
+
+async def start_prompt_optimize_job(
+    prompt: str, image_urls: Optional[List[str]], context_notes: str
+) -> str:
+    if not PROMPT_OPTIMIZE_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID（flow 见 agent/flows/prompt-optimize.json）"
+        )
+    if not DMX_API_KEY:
+        raise RuntimeError("未配置 DMX_API_KEY，提示词优化不可用")
+    prompt = str(prompt or "").strip()
+    urls = [_normalize_asset_url(u) for u in (image_urls or []) if str(u).strip()][:4]
+    if not prompt and not urls:
+        raise RuntimeError("提示词为空且无参考图：没有可优化的对象")
+    # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
+    # 组件里 json.loads 会报 Invalid control character（imagegen 同款防坑）
+    payload = {
+        "prompt": " ".join(prompt[:2000].split()),
+        "image_urls": urls,
+        "context_notes": " ".join(str(context_notes or "")[:1200].split()),
+    }
+
+    job_id = uuid.uuid4().hex[:12]
+    PROMPT_OPTIMIZE_JOBS[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run() -> None:
+        try:
+            raw = await run_flow_blocking(
+                PROMPT_OPTIMIZE_FLOW_ID,
+                tweaks={
+                    "PromptOptimize-main": {
+                        "payload": json.dumps(payload, ensure_ascii=False),
+                        "api_key": DMX_API_KEY,
+                    }
+                },
+            )
+            if raw.startswith("（"):
+                PROMPT_OPTIMIZE_JOBS[job_id].update(status="done", error=raw.strip("（）"))
+            else:
+                PROMPT_OPTIMIZE_JOBS[job_id].update(status="done", result=raw)
+        except Exception as e:  # noqa: BLE001
+            PROMPT_OPTIMIZE_JOBS[job_id].update(status="done", error=str(e)[:200])
+        finally:
+            done = [k for k, v in PROMPT_OPTIMIZE_JOBS.items() if v["status"] == "done"]
+            for k in done[:-49]:
+                PROMPT_OPTIMIZE_JOBS.pop(k, None)
+
+    asyncio.create_task(run())
+    return job_id

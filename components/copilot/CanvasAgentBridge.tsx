@@ -30,6 +30,108 @@ import {
   type MaskRedrawDetail,
   type RowGenerateDetail,
 } from "@/lib/canvas/events";
+import {
+  pollShotImageJob,
+  startShotImageJob,
+} from "@/lib/shotlist";
+
+/** 面板出图直连管线：跳过聊天 LLM，直连 imagegen flow（与拆解出图链/
+ *  分镜批量出图同一条）。确定性任务不走 agent，快、省 token、不刷聊天屏。
+ *  prompt 空=按卡上标题与正文；参考图取 @引用+上游连线卡的设定图；
+ *  上游有角色卡时按角色四格契约出图（Look 卡重生成保持版式） */
+async function directImagegen(
+  nodeId: string,
+  opts: { prompt: string; refIds: string[]; count?: number },
+) {
+  const st = useCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === nodeId);
+  if (!node) return;
+  const projectStyle = st.projectStyle.trim();
+  if (!projectStyle) {
+    st.updateNodeData(nodeId, {
+      status: "error",
+      errorMessage: "未选画风：请先在底部坞「画风」选项目画风，再出图",
+    });
+    return;
+  }
+  // 参考 = 手动 @ 引用 + 上游连线卡（与面板 chip 展示一致），带图才收
+  const refNodes = [
+    ...opts.refIds
+      .map((rid) => st.nodes.find((n) => n.id === rid))
+      .filter((n): n is NonNullable<typeof n> => Boolean(n)),
+    ...st.edges
+      .filter((e) => e.target === nodeId && !opts.refIds.includes(e.source))
+      .map((e) => st.nodes.find((n) => n.id === e.source))
+      .filter((n): n is NonNullable<typeof n> => Boolean(n)),
+  ].filter((n) => n.data.imageUrl);
+  const seenUrl = new Set<string>();
+  const referenceImages = refNodes
+    .map((n) => n.data.imageUrl as string)
+    .filter((u) => (seenUrl.has(u) ? false : (seenUrl.add(u), true)))
+    .slice(0, 4);
+  const visualNotes = [
+    ...refNodes.map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150)),
+    `全局视觉风格：${projectStyle}`,
+  ].join("；");
+  const isCharacterLook = refNodes.some((n) => n.data.nodeType === "character");
+  const description = (opts.prompt || `${node.data.title} ${node.data.body ?? ""}`).trim();
+  const count = Math.max(1, Math.min(4, opts.count ?? 1));
+  const first = st.nodes.find((n) => n.id === nodeId);
+
+  st.updateNodeData(nodeId, {
+    status: "loading",
+    errorMessage: undefined,
+    refIds: opts.refIds,
+    // 重生成前把当前主图存进版本历史（可对比/回滚）
+    ...(first?.data.imageUrl
+      ? {
+          versions: [
+            ...(first.data.versions ?? []),
+            { url: first.data.imageUrl as string, at: new Date().toISOString().slice(5, 16).replace("T", " ") },
+          ].slice(-12),
+        }
+      : {}),
+  });
+  try {
+    const jobId = await startShotImageJob(
+      Array.from({ length: count }, (_, i) => ({
+        rid: `${nodeId}#${i}`,
+        name: (node.data.title as string) || "图片",
+        description,
+        assetType: isCharacterLook ? "character" : "scene",
+        visualNotes,
+        referenceImages,
+      })),
+    );
+    const urls: string[] = [];
+    let lastError = "";
+    const outcome = await pollShotImageJob(jobId, (item) => {
+      if (item.ok && item.imageUrl) urls.push(item.imageUrl);
+      else if (item.error) lastError = item.error;
+    });
+    if (urls.length > 0) {
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        status: "ready",
+        imageUrl: urls[0],
+        primaryIndex: 0,
+        ...(urls.length > 1 ? { imageUrls: urls } : {}),
+      });
+    } else {
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        status: "error",
+        errorMessage:
+          outcome === "gone"
+            ? "出图任务已失效（agent 重启），请重试"
+            : lastError || "出图失败，请重试",
+      });
+    }
+  } catch (exc) {
+    useCanvasStore.getState().updateNodeData(nodeId, {
+      status: "error",
+      errorMessage: (exc instanceof Error ? exc.message : "出图失败").slice(0, 200),
+    });
+  }
+}
 
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
 interface WingsightAgentState {
@@ -160,6 +262,14 @@ export default function CanvasAgentBridge() {
       const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
       const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
       if (!node) return;
+      // 图片卡重试同样直连（不绕聊天）；视频仍走聊天指令（唯一视频执行层）
+      if (node.data.nodeType === "image") {
+        void directImagegen(nodeId, {
+          prompt: ((node.data.body as string) ?? "").trim(),
+          refIds: ((node.data.refIds as string[]) ?? []).filter(Boolean),
+        });
+        return;
+      }
       const what = node.data.nodeType === "video" ? "视频" : "设定图";
       useCanvasStore.getState().updateNodeData(nodeId, {
         status: "loading",
@@ -185,6 +295,11 @@ export default function CanvasAgentBridge() {
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
+      // 出图=确定性任务，直连 imagegen flow（不经聊天 LLM，不刷聊天屏）
+      if (kind === "image") {
+        void directImagegen(nodeId, { prompt, refIds, count });
+        return;
+      }
       // 连线即数据流：目标卡的入边上游自动进生成上下文（@ 手动引用过的不重复）
       const upstreamLines = st.edges
         .filter((e) => e.target === nodeId && !refIds.includes(e.source))
@@ -297,10 +412,6 @@ export default function CanvasAgentBridge() {
         .join("\n");
       const field = kind === "video" ? "videoUrl" : "imageUrl";
       const kindLabel = kind === "video" ? "视频" : "图片";
-      const countLine =
-        kind === "image" && count && count > 1
-          ? `\n请生成 ${count} 张候选（把生成调用重复 ${count} 次或一次传 ${count} 个同项资产），全部完成后用 canvas_ops update_node 一次写入：imageUrls=[${count} 个URL数组]、imageUrl=其中你推荐的一张、status:"ready"。`
-          : "";
       const content = [
         `请为画布节点 ${nodeId}（${kindLabel}卡「${node.data.title}」）生成内容：`,
         prompt || "（按卡片标题与正文生成）",
@@ -310,7 +421,6 @@ export default function CanvasAgentBridge() {
         upstreamLines
           ? `该卡已连线接入以下上游内容，作为本次生成的依据（文本卡=画面描述来源，图片/角色卡=保持形象一致）：\n${upstreamLines}`
           : "",
-        countLine,
         `完成后用 canvas_ops update_node 把 ${nodeId} 置为 {status:"ready", ${field}:<url>}；失败则置 {status:"error", errorMessage:<原因>}，不要让卡片停在 loading。`,
       ]
         .filter(Boolean)

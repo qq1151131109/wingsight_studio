@@ -156,6 +156,36 @@ export type ShotImageResult = {
  *  抖动，调用方可据此把 loading 图卡置败、清除断点旗标） */
 export class ShotJobGoneError extends Error {}
 
+/** 轮询批量出图任务：每张完成即回调 onItem。返回 done/timeout/gone
+ *  （gone=agent 重启丢内存任务表）。单次网络抖动不判死，超 deadline 才放弃。
+ *  批量出图、刷新恢复与面板直连出图共用 */
+export async function pollShotImageJob(
+  jobId: string,
+  onItem: (item: ShotImageResult) => void,
+  deadlineMs = 10 * 60 * 1000,
+): Promise<"done" | "timeout" | "gone"> {
+  const deadline = Date.now() + deadlineMs;
+  const applied = new Set<string>();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 2500));
+    let job;
+    try {
+      job = await getShotImageJob(jobId);
+    } catch (exc) {
+      if (exc instanceof ShotJobGoneError) return "gone";
+      if (Date.now() > deadline) return "timeout";
+      continue;
+    }
+    for (const item of job.images) {
+      if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
+      applied.add(item.rid);
+      onItem(item);
+    }
+    if (job.status === "done") return "done";
+    if (Date.now() > deadline) return "timeout";
+  }
+}
+
 /** 启动批量出图任务：Next 同源代理 30s 掐断长请求，必须异步任务 + 轮询 */
 export async function startShotImageJob(
   shots: ShotImageRequest[],

@@ -76,7 +76,8 @@ export default function NodeInputPanel() {
       }}
     >
       <div className="rounded-xl border border-hairline bg-surface-1 p-2 shadow-lg">
-        <PromptBar nodeId={node.id} kind={kind} variant="floating" />
+        {/* key：切卡时强制重挂载，PromptBar 按新卡预填当前提示词 */}
+        <PromptBar key={node.id} nodeId={node.id} kind={kind} variant="floating" />
       </div>
     </div>
   );

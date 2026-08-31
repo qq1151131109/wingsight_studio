@@ -83,9 +83,9 @@ import {
   decomposeAssets,
   generateShotlist,
   getShotImageJob,
+  pollShotImageJob,
   startCharacterImageJob,
   startShotImageJob,
-  ShotJobGoneError,
   type DecomposedLook,
   type ShotImageResult,
 } from "@/lib/shotlist";
@@ -939,8 +939,10 @@ function NoteCard({ data, id, selected }: NodeProps) {
  *  自动触发生成（autoGenerate 旗标） */
 function ScriptCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
+  const nodes = useCanvasStore((s) => s.nodes);
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
+  const [fillingAssets, setFillingAssets] = useState(false);
   const [genError, setGenError] = useState("");
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
@@ -957,6 +959,19 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       useCanvasStore.getState().nodes.find((n) => n.id === id)?.data.body ?? ""
     ).trim();
 
+  const missingAssetCount = countAssetsMissingImage(nodes);
+  /** 补资产图：画布上缺设定图的资产卡一键批量出图（画风闸内） */
+  const fillAssets = async () => {
+    if (fillingAssets) return;
+    setFillingAssets(true);
+    setDecomposeMsg("");
+    try {
+      const msg = await fillAssetImages();
+      if (msg) setDecomposeMsg(msg);
+    } finally {
+      setFillingAssets(false);
+    }
+  };
   /** 拆解资产：共享实现 runAssetDecompose，锚点=本卡（资产组建在左侧） */
   const decompose = () => {
     if (decomposing) return;
@@ -1043,6 +1058,20 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             >
               {decomposing ? "拆解中…" : "拆解资产"}
             </button>
+            {missingAssetCount > 0 ? (
+              <button
+                type="button"
+                disabled={fillingAssets}
+                title="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
+                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void fillAssets();
+                }}
+              >
+                {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={empty}
@@ -2699,36 +2728,6 @@ async function runAssetDecompose(opts: {
   }
 }
 
-/** 轮询批量出图任务：每张完成即回调 onItem。返回 done/timeout/gone
- *  （gone=agent 重启丢内存任务表）。单次网络抖动不判死，超 deadline 才放弃。
- *  批量出图与刷新恢复共用 */
-async function pollShotImageJob(
-  jobId: string,
-  onItem: (item: ShotImageResult) => void,
-  deadlineMs = 10 * 60 * 1000,
-): Promise<"done" | "timeout" | "gone"> {
-  const deadline = Date.now() + deadlineMs;
-  const applied = new Set<string>();
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 2500));
-    let job;
-    try {
-      job = await getShotImageJob(jobId);
-    } catch (exc) {
-      if (exc instanceof ShotJobGoneError) return "gone";
-      if (Date.now() > deadline) return "timeout";
-      continue;
-    }
-    for (const item of job.images) {
-      if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
-      applied.add(item.rid);
-      onItem(item);
-    }
-    if (job.status === "done") return "done";
-    if (Date.now() > deadline) return "timeout";
-  }
-}
-
 /** 批量出图单张结果回填：rid → 行的 imageNodeId 节点置 ready/error。
  *  行数据读 live store（批量轮询与刷新恢复共用，防闭包过期） */
 function applyShotImageItem(cardId: string, item: ShotImageResult) {
@@ -2789,6 +2788,98 @@ async function composeFromCard(composeId: string) {
   else st.updateNodeData(composeId, { status: "error", errorMessage: "合成失败（源文件不兼容或服务端异常），可重试" });
 }
 
+/** 补资产图：收集画布上没有设定图的资产卡一键批量出图（novanova 资产
+ *  批量范式）。画风闸内；返回 null=无缺图/用户取消，否则返回汇报文案 */
+async function fillAssetImages(): Promise<string | null> {
+  const st = useCanvasStore.getState();
+  const projectStyle = st.projectStyle.trim();
+  if (!projectStyle) {
+    return "未选画风：请先在底部坞「画风」选项目画风，再补资产图";
+  }
+  const targets = st.nodes.filter(
+    (n) =>
+      ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
+      (n.data.title as string)?.trim() &&
+      (n.data.body as string)?.trim() &&
+      !n.data.imageUrl &&
+      n.data.status !== "loading",
+  );
+  if (targets.length === 0) return null;
+  const ask =
+    targets.length === 1
+      ? `为「${targets[0].data.title}」补出设定图（消耗出图额度）？`
+      : `将为 ${targets.length} 张缺图的资产卡批量出图（每张数十秒并消耗出图额度）。确认开始？`;
+  if (!window.confirm(ask)) return null;
+  const cst = useCanvasStore.getState();
+  for (const n of targets) {
+    cst.updateNodeData(n.id, { status: "loading", errorMessage: undefined });
+  }
+  try {
+    const jobId = await startShotImageJob(
+      targets.map((n) => ({
+        rid: n.id,
+        name: n.data.title as string,
+        description: `${n.data.title}。${n.data.body}`,
+        // 服饰卡的设定图按道具契约（4:3 单件）出图
+        assetType:
+          n.data.nodeType === "costume"
+            ? "prop"
+            : (n.data.nodeType as "character" | "scene" | "prop"),
+        visualNotes: `全局视觉风格：${projectStyle}`,
+      })),
+    );
+    const done: string[] = [];
+    const failed: string[] = [];
+    const outcome = await pollShotImageJob(jobId, (item) => {
+      const ust = useCanvasStore.getState();
+      const name =
+        (targets.find((t) => t.id === item.rid)?.data.title as string) || item.rid;
+      if (item.ok && item.imageUrl) {
+        ust.updateNodeData(item.rid, { imageUrl: item.imageUrl, status: "ready" });
+        done.push(name);
+      } else {
+        ust.updateNodeData(item.rid, {
+          status: "error",
+          errorMessage: item.error || "出图失败",
+        });
+        failed.push(name);
+      }
+    });
+    if (outcome === "gone") {
+      const ust = useCanvasStore.getState();
+      for (const t of targets) {
+        ust.updateNodeData(t.id, {
+          status: "error",
+          errorMessage: "出图任务已失效（agent 重启），请重试",
+        });
+      }
+      return "出图任务已失效（agent 重启），请重试";
+    }
+    return `补资产图完成：成功 ${done.length} 张${
+      failed.length > 0 ? `，失败 ${failed.length} 张（${failed.join("、")}，可在卡上重试）` : ""
+    }`;
+  } catch (exc) {
+    const msg = exc instanceof Error ? exc.message : "批量出图失败";
+    const ust = useCanvasStore.getState();
+    for (const t of targets) {
+      ust.updateNodeData(t.id, { status: "error", errorMessage: msg });
+    }
+    return msg;
+  }
+}
+
+/** 画布上缺设定图的资产卡数（补资产图按钮的计数与显隐） */
+function countAssetsMissingImage(nodes: WingNode[]): number {
+  return nodes.filter(
+    (n) =>
+      ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
+      (n.data.title as string)?.trim() &&
+      (n.data.body as string)?.trim() &&
+      !n.data.imageUrl &&
+      n.data.status !== "loading",
+  ).length;
+}
+
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
@@ -2802,6 +2893,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   // 行选择：null = 全选（默认全选，取消勾选即收窄到子集）
   const [selRows, setSelRows] = useState<Set<string> | null>(null);
   // 行列表滚动容器：加一行（按钮在顶部）后滚到新行
+  const [fillingAssets, setFillingAssets] = useState(false);
   const rowsScrollRef = useRef<HTMLDivElement>(null);
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
@@ -3060,6 +3152,18 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       .filter((n): n is WingNode => Boolean(n));
   };
 
+  /** 补资产图：画布上缺设定图的资产卡一键批量出图（画风闸内） */
+  const fillAssets = async () => {
+    if (fillingAssets) return;
+    setFillingAssets(true);
+    setDecomposeMsg("");
+    try {
+      const msg = await fillAssetImages();
+      if (msg) setDecomposeMsg(msg);
+    } finally {
+      setFillingAssets(false);
+    }
+  };
   /** 拆解资产（novanova「分镜同时出资产清单」的独立化）：共享实现
    *  runAssetDecompose，锚点=本卡（资产组建在左侧） */
   const decompose = async () => {
@@ -3244,6 +3348,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     update({ rows: next });
   };
 
+  const missingAssetCount = countAssetsMissingImage(nodes);
   const totalDur = rows.reduce((sum, r) => {
     // LLM 可能返回数字型 duration（JSON 数值），String 化防 .match 崩渲染树
     const m = String(r.duration ?? "").match(/(\d+(?:\.\d+)?)/);
@@ -3622,6 +3727,20 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           >
             {decomposing ? "拆解中…" : "拆解资产"}
           </button>
+            {missingAssetCount > 0 ? (
+              <button
+                type="button"
+                disabled={fillingAssets}
+                title="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
+                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void fillAssets();
+                }}
+              >
+                {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
+              </button>
+            ) : null}
           <button
             type="button"
             disabled={imgGenerating || selectedGenRows.length === 0}

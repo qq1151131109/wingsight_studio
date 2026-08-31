@@ -354,6 +354,34 @@ async def api_storyboard_generate_status(job_id: str, user: auth.CurrentUser):
     return {"status": job["status"], "rows": job.get("rows")}
 
 
+@app.post("/prompt/optimize")
+async def api_prompt_optimize(req: dict, user: auth.CurrentUser):
+    """提示词 AI 辅助（面板 ✦ 双态按钮）：优化扩写 / 看图反推，直连 flow
+    不经聊天。异步任务（Next 代理 30s 掐断长请求），前端轮询 GET。
+
+    req: {prompt?: str, imageUrls?: [str], contextNotes?: str}
+    prompt 空=看图反推（imageUrls 必须非空）。
+    """
+    prompt = str(req.get("prompt") or "").strip()
+    image_urls = req.get("imageUrls") if isinstance(req.get("imageUrls"), list) else []
+    context_notes = str(req.get("contextNotes") or "")
+    if not prompt and not image_urls:
+        return Response(status_code=400, content="提示词为空且无参考图", media_type="text/plain")
+    try:
+        job_id = await skills.start_prompt_optimize_job(prompt, image_urls, context_notes)
+    except RuntimeError as exc:
+        return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@app.get("/prompt/optimize/{job_id}")
+async def api_prompt_optimize_status(job_id: str, user: auth.CurrentUser):
+    job = skills.get_prompt_optimize_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="任务不存在", media_type="text/plain")
+    return {"status": job["status"], "result": job.get("result"), "error": job.get("error")}
+
+
 @app.post("/storyboard/images")
 async def api_storyboard_images(req: dict, user: auth.CurrentUser):
     """分镜行批量出图：启动异步任务立即返回 jobId（Next 代理 30s 会掐断
