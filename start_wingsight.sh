@@ -64,7 +64,7 @@ do_status() {
   is_up "$AGENT_PORT" && echo "✓ agent  :$AGENT_PORT" || echo "✗ agent 未运行"
   web_up "$WEB_PORT" && echo "✓ 前端   :$WEB_PORT" || echo "✗ 前端未运行"
   curl -s -o /dev/null --max-time 2 http://127.0.0.1:7860/health 2>/dev/null \
-    && echo "✓ langflow :7860（外部服务）" || echo "⚠ langflow :7860 未运行（拆解/出图需要它）"
+    && echo "✓ langflow :7860（langflow/ 内置，scripts/setup-langflow.sh 管理）" || echo "⚠ langflow :7860 未运行（拆解/出图需要它，跑 ./scripts/setup-langflow.sh）"
 }
 
 case "${1:-start}" in
