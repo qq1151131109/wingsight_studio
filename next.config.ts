@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   devIndicators: false,
 
   // dev 服务器默认只信任 localhost 来源；放行本机回环/局域网/远程隧道域名
+  // （192.168.100.204 = 本机，192.168.31.150 = wingsight 服务器部署内网 IP）
   allowedDevOrigins: [
     "localhost",
     "127.0.0.1",
@@ -13,6 +14,7 @@ const nextConfig: NextConfig = {
     "*.trycloudflare.com",
     "bore.pub",
     "192.168.100.204",
+    "192.168.31.150",
   ],
 
   // agent 服务同源代理：浏览器统一走 /agent-service，
