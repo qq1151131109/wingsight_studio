@@ -962,14 +962,14 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       useCanvasStore.getState().nodes.find((n) => n.id === id)?.data.body ?? ""
     ).trim();
 
-  const missingAssetCount = countAssetsMissingImage(nodes);
-  /** 补资产图：画布上缺设定图的资产卡一键批量出图（画风闸内） */
+  const missingAssetCount = countAssetsMissingImage(nodes, id);
+  /** 补资产图：本卡拆解出的缺图资产卡一键批量出图（画风闸内） */
   const fillAssets = async () => {
     if (fillingAssets) return;
     setFillingAssets(true);
     setDecomposeMsg("");
     try {
-      const msg = await fillAssetImages();
+      const msg = await fillAssetImages(id);
       if (msg) setDecomposeMsg(msg);
     } finally {
       setFillingAssets(false);
@@ -1071,7 +1071,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 disabled={fillingAssets}
-                data-tip="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）" aria-label="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
+                data-tip="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -2534,6 +2534,18 @@ async function runAssetDecompose(opts: {
           ),
       );
       existed += items.length - fresh.length;
+      // 同名既有卡认领到本卡名下：assetSource 是「补资产图」的圈定键，
+      // 历史无来源的存量卡由重复拆解自然 heal，不做单独的存量迁移
+      for (const a of items) {
+        if (fresh.includes(a)) continue;
+        const owner = cur.nodes.find(
+          (n) => n.data.nodeType === type && n.data.title === a.name,
+        );
+        if (owner && owner.data.assetSource !== anchorId)
+          useCanvasStore.getState().updateNodeData(owner.id, {
+            assetSource: anchorId,
+          });
+      }
       if (fresh.length === 0) continue;
       kindCounts[type] = fresh.length;
       const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
@@ -2561,6 +2573,8 @@ async function runAssetDecompose(opts: {
             body: [a.description, a.visual_notes ? `视觉：${a.visual_notes}` : ""]
               .filter(Boolean)
               .join("\n"),
+            // 来源锚点：补资产图按它圈定「本卡资产」
+            assetSource: anchorId,
             // 全自动出图产物：定妆照即本卡唯一一张图（一张卡一张图）
             ...(a.image_url
               ? { imageUrl: a.image_url, status: "ready" as const }
@@ -3145,10 +3159,11 @@ async function fillAssetImages(): Promise<string | null> {
   }
 }
 
-/** 画布上缺设定图的资产卡数（补资产图按钮的计数与显隐） */
-function countAssetsMissingImage(nodes: WingNode[]): number {
+/** 本卡（assetSource=sourceId）拆解出的资产卡里缺设定图的张数（补资产图按钮的计数与显隐） */
+function countAssetsMissingImage(nodes: WingNode[], sourceId: string): number {
   return nodes.filter(
     (n) =>
+      n.data.assetSource === sourceId &&
       ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
       (n.data.title as string)?.trim() &&
       (n.data.body as string)?.trim() &&
@@ -3395,13 +3410,13 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       .map((nid) => nodes.find((n) => n.id === nid))
       .filter((n): n is WingNode => Boolean(n));
 
-  /** 补资产图：画布上缺设定图的资产卡一键批量出图（画风闸内） */
+  /** 补资产图：本卡拆解出的缺图资产卡一键批量出图（画风闸内） */
   const fillAssets = async () => {
     if (fillingAssets) return;
     setFillingAssets(true);
     setDecomposeMsg("");
     try {
-      const msg = await fillAssetImages();
+      const msg = await fillAssetImages(id);
       if (msg) setDecomposeMsg(msg);
     } finally {
       setFillingAssets(false);
@@ -3658,7 +3673,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     update({ rows: next });
   };
 
-  const missingAssetCount = countAssetsMissingImage(nodes);
+  const missingAssetCount = countAssetsMissingImage(nodes, id);
   const totalDur = rows.reduce((sum, r) => {
     // LLM 可能返回数字型 duration（JSON 数值），String 化防 .match 崩渲染树
     const m = String(r.duration ?? "").match(/(\d+(?:\.\d+)?)/);
@@ -4064,7 +4079,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 disabled={fillingAssets}
-                data-tip="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）" aria-label="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
+                data-tip="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();
