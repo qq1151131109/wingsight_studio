@@ -7,8 +7,8 @@ projects + canvases + chat_messages 三张表：画布整体 JSON 存取，
 多用户（AUTH_ENABLED=true 时）：
 - projects.owner_id 记录归属（默认 'default'，兼容单人时期的存量数据）
 - projects.collaborators 是协作者用户名 JSON 数组（owner/admin 可管理）
-- 访问规则（照搬 juben 的 _access.py 语义）：admin 全放行；owner_id='default'
-  的存量项目全员可见；owner 或协作者放行；其余 404（防探测枚举）
+- 访问规则（照搬 juben 的 _access.py 语义）：admin 全放行；owner 或协作者
+  放行；其余 404（防探测枚举）。admin 的 id 即 'default'，存量项目归 admin
 """
 
 import json
@@ -178,11 +178,10 @@ def _collaborators_of(row: sqlite3.Row) -> List[str]:
 
 
 def can_access(viewer: Any, row: sqlite3.Row) -> bool:
-    """admin → 全放行；存量无主项目（owner_id='default'）→ 全员可见；
-    其余仅 owner 与协作者。"""
+    """admin → 全放行；其余仅 owner 与协作者（无权/不存在一律 404 防枚举，
+    见 assert_access）。admin 的 user id 就是 'default'，单人时期存量项目
+    天然归 admin 所有，无需迁移。"""
     if getattr(viewer, "role", "admin") == "admin":
-        return True
-    if row["owner_id"] == "default":
         return True
     return row["owner_id"] == viewer.id or viewer.sub in _collaborators_of(row)
 
