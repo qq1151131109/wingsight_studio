@@ -350,7 +350,9 @@ export function selectionBoxes(nodes: WingNode[], ids: string[]) {
 
 /** 建卡找空位（AIGCCanvasFlow 的向下扫描式，对标竞品 auto-placement）：
  *  从锚点起测试新卡矩形，被占则跳到「障碍物最低底边 + gap」再试，最多 30 次。
- *  障碍物一律用实际尺寸（nodeSize，外扩 12px 判定边距），隐藏卡与分组框不算；
+ *  障碍物一律用实际尺寸（nodeSize，外扩 12px 判定边距），隐藏卡与未折叠的
+ *  分组框不算（子卡已代表其占位）；折叠组框按展开尺寸算（子卡随折叠置
+ *  hidden，不算上会在胶囊位置落卡、展开时叠成一堆）。
  *  连点 + 号 / 生成多张时天然向纵向级联，不会叠卡。 */
 export function findFreePosition(
   nodes: WingNode[],
@@ -359,10 +361,18 @@ export function findFreePosition(
   gap = 32,
 ): { x: number; y: number } {
   const obstacles = nodes
-    .filter((n) => !n.hidden && n.data.nodeType !== "group")
+    .filter(
+      (n) =>
+        !n.hidden &&
+        (n.data.nodeType !== "group" || n.data.collapsed === true),
+    )
     .map((n) => {
       const abs = absolutePosition(nodes, n);
-      const s = nodeSize(n);
+      const s =
+        n.data.collapsed === true
+          ? ((n.data.prevSize as { w: number; h: number } | undefined) ??
+            nodeSize(n))
+          : nodeSize(n);
       return {
         x: abs.x - 12,
         y: abs.y - 12,

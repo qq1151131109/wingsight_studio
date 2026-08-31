@@ -2434,7 +2434,7 @@ function composeShotPrompt(r: ShotRow, visualStyle: string): string {
 }
 
 /** 拆解资产共享实现（ShotListCard 与 ScriptCard 的「拆解资产」都走这里）：
- *  直连拆解 flow，角色/场景/道具各成一个组框建在锚点卡左侧（同名跳过）。
+ *  直连拆解 flow，角色/场景/道具各成一个组框建在锚点卡正下方（同名跳过）。
  *  锚点是分镜表时才做遗留 分镜表→资产 边的翻转；内部自捕获异常并经 onError
  *  上报，永不 reject，调用方只需管 busy 态 */
 async function runAssetDecompose(opts: {
@@ -2507,10 +2507,13 @@ async function runAssetDecompose(opts: {
     const lookEdges: { lookId: string; costume: string }[] = [];
     const kindCounts: Record<string, number> = {};
     let existed = 0;
-    // 资产卡放锚点卡左侧（推导方向：左入右出），组框贴着左缘往左排
-    let groupRight = abs.x - 80;
+    // 资产带放锚点卡正下方（脚注区）：左侧是上游来向（剧本→分镜表的连线方向）、
+    // 右侧是下游产物（镜头图方阵/成片卡），只有下方是中性空地——放左侧会压进
+    // 上游剧本卡的地盘（findFreePosition 只向下避让，组框被楔在剧本卡底下）。
+    // 组框在带内从左往右排，行 Y 取首个落点（避让推下去后全行跟随对齐）
+    let groupLeft = abs.x;
+    let rowY = abs.y + nodeSize(src).h + 80;
     let charGroupRight = 0; // 角色组右缘：造型图框的贴靠锚点
-    const anchorY = abs.y;
     for (const { type, label } of KIND_ORDER) {
       const cur = useCanvasStore.getState();
       const items = chars.filter((a) => a.type === type);
@@ -2524,10 +2527,12 @@ async function runAssetDecompose(opts: {
       if (fresh.length === 0) continue;
       kindCounts[type] = fresh.length;
       const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
-      const kcols = Math.min(2, fresh.length);
+      // 列数随规模自适应（√n，1~3 封顶）：大拆解不再固定 2 列竖长条
+      // （10 卡会拉到 1770px 高），组框接近方形，与镜头图方阵同一启发式
+      const kcols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(fresh.length))));
       const kw = kcols * (fp.w + 60) - 60;
       const kh = Math.ceil(fresh.length / kcols) * (fp.h + 54) - 54;
-      const origin = findFreePosition(cur.nodes, { x: groupRight - kw, y: anchorY }, {
+      const origin = findFreePosition(cur.nodes, { x: groupLeft, y: rowY }, {
         w: kw,
         h: kh,
       });
@@ -2561,7 +2566,14 @@ async function runAssetDecompose(opts: {
       const gid = useCanvasStore.getState().groupNodes(ids, label);
       if (gid) groupIds.push(gid);
       created.push(...ids);
-      groupRight = origin.x - 80;
+      groupLeft = origin.x + kw + 80;
+      rowY = Math.max(rowY, origin.y);
+      // 角色组右侧预留造型图框位：带内后续组从造型图框再往右排
+      if (type === "character" && lookJobs.length > 0) {
+        const lfp = NODE_FOOTPRINT.image;
+        const colsMax = Math.max(...lookJobs.map((j) => j.looks.length), 1);
+        groupLeft = charGroupRight + 64 + (colsMax * (lfp.w + 32) - 32) + 64;
+      }
     }
     // Look 造型图收进专属组框「造型图」：贴角色组右缘（推导方向 左入右出），
     // 一行一角色、行内造型并排。不混进角色组——角色组是「一格一资产」的均匀
@@ -2575,8 +2587,9 @@ async function runAssetDecompose(opts: {
       const lorigin = findFreePosition(
         st2.nodes,
         {
-          x: charGroupRight > 0 ? charGroupRight + 64 : abs.x - 80 - low,
-          y: anchorY,
+          // 角色组右侧的预留位；无角色组（角色均已存在）时从带首向下避让
+          x: charGroupRight > 0 ? charGroupRight + 64 : groupLeft,
+          y: rowY,
         },
         { w: low, h: loh },
       );
@@ -2652,7 +2665,9 @@ async function runAssetDecompose(opts: {
             !KIND_TITLES.includes(g!.data.title ?? ""),
         );
       for (const g of genericGroups) end.ungroupNode(g.id);
-      let groupRight2 = abs.x - 80;
+      // 重排同新拆解的落位规则：锚点正下方的资产带，从左往右一行排开
+      let groupLeft2 = abs.x;
+      let rowY2 = abs.y + nodeSize(src).h + 80;
       const newGroups: string[] = [];
       for (const { type, label } of KIND_ORDER) {
         const cur = useCanvasStore.getState();
@@ -2664,10 +2679,13 @@ async function runAssetDecompose(opts: {
         );
         if (items.length === 0) continue;
         const fp = NODE_FOOTPRINT[type] ?? NODE_FOOTPRINT.note;
-        const kcols = Math.min(2, items.length);
+        const kcols = Math.min(
+          3,
+          Math.max(1, Math.ceil(Math.sqrt(items.length))),
+        );
         const kw = kcols * (fp.w + 60) - 60;
         const kh = Math.ceil(items.length / kcols) * (fp.h + 54) - 54;
-        const origin = findFreePosition(cur.nodes, { x: groupRight2 - kw, y: anchorY }, {
+        const origin = findFreePosition(cur.nodes, { x: groupLeft2, y: rowY2 }, {
           w: kw,
           h: kh,
         });
@@ -2688,7 +2706,8 @@ async function runAssetDecompose(opts: {
           .getState()
           .groupNodes(items.map((m) => m.id), label);
         if (gid) newGroups.push(gid);
-        groupRight2 = origin.x - 80;
+        groupLeft2 = origin.x + kw + 80;
+        rowY2 = Math.max(rowY2, origin.y);
       }
       // 历史遗留的 分镜表→资产 边统一翻转为 资产→分镜表（仅分镜表锚点做：
       // 剧本卡锚点下翻成 资产→剧本 无意义）
@@ -4055,6 +4074,7 @@ export const nodeTypes = {
   character: memo(AssetCard),
   scene: memo(AssetCard),
   prop: memo(AssetCard),
+  costume: memo(AssetCard),
   image: memo(ImageCard),
   video: memo(VideoCard),
   audio: memo(AudioCard),
