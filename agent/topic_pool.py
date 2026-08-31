@@ -116,6 +116,15 @@ class TopicCurator:
         flow_runner: FlowRunner | None = None,
         search: SearchFn | None = None,
     ) -> None:
+        # 默认接线：LLM 走 langflow 阻塞调用，检索走文本级联（懒导入，测试注 fake 不触发）
+        if flow_runner is None:
+            import skills
+
+            flow_runner = skills.run_flow_blocking
+        if search is None:
+            from websearch import web_search
+
+            search = web_search
         self.flow_runner = flow_runner
         self.search = search
 

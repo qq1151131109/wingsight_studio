@@ -1,6 +1,6 @@
 "use client";
 
-/** 选题池 API 客户端（经同源代理 /agent-service/topics）。 */
+/** 选题池 API 客户端（经同源代理 /api/v1/topics，与 juben 的 /api/v1 路径约定一致）。 */
 
 import { apiFetch } from "@/lib/auth";
 
@@ -65,7 +65,7 @@ export interface TopicRefreshRun {
   error?: string;
 }
 
-const BASE = "/agent-service/topics";
+const BASE = "/api/v1/topics";
 
 export interface TopicListResult {
   topics: Topic[];
