@@ -65,7 +65,7 @@ import {
   type WingNodeType,
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
-import { isLookCard, resolveRowRefIds } from "@/lib/canvas/shotRefs";
+import { isLookCard, preferLookRefs, resolveRowRefIds } from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
 import { downloadMedia } from "@/lib/download";
 import {
@@ -91,6 +91,7 @@ import {
   startCharacterImageJob,
   startShotImageJob,
   type DecomposedLook,
+  type ExistingAsset,
   type ShotImageResult,
 } from "@/lib/shotlist";
 import { useDismissOnOutside } from "@/lib/useDismiss";
@@ -2487,16 +2488,37 @@ async function runAssetDecompose(opts: {
 }) {
   const { anchorId, scriptSource } = opts;
   try {
-    const nodes = useCanvasStore.getState().nodes;
-    // 画布已有资产名单喂给拆解 flow：同指资产沿用旧名（跨次拆解可去重合并）
-    const existing = nodes
+    // 画布已有资产名单喂给拆解 flow：同指资产沿用旧名（跨次拆解可去重合并）；
+    // 带卡上定妆照/已有 Look 造型名，供自动链给已有角色补 Look
+    const st0 = useCanvasStore.getState();
+    const existing = st0.nodes
       .filter(
         (n) =>
           ["character", "scene", "prop", "costume"].includes(
             String(n.data.nodeType),
           ) && n.data.title,
       )
-      .map((n) => ({ type: String(n.data.nodeType), name: n.data.title as string }));
+      .map((n) => {
+        const entry: ExistingAsset = {
+          type: String(n.data.nodeType),
+          name: n.data.title as string,
+        };
+        // 卡上现图：已有角色补 Look 的身份锚点（免重出定妆照）
+        if (n.data.imageUrl) entry.image_url = n.data.imageUrl as string;
+        // 已有 Look 卡的造型名：重拆时对名跳过不重出
+        if (entry.type === "character") {
+          const labels = st0.nodes
+            .filter(
+              (m) =>
+                isLookCard(m, st0.nodes, st0.edges) &&
+                st0.edges.some((e) => e.source === n.id && e.target === m.id),
+            )
+            .map((m) => (m.data.title as string).slice(entry.name.length + 1))
+            .filter(Boolean);
+          if (labels.length > 0) entry.looks = labels;
+        }
+        return entry;
+      });
     // 全自动（juben 范式）：拆解后 agent 直接跑角色出图链（定妆照→逐 Look），
     // 项目画风注入每张图；阶段进度经 onMsg 显示在卡上。
     // 画风闸：无全局画风时只拆文字不自动出图（与出图按钮同一道闸）
@@ -2578,6 +2600,21 @@ async function runAssetDecompose(opts: {
           useCanvasStore.getState().updateNodeData(owner.id, {
             assetSource: anchorId,
           });
+        // 已存在角色的 Look 补齐物化：agent 只回带 image_url 的新造型，
+        // 挂到既有角色卡下（同名 Look 卡已由 agent 对名跳过，这里双保险）
+        if (type === "character" && owner) {
+          const newLooks = (a.looks ?? []).filter(
+            (l) =>
+              l.image_url &&
+              !cur.nodes.some(
+                (n) =>
+                  n.data.nodeType === "image" &&
+                  n.data.title === `${a.name}·${l.label}`,
+              ),
+          );
+          if (newLooks.length > 0)
+            lookJobs.push({ charId: owner.id, charName: a.name, looks: newLooks });
+        }
       }
       if (fresh.length === 0) continue;
       kindCounts[type] = fresh.length;
@@ -3357,9 +3394,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   };
 
   /** 行引用解析 → 参考卡列表（共享解析器 shotRefs，与 sanitize 存量迁移
-   *  同源；结构化 refIds 优先，文本 @名称 最长匹配兜底） */
+   *  同源；结构化 refIds 优先，文本 @名称 最长匹配兜底；行文字命中造型/
+   *  服饰名时 Look 图替换定妆照——juben look 范式） */
   const rowRefNodes = (r: ShotRow) =>
-    resolveRowRefIds(r, nodes, edges)
+    preferLookRefs(r, resolveRowRefIds(r, nodes, edges), nodes, edges)
       .map((nid) => nodes.find((n) => n.id === nid))
       .filter((n): n is WingNode => Boolean(n));
 
@@ -3460,7 +3498,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     const edgeKeys = new Set(st.edges.map((e) => `${e.source}\u0000${e.target}`));
     for (let i = 0; i < targets.length; i++) {
       const { row } = targets[i];
-      const refIds = resolveRowRefIds(row, st.nodes, st.edges);
+      const refIds = preferLookRefs(
+        row,
+        resolveRowRefIds(row, st.nodes, st.edges),
+        st.nodes,
+        st.edges,
+      );
       const connectRefs = (nid: string) => {
         for (const rid of refIds) {
           const key = `${rid}\u0000${nid}`;

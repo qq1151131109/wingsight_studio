@@ -81,3 +81,49 @@ export function resolveRowRefIds(
   );
   return [...ids];
 }
+
+/** 行出图参考的 Look 优先展开：引用了角色卡且行文字（画面/台词）命中其
+ *  某张 Look 卡的造型名或绑定服饰名（服饰→Look 边）时，用该 Look 图替换
+ *  角色定妆照做参考——Look 继承定妆照五官又带正确服饰，是更准的一致性
+ *  锚点（juben look 范式）。没命中保持定妆照，不瞎选 */
+export function preferLookRefs(
+  row: Pick<ShotRow, "action" | "dialogue">,
+  refIds: string[],
+  nodes: WingNode[],
+  edges: WingEdge[],
+): string[] {
+  const text = `${row.action ?? ""}${row.dialogue ?? ""}`;
+  const out = refIds.map((id) => {
+    const n = nodes.find((m) => m.id === id);
+    if (!n || n.data.nodeType !== "character") return id;
+    const looks = nodes.filter(
+      (m) =>
+        isLookCard(m, nodes, edges) &&
+        edges.some((e) => e.source === id && e.target === m.id),
+    );
+    // 用户显式引用了该角色的某张 Look 卡：照单全收，不做自动替换
+    if (looks.some((m) => refIds.includes(m.id))) return id;
+    // 多命中消歧：取文本中最后出现的造型/服饰词（「脱下常服换上雨夜装」
+    // 里换上的才是身上穿的）；同位置取更长词（素裙大礼服 压过 素裙）
+    let best: { id: string; pos: number; len: number } | null = null;
+    for (const m of looks) {
+      const title = m.data.title as string;
+      const label = title.includes("·") ? title.split("·").slice(1).join("·") : title;
+      const terms = [label];
+      for (const e of edges) {
+        if (e.target !== m.id) continue;
+        const c = nodes.find((x) => x.id === e.source);
+        if (c?.data.nodeType === "costume" && c.data.title) terms.push(c.data.title as string);
+      }
+      for (const t of terms) {
+        if (!t || !text.includes(t)) continue;
+        const pos = text.lastIndexOf(t);
+        if (!best || pos > best.pos || (pos === best.pos && t.length > best.len)) {
+          best = { id: m.id, pos, len: t.length };
+        }
+      }
+    }
+    return best ? best.id : id;
+  });
+  return [...new Set(out)];
+}

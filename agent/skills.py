@@ -390,8 +390,25 @@ async def start_decompose_job(
                         (str(e.get("type") or ""), str(e.get("name") or "").strip())
                         for e in existing or []
                     }
+                    # 前端带的画布现况：卡上定妆照/设定图（已有角色补 Look 的
+                    # 身份锚点，免重出定妆照）+ 已有 Look 造型名（对名跳过）
+                    existing_imgs = {
+                        (str(e.get("type") or ""), str(e.get("name") or "").strip()):
+                            str(e.get("image_url") or "")
+                        for e in existing or []
+                        if e.get("image_url")
+                    }
+                    existing_look_labels = {
+                        str(e.get("name") or "").strip(): {
+                            str(x).strip() for x in (e.get("looks") or [])
+                        }
+                        for e in existing or []
+                        if e.get("type") == "character" and e.get("looks")
+                    }
                     state["images_note"] = await _auto_asset_images(
-                        assets, state, visual_style, existed, params=params
+                        assets, state, visual_style, existed, params=params,
+                        existing_imgs=existing_imgs,
+                        existing_look_labels=existing_look_labels,
                     )
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
@@ -417,15 +434,20 @@ async def _auto_asset_images(
     visual_style: str,
     existed: Optional[set] = None,
     params: Optional[Dict[str, str]] = None,
+    existing_imgs: Optional[Dict[tuple, str]] = None,
+    existing_look_labels: Optional[Dict[str, set]] = None,
 ) -> str:
     """资产图自动链（juben collect_pending_character_materials 泛化）：
     ① 服饰结构图先行（Look 的一致性锚点之二）
     ② 角色定妆照 / 场景概念图 / 道具设定图 并发
     ③ 角色 Look 造型图（参考图1=定妆照身份锚点，参考图2=绑定服饰的结构图）
+    ③b 画布已有角色补 Look：定妆照免重出（existing_imgs 带卡上现图做
+    身份锚点），只出画布还没有的造型（existing_look_labels 对名跳过）
     结果写回 asset 条目（image_url / looks[i].image_url）；单张失败记 error
     不拖累其他。并发 30；每类上限 8、每角色 Look 上限 4（防成本失控）。
     existed：画布已有 (type, name) 集合，命中跳过。返回汇报 note。"""
     existed = existed or set()
+    existing_imgs = existing_imgs or {}
     sem = asyncio.Semaphore(30)
     style_note = f"全局视觉风格：{visual_style}" if visual_style.strip() else ""
     total_done = [0]
@@ -473,49 +495,77 @@ async def _auto_asset_images(
             for l in a.get("looks") or []:
                 l["error"] = "定妆照生成失败，Look 已跳过"
             return
-
-        async def one_look(l: Dict[str, Any]) -> None:
-            # 参考图2：绑定的服饰卡结构图（按名模糊对上才加）
-            refs = [a["image_url"]]
-            cname = str(l.get("costume") or "").strip()
-            costume_img = next(
-                (
-                    c["image_url"]
-                    for c in assets
-                    if c.get("type") == "costume"
-                    and c.get("image_url")
-                    and cname
-                    and (cname in str(c.get("name") or "") or str(c.get("name") or "") in cname)
-                ),
-                None,
-            )
-            if costume_img:
-                refs.append(costume_img)
-            protocol = [
-                f"生成角色「{a.get('name', '')}」的造型定妆图：{l.get('label', '')}。",
-                f"角色设定：{a.get('description', '')}。",
-                "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，"
-                "保持完全不变；忽略其服装、配饰、姿态与背景。",
-            ]
-            if costume_img:
-                protocol.append(
-                    "参考图2（服饰结构参考）：形制、材质、配色以该服饰图为准。"
-                )
-            protocol.append(f"造型要求：{l.get('description', '')}。")
-            r = await gen({
-                "name": f"{a.get('name', '')}·{l.get('label', '造型')}",
-                "description": " ".join(protocol),
-                "assetType": "character",
-                "visual_notes": style_note,
-                "referenceImages": refs,
-            })
-            if r.get("ok") and r.get("imageUrl"):
-                l["image_url"] = r["imageUrl"]
-            else:
-                l["error"] = str(r.get("error") or "出图失败")[:200]
-
         looks = (a.get("looks") or [])[:_AUTO_LOOK_CAP]
-        await asyncio.gather(*[one_look(l) for l in looks])
+        await asyncio.gather(
+            *[gen_one_look(a, l, a["image_url"]) for l in looks]
+        )
+
+    def find_costume_img(cname: str) -> Optional[str]:
+        """绑定服饰的结构图：先查本次 flow 产物，再查画布已有服饰卡带图
+        （existing_imgs；重拆补 Look 时服饰卡多半早已建好）"""
+        cname = cname.strip()
+        if not cname:
+            return None
+        for c in assets:
+            if (
+                c.get("type") == "costume"
+                and c.get("image_url")
+                and (cname in str(c.get("name") or "") or str(c.get("name") or "") in cname)
+            ):
+                return c["image_url"]
+        for (t, n), url in existing_imgs.items():
+            if t == "costume" and (cname in n or n in cname):
+                return url
+        return None
+
+    async def gen_one_look(
+        a: Dict[str, Any], l: Dict[str, Any], identity: str
+    ) -> None:
+        # 参考图2：绑定的服饰卡结构图（按名模糊对上才加）
+        refs = [identity]
+        costume_img = find_costume_img(str(l.get("costume") or ""))
+        if costume_img:
+            refs.append(costume_img)
+        protocol = [
+            f"生成角色「{a.get('name', '')}」的造型定妆图：{l.get('label', '')}。",
+            f"角色设定：{a.get('description', '')}。",
+            "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，"
+            "保持完全不变；忽略其服装、配饰、姿态与背景。",
+        ]
+        if costume_img:
+            protocol.append(
+                "参考图2（服饰结构参考）：形制、材质、配色以该服饰图为准。"
+            )
+        protocol.append(f"造型要求：{l.get('description', '')}。")
+        r = await gen({
+            "name": f"{a.get('name', '')}·{l.get('label', '造型')}",
+            "description": " ".join(protocol),
+            "assetType": "character",
+            "visual_notes": style_note,
+            "referenceImages": refs,
+        })
+        if r.get("ok") and r.get("imageUrl"):
+            l["image_url"] = r["imageUrl"]
+        else:
+            l["error"] = str(r.get("error") or "出图失败")[:200]
+
+    # 已存在角色的 Look 补齐计划：卡上定妆照做身份锚点，跳过画布已有的造型
+    look_backfill: List[tuple] = []
+    for a in assets:
+        if a.get("type") != "character":
+            continue
+        name = str(a.get("name") or "").strip()
+        ding = existing_imgs.get(("character", name))
+        if not ding or (a.get("looks") or []) == []:
+            continue
+        skip = set(existing_look_labels.get(name) or set())
+        new_looks = [
+            l
+            for l in (a.get("looks") or [])[:_AUTO_LOOK_CAP]
+            if str(l.get("label") or "").strip() not in skip
+        ]
+        if new_looks:
+            look_backfill.append((a, ding, new_looks))
 
     # 总量先算好再跑（进度条闭环）
     costumes = capped("costume")
@@ -528,6 +578,7 @@ async def _auto_asset_images(
         + len(scenes)
         + len(props)
         + sum(min(len(a.get("looks") or []), _AUTO_LOOK_CAP) for a in chars)
+        + sum(len(ls) for _, _, ls in look_backfill)
     )
     state["progress"] = {"done": 0, "total": total_target[0]}
 
@@ -535,6 +586,10 @@ async def _auto_asset_images(
     await asyncio.gather(*[one_costume(a) for a in costumes])
     await asyncio.gather(
         *([one_char(a) for a in chars] + [gen_main(a, "scene") for a in scenes] + [gen_main(a, "prop") for a in props])
+    )
+    # ③b 补 Look（放服饰之后：参考图2 可吃本次新出的服饰结构图）
+    await asyncio.gather(
+        *[gen_one_look(a, l, ding) for a, ding, ls in look_backfill for l in ls]
     )
 
     imaged = {
@@ -561,6 +616,9 @@ async def _auto_asset_images(
     note = "已自动出图：" + ("、".join(parts) if parts else "无")
     if looks_done:
         note += f"（含 Look {looks_done} 张）"
+    backfilled = sum(len(ls) for _, _, ls in look_backfill)
+    if backfilled:
+        note += f"；已有角色补 Look {backfilled} 张"
     skipped = sum(
         1
         for a in assets

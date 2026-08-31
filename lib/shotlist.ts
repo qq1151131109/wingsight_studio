@@ -68,9 +68,19 @@ export type DecomposedAsset = {
   looks?: DecomposedLook[];
 };
 
+/** 画布已有资产：name 供拆解沿用旧名；image_url（卡上定妆照/设定图）供
+ *  自动链给已有角色补 Look 时做身份锚点；looks（角色已有 Look 卡的造型名）
+ *  供重拆时对名跳过、不重出同款造型 */
+export type ExistingAsset = {
+  type: string;
+  name: string;
+  image_url?: string;
+  looks?: string[];
+};
+
 export async function decomposeAssets(
   script: string,
-  existing?: { type: string; name: string }[],
+  existing?: ExistingAsset[],
   opts?: {
     /** 全自动：拆解后 agent 直接跑角色出图链（定妆照→逐 Look） */
     autoLooks?: boolean;
