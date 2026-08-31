@@ -23,8 +23,8 @@ AI 影视创作无限画布工作台：React Flow 画布 + CopilotKit 聊天 + L
 ## 常用命令
 
 ```bash
-./start_wingsight.sh            # 一键 start/stop/status（agent:8123 + 前端:8002，日志在 logs/）
-pnpm dev --port 8002            # 前端
+./start_wingsight.sh            # 一键 start/stop/status（agent:8123 + 前端:8008，日志在 logs/）
+pnpm dev --port 8008            # 前端
 cd agent && uv run uvicorn main:app --port 8123 --host 127.0.0.1   # agent
 pnpm exec tsc --noEmit && pnpm exec eslint components lib app       # 检查
 node scripts/agui-client-test.mjs               # 两轮工具调用闭环（需 agent 在跑）

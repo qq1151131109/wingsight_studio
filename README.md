@@ -6,7 +6,7 @@ AI 影视创作无限画布工作台：**React Flow 画布 + CopilotKit 聊天 +
 ## 架构
 
 ```
-Next.js 前端（8002）
+Next.js 前端（8008）
 ├─ React Flow 无限画布（zustand；多项目服务端持久化，localStorage 作离线缓存）
 │   节点：note 便签 / script 剧本 / character 角色 / storyboard 分镜 / image 图片
 ├─ CopilotKit 1.69（v1 SDK，selfManagedAgents + HttpAgent）
@@ -24,17 +24,17 @@ agent/ LangGraph 服务（FastAPI + ag-ui-langgraph）
 ## 启动
 
 ```bash
-# 1. 前端（8002 端口）
+# 1. 前端（8008 端口）
 pnpm install
 cp .env.example .env.local   # 填 AGENT_API_KEY 等
-pnpm dev --port 8002
+pnpm dev --port 8008
 
 # 2. Agent 服务（8123 端口）
 cd agent && uv sync
 uv run uvicorn main:app --port 8123 --host 127.0.0.1
 ```
 
-打开 http://localhost:8002 ：首页项目仪表盘（新建/搜索/协作者/删改）→ 点击项目卡进入画布：
+打开 http://localhost:8008 ：首页项目仪表盘（新建/搜索/协作者/删改）→ 点击项目卡进入画布：
 双击画布加便签 / 工具条加卡片 / 连线拖到空白处快速建卡 / 右键呼出四态菜单（空白：加卡/粘贴/全选；节点与多选：复制/打成一组/删除；连线：删除）/ 右侧聊天让助手建卡连线、调技能。左侧栏房子图标回首页。
 
 画布快捷键：`Cmd/Ctrl+Z` 撤销、`Shift+Cmd/Ctrl+Z` 或 `Ctrl+Y` 重做、`Cmd/Ctrl+C/V` 复制粘贴选中卡（连线随行）、`Cmd/Ctrl+A` 全选、粘贴系统剪贴板图片直接落成图片卡（经 `/agent-service/assets` 上传）。文本编辑中不拦截。

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Wingsight Studio 一键启动/停止
-#   ./start_wingsight.sh            启动 agent(8123) + 前端(8002)
+#   ./start_wingsight.sh            启动 agent(8123) + 前端(8008)
 #   ./start_wingsight.sh --tunnel   额外启动 bore 公网隧道（临时端口）
 #   ./start_wingsight.sh status     查看状态
 #   ./start_wingsight.sh stop       全部停止
@@ -10,7 +10,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$ROOT/logs"; mkdir -p "$LOGS"
 
 AGENT_PORT=8123
-WEB_PORT=8002
+WEB_PORT=8008
 
 is_up() { curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$1/healthz" 2>/dev/null && return 0 || return 1; }
 web_up() { curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$1/" 2>/dev/null && return 0 || return 1; }

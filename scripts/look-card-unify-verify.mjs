@@ -4,7 +4,7 @@
  */
 import { chromium } from "playwright";
 
-const BASE = "http://127.0.0.1:8002";
+const BASE = "http://127.0.0.1:8008";
 const API = `${BASE}/agent-service`;
 const png1px =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";

@@ -3,13 +3,13 @@
  * 隔离：自建测试项目（?pid= 直达），不碰用户画布。
  * 出图断点恢复用 route mock（不消耗真实出图额度）；成片走真实 ffmpeg。
  *
- * 前置：agent(8123) + 前端(8002) 在跑；本机有 ffmpeg。
+ * 前置：agent(8123) + 前端(8008) 在跑；本机有 ffmpeg。
  */
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
 
-const BASE = "http://127.0.0.1:8002";
+const BASE = "http://127.0.0.1:8008";
 const API = `${BASE}/agent-service`;
 const png1px =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
