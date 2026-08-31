@@ -58,8 +58,13 @@ fi
 # 不能 source：LANGFLOW_SKILLS_JSON 的值是带空格的 JSON，source 会当命令执行
 # （grep 不匹配时管道退出码非 0，pipefail 下必须 || true 兜住）
 KEY="$(grep -E '^LANGFLOW_API_KEY=' .env.local | tail -1 | cut -d= -f2- || true)"
-if [ -z "$KEY" ]; then
-  KEY=$(cd langflow && .venv/bin/langflow api-key 2>/dev/null | grep -oE 'sk-[A-Za-z0-9_-]+' | head -1 || true)
+# key 可能来自别的实例的拷贝（换机部署常见）——先验证，无效则重新生成
+key_ok() {
+  [ -n "$1" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 \
+    -H "x-api-key: $1" "$LF/api/v1/flows/")" = 200 ]
+}
+if ! key_ok "$KEY"; then
+  KEY="$(cd langflow && .venv/bin/langflow api-key 2>/dev/null | grep -oE 'sk-[A-Za-z0-9_-]+' | head -1 || true)"
   [ -n "$KEY" ] || { echo "✗ API key 生成失败（AUTO_LOGIN 未开？）"; exit 1; }
   python3 - "$KEY" <<'PY'
 import sys
@@ -81,11 +86,16 @@ key = sys.argv[1]
 base = "http://127.0.0.1:7860"
 
 def api(method, path, body=None):
+    import gzip
     req = urllib.request.Request(base + path, method=method,
-        headers={"x-api-key": key, "Content-Type": "application/json"},
+        headers={"x-api-key": key, "Content-Type": "application/json",
+                 "Accept-Encoding": "identity"},
         data=json.dumps(body).encode() if body else None)
     with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+        raw = r.read()
+    if raw[:2] == b"\x1f\x8b":  # langflow 部分端点无视 identity 强制 gzip
+        raw = gzip.decompress(raw)
+    return json.loads(raw)
 
 env_path = Path(".env.local")
 lines = env_path.read_text(encoding="utf-8").splitlines()
@@ -96,6 +106,7 @@ for l in lines:
         env[k.strip()] = v
 
 existing = {f["id"] for f in api("GET", "/api/v1/flows/")}
+existing_by_name = {f["name"]: f["id"] for f in api("GET", "/api/v1/flows/")}
 # flow 文件 → .env.local 变量；promo-copy 特殊：flowId 藏在 LANGFLOW_SKILLS_JSON
 FLOWS = {
     "asset-decompose-character.json": "LANGFLOW_DECOMPOSE_CHARACTER_FLOW_ID",
@@ -117,11 +128,25 @@ for fname, var in FLOWS.items():
     if not path.exists():
         print(f"  - 跳过 {fname}（文件不存在）")
         continue
+    payload = json.loads(path.read_text(encoding="utf-8"))
     cur = env.get(var, "") if var else skills.get("宣发文案生成", {}).get("flowId", "")
+    # 名字已在实例中 = 别的并发/历史运行导入过 → 跳过（幂等；POST 同 id 会 400）
+    if payload.get("name") in existing_by_name:
+        print(f"  = {fname}（{payload.get('name')}）已存在，跳过")
+        continue
     if cur and cur in existing:
         print(f"  = {fname} 已存在（{cur[:8]}…），跳过")
         continue
-    new_id = api("POST", "/api/v1/flows/", json.loads(path.read_text(encoding="utf-8")))["id"]
+    try:
+        new_id = api("POST", "/api/v1/flows/", payload)["id"]
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")
+        if e.code == 400 and "unique" in body and payload.get("name") in (
+            {f["name"]: f["id"] for f in api("GET", "/api/v1/flows/")}
+        ):
+            print(f"  = {fname} 并发导入撞车，已存在，跳过")
+            continue
+        raise
     if var:
         lines = [f"{var}={new_id}" if l.startswith(var + "=") else l for l in lines]
         if not any(l.startswith(var + "=") for l in lines):

@@ -31,8 +31,11 @@ import graph  # noqa: E402
 import models  # noqa: E402
 import projects  # noqa: E402
 import skills  # noqa: E402
+import topic_routes  # noqa: E402
+import topics  # noqa: E402
 
 projects.init_db()
+topics.init_topics_db()
 auth.init_auth_db()
 auth.ensure_auth_password()
 
@@ -50,6 +53,8 @@ app.add_middleware(
 
 # 认证/用户/API Key（前端经 /api/v1 同源代理访问）
 app.include_router(auth_routes.router, prefix="/api/v1")
+# 选题池（生产前漏斗，跨项目全局）
+app.include_router(topic_routes.router, prefix="/api/v1")
 
 
 agent = LangGraphAgent(
@@ -333,12 +338,17 @@ async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
     if not script:
         return Response(status_code=400, content="剧本内容为空", media_type="text/plain")
     try:
+        text_model = models.resolve_text_model(req.get("model"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
         job_id = await skills.start_storyboard_gen_job(
             script,
             shot_count=req.get("shotCount"),
             duration_seconds=req.get("durationSeconds"),
             visual_style=str(req.get("visualStyle") or ""),
             assets=req.get("assets") if isinstance(req.get("assets"), list) else None,
+            model=text_model or "",
         )
     except RuntimeError as exc:
         return Response(status_code=503, content=str(exc), media_type="text/plain")
@@ -369,7 +379,13 @@ async def api_prompt_optimize(req: dict, user: auth.CurrentUser):
     if not prompt and not image_urls:
         return Response(status_code=400, content="提示词为空且无参考图", media_type="text/plain")
     try:
-        job_id = await skills.start_prompt_optimize_job(prompt, image_urls, context_notes)
+        text_model = models.resolve_text_model(req.get("model"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
+        job_id = await skills.start_prompt_optimize_job(
+            prompt, image_urls, context_notes, model=text_model or ""
+        )
     except RuntimeError as exc:
         return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")
     return {"jobId": job_id}
@@ -387,6 +403,13 @@ async def api_prompt_optimize_status(job_id: str, user: auth.CurrentUser):
 async def api_image_models(user: auth.CurrentUser):
     """图像模型目录（实探验证清单，见 agent/models.py）。前端出图设置渲染。"""
     return {"models": models.image_models_payload()}
+
+
+@app.get("/models/text")
+async def api_text_models(user: auth.CurrentUser):
+    """文本模型目录（DMX 网关 chat 探针验证，见 agent/models.py）。
+    剧本/分镜表/拆解等文本生成的模型选择渲染。"""
+    return {"models": models.text_models_payload(), "default": models.DEFAULT_TEXT_MODEL_ID}
 
 
 @app.post("/storyboard/images")
@@ -452,12 +475,17 @@ async def api_assets_decompose(req: dict, user: auth.CurrentUser):
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:
+        text_model = models.resolve_text_model(req.get("text_model"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
         job_id = await skills.start_decompose_job(
             script,
             existing=existing,
             auto_looks=auto_looks,
             visual_style=visual_style,
             params=params,
+            text_model=text_model or "",
         )
     except RuntimeError as exc:
         return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")

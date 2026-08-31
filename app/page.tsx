@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   FolderPlus,
   LayoutGrid,
+  Lightbulb,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -152,6 +154,13 @@ function HomeInner() {
             </h1>
             <p className="text-[11px] leading-tight text-text-3">AI 影视创作画布</p>
           </div>
+          <Link
+            href="/topic-pool"
+            className="flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 px-3 py-1.5 text-xs font-medium text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+          >
+            <Lightbulb className="h-3.5 w-3.5" />
+            选题池
+          </Link>
           <button
             type="button"
             onClick={() => void create()}

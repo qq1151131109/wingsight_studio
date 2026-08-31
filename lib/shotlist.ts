@@ -13,14 +13,15 @@ export async function generateShotlist(
     visualStyle?: string;
     /** 画布已有资产名单（类型化）：分镜 @名称 引用 + 角色硬约束 */
     assets?: { type: string; name: string }[];
+    /** 文本模型覆盖（agent/models.py 目录 id，空=flow 出厂模型） */
+    model?: string;
   },
 ): Promise<ShotRow[]> {
   const start = await apiFetch("/agent-service/storyboard/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ script, ...opts }),
-  });
-  if (!start.ok) {
+  });  if (!start.ok) {
     const detail = (await start.text()).slice(0, 160);
     throw new Error(detail || `生成任务启动失败（${start.status}）`);
   }
@@ -80,6 +81,8 @@ export async function decomposeAssets(
       phase: string;
       progress?: { done: number; total: number };
     }) => void;
+    /** 拆解文本模型覆盖（agent/models.py 目录 id，空=flow 出厂模型；出图链不受影响） */
+    model?: string;
   },
 ): Promise<{
   assets: DecomposedAsset[];
@@ -99,6 +102,7 @@ export async function decomposeAssets(
       ...(opts?.autoLooks
         ? { params: useCanvasStore.getState().imagegen }
         : {}),
+      ...(opts?.model ? { text_model: opts.model } : {}),
     }),
   });
   if (!start.ok) {

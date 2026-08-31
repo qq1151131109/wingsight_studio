@@ -91,6 +91,7 @@ import {
   type DecomposedLook,
   type ShotImageResult,
 } from "@/lib/shotlist";
+import { findTextModelOption, useTextModels } from "@/lib/textmodels";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 
@@ -974,7 +975,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       setFillingAssets(false);
     }
   };
-  /** 拆解资产：共享实现 runAssetDecompose，锚点=本卡（资产组建在左侧） */
+  /** 拆解资产：共享实现 runAssetDecompose，锚点=本卡（资产组建在本卡正下方） */
   const decompose = () => {
     if (decomposing) return;
     const scriptSource = freshBody();
@@ -985,6 +986,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     void runAssetDecompose({
       anchorId: id,
       scriptSource,
+      model: (d.textModel ?? "").trim() || undefined,
       onMsg: setDecomposeMsg,
       onError: setGenError,
     }).finally(() => setDecomposing(false));
@@ -1001,7 +1003,11 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     )?.target;
     const tid = tid0 ?? createConnectedNode(id, "shotlist");
     if (!tid) return;
-    useCanvasStore.getState().updateNodeData(tid, { autoGenerate: true });
+    // 本卡选的文本模型一并带过去（分镜表卡可再改）
+    useCanvasStore.getState().updateNodeData(tid, {
+      autoGenerate: true,
+      ...((d.textModel ?? "").trim() ? { textModel: d.textModel } : {}),
+    });
     window.dispatchEvent(
       new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [tid] } }),
     );
@@ -1048,10 +1054,11 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               <Download className="h-3 w-3" />
               导出
             </button>
+            <TextModelChip nodeId={id} />
             <button
               type="button"
               disabled={empty || decomposing}
-              data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡左侧。出分镜图前先给资产出设定图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡左侧。出分镜图前先给资产出设定图，一致性最好"
+              data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方。出分镜图前先给资产出设定图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方。出分镜图前先给资产出设定图，一致性最好"
               className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               onClick={(e) => {
                 e.stopPropagation();
@@ -2440,6 +2447,8 @@ function composeShotPrompt(r: ShotRow, visualStyle: string): string {
 async function runAssetDecompose(opts: {
   anchorId: string;
   scriptSource: string;
+  /** 拆解文本模型覆盖（models.py 目录 id，缺省=flow 出厂模型；出图链不受影响） */
+  model?: string;
   onMsg: (msg: string) => void;
   onError: (msg: string) => void;
 }) {
@@ -2467,6 +2476,7 @@ async function runAssetDecompose(opts: {
       {
         autoLooks: styleReady,
         visualStyle: useCanvasStore.getState().projectStyle ?? "",
+        model: opts.model,
         onPhase: ({ phase, progress }) => {
           if (phase === "images" && progress?.total)
             opts.onMsg(`拆解完成，自动出图中 ${progress.done}/${progress.total}…`);
@@ -2758,6 +2768,92 @@ async function runAssetDecompose(opts: {
   } catch (exc) {
     opts.onError(exc instanceof Error ? exc.message : "拆解失败");
   }
+}
+
+/** 文本模型 chip（剧本/分镜表卡底栏）：卡片级覆盖存 data.textModel，
+ *  空=跟随出厂默认（agent/models.py，deepseek-v4-flash）。
+ *  驱动范围：剧本卡=拆解资产；分镜表卡=生成分镜 + 本卡拆解 */
+function TextModelChip({ nodeId }: { nodeId: string }) {
+  const data = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId)?.data);
+  const { models } = useTextModels();
+  const [open, setOpen] = useState(false);
+  const current = String(data?.textModel ?? "").trim();
+  const option = findTextModelOption(current, models);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  return (
+    <span className="relative">
+      <button
+        type="button"
+        data-tip={`文本模型（生成分镜/拆解的 LLM）：${
+          current ? (option?.label ?? current) : "跟随默认 DeepSeek V4 Flash"
+        }`}
+        aria-label="文本模型"
+        className={`nodrag shrink-0 rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
+          current ? "border-accent" : "border-hairline"
+        }`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        {current ? (option?.label ?? current) : "默认模型"}
+      </button>
+      {open ? (
+        <span
+          className="absolute bottom-full left-0 z-30 mb-1.5 block w-64 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="block text-[10px] font-medium text-text-4">
+            文本模型（生成分镜 / 拆解资产）
+          </span>
+          <span className="mt-1 block max-h-44 space-y-0.5 overflow-y-auto">
+            <button
+              type="button"
+              className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
+                current === "" ? "bg-accent-dim" : "hover:bg-surface-2"
+              }`}
+              onClick={() =>
+                useCanvasStore.getState().updateNodeData(nodeId, { textModel: undefined })
+              }
+            >
+              <span className="block text-[11px] text-text">跟随默认</span>
+              <span className="block text-[9px] text-text-4">
+                DeepSeek V4 Flash · 快 · 便宜
+              </span>
+            </button>
+            {models === null ? (
+              <span className="block px-1.5 py-1 text-[10px] text-text-4">
+                加载模型目录…
+              </span>
+            ) : (
+              models.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
+                    m.id === current ? "bg-accent-dim" : "hover:bg-surface-2"
+                  }`}
+                  onClick={() =>
+                    useCanvasStore.getState().updateNodeData(nodeId, { textModel: m.id })
+                  }
+                >
+                  <span className="block text-[11px] text-text">{m.label}</span>
+                  <span className="block text-[9px] text-text-4">{m.tag}</span>
+                </button>
+              ))
+            )}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
 }
 
 /** 分镜表卡出图设置（ShotGenSettings 写入的数据，随卡持久化）：画幅 w:h、
@@ -3173,13 +3269,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     try {
       const next = await generateShotlist(scriptSource, {
         // 项目画风打底 + 分镜表风格叠加
-        visualStyle:
-          [
-            projectStyle.trim() ? `全局：${projectStyle.trim()}` : "",
-            (d.visualStyle ?? "").trim(),
-          ]
-            .filter(Boolean)
-            .join("；") || undefined,
+        visualStyle: [
+          projectStyle.trim() ? `全局：${projectStyle.trim()}` : "",
+          (d.visualStyle ?? "").trim(),
+        ]
+          .filter(Boolean)
+          .join("；") || undefined,
+        // 卡片级文本模型覆盖（chip 选择，空=跟随默认）
+        model: (d.textModel ?? "").trim() || undefined,
         // 硬约束 + @引用名单（ai-moive-studio 范式）：分镜只用画布已有资产，
         // 行内提到它们时用 @名称
         assets: nodes
@@ -3319,6 +3416,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     await runAssetDecompose({
       anchorId: id,
       scriptSource,
+      model: (d.textModel ?? "").trim() || undefined,
       onMsg: setDecomposeMsg,
       onError: setGenError,
     });
@@ -3976,6 +4074,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
               </button>
             ) : null}
+          <TextModelChip nodeId={id} />
           <ShotGenSettings nodeId={id} />
           <button
             type="button"

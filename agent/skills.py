@@ -76,8 +76,13 @@ async def start_storyboard_gen_job(
     duration_seconds: Optional[int] = None,
     visual_style: str = "",
     assets: Optional[List[Dict[str, Any]]] = None,
+    model: str = "",
 ) -> str:
-    """启动分镜表生成任务（异步：代理 30s 掐断长请求）。返回 jobId。"""
+    """启动分镜表生成任务（异步：代理 30s 掐断长请求）。返回 jobId。
+
+    model：文本模型覆盖（models.resolve_text_model 产物，空=flow 出厂模型），
+    经 LanguageModelComponent 的 model_name 覆盖字段按组件名注入。
+    """
     flow_id = os.environ.get("LANGFLOW_SHOTLIST_FLOW_ID", "")
     if not flow_id:
         raise RuntimeError("未配置 LANGFLOW_SHOTLIST_FLOW_ID")
@@ -112,7 +117,12 @@ async def start_storyboard_gen_job(
             text = await run_flow_blocking(
                 flow_id,
                 input_value=input_value,
-                tweaks={"LanguageModelComponent": {"temperature": 0.4}},
+                tweaks={
+                    "LanguageModelComponent": {
+                        "temperature": 0.4,
+                        **({"model_name": model} if model else {}),
+                    }
+                },
             )
             state["rows"] = _parse_shot_rows(text)
         except Exception as e:  # noqa: BLE001
@@ -290,17 +300,19 @@ async def decompose_script(script: str) -> str:
 async def decompose_script_assets(
     script: str,
     existing: Optional[List[Dict[str, Any]]] = None,
+    model: str = "",
 ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
     """拆解剧本为结构化资产清单（直连端点用）。
 
     已配置的分类型 flow 各拆一类、并行调用（character/scene/prop/costume
     四路；单类失败记入 errors 不拖累其他；未配置的类型直接跳过，不回退整
     条 legacy）。existing：画布已有资产 [{type, name}]，注入名单让 LLM
-    沿用旧名（跨次拆解去重合并）。返回 (assets, errors)。
+    沿用旧名（跨次拆解去重合并）。model：文本模型覆盖（同分镜表生成）。
+    返回 (assets, errors)。
     """
     configured = {t: fid for t, fid in DECOMPOSE_FLOW_IDS.items() if fid}
     if not configured:
-        return await _decompose_legacy(script, existing)
+        return await _decompose_legacy(script, existing, model)
 
     rosters = {
         t: [e for e in existing or [] if e.get("type") == t] for t in configured
@@ -308,7 +320,7 @@ async def decompose_script_assets(
 
     async def one(ttype: str) -> List[Dict[str, Any]]:
         return await _decompose_one_type(
-            configured[ttype], ttype, script, rosters[ttype]
+            configured[ttype], ttype, script, rosters[ttype], model
         )
 
     results = await asyncio.gather(
@@ -339,6 +351,7 @@ async def start_decompose_job(
     auto_looks: bool = False,
     visual_style: str = "",
     params: Optional[Dict[str, str]] = None,
+    text_model: str = "",
 ) -> str:
     """启动资产拆解任务，立即返回 jobId（前端轮询 GET /assets/decompose/{jobId}）。
 
@@ -346,6 +359,7 @@ async def start_decompose_job(
     每角色先出定妆照，再以其为身份参考图逐个出 Look 造型图），
     结果写回 asset 条目（image_url / looks[i].image_url）。
     params：出图模型/分辨率覆盖（models.resolve_imagegen_params 产物）。
+    text_model：拆解文本模型覆盖（models.resolve_text_model 产物，出图链不受影响）。
     """
     job_id = uuid.uuid4().hex[:12]
     DECOMPOSE_JOBS[job_id] = {
@@ -361,7 +375,7 @@ async def start_decompose_job(
         state = DECOMPOSE_JOBS[job_id]
         try:
             assets, errors = await decompose_script_assets(
-                script, existing=existing
+                script, existing=existing, model=text_model
             )
             state["assets"] = assets
             state["errors"] = errors
@@ -572,6 +586,7 @@ async def _decompose_one_type(
     ttype: str,
     script: str,
     roster: List[Dict[str, Any]],
+    model: str = "",
 ) -> List[Dict[str, Any]]:
     parts = []
     if roster:
@@ -583,7 +598,12 @@ async def _decompose_one_type(
     raw = await run_flow_blocking(
         flow_id,
         input_value="\n".join(parts),
-        tweaks={"LanguageModelComponent": {"temperature": 0.1}},
+        tweaks={
+            "LanguageModelComponent": {
+                "temperature": 0.1,
+                **({"model_name": model} if model else {}),
+            }
+        },
     )
     if raw.startswith("（"):
         raise RuntimeError(raw.strip("（）"))
@@ -617,6 +637,7 @@ async def _decompose_one_type(
 async def _decompose_legacy(
     script: str,
     existing: Optional[List[Dict[str, Any]]] = None,
+    model: str = "",
 ) -> tuple[List[Dict[str, Any]], Dict[str, str]]:
     if not DECOMPOSE_FLOW_ID:
         raise RuntimeError(
@@ -639,7 +660,12 @@ async def _decompose_legacy(
     raw = await run_flow_blocking(
         DECOMPOSE_FLOW_ID,
         input_value="\n".join(parts),
-        tweaks={"LanguageModelComponent": {"temperature": 0.1}},
+        tweaks={
+            "LanguageModelComponent": {
+                "temperature": 0.1,
+                **({"model_name": model} if model else {}),
+            }
+        },
     )
     if raw.startswith("（"):
         raise RuntimeError(raw.strip("（）"))
@@ -1044,8 +1070,10 @@ def _normalize_asset_url(url: str) -> str:
 
 
 async def start_prompt_optimize_job(
-    prompt: str, image_urls: Optional[List[str]], context_notes: str
+    prompt: str, image_urls: Optional[List[str]], context_notes: str, model: str = ""
 ) -> str:
+    """model：文本模型覆盖（PromptOptimizerComponent 的 model_name 字段按名注入，
+    空=组件默认 deepseek-v4-flash）。"""
     if not PROMPT_OPTIMIZE_FLOW_ID:
         raise RuntimeError(
             "未配置 LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID（flow 见 agent/flows/prompt-optimize.json）"
@@ -1075,6 +1103,7 @@ async def start_prompt_optimize_job(
                     "PromptOptimize-main": {
                         "payload": json.dumps(payload, ensure_ascii=False),
                         "api_key": DMX_API_KEY,
+                        **({"model_name": model} if model else {}),
                     }
                 },
             )

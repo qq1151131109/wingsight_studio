@@ -115,6 +115,9 @@ export interface WingNodeData {
   visualStyle?: string;
   /** 分镜表：一次性远程触发生成旗标（剧本卡「拆分镜表」置位，本卡消费即清） */
   autoGenerate?: boolean;
+  /** 文本模型覆盖（agent/models.py 目录 id，空/缺省=flow 出厂默认）。
+   *  剧本卡驱动「拆解资产」，分镜表卡驱动「生成分镜」与本卡拆解 */
+  textModel?: string;
   /** 分镜表：进行中的批量出图任务（出图中刷新页面后挂载续轮询收尾，完事即清） */
   imageJobId?: string;
   /** 遗留字段（一卡一图重构前）：角色卡 Look 变体。UI 已不读写，仅装载时
