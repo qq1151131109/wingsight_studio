@@ -4,7 +4,13 @@
  * 直接进渲染管线会引发 xyflow 告警和布局错乱——必须在 loadCanvas 后过滤。
  */
 
-import { NODE_FOOTPRINT, type ShotRow, type WingEdge, type WingNode } from "./store";
+import {
+  findFreePosition,
+  NODE_FOOTPRINT,
+  type ShotRow,
+  type WingEdge,
+  type WingNode,
+} from "./store";
 import { resolveRowRefIds } from "./shotRefs";
 
 export interface SanitizeResult {
@@ -197,6 +203,101 @@ export function sanitizeCanvas(
         extraEdges.push(e);
       }
     }
+  }
+
+  // 存量 Look 散卡收框「造型图」：有 角色/服饰 入边、未归组的「名·造型」
+  // 图片卡即 Look 造型图（镜头派生图天然排除——它有分镜表入边）。≥2 张时
+  // 按来源角色分行重排、贴角色组右缘成框（无角色组则落散卡现区域）；进框
+  // 后有 parentId，再次装载不再命中，幂等
+  const lookLoose = cleanNodes.filter(
+    (n) =>
+      !n.parentId &&
+      n.data.nodeType === "image" &&
+      String(n.data.title ?? "").includes("·") &&
+      allEdges.some((e) => {
+        if (e.target !== n.id) return false;
+        const src = byId3.get(e.source);
+        return (
+          Boolean(src) &&
+          ["character", "costume"].includes(String(src!.data.nodeType))
+        );
+      }) &&
+      !allEdges.some((e) => {
+        const src = byId3.get(e.source);
+        return e.target === n.id && src?.data.nodeType === "shotlist";
+      }),
+  );
+  if (lookLoose.length >= 2) {
+    const charTitleOf = (n: WingNode) => {
+      for (const e of allEdges) {
+        if (e.target !== n.id) continue;
+        const src = byId3.get(e.source);
+        if (src?.data.nodeType === "character")
+          return String(src.data.title ?? "");
+      }
+      return "·"; // 无角色源（仅服饰绑定等）归入同一兜底行
+    };
+    const sorted = [...lookLoose].sort(
+      (a, b) => a.position.y - b.position.y || a.position.x - b.position.x,
+    );
+    const rows: WingNode[][] = [];
+    for (const n of sorted) {
+      const last = rows[rows.length - 1];
+      if (last && charTitleOf(last[0]) === charTitleOf(n)) last.push(n);
+      else rows.push([n]);
+    }
+    const lfp = NODE_FOOTPRINT.image;
+    const colsMax = Math.max(...rows.map((r) => r.length), 1);
+    const low = colsMax * (lfp.w + 32) - 32;
+    const loh = rows.length * (lfp.h + 32) - 32;
+    const charGroup = cleanNodes.find(
+      (n) => n.data.nodeType === "group" && n.data.title === "角色",
+    );
+    const originL = findFreePosition(
+      cleanNodes,
+      charGroup
+        ? {
+            x:
+              charGroup.position.x +
+              ((typeof charGroup.style?.width === "number"
+                ? charGroup.style.width
+                : 0) || 0) +
+              64,
+            y: charGroup.position.y,
+          }
+        : {
+            x: Math.min(...lookLoose.map((n) => n.position.x)),
+            y: Math.min(...lookLoose.map((n) => n.position.y)),
+          },
+      { w: low, h: loh },
+    );
+    rows.forEach((row, ri) => {
+      row.forEach((n, ci) => {
+        n.position = {
+          x: originL.x + ci * (lfp.w + 32),
+          y: originL.y + ri * (lfp.h + 32),
+        };
+      });
+    });
+    // 手工建组（sanitize 是纯函数，不走 store.groupNodes）：尺寸/内边距与
+    // groupNodes 约定一致（pad 36 + 标题条 22）；组节点须排在子节点之前
+    const pad = 36;
+    const gid = `n_${Math.random().toString(36).slice(2, 10)}`;
+    const groupNode: WingNode = {
+      id: gid,
+      type: "group",
+      position: { x: originL.x - pad, y: originL.y - pad - 22 },
+      style: { width: low + pad * 2, height: loh + pad * 2 + 22 },
+      data: { nodeType: "group", title: "造型图", body: "" },
+    };
+    for (const n of lookLoose) {
+      n.parentId = gid;
+      n.position = {
+        x: n.position.x - groupNode.position.x,
+        y: n.position.y - groupNode.position.y,
+      };
+    }
+    cleanNodes.unshift(groupNode);
   }
 
   return {

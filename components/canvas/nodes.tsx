@@ -2508,6 +2508,7 @@ async function runAssetDecompose(opts: {
     let existed = 0;
     // 资产卡放锚点卡左侧（推导方向：左入右出），组框贴着左缘往左排
     let groupRight = abs.x - 80;
+    let charGroupRight = 0; // 角色组右缘：造型图框的贴靠锚点
     const anchorY = abs.y;
     for (const { type, label } of KIND_ORDER) {
       const cur = useCanvasStore.getState();
@@ -2529,6 +2530,7 @@ async function runAssetDecompose(opts: {
         w: kw,
         h: kh,
       });
+      if (type === "character") charGroupRight = origin.x + kw;
       const ids: string[] = [];
       fresh.forEach((a, i) => {
         const st2 = useCanvasStore.getState();
@@ -2555,25 +2557,36 @@ async function runAssetDecompose(opts: {
         if (type === "character" && looks.length > 0)
           lookJobs.push({ charId: nid, charName: a.name, looks });
       });
-      // 角色组框右侧竖排 Look 卡（findFreePosition 整块避让锚点卡等已有内容）
-      for (const { charId, charName, looks } of lookJobs) {
-        const st2 = useCanvasStore.getState();
-        // 尺寸与普通图片卡一致（用户要求通用容器）：特殊小卡会让媒体区溢出卡体
-        const lfp = NODE_FOOTPRINT.image;
-        const lcols = Math.min(2, looks.length);
-        const low = lcols * (lfp.w + 32) - 32;
-        const loh = Math.ceil(looks.length / lcols) * (lfp.h + 32) - 32;
-        const lorigin = findFreePosition(
-          st2.nodes,
-          { x: origin.x + kw + 64, y: anchorY },
-          { w: low, h: loh },
-        );
+      const gid = useCanvasStore.getState().groupNodes(ids, label);
+      if (gid) groupIds.push(gid);
+      created.push(...ids);
+      groupRight = origin.x - 80;
+    }
+    // Look 造型图收进专属组框「造型图」：贴角色组右缘（推导方向 左入右出），
+    // 一行一角色、行内造型并排。不混进角色组——角色组是「一格一资产」的均匀
+    // 网格，Look 是 1:N 衍生物；独立成框与四类资产组同款交互（整框拖动/避让）
+    if (lookJobs.length > 0) {
+      const st2 = useCanvasStore.getState();
+      const lfp = NODE_FOOTPRINT.image;
+      const colsMax = Math.max(...lookJobs.map((j) => j.looks.length), 1);
+      const low = colsMax * (lfp.w + 32) - 32;
+      const loh = lookJobs.length * (lfp.h + 32) - 32;
+      const lorigin = findFreePosition(
+        st2.nodes,
+        {
+          x: charGroupRight > 0 ? charGroupRight + 64 : abs.x - 80 - low,
+          y: anchorY,
+        },
+        { w: low, h: loh },
+      );
+      const lookIds: string[] = [];
+      lookJobs.forEach(({ charId, charName, looks }, ri) => {
         looks.forEach((l, li) => {
           const st3 = useCanvasStore.getState();
           const lid = st3.addNode({
             position: {
-              x: lorigin.x + (li % lcols) * (lfp.w + 32),
-              y: lorigin.y + Math.floor(li / lcols) * (lfp.h + 32),
+              x: lorigin.x + li * (lfp.w + 32),
+              y: lorigin.y + ri * (lfp.h + 32),
             },
             style: { width: lfp.w, height: lfp.h },
             data: {
@@ -2585,16 +2598,14 @@ async function runAssetDecompose(opts: {
             },
           });
           st3.connect({ source: charId, target: lid });
-          // 只进 created（选中/闪烁用），不进 ids——ids 会成为角色组框的
-          // 子节点（坐标转相对），Look 卡是画布层卡，不归组
+          // 进 lookIds/created（组框子节点/选中闪烁），不进类型组的 ids
+          lookIds.push(lid);
           created.push(lid);
           lookEdges.push({ lookId: lid, costume: (l.costume ?? "").trim() });
         });
-      }
-      const gid = useCanvasStore.getState().groupNodes(ids, label);
-      if (gid) groupIds.push(gid);
-      created.push(...ids);
-      groupRight = origin.x - 80;
+      });
+      const lgid = useCanvasStore.getState().groupNodes(lookIds, "造型图");
+      if (lgid) groupIds.push(lgid);
     }
     // 服饰绑定：Look 造型卡与服饰卡按名对上（互含即算）→ 连 服饰→Look 边，
     // 表达「该造型的衣着结构以服饰卡为准」（juben 参考图2 协议的画布化）。

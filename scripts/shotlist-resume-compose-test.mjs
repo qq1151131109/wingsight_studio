@@ -280,10 +280,27 @@ await save(
       data: { nodeType: "shotlist", title: "分镜表", rows: rowsD, status: "ready" },
     },
     imgNode("n_e2e_imgG", "ready", { imageUrl: png1px }),
+    // 存量 Look 散卡（历史形态：有角色入边、无组框）
+    {
+      id: "n_e2e_look1",
+      type: "image",
+      position: { x: 1400, y: 600 },
+      style: { width: 256, height: 260 },
+      data: { nodeType: "image", title: "雨夜侦探老陈·白裙", imageUrl: png1px, status: "ready" },
+    },
+    {
+      id: "n_e2e_look2",
+      type: "image",
+      position: { x: 1400, y: 900 },
+      style: { width: 256, height: 260 },
+      data: { nodeType: "image", title: "雨夜侦探老陈·黑裙", imageUrl: png1px, status: "ready" },
+    },
   ],
   [
     { id: "e1", source: "n_e2e_script", target: "n_e2e_sl" },
     { id: "e2", source: "n_e2e_sl", target: "n_e2e_imgG" },
+    { id: "e3", source: "n_e2e_char", target: "n_e2e_look1" },
+    { id: "e4", source: "n_e2e_char", target: "n_e2e_look2" },
   ],
   // 画风闸需要项目画风（出图直连管线硬闸）
   { visualStyle: "测试画风：黑色电影，雨夜霓虹" },
@@ -321,6 +338,15 @@ await page.waitForTimeout(3500); // sanitize 迁移 + debounce 落库
     "D2 存量迁移补 refIds",
     (imgG?.data?.refIds ?? []).includes("n_e2e_char"),
     `refIds=${JSON.stringify(imgG?.data?.refIds)}`,
+  );
+  const lookFrame = (c?.nodes ?? []).find(
+    (n) => n?.data?.nodeType === "group" && n?.data?.title === "造型图",
+  );
+  const lookKids = (c?.nodes ?? []).filter((n) => n?.parentId === lookFrame?.id);
+  check(
+    "D4 存量 Look 散卡收进「造型图」组框",
+    Boolean(lookFrame) && lookKids.length === 2,
+    `子卡=${lookKids.length}`,
   );
 }
 
@@ -369,6 +395,14 @@ await page.waitForTimeout(3500);
     refEdges.length === 1 &&
       (imgG?.data?.refIds ?? []).filter((x) => x === "n_e2e_char").length === 1,
     `边=${refEdges.length} refIds=${JSON.stringify(imgG?.data?.refIds)}`,
+  );
+  const frames = (c?.nodes ?? []).filter(
+    (n) => n?.data?.nodeType === "group" && n?.data?.title === "造型图",
+  );
+  check(
+    "D5 造型图框幂等（重载不重复建框）",
+    frames.length === 1,
+    `框=${frames.length}`,
   );
 }
 
