@@ -209,7 +209,7 @@ export function Lightbox({
         <>
           <button
             type="button"
-            title="上一张"
+            data-tip="上一张" aria-label="上一张"
             disabled={index === 0}
             className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
             onClick={(e) => {
@@ -221,7 +221,7 @@ export function Lightbox({
           </button>
           <button
             type="button"
-            title="下一张"
+            data-tip="下一张" aria-label="下一张"
             disabled={index === images.length - 1}
             className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-white/10 p-2 text-white hover:bg-white/20 disabled:opacity-30"
             onClick={(e) => {

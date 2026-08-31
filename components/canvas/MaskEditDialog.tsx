@@ -125,7 +125,7 @@ export default function MaskEditDialog({
             <Brush className="h-4 w-4" />
             标注重绘 · {title || "图片"}
           </h3>
-          <button type="button" className="rounded p-0.5 text-text-4 hover:text-text" onClick={onClose}>
+          <button type="button" data-tip="关闭" aria-label="关闭" className="rounded p-0.5 text-text-4 hover:text-text" onClick={onClose}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -158,7 +158,7 @@ export default function MaskEditDialog({
           ))}
           <button
             type="button"
-            title="撤销上一笔"
+            data-tip="撤销上一笔" aria-label="撤销上一笔"
             className="ml-auto flex items-center gap-1 rounded border border-hairline px-1.5 py-0.5 text-[10px] text-text-3 hover:text-text"
             onClick={() => {
               strokes.current.pop();
@@ -171,7 +171,7 @@ export default function MaskEditDialog({
           </button>
           <button
             type="button"
-            title="清空标注"
+            data-tip="清空标注" aria-label="清空标注"
             className="flex items-center gap-1 rounded border border-hairline px-1.5 py-0.5 text-[10px] text-text-3 hover:text-text"
             onClick={() => {
               strokes.current = [];

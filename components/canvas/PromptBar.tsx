@@ -326,7 +326,7 @@ export default function PromptBar({
                 {hasImg ? (
                   <button
                     type="button"
-                    title="预览参考图"
+                    data-tip="预览参考图" aria-label="预览参考图"
                     className="shrink-0"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -340,7 +340,7 @@ export default function PromptBar({
                 )}
                 <button
                   type="button"
-                  title="定位到画布卡片"
+                  data-tip="定位到画布卡片" aria-label="定位到画布卡片"
                   className="max-w-24 truncate transition-colors hover:text-accent"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -358,7 +358,7 @@ export default function PromptBar({
                 {connected ? null : (
                   <button
                     type="button"
-                    title="移除引用"
+                    data-tip="移除引用" aria-label="移除引用"
                     className="text-text-4 hover:text-danger"
                     onClick={() => setRefs((rs) => rs.filter((x) => x.id !== r.id))}
                   >
@@ -448,7 +448,11 @@ export default function PromptBar({
           <button
             type="button"
             disabled={aiBusy || !canAssist}
-            title={
+            data-tip={
+              text.trim()
+                ? "AI 优化提示词：保留主体意图扩写成完整出图提示词，结果回填可再改"
+                : "看图反推：AI 按卡上图/参考图写出出图提示词，结果回填可再改"
+            } aria-label={
               text.trim()
                 ? "AI 优化提示词：保留主体意图扩写成完整出图提示词，结果回填可再改"
                 : "看图反推：AI 按卡上图/参考图写出出图提示词，结果回填可再改"
@@ -471,7 +475,7 @@ export default function PromptBar({
         ) : null}
         <button
           type="button"
-          title={favSaved ? "已收藏" : "收藏当前输入到提示词库"}
+          data-tip={favSaved ? "已收藏" : "收藏当前输入到提示词库"} aria-label={favSaved ? "已收藏" : "收藏当前输入到提示词库"}
           className={`grid shrink-0 place-items-center rounded-md border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
             floating ? "h-8 w-8" : "h-7 w-7"
           } ${favSaved ? "text-warn" : "text-text-2"}`}
@@ -487,7 +491,13 @@ export default function PromptBar({
         </button>
         <button
           type="button"
-          title={
+          data-tip={
+            kind === "text"
+              ? "让 AI 撰写（Ctrl+Enter）"
+              : kind === "shotlist"
+                ? "让 AI 修改分镜表（Ctrl+Enter）"
+                : "生成（Ctrl+Enter）；清空提示词=按卡片标题与正文重生成"
+          } aria-label={
             kind === "text"
               ? "让 AI 撰写（Ctrl+Enter）"
               : kind === "shotlist"
@@ -586,7 +596,11 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
     <div className="relative ml-auto flex items-center">
       <button
         type="button"
-        title={
+        data-tip={
+          cardGen
+            ? `本卡覆盖：${effective.model} · ${effective.resolution}（点击修改；可回退跟随项目）`
+            : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位）`
+        } aria-label={
           cardGen
             ? `本卡覆盖：${effective.model} · ${effective.resolution}（点击修改；可回退跟随项目）`
             : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位）`
@@ -655,7 +669,7 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
                       key={r}
                       type="button"
                       disabled={!supported}
-                      title={supported ? undefined : "该模型不支持此档"}
+                      data-tip={supported ? undefined : "该模型不支持此档"} aria-label={supported ? undefined : "该模型不支持此档"}
                       className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
                         effective.resolution === r
                           ? "border-accent bg-accent-dim text-text"

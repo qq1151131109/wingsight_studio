@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import GlobalErrorDialog from "@/components/shell/GlobalErrorDialog";
+import TipHost from "@/components/shell/TipHost";
 
 export const metadata: Metadata = {
   title: "Wingsight Studio",
@@ -52,6 +53,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="h-full overflow-hidden">
         {children}
         <GlobalErrorDialog />
+        <TipHost />
       </body>
     </html>
   );

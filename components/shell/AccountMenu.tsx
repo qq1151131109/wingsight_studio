@@ -71,7 +71,7 @@ export default function AccountMenu() {
     <div ref={rootRef} className="relative">
       <button
         type="button"
-        title={isAdmin ? `管理员 ${name}（账户菜单）` : `账户菜单（${name}）`}
+        data-tip={isAdmin ? `管理员 ${name}（账户菜单）` : `账户菜单（${name}）`} aria-label={isAdmin ? `管理员 ${name}（账户菜单）` : `账户菜单（${name}）`}
         onClick={() => setOpen((v) => !v)}
         className="grid h-8 w-8 place-items-center rounded-full border border-surface-1 text-xs font-medium text-white shadow-sm transition-opacity hover:opacity-85"
         style={{ background: avatarColor(name) }}

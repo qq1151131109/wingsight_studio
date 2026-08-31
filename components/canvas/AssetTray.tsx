@@ -142,7 +142,7 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
         <h3 className="text-xs font-semibold text-text">素材库</h3>
         <button
           type="button"
-          title="关闭（Esc）"
+          data-tip="关闭（Esc）" aria-label="关闭（Esc）"
           className="nodrag rounded p-0.5 text-text-4 hover:text-text"
           onClick={onClose}
         >
@@ -214,7 +214,7 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
               </span>
               <button
                 type="button"
-                title="从素材库删除（不影响画布卡片）"
+                data-tip="从素材库删除（不影响画布卡片）" aria-label="从素材库删除（不影响画布卡片）"
                 className="shrink-0 rounded p-0.5 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();

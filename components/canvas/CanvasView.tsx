@@ -343,7 +343,7 @@ function AddNodeToolbar() {
             key={key}
             type="button"
             draggable
-            title={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
+            data-tip={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`} aria-label={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
             className="flex h-8 w-8 cursor-grab items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
             onClick={() => addAtCenter(type)}
             onDragStart={(e) => {
@@ -492,7 +492,7 @@ function StylePresetList({
             <button
               key={p.id}
               type="button"
-              title={`${p.name}｜${p.tagline || p.category}`}
+              data-tip={`${p.name}｜${p.tagline || p.category}`} aria-label={`${p.name}｜${p.tagline || p.category}`}
               className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
                 active
                   ? "border-accent ring-2 ring-accent"
@@ -568,7 +568,7 @@ function BottomDock({
       <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
       <button
         type="button"
-        title="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布"
+        data-tip="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布" aria-label="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenAssets}
       >
@@ -577,7 +577,7 @@ function BottomDock({
       </button>
       <button
         type="button"
-        title="提示词常用语：选中卡片后点选，自动追加进生成输入框"
+        data-tip="提示词常用语：选中卡片后点选，自动追加进生成输入框" aria-label="提示词常用语：选中卡片后点选，自动追加进生成输入框"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenPrompts}
       >
@@ -586,7 +586,7 @@ function BottomDock({
       </button>
       <button
         type="button"
-        title="画布导航（按类型列出全部卡片，点击运镜定位）"
+        data-tip="画布导航（按类型列出全部卡片，点击运镜定位）" aria-label="画布导航（按类型列出全部卡片，点击运镜定位）"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenOutline}
       >
@@ -599,7 +599,7 @@ function BottomDock({
       <div className="relative">
         <button
           type="button"
-          title="项目画风（全局视觉风格：注入所有出图与分镜生成）"
+          data-tip="项目画风（全局视觉风格：注入所有出图与分镜生成）" aria-label="项目画风（全局视觉风格：注入所有出图与分镜生成）"
           className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
             projectStyle ? "text-accent" : "text-text-2 hover:text-text"
           } ${stylePanel ? "bg-surface-2 text-text" : ""}`}
@@ -615,7 +615,7 @@ function BottomDock({
       {/* 出图模型/分辨率（项目级默认，存 meta.imagegen）：所有出图入口生效 */}
       <button
         type="button"
-        title={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，出图面板可改）`}
+        data-tip={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，出图面板可改）`} aria-label={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，出图面板可改）`}
         className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
           imagegenPanel ? "bg-surface-2 text-text" : ""
         }`}
@@ -637,7 +637,7 @@ function BottomDock({
       </DockBtn>
       <button
         type="button"
-        title="点击复位 100%（⌘0）"
+        data-tip="点击复位 100%（⌘0）" aria-label="点击复位 100%（⌘0）"
         className="min-w-11 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={() => void zoomTo(1, { duration: 250 })}
       >
@@ -681,7 +681,7 @@ function BottomDock({
               </div>
               <button
                 type="button"
-                title="关闭"
+                data-tip="关闭" aria-label="关闭"
                 className="rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
                 onClick={() => setStylePanel(false)}
               >
@@ -737,7 +737,7 @@ function BottomDock({
               </div>
               <button
                 type="button"
-                title="关闭"
+                data-tip="关闭" aria-label="关闭"
                 className="rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
                 onClick={() => setImagegenPanel(false)}
               >
@@ -775,7 +775,7 @@ function DockBtn({
   return (
     <button
       type="button"
-      title={title}
+      data-tip={title} aria-label={title}
       disabled={disabled}
       className="flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
       onClick={onClick}
@@ -859,7 +859,7 @@ function ImagegenSettings() {
                 key={r}
                 type="button"
                 disabled={!supported}
-                title={supported ? undefined : `${current?.label ?? "该模型"}不支持 ${r} 档`}
+                data-tip={supported ? undefined : `${current?.label ?? "该模型"}不支持 ${r} 档`} aria-label={supported ? undefined : `${current?.label ?? "该模型"}不支持 ${r} 档`}
                 className={`rounded border px-2.5 py-1 text-xs transition-colors ${
                   imagegen.resolution === r
                     ? "border-accent bg-accent-dim text-text"

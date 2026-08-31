@@ -238,7 +238,7 @@ function HomeInner() {
                       e.stopPropagation();
                       setMenuPid(menuPid === p.id ? null : p.id);
                     }}
-                    title="更多操作"
+                    data-tip="更多操作" aria-label="更多操作"
                   >
                     <MoreHorizontal className="h-4 w-4" />
                   </button>

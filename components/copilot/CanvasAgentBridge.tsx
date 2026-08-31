@@ -700,7 +700,7 @@ export default function CanvasAgentBridge() {
                 <button
                   key={`${m.nodeId}_${m.url}`}
                   type="button"
-                  title="点击在画布上定位"
+                  data-tip="点击在画布上定位" aria-label="点击在画布上定位"
                   className="group relative block overflow-hidden rounded-md border border-hairline transition-shadow hover:shadow-md"
                   onClick={() =>
                     window.dispatchEvent(

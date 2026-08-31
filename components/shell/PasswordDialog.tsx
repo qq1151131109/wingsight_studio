@@ -99,7 +99,7 @@ export default function PasswordDialog({ onClose }: { onClose: () => void }) {
                 修改密码
               </h3>
               <button
-                type="button"
+                type="button" data-tip="关闭" aria-label="关闭"
                 onClick={onClose}
                 className="rounded-md p-1 text-text-3 hover:bg-surface-2 hover:text-text"
               >

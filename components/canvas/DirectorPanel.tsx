@@ -144,7 +144,7 @@ export default function DirectorPanel({
           </h3>
           <button
             type="button"
-            title="关闭（Esc）"
+            data-tip="关闭（Esc）" aria-label="关闭（Esc）"
             className="rounded p-0.5 text-text-4 hover:text-text"
             onClick={onClose}
           >

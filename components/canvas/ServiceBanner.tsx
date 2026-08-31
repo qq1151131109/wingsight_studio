@@ -46,7 +46,7 @@ export default function ServiceBanner() {
       </code>
       <button
         type="button"
-        title="本次会话不再提示"
+        data-tip="本次会话不再提示" aria-label="本次会话不再提示"
         className="rounded p-0.5 hover:bg-danger/20"
         onClick={() => {
           sessionStorage.setItem(DISMISS_KEY, "1");

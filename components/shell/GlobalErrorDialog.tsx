@@ -47,6 +47,8 @@ export default function GlobalErrorDialog() {
           </h3>
           <button
             type="button"
+            data-tip="关闭"
+            aria-label="关闭"
             className="rounded p-0.5 text-text-4 hover:text-text"
             onClick={() => setCur(null)}
           >

@@ -126,7 +126,7 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
         </h3>
         <button
           type="button"
-          title="导出画布 JSON（结构备份；媒体文件在服务端 assets）"
+          data-tip="导出画布 JSON（结构备份；媒体文件在服务端 assets）" aria-label="导出画布 JSON（结构备份；媒体文件在服务端 assets）"
           className="nodrag rounded p-0.5 text-text-4 hover:text-text"
           onClick={exportCanvas}
         >
@@ -134,7 +134,7 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
         </button>
         <button
           type="button"
-          title="导入画布 JSON（整体替换当前画布）"
+          data-tip="导入画布 JSON（整体替换当前画布）" aria-label="导入画布 JSON（整体替换当前画布）"
           className="nodrag rounded p-0.5 text-text-4 hover:text-text"
           onClick={() => fileRef.current?.click()}
         >
@@ -153,7 +153,7 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
         />
         <button
           type="button"
-          title="关闭（Esc）"
+          data-tip="关闭（Esc）" aria-label="关闭（Esc）"
           className="nodrag rounded p-0.5 text-text-4 hover:text-text"
           onClick={onClose}
         >
@@ -189,7 +189,7 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
                     key={n.id}
                     type="button"
                     className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-                    title="点击定位到画布"
+                    data-tip="点击定位到画布" aria-label="点击定位到画布"
                     onClick={() => locate(n.id)}
                   >
                     <span

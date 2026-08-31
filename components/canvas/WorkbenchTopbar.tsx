@@ -78,7 +78,7 @@ export default function WorkbenchTopbar() {
         <button
           type="button"
           onClick={startEdit}
-          title="点击重命名项目"
+          data-tip="点击重命名项目" aria-label="点击重命名项目"
           className="group flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-surface-2"
         >
           <span className="font-editorial truncate text-sm font-semibold text-text">
@@ -119,7 +119,11 @@ export default function WorkbenchTopbar() {
           时间规则（20:00–次日 8:00 自动夜间）。图标显示点击后将到达的主题 */}
       <button
         type="button"
-        title={
+        data-tip={
+          resolvedTheme === "dark"
+            ? "切换为日间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"
+            : "切换为夜间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"
+        } aria-label={
           resolvedTheme === "dark"
             ? "切换为日间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"
             : "切换为夜间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"

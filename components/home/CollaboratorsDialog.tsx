@@ -110,7 +110,7 @@ export default function CollaboratorsDialog({
             协作者 · {projectName}
           </h3>
           <button
-            type="button"
+            type="button" data-tip="关闭" aria-label="关闭"
             onClick={onClose}
             className="rounded-md p-1 text-text-3 hover:bg-surface-2 hover:text-text"
           >
@@ -166,7 +166,7 @@ export default function CollaboratorsDialog({
                   disabled={busyName === name}
                   onClick={() => void remove(name)}
                   className="rounded p-1 text-text-4 transition-colors hover:bg-danger/10 hover:text-danger"
-                  title="移除"
+                  data-tip="移除" aria-label="移除"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>

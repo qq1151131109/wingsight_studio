@@ -39,7 +39,7 @@ export default function PromptLibraryPanel({ onClose }: { onClose: () => void })
         <h3 className="text-xs font-semibold text-text">提示词库</h3>
         <button
           type="button"
-          title="关闭（Esc）"
+          data-tip="关闭（Esc）" aria-label="关闭（Esc）"
           className="nodrag rounded p-0.5 text-text-4 hover:text-text"
           onClick={onClose}
         >
@@ -116,7 +116,7 @@ function PromptRow({
       </span>
       <button
         type="button"
-        title={fav ? "取消收藏" : "收藏"}
+        data-tip={fav ? "取消收藏" : "收藏"} aria-label={fav ? "取消收藏" : "收藏"}
         className={`shrink-0 p-0.5 transition-colors ${
           fav ? "text-warn" : "text-text-4 opacity-0 group-hover/prow:opacity-100 hover:text-warn"
         }`}

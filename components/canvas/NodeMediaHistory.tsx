@@ -31,7 +31,7 @@ function Thumb({
       className={`group relative shrink-0 overflow-hidden rounded-lg border transition-colors ${
         active ? "border-accent" : "border-hairline hover:border-accent-soft"
       }`}
-      title={`${label} — 点击查看大图 · 双击设为当前`}
+      data-tip={`${label} — 点击查看大图 · 双击设为当前`} aria-label={`${label} — 点击查看大图 · 双击设为当前`}
     >
       {isVideoUrl(url) ? (
         <video src={url} muted preload="metadata" className="h-24 w-36 bg-black object-cover" />
@@ -144,7 +144,7 @@ export default function VersionHistoryModal({
             <GitCompareArrows className="h-4 w-4" />
             版本历史 · {data.title || "未命名"}
           </h3>
-          <button type="button" className="rounded p-0.5 text-text-4 hover:text-text" onClick={onClose}>
+          <button type="button" data-tip="关闭" aria-label="关闭" className="rounded p-0.5 text-text-4 hover:text-text" onClick={onClose}>
             <X className="h-4 w-4" />
           </button>
         </div>

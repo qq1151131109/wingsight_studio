@@ -275,7 +275,7 @@ function ToolBtn({
   return (
     <button
       type="button"
-      title={title}
+      data-tip={title} aria-label={title}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
@@ -626,7 +626,7 @@ function AudioPlayer({ src, title }: { src: string; title: string }) {
       <div className="flex items-center gap-2">
         <button
           type="button"
-          title={playing ? "暂停" : "播放"}
+          data-tip={playing ? "暂停" : "播放"} aria-label={playing ? "暂停" : "播放"}
           className="grid h-7 w-7 shrink-0 place-items-center rounded-full border border-hairline bg-surface-1 text-text-2 transition-colors hover:border-accent hover:text-text"
           onClick={(e) => {
             e.stopPropagation();
@@ -882,7 +882,7 @@ function TextCard({
       <button
         type="button"
         className="nodrag nowheel flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-        title={`以本文为提示词，右侧新建${label}卡并生成`}
+        data-tip={`以本文为提示词，右侧新建${label}卡并生成`} aria-label={`以本文为提示词，右侧新建${label}卡并生成`}
         onClick={(e) => {
           e.stopPropagation();
           genFromText(kind);
@@ -1038,7 +1038,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             <button
               type="button"
               disabled={empty}
-              title="把剧本正文导出为 .md 文件"
+              data-tip="把剧本正文导出为 .md 文件" aria-label="把剧本正文导出为 .md 文件"
               className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1051,7 +1051,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             <button
               type="button"
               disabled={empty || decomposing}
-              title="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡左侧。出分镜图前先给资产出设定图，一致性最好"
+              data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡左侧。出分镜图前先给资产出设定图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡左侧。出分镜图前先给资产出设定图，一致性最好"
               className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1064,7 +1064,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 disabled={fillingAssets}
-                title="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
+                data-tip="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）" aria-label="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1077,7 +1077,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             <button
               type="button"
               disabled={empty}
-              title="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
+              data-tip="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）" aria-label="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
               className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-accent bg-accent-dim px-2 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1250,7 +1250,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
             <CornerActions>
               <button
                 type="button"
-                title="AI 重新出设定图（用设定正文）"
+                data-tip="AI 重新出设定图（用设定正文）" aria-label="AI 重新出设定图（用设定正文）"
                 className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1261,7 +1261,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
               </button>
               <button
                 type="button"
-                title={`更换${imgLabel}`}
+                data-tip={`更换${imgLabel}`} aria-label={`更换${imgLabel}`}
                 className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1298,7 +1298,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
         <button
           type="button"
           disabled={imgJob}
-          title={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`}
+          data-tip={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`} aria-label={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`}
           className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-dashed border-hairline px-2 py-1 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text disabled:opacity-40"
           onClick={(e) => {
             e.stopPropagation();
@@ -1547,7 +1547,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
             {versionCount > 0 ? (
               <button
                 type="button"
-                title="版本历史（重生成前的结果自动存档）"
+                data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
                 className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity hover:bg-black/60 group-hover:opacity-100"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1570,7 +1570,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               {d.body ? (
                 <button
                   type="button"
-                  title="复制提示词"
+                  data-tip="复制提示词" aria-label="复制提示词"
                   className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1584,7 +1584,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               ) : null}
               <button
                 type="button"
-                title="标注重绘：涂出想改的区域让 AI 重绘"
+                data-tip="标注重绘：涂出想改的区域让 AI 重绘" aria-label="标注重绘：涂出想改的区域让 AI 重绘"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1595,7 +1595,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               </button>
               <button
                 type="button"
-                title="九宫格切图：拆成 9 张卡"
+                data-tip="九宫格切图：拆成 9 张卡" aria-label="九宫格切图：拆成 9 张卡"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1606,7 +1606,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               </button>
               <button
                 type="button"
-                title="重新生成"
+                data-tip="重新生成" aria-label="重新生成"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1643,7 +1643,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
             <button
               key={`${u}_${i}`}
               type="button"
-              title="设为主图"
+              data-tip="设为主图" aria-label="设为主图"
               className={`shrink-0 overflow-hidden rounded border transition-colors ${
                 u === d.imageUrl ? "border-accent" : "border-hairline-soft hover:border-accent-soft"
               }`}
@@ -1934,7 +1934,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
               {versionCount > 0 ? (
                 <button
                   type="button"
-                  title="版本历史（重生成前的结果自动存档）"
+                  data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
                   className="flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white hover:bg-black/60"
                   onClick={(e) => {
                     e.stopPropagation();
@@ -1946,7 +1946,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
               ) : null}
               <button
                 type="button"
-                title={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
+                data-tip={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"} aria-label={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
                 disabled={analyzing}
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60 disabled:opacity-50"
                 onClick={(e) => {
@@ -1967,7 +1967,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
               </a>
               <button
                 type="button"
-                title="放大播放"
+                data-tip="放大播放" aria-label="放大播放"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -2000,7 +2000,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
             <button
               key={n}
               type="button"
-              title={`抽 ${n} 帧`}
+              data-tip={`抽 ${n} 帧`} aria-label={`抽 ${n} 帧`}
               className={`shrink-0 rounded border px-1 py-0.5 text-[9px] transition-colors ${
                 frameCount === n
                   ? "border-accent bg-accent-dim text-text"
@@ -2019,7 +2019,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
               key={f.t}
               type="button"
               className="nodrag group relative shrink-0 overflow-hidden rounded border border-hairline-soft transition-colors hover:border-accent"
-              title={`${f.t.toFixed(1)}s · 点击抽帧建图卡`}
+              data-tip={`${f.t.toFixed(1)}s · 点击抽帧建图卡`} aria-label={`${f.t.toFixed(1)}s · 点击抽帧建图卡`}
               onClick={(e) => {
                 e.stopPropagation();
                 void captureFrameAsNode(id, d.videoUrl as string, f.t);
@@ -2209,17 +2209,17 @@ function ComposeCard({ data, id, selected }: NodeProps) {
               <span className="min-w-0 flex-1 truncate text-[11px] text-text-2">
                 {s.node.data.title || s.sid}
               </span>
-              <button type="button" title="上移" disabled={i === 0}
+              <button type="button" data-tip="上移" aria-label="上移" disabled={i === 0}
                 className="nodrag text-text-4 hover:text-text disabled:opacity-30"
                 onClick={(e) => { e.stopPropagation(); move(i, -1); }}>
                 <ChevronUp className="h-3 w-3" />
               </button>
-              <button type="button" title="下移" disabled={i === items.length - 1}
+              <button type="button" data-tip="下移" aria-label="下移" disabled={i === items.length - 1}
                 className="nodrag text-text-4 hover:text-text disabled:opacity-30"
                 onClick={(e) => { e.stopPropagation(); move(i, 1); }}>
                 <ChevronDown className="h-3 w-3" />
               </button>
-              <button type="button" title="从合成移除（断开连线）"
+              <button type="button" data-tip="从合成移除（断开连线）" aria-label="从合成移除（断开连线）"
                 className="nodrag text-text-4 hover:text-danger"
                 onClick={(e) => { e.stopPropagation(); removeSource(s.sid); }}>
                 <X className="h-3 w-3" />
@@ -2388,7 +2388,7 @@ function GroupCard({ data, id, selected }: NodeProps) {
       <div className="flex items-center gap-1.5 px-2.5 py-1.5">
         <button
           type="button"
-          title={collapsed ? "展开分组" : "折叠分组（隐藏子卡）"}
+          data-tip={collapsed ? "展开分组" : "折叠分组（隐藏子卡）"} aria-label={collapsed ? "展开分组" : "折叠分组（隐藏子卡）"}
           className="nodrag shrink-0 text-text-3 transition-colors hover:text-text"
           onClick={(e) => {
             e.stopPropagation();
@@ -2801,9 +2801,10 @@ function ShotGenSettings({ nodeId }: { nodeId: string }) {
     <span className="relative">
       <button
         type="button"
-        title={`本卡出图设置：画幅 ${aspect} · 每镜候选 ${genCount} 张 · 模型 ${
+        data-tip={`本卡出图设置：画幅 ${aspect} · 每镜候选 ${genCount} 张 · 模型 ${
           cardGen ? (option?.label ?? effective.model) : `跟随项目（${option?.label ?? effective.model}）`
         }`}
+        aria-label="本卡出图设置"
         className={`nodrag shrink-0 rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
           cardGen ? "border-accent" : "border-hairline"
         }`}
@@ -3718,7 +3719,15 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 ) : (
                   <button
                     type="button"
-                    title={
+                    data-tip={
+                      thumbLoading
+                        ? "正在出图…"
+                        : thumbError
+                          ? `出图失败：${(linked?.data.errorMessage as string) ?? "可重试"}`
+                          : refImagesFor(r).length === 0
+                            ? "为这个镜头出图。注意：此镜未引用已出图的资产设定图，将纯文生图、一致性弱（可先拆解资产并出图，或行内 @资产名）"
+                            : "为这个镜头出图（出图卡自动摆到本卡右侧并连线）"
+                    } aria-label={
                       thumbLoading
                         ? "正在出图…"
                         : thumbError
@@ -3821,7 +3830,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       />
                       <button
                         type="button"
-                        title="清除自定义，恢复按本行字段自动合成"
+                        data-tip="清除自定义，恢复按本行字段自动合成" aria-label="清除自定义，恢复按本行字段自动合成"
                         className="nodrag mt-0.5 shrink-0 text-text-4 transition-colors hover:text-accent"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -3834,7 +3843,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                   ) : (
                     <button
                       type="button"
-                      title="自定义发给图像模型的提示词（默认按本行字段自动合成，一般不用手写）"
+                      data-tip="自定义发给图像模型的提示词（默认按本行字段自动合成，一般不用手写）" aria-label="自定义发给图像模型的提示词（默认按本行字段自动合成，一般不用手写）"
                       className="nodrag flex w-fit items-center gap-1 rounded border border-dashed border-hairline px-1.5 py-0.5 text-[10px] text-text-4 transition-colors hover:border-accent hover:text-text"
                       onClick={(e) => {
                         e.stopPropagation();
@@ -3849,7 +3858,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 <div className="flex shrink-0 items-start gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
                   <button
                     type="button"
-                    title={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"}
+                    data-tip={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"} aria-label={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"}
                     className="nodrag text-text-4 hover:text-accent"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -3858,18 +3867,18 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                   >
                     <RefreshCw className="h-3 w-3" />
                   </button>
-                  <button type="button" title="复制此行（排到下一行，不带出图）" className="nodrag text-text-4 hover:text-text" onClick={(e) => { e.stopPropagation(); copyRow(r.rid); }}>
+                  <button type="button" data-tip="复制此行（排到下一行，不带出图）" aria-label="复制此行（排到下一行，不带出图）" className="nodrag text-text-4 hover:text-text" onClick={(e) => { e.stopPropagation(); copyRow(r.rid); }}>
                     <Copy className="h-3 w-3" />
                   </button>
-                  <button type="button" title="上移" className="nodrag text-text-4 hover:text-text disabled:opacity-30" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, -1); }}>
+                  <button type="button" data-tip="上移" aria-label="上移" className="nodrag text-text-4 hover:text-text disabled:opacity-30" disabled={i === 0} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, -1); }}>
                     <ChevronUp className="h-3 w-3" />
                   </button>
-                  <button type="button" title="下移" className="nodrag text-text-4 hover:text-text disabled:opacity-30" disabled={i === rows.length - 1} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, 1); }}>
+                  <button type="button" data-tip="下移" aria-label="下移" className="nodrag text-text-4 hover:text-text disabled:opacity-30" disabled={i === rows.length - 1} onClick={(e) => { e.stopPropagation(); moveRow(r.rid, 1); }}>
                     <ChevronDown className="h-3 w-3" />
                   </button>
                   <button
                     type="button"
-                    title="删除此行"
+                    data-tip="删除此行" aria-label="删除此行"
                     className="nodrag text-text-4 hover:text-danger"
                     onClick={(e) => {
                       e.stopPropagation();
@@ -3944,7 +3953,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           <button
             type="button"
             disabled={decomposing || !scriptSource}
-            title="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡并出资产图（画风闸内自动链）。出分镜图前先给资产出设定图，一致性最好"
+            data-tip="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡并出资产图（画风闸内自动链）。出分镜图前先给资产出设定图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡并出资产图（画风闸内自动链）。出分镜图前先给资产出设定图，一致性最好"
             className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             onClick={(e) => {
               e.stopPropagation();
@@ -3957,7 +3966,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 disabled={fillingAssets}
-                title="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
+                data-tip="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）" aria-label="为画布上缺设定图的资产卡一键批量出图（按卡上设定正文，画风闸内）"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -3971,7 +3980,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           <button
             type="button"
             disabled={imgGenerating || selectedGenRows.length === 0}
-            title="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
+            data-tip="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认" aria-label="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
             className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             onClick={(e) => {
               e.stopPropagation();
@@ -3984,7 +3993,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             <button
               type="button"
               disabled={imgGenerating}
-              title={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`}
+              data-tip={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`} aria-label={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`}
               className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               onClick={(e) => {
                 e.stopPropagation();
@@ -3997,7 +4006,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           <button
             type="button"
             disabled={videoSources.length < 2}
-            title="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
+            data-tip="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）" aria-label="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
             className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             onClick={(e) => {
               e.stopPropagation();

@@ -52,7 +52,7 @@ function AssistantFab() {
     <button
       type="button"
       onClick={() => setOpen(true)}
-      title="打开画布助手"
+      data-tip="打开画布助手" aria-label="打开画布助手"
       className="fixed right-4 top-14 z-40 flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-white shadow-md transition-opacity hover:opacity-90"
     >
       <Sparkles className="h-3.5 w-3.5" />
@@ -98,7 +98,7 @@ function EmptyStateSuggestions({
         <button
           key={s.title}
           type="button"
-          title={s.message}
+          data-tip={s.message} aria-label={s.message}
           onClick={() => onSuggestionClick(s.message)}
           className="rounded-lg border border-hairline bg-surface-2 px-2.5 py-2 text-left text-xs leading-snug text-text-2 transition-colors hover:border-accent-soft hover:bg-surface-1 hover:text-text"
         >

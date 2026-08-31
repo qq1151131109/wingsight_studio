@@ -32,7 +32,7 @@ export default function ActivityBar() {
       </div>
       <button
         type="button"
-        title="返回项目首页（切换 / 新建项目）"
+        data-tip="返回项目首页（切换 / 新建项目）" aria-label="返回项目首页（切换 / 新建项目）"
         onClick={() => router.push("/")}
         className="mb-1 flex h-8 w-8 items-center justify-center rounded-lg text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
       >
@@ -43,7 +43,7 @@ export default function ActivityBar() {
           <button
             key={id}
             type="button"
-            title={enabled ? label : `${label}（规划中）`}
+            data-tip={enabled ? label : `${label}（规划中）`} aria-label={enabled ? label : `${label}（规划中）`}
             disabled={!enabled}
             className={`flex h-10 w-10 flex-col items-center justify-center gap-0.5 rounded-lg text-[10px] transition-colors ${
               enabled

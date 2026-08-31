@@ -137,7 +137,7 @@ export default function ChatSidebarHeader() {
       <div className="ml-auto flex items-center gap-0.5">
         <button
           type="button"
-          title="新会话"
+          data-tip="新会话" aria-label="新会话"
           onClick={startNew}
           className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
         >
@@ -145,7 +145,7 @@ export default function ChatSidebarHeader() {
         </button>
         <button
           type="button"
-          title="历史会话"
+          data-tip="历史会话" aria-label="历史会话"
           onClick={togglePanel}
           className={`rounded-md p-1.5 transition-colors hover:bg-surface-2 hover:text-text ${
             panelOpen ? "bg-surface-2 text-text" : "text-text-3"
@@ -155,7 +155,7 @@ export default function ChatSidebarHeader() {
         </button>
         <button
           type="button"
-          aria-label="Close"
+          aria-label="关闭" data-tip="关闭"
           onClick={() => setOpen(false)}
           className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
         >
@@ -171,7 +171,7 @@ export default function ChatSidebarHeader() {
             </p>
             <button
               type="button"
-              title="导出当前会话为 Markdown"
+              data-tip="导出当前会话为 Markdown" aria-label="导出当前会话为 Markdown"
               className="ml-auto rounded p-0.5 text-text-4 transition-colors hover:text-text"
               onClick={() => void exportCurrent()}
             >
@@ -227,7 +227,7 @@ export default function ChatSidebarHeader() {
                   </button>
                   <button
                     type="button"
-                    title="重命名"
+                    data-tip="重命名" aria-label="重命名"
                     className="shrink-0 rounded p-1 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100"
                     onClick={() => void rename(t)}
                   >
@@ -235,7 +235,7 @@ export default function ChatSidebarHeader() {
                   </button>
                   <button
                     type="button"
-                    title="删除"
+                    data-tip="删除" aria-label="删除"
                     className="shrink-0 rounded p-1 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
                     onClick={() => setDeleting(t)}
                   >

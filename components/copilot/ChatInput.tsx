@@ -429,7 +429,7 @@ export default function ChatInput({
                 key={r.id}
                 type="button"
                 // 点击 chip 定位画布节点；X 才是移除
-                title={`点击在画布定位「${r.data.title || "无题"}」`}
+                data-tip={`点击在画布定位「${r.data.title || "无题"}」`} aria-label={`点击在画布定位「${r.data.title || "无题"}」`}
                 onClick={() =>
                   window.dispatchEvent(
                     new CustomEvent(FOCUS_NODES_EVENT, {
@@ -488,7 +488,7 @@ export default function ChatInput({
                 </span>
                 <button
                   type="button"
-                  title="移除附件"
+                  data-tip="移除附件" aria-label="移除附件"
                   className="text-text-4 hover:text-danger"
                   onClick={() => removeAttachment(a.key)}
                 >
@@ -532,7 +532,7 @@ export default function ChatInput({
           <button
             type="button"
             className="copilotKitInputControlButton"
-            title="添加附件（图片 / 视频 / 文档）"
+            data-tip="添加附件（图片 / 视频 / 文档）" aria-label="添加附件（图片 / 视频 / 文档）"
             onClick={() => fileRef.current?.click()}
           >
             <Paperclip className="h-4 w-4" />
@@ -541,7 +541,7 @@ export default function ChatInput({
             <button
               type="button"
               className="copilotKitInputControlButton"
-              title="停止生成"
+              data-tip="停止生成" aria-label="停止生成"
               onClick={() => onStop?.()}
             >
               <Square className="h-3 w-3 fill-current motion-safe:animate-pulse" />
@@ -550,7 +550,7 @@ export default function ChatInput({
             <button
               type="button"
               className="copilotKitInputControlButton"
-              title={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"}
+              data-tip={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"} aria-label={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"}
               disabled={!canSend || uploading}
               onClick={() => void submit()}
             >
@@ -613,7 +613,11 @@ export default function ChatInput({
                 }`}
                 onClick={() => pickSkill(s)}
                 onMouseEnter={() => setHi(i)}
-                title={
+                data-tip={
+                  s.params.length > 0
+                    ? `参数：${s.params.map((p) => p.name).join("、")}`
+                    : undefined
+                } aria-label={
                   s.params.length > 0
                     ? `参数：${s.params.map((p) => p.name).join("、")}`
                     : undefined
