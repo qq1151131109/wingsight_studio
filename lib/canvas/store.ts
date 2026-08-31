@@ -96,6 +96,9 @@ export interface WingNodeData {
    *  项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
    *  分镜表卡可各自指定；生成本卡图片的入口全部读它 */
   gen?: { model: string; resolution: string };
+  /** 资产卡来源（character/scene/prop/costume）：拆解锚点卡 id（剧本卡/分镜表卡）。
+   *  「补资产图」按它圈定本卡资产；聊天/agent 直建的资产卡无此字段不纳入 */
+  assetSource?: string;
   /** 分镜表卡：镜头图幅面（w:h，缺省 16:9）。资产卡设定图不走它——
    *  幅面与布局契约（四格定妆照/道具平铺）绑定，不开放 */
   aspect?: string;
@@ -189,6 +192,8 @@ interface CanvasState {
   /** 多选对齐（按选择包围盒的左/中/右/顶/中/底）与等距分布 */
   alignNodes: (ids: string[], mode: AlignMode) => void;
   distributeNodes: (ids: string[], axis: "h" | "v") => void;
+  /** 宫格整理：ids 缺省=全部顶层未锁定卡，阅读顺序行式流入重排（对标 open-ai-canvas 自动整理） */
+  tidyNodes: (ids?: string[]) => void;
   /** 原地复制一份选中节点（Cmd+D） */
   duplicateSelection: () => string[];
   /** 打组：把 ids 收进新建分组框（parentId+extent，坐标转相对），返回组 id */
@@ -962,6 +967,50 @@ export const useCanvasStore = create<CanvasState>()(
             }
             const center = leadC + step * i;
             return { ...n, position: { x: n.position.x, y: center - b.h / 2 - b.dy } };
+          }),
+        }));
+      },
+
+      tidyNodes: (ids) => {
+        const state = get();
+        // 只动顶层未锁定卡：组内子卡跟随父组（相对坐标），锁定卡是用户钉死的位置
+        const movable = state.nodes.filter(
+          (n) => !n.parentId && !n.data.locked && (!ids || ids.includes(n.id)),
+        );
+        if (movable.length === 0) return;
+        const boxes = selectionBoxes(state.nodes, movable.map((n) => n.id));
+        // 阅读顺序（先上后左）决定流入次序，尽量保留用户已有的排布心智
+        const sorted = [...boxes].sort(
+          (a, b) =>
+            a.y + a.h / 2 - (b.y + b.h / 2) || a.x + a.w / 2 - (b.x + b.w / 2),
+        );
+        const originX = Math.min(...sorted.map((b) => b.x));
+        const originY = Math.min(...sorted.map((b) => b.y));
+        // 行式流入：超出行宽换行，行高取行内最高卡；落点吸附 16px 网格
+        const GAP = 24;
+        const WRAP_W = 1280;
+        const snap16 = (v: number) => Math.round(v / 16) * 16;
+        const placed = new Map<string, { x: number; y: number }>();
+        let cursorX = originX;
+        let cursorY = originY;
+        let rowH = 0;
+        for (const b of sorted) {
+          if (cursorX > originX && cursorX + b.w > originX + WRAP_W) {
+            cursorX = originX;
+            cursorY += rowH + GAP;
+            rowH = 0;
+          }
+          placed.set(b.id, { x: snap16(cursorX), y: snap16(cursorY) });
+          cursorX += b.w + GAP;
+          rowH = Math.max(rowH, b.h);
+        }
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) => {
+            const p = placed.get(n.id);
+            if (!p) return n;
+            const b = boxes.find((x) => x.id === n.id)!;
+            return { ...n, position: { x: p.x - b.dx, y: p.y - b.dy } };
           }),
         }));
       },

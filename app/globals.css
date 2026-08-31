@@ -386,6 +386,13 @@ body {
 @keyframes ws-edge-flow {
     to { stroke-dashoffset: -16; }
 }
+
+/* 画布设置「显示连线」关闭（CanvasView 挂 ws-edges-hidden 类 / ⇧E 切换）：
+   仅视觉隐藏，边数据与交互不受影响——不往 edges 对象塞 hidden 字段，
+   避免把 UI 偏好污染进服务端持久化的画布 JSON */
+.ws-edges-hidden .react-flow__edge {
+    display: none;
+}
 .react-flow__edge-text {
     fill: var(--color-text-3);
     font-size: 0.65rem;

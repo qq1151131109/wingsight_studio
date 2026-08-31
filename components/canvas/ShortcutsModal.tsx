@@ -27,6 +27,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { keys: ["Esc"], title: "清空选区 / 关闭弹层", group: "画布" },
   { keys: ["↑↓←→"], title: "微调选中卡 1px", group: "画布" },
   { keys: ["⇧+方向键"], title: "按网格 16px 微调", group: "画布" },
+  { keys: ["⇧E"], title: "显示 / 隐藏画布连线", group: "画布" },
   { keys: ["?"], title: "快捷键速查表", group: "画布" },
   { keys: ["左拖空白"], title: "框选", group: "画布" },
   { keys: ["中键拖 / Space+拖"], title: "平移画布", group: "画布" },

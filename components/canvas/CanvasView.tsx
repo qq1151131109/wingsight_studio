@@ -2,8 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Background,
-  BackgroundVariant,
   MiniMap,
   ReactFlow,
   SelectionMode,
@@ -14,6 +12,7 @@ import {
   type NodeMouseHandler,
   type OnBeforeDelete,
   type OnConnectEnd,
+  type OnMove,
   type OnMoveEnd,
   type OnNodeDrag,
   type OnReconnect,
@@ -56,6 +55,7 @@ import {
 } from "@/lib/canvas/events";
 import { useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
+import { useCanvasPref } from "@/lib/canvas/prefs";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import { nodeTypes, NodeInfoModal } from "./nodes";
 import DeletableEdge from "./edges";
@@ -69,6 +69,7 @@ import OverlayModal from "./OverlayModal";
 import ServiceBanner from "./ServiceBanner";
 import OutlinePanel from "./OutlinePanel";
 import DirectorPanel from "./DirectorPanel";
+import CanvasSettings from "./CanvasSettings";
 
 /** 离线指示：断网时顶部常驻小条（保存走 saveState "offline" 文案，这里补全局感知） */
 function OfflineIndicator() {
@@ -1080,6 +1081,7 @@ function SelectionToolbar() {
           ) : null}
         </div>
         <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
+        <SelBtn onClick={() => useCanvasStore.getState().tidyNodes(ids)}>整理</SelBtn>
         <SelBtn danger onClick={() => useCanvasStore.getState().deleteNodes(ids)}>
           删除
         </SelBtn>
@@ -1134,6 +1136,11 @@ export default function CanvasView() {
   const canUndo = useCanvasStore((s) => s.canUndoNow);
   const canRedo = useCanvasStore((s) => s.canRedoNow);
 
+  // 画布视图偏好（localStorage，设备本地）：小地图 / 网格吸附 / 连线显隐
+  const [minimapVisible] = useCanvasPref("minimap");
+  const [snapEnabled] = useCanvasPref("snap");
+  const [edgesVisible] = useCanvasPref("edges");
+
   // 视口双向同步：agent 的 set_viewport / 项目装载 → 画布动画跟随；
   // 用户平移缩放 → 回写 store（供持久化与 agent 感知）。
   // ref 按值比较防回环：程序化 setViewport 结束也会触发 onMoveEnd。
@@ -1158,6 +1165,29 @@ export default function CanvasView() {
     lastSyncedVp.current = vp;
     useCanvasStore.getState().setViewport(vp);
   }, []);
+
+  // 背景点阵（对标 open-ai-canvas 的 LOD 网格）：xyflow <Background> 画在画布
+  // 坐标系，缩小时间距被压缩成屏幕级摩尔纹（点糊成十字，用户反馈"又密又丑"）。
+  // 改为屏幕坐标自绘：点距 = max(32×zoom, 32)px 触底不压缩（32 = 2×吸附格），
+  // 点半径恒定屏幕像素、深缩换小档；backgroundPosition 取 viewport 余数——
+  // 点阵随平移移动（锚定画布空间）但尺寸密度恒定。逐帧写 style 不经 React。
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const paintGrid = useCallback((vp: Viewport) => {
+    const el = gridRef.current;
+    if (!el) return;
+    const gap = Math.max(32 * vp.zoom, 32);
+    const dot = vp.zoom < 0.12 ? 0.6 : 0.8;
+    el.style.backgroundSize = `${gap}px ${gap}px`;
+    el.style.backgroundPosition = `${((vp.x % gap) + gap) % gap}px ${
+      ((vp.y % gap) + gap) % gap
+    }px`;
+    el.style.backgroundImage = `radial-gradient(circle, var(--color-hairline-strong) ${dot}px, transparent ${dot + 0.4}px)`;
+  }, []);
+  // 程序化视口（项目装载 / agent set_viewport）的动画帧也走 onMove，挂载首帧在此补
+  useEffect(() => {
+    paintGrid(viewport);
+  }, [paintGrid, viewport]);
+  const onMove = useCallback<OnMove>((_event, vp) => paintGrid(vp), [paintGrid]);
 
   // fitView prop 在 12.11 不是"只看挂载一次"：StoreUpdater 监听它，prop 值
   // 一旦翻转就 fitViewQueued=true 重新执行 fit——空画布建第一张卡时 false→true
@@ -1633,6 +1663,8 @@ export default function CanvasView() {
       onDragEnter={onWrapperDragEnter}
       onDragLeave={onWrapperDragLeave}
     >
+      {/* 背景点阵垫底：ReactFlow 透明底，此层透出 */}
+      <div ref={gridRef} className="pointer-events-none absolute inset-0" />
       {dropHover ? (
         <div className="ws-dropzone">
           <div className="rounded-lg bg-surface-1 px-4 py-2 text-xs font-medium text-text shadow-lg">
@@ -1670,6 +1702,7 @@ export default function CanvasView() {
         }}
         onReconnect={onReconnect}
         edgesReconnectable
+        onMove={onMove}
         onMoveEnd={onMoveEnd}
         onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
@@ -1711,35 +1744,32 @@ export default function CanvasView() {
         zoomOnScroll={wheelMode === "mouse"}
         panOnScroll={wheelMode === "trackpad"}
         zoomOnDoubleClick={false}
-        snapToGrid
+        snapToGrid={snapEnabled}
         snapGrid={[16, 16]}
         onlyRenderVisibleElements
-        className="bg-transparent"
+        className={`bg-transparent${edgesVisible ? "" : " ws-edges-hidden"}`}
       >
-        <Background
-          variant={BackgroundVariant.Dots}
-          gap={22}
-          size={1.4}
-          color="var(--color-hairline)"
-        />
-        <MiniMap
-          position="bottom-right"
-          pannable
-          zoomable
-          // 纸感主题：默认白底在米黄画布上是突兀的白块
-          bgColor="var(--color-surface-2)"
-          maskColor="color-mix(in oklab, var(--color-surface-1) 72%, transparent)"
-          style={{
-            borderRadius: 10,
-            border: "1px solid var(--color-hairline)",
-            boxShadow: "0 1px 3px oklch(0 0 0 / 0.06)",
-          }}
-          nodeColor={(n) => NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.dot ?? "var(--color-warm)"}
-          nodeStrokeColor="var(--color-hairline)"
-        />
+        {minimapVisible ? (
+          <MiniMap
+            position="bottom-right"
+            pannable
+            zoomable
+            // 纸感主题：默认白底在米黄画布上是突兀的白块
+            bgColor="var(--color-surface-2)"
+            maskColor="color-mix(in oklab, var(--color-surface-1) 72%, transparent)"
+            style={{
+              borderRadius: 10,
+              border: "1px solid var(--color-hairline)",
+              boxShadow: "0 1px 3px oklch(0 0 0 / 0.06)",
+            }}
+            nodeColor={(n) => NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.dot ?? "var(--color-warm)"}
+            nodeStrokeColor="var(--color-hairline)"
+          />
+        ) : null}
         <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
           <AddNodeToolbar />
           <NodeSearch />
+          <CanvasSettings />
         </div>
         <BottomDock
           onOpenAssets={() => {

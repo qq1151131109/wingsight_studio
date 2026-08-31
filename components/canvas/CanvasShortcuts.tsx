@@ -6,6 +6,7 @@
  *  - Cmd/Ctrl+C 复制、X 剪切、V 粘贴、D 原地复制、A 全选
  *  - 方向键微调选中卡（1px，Shift 按网格 16px）；Esc 清空选区
  *  - Cmd/Ctrl+0 复位缩放、± 缩放
+ *  - Shift+E 显示/隐藏画布连线（视图偏好，见 lib/canvas/prefs.ts）
  *  - 系统剪贴板粘贴图片 → 上传 agent → 建 image 卡
  * 输入框/文本编辑中不拦截。
  */
@@ -14,6 +15,7 @@ import { useEffect } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { selectAllNodes, useCanvasStore } from "@/lib/canvas/store";
 import { dispatchFocusEdit } from "@/lib/canvas/events";
+import { getCanvasPref, setCanvasPref } from "@/lib/canvas/prefs";
 import { uploadAsset } from "@/lib/projects";
 
 function isTyping(e: KeyboardEvent): boolean {
@@ -67,6 +69,9 @@ export default function CanvasShortcuts() {
         if (e.key === "0") void zoomTo(1, { duration: 250 });
         else if (e.key === "-") void zoomOut({ duration: 150 });
         else void zoomIn({ duration: 150 });
+      } else if (e.shiftKey && !mod && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setCanvasPref("edges", !getCanvasPref("edges"));
       } else if (e.key.startsWith("Arrow")) {
         const sel = store.nodes.filter((n) => n.selected);
         if (sel.length === 0) return;
