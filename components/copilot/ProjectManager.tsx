@@ -9,7 +9,7 @@
  *  - localStorage 仅作每项目缓存（键含 projectId），服务端是唯一事实源
  */
 
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
@@ -79,34 +79,8 @@ export default function ProjectManager() {
     return () => {
       cancelled = true;
     };
-    // 仅初始激活一次；项目内切换走 switch-project 事件
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  // ---------- 项目切换（ActivityBar 快捷切换器） ----------
-  const switchProject = useCallback(async (pid: string) => {
-    const store = useCanvasStore.getState();
-    // 先落盘当前项目
-    if (store.projectId && store.hydrated) {
-      await saveCanvas(store.projectId, {
-        nodes: store.nodes,
-        edges: store.edges,
-        viewport: store.viewport,
-        meta: { visualStyle: store.projectStyle },
-        revision: store.rev > 0 ? store.rev : undefined,
-      }).catch(() => undefined);
-    }
-    await activateProject({ id: pid, name: "", updated_at: "" });
-  }, []);
-
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const pid = (e as CustomEvent<{ pid: string }>).detail?.pid;
-      if (pid) void switchProject(pid);
-    };
-    window.addEventListener("wingsight:switch-project", handler);
-    return () => window.removeEventListener("wingsight:switch-project", handler);
-  }, [switchProject]);
 
   // ---------- 画布变化 → debounce 同步 ----------
   const nodes = useCanvasStore((s) => s.nodes);

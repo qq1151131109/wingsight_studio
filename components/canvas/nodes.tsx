@@ -76,6 +76,7 @@ import {
 } from "@/lib/canvas/events";
 import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
 import { createPortal } from "react-dom";
+import OverlayModal from "./OverlayModal";
 import { composeVideos, uploadAsset } from "@/lib/projects";
 import {
   decomposeAssets,
@@ -1459,7 +1460,7 @@ function Lightbox({
 
   const cur = images[index];
   return (
-    <div
+    <OverlayModal
       ref={containerRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
       onMouseMove={(e) => {
@@ -1558,7 +1559,7 @@ function Lightbox({
       >
         <X className="h-5 w-5" />
       </button>
-    </div>
+    </OverlayModal>
   );
 }
 
@@ -1922,7 +1923,7 @@ function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div
+    <OverlayModal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
       onClick={onClose}
     >
@@ -1941,7 +1942,7 @@ function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
       >
         <X className="h-5 w-5" />
       </button>
-    </div>
+    </OverlayModal>
   );
 }
 

@@ -63,6 +63,7 @@ import NodeInputPanel from "./NodeInputPanel";
 import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import ShortcutsModal from "./ShortcutsModal";
+import OverlayModal from "./OverlayModal";
 import ServiceBanner from "./ServiceBanner";
 import OutlinePanel from "./OutlinePanel";
 import DirectorPanel from "./DirectorPanel";
@@ -540,6 +541,18 @@ function BottomDock({
   const [resolving, setResolving] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
 
+  // 弹窗开着时 Esc 关闭（弹窗经 portal 挂 body，画布的全局 Esc 管不到这里）
+  useEffect(() => {
+    if (!stylePanel && !conflictPanel) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      setStylePanel(false);
+      setConflictPanel(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stylePanel, conflictPanel]);
+
   /** 保存冲突两种解法：载入服务器版本（丢弃本地未保存改动）/ 强制覆盖 */
   const resolveConflict = async (mode: "reload" | "force") => {
     const st = useCanvasStore.getState();
@@ -691,7 +704,7 @@ function BottomDock({
       ) : null}
       </div>
       {conflictPanel ? (
-        <div
+        <OverlayModal
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
           onClick={() => setConflictPanel(false)}
         >
@@ -722,10 +735,10 @@ function BottomDock({
               </button>
             </div>
           </div>
-        </div>
+        </OverlayModal>
       ) : null}
       {stylePanel ? (
-        <div
+        <OverlayModal
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
           onClick={() => setStylePanel(false)}
         >
@@ -779,7 +792,7 @@ function BottomDock({
               </button>
             </div>
           </div>
-        </div>
+        </OverlayModal>
       ) : null}
     </>
   );

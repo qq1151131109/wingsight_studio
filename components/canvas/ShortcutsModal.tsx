@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Keyboard, Search, X } from "lucide-react";
+import OverlayModal from "./OverlayModal";
 
 interface ShortcutItem {
   keys: string[];
@@ -83,7 +84,7 @@ export default function ShortcutsModal() {
 
   if (!open) return null;
   return (
-    <div
+    <OverlayModal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
       onClick={() => setOpen(false)}
     >
@@ -158,6 +159,6 @@ export default function ShortcutsModal() {
           ) : null}
         </div>
       </div>
-    </div>
+    </OverlayModal>
   );
 }

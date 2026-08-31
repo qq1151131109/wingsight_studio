@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Drama,
-  FolderPlus,
   House,
   LayoutGrid,
   LogOut,
@@ -11,8 +10,6 @@ import {
   Settings,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCanvasStore } from "@/lib/canvas/store";
-import { createProject, listProjects, type ProjectMeta } from "@/lib/projects";
 import { clearToken, getToken } from "@/lib/auth";
 
 const ITEMS = [
@@ -22,52 +19,13 @@ const ITEMS = [
   { id: "settings", label: "设置", icon: Settings, enabled: false },
 ] as const;
 
+/** 左侧活动栏：只放画布工作台的上下文工具。
+ *  项目级操作（切换 / 新建）统一收在项目首页——这里是唯一回口，
+ *  画布内不放重复入口（对标 novanova / open-ai-canvas 的返回箭头）。 */
 export default function ActivityBar() {
   const router = useRouter();
-  const projectId = useCanvasStore((s) => s.projectId);
-  const projectName = useCanvasStore((s) => s.projectName);
-  const [projects, setProjects] = useState<ProjectMeta[]>([]);
   // 登录/登出都是整页跳转，token 在本页生命周期内不变；AuthGate 保证仅在客户端挂载
   const [hasToken] = useState(() => Boolean(getToken()));
-
-  const refreshProjects = useCallback(async () => {
-    try {
-      setProjects(await listProjects());
-    } catch {
-      /* 服务不可达时保持现有列表 */
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!projectId) return;
-    let alive = true;
-    listProjects()
-      .then((ps) => {
-        if (alive) setProjects(ps);
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [projectId]);
-
-  const switchTo = (pid: string) => {
-    window.dispatchEvent(
-      new CustomEvent("wingsight:switch-project", { detail: { pid } }),
-    );
-  };
-
-  const newProject = async () => {
-    const name = window.prompt("项目名称", "新项目");
-    if (!name?.trim()) return;
-    try {
-      const created = await createProject(name.trim());
-      await refreshProjects();
-      switchTo(created.id);
-    } catch {
-      /* 服务不可达 */
-    }
-  };
 
   return (
     <aside className="flex w-14 shrink-0 flex-col items-center border-r border-hairline bg-surface-1/60 py-3 backdrop-blur">
@@ -77,38 +35,14 @@ export default function ActivityBar() {
       >
         翼
       </div>
-      {/* 首页 + 项目切换器 */}
       <button
         type="button"
-        title="项目首页"
+        title="返回项目首页（切换 / 新建项目）"
         onClick={() => router.push("/")}
         className="mb-1 flex h-8 w-8 items-center justify-center rounded-lg text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
       >
         <House className="h-4 w-4" />
       </button>
-      <div className="mb-3 flex w-12 flex-col items-center gap-1">
-        <select
-          title={projectName || "切换项目"}
-          value={projectId ?? ""}
-          onChange={(e) => e.target.value && switchTo(e.target.value)}
-          className="w-12 cursor-pointer truncate rounded-md border border-hairline bg-surface-2 px-1 py-0.5 text-[10px] text-text-2 outline-none hover:border-hairline-strong"
-        >
-          {projects.length === 0 && <option value="">{projectName || "…"}</option>}
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          title="新建项目"
-          onClick={() => void newProject()}
-          className="flex h-6 w-8 items-center justify-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-        >
-          <FolderPlus className="h-3.5 w-3.5" />
-        </button>
-      </div>
       <nav className="flex flex-1 flex-col items-center gap-1">
         {ITEMS.map(({ id, label, icon: Icon, enabled }) => (
           <button
@@ -133,6 +67,8 @@ export default function ActivityBar() {
           title="退出登录"
           onClick={() => {
             clearToken();
+            // 故意整页跳转：登出必须清掉全部内存态（store/缓存），router.push 不卸载模块
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination
             window.location.href = "/login";
           }}
           className="flex h-9 w-9 items-center justify-center rounded-lg text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
