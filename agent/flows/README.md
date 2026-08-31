@@ -12,7 +12,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `asset-decompose-scene.json` | 场景拆解 | 剧本 → 场景 JSON（含大纲推断主要发生地） | `LANGFLOW_DECOMPOSE_SCENE_FLOW_ID` | 同上 |
 | `asset-decompose-prop.json` | 道具拆解 | 剧本 → 道具 JSON | `LANGFLOW_DECOMPOSE_PROP_FLOW_ID` | 同上 |
 | `asset-decompose-costume.json` | 服饰拆解 | 剧本 → 服饰 JSON（核心服装/造型套装，支撑造型一致性） | `LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID` | 同上 |
-| `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 豆包出图；`reference_images` 一致性锚点图会下载作参考 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload） |
+| `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 出图；`reference_images` 一致性锚点图会下载作参考。模型分流在组件内：seedream 5.x 前缀走 `/v1/responses` 多图融合（`generate_image_responses`，2~10 参考图合成一张），其余走 OpenAI images 接口 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload / model_name / resolution） |
 | `prompt-optimize.json` | 提示词优化 | 出图提示词 AI 辅助（面板 ✦ 双态）：优化扩写（deepseek-v4-flash）/ 看图反推（gemini-2.5-flash 视觉；deepseek 经 DMX 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
 | `promo-copy.json` | 宣发文案生成 | 飞书宣发资料 → 三路大模型并行 → 合并文案 | `LANGFLOW_SKILLS_JSON`（技能注册内含 flowId） | `PromptTemplate-Writer`（title/count/platform/batch_kind/brief/form） |
 | `shotlist-generate.json` | 分镜表生成 | 剧本 → 分镜 rows（景别/运镜/时长/画面/台词） | `LANGFLOW_SHOTLIST_FLOW_ID` | 无（参数走 input_value 文本头注入） |
@@ -30,6 +30,11 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `POST /storyboard/generate` + `GET /storyboard/generate/{jobId}` | 分镜表生成 | 剧本(+镜头数/时长/视觉风格/资产名单) → rows。**异步任务**：POST 返回 jobId，前端轮询 |
 | `POST /assets/decompose` + `GET /assets/decompose/{jobId}` | 三路拆解（或合并版） | 剧本(+已有资产名单) → 类型化资产清单。**异步任务**：三路 flow 并发也常超 30s，阻塞等完必 500 |
 | `POST /storyboard/images` + `GET /storyboard/images/{jobId}` | 单资产出图 | 分镜行批量出图：起任务立即返回 jobId，前端轮询（每张完成即写回任务状态）。**必须异步**——Next 同源代理约 30s 掐断长请求，阻塞等完必 500 |
+
+出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?}`
+（项目级出图设置，目录与校验见 `agent/models.py`，`GET /models/image` 下发），
+非法组合 400 明报；合法则经 tweaks 注入 `BatchAssetSheet-img02` 的
+`model_name` / `resolution`，缺省走 flow 默认（gpt-image-2-03 · 1K）。
 
 ## 导出（langflow → 本目录）
 

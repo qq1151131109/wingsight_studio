@@ -28,6 +28,7 @@ import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
 import graph  # noqa: E402
+import models  # noqa: E402
 import projects  # noqa: E402
 import skills  # noqa: E402
 
@@ -382,12 +383,21 @@ async def api_prompt_optimize_status(job_id: str, user: auth.CurrentUser):
     return {"status": job["status"], "result": job.get("result"), "error": job.get("error")}
 
 
+@app.get("/models/image")
+async def api_image_models(user: auth.CurrentUser):
+    """图像模型目录（实探验证清单，见 agent/models.py）。前端出图设置渲染。"""
+    return {"models": models.image_models_payload()}
+
+
 @app.post("/storyboard/images")
 async def api_storyboard_images(req: dict, user: auth.CurrentUser):
     """分镜行批量出图：启动异步任务立即返回 jobId（Next 代理 30s 会掐断
     长请求，无法阻塞等完）。前端轮询 GET /storyboard/images/{jobId}。
 
-    req: {shots: [{rid, name, description, visual_notes?}]}
+    req: {shots: [{rid, name, description, visual_notes?, aspect?,
+                   params?: {model?, resolution?}}],
+          params?: {model?, resolution?}}
+    镜头级 params 覆盖请求级（卡片级覆盖），逐镜头合并预校验。
     """
     shots = req.get("shots") or []
     if not isinstance(shots, list) or not shots:
@@ -399,9 +409,16 @@ async def api_storyboard_images(req: dict, user: auth.CurrentUser):
             media_type="text/plain",
         )
     try:
-        job_id = await skills.start_storyboard_image_job(shots)
+        params = models.resolve_imagegen_params(req.get("params"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
+        job_id = await skills.start_storyboard_image_job(shots, params=params)
     except RuntimeError as exc:
         return Response(status_code=503, content=str(exc), media_type="text/plain")
+    except ValueError as exc:
+        # 逐镜头参数合并预校验失败（模型/档位组合不合法），整批明报
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
     return {"jobId": job_id}
 
 
@@ -431,8 +448,16 @@ async def api_assets_decompose(req: dict, user: auth.CurrentUser):
     auto_looks = bool(req.get("auto_looks"))
     visual_style = str(req.get("visual_style") or "")
     try:
+        params = models.resolve_imagegen_params(req.get("params"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
         job_id = await skills.start_decompose_job(
-            script, existing=existing, auto_looks=auto_looks, visual_style=visual_style
+            script,
+            existing=existing,
+            auto_looks=auto_looks,
+            visual_style=visual_style,
+            params=params,
         )
     except RuntimeError as exc:
         return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")

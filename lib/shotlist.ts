@@ -2,6 +2,7 @@
  *  链路：前端 → 同源代理 /agent-service → agent /storyboard/generate
  *  → langflow「分镜表生成」flow（agent/flows/shotlist-generate.json）。 */
 import { apiFetch } from "@/lib/auth";
+import { useCanvasStore } from "@/lib/canvas/store";
 import type { ShotRow } from "@/lib/canvas/store";
 
 export async function generateShotlist(
@@ -94,6 +95,10 @@ export async function decomposeAssets(
       existing,
       auto_looks: opts?.autoLooks ?? false,
       visual_style: opts?.visualStyle ?? "",
+      // 全自动出图链沿用项目级出图设置（同 startShotImageJob）
+      ...(opts?.autoLooks
+        ? { params: useCanvasStore.getState().imagegen }
+        : {}),
     }),
   });
   if (!start.ok) {
@@ -135,7 +140,9 @@ export async function decomposeAssets(
 /** 分镜行批量出图请求（直连 imagegen flow，不经聊天）。
  *  description 传最终提示词或按行字段合成；visualNotes 并入一致性参考描述；
  *  referenceImages 传角色定妆照 URL（一致性锚点，flow 下载作参考图）；
- *  assetType 决定出图幅面与布局契约（角色 16:9 四格 / 道具 4:3，缺省 scene）。 */
+ *  assetType 决定布局契约（角色 16:9 四格 / 道具 4:3，缺省 scene），
+ *  aspect 覆写幅面（分镜图 9:16/21:9 等，资产设定图不传）；
+ *  params 为镜头级模型/档位覆盖（卡片级 data.gen，赢过请求级 params） */
 export type ShotImageRequest = {
   rid: string;
   name: string;
@@ -143,6 +150,8 @@ export type ShotImageRequest = {
   visualNotes?: string;
   assetType?: "character" | "scene" | "prop";
   referenceImages?: string[];
+  aspect?: string;
+  params?: { model: string; resolution: string };
 };
 
 export type ShotImageResult = {
@@ -191,14 +200,20 @@ export async function pollShotImageJob(
   }
 }
 
-/** 启动批量出图任务：Next 同源代理 30s 掐断长请求，必须异步任务 + 轮询 */
+/** 启动批量出图任务：Next 同源代理 30s 掐断长请求，必须异步任务 + 轮询。
+ *  params 缺省取项目级出图设置（store.imagegen，底部坞「出图」），
+ *  服务端按模型目录校验，非法组合 400 明报 */
 export async function startShotImageJob(
   shots: ShotImageRequest[],
+  params?: { model: string; resolution: string },
 ): Promise<string> {
   const r = await apiFetch("/agent-service/storyboard/images", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ shots }),
+    body: JSON.stringify({
+      shots,
+      params: params ?? useCanvasStore.getState().imagegen,
+    }),
   });
   if (!r.ok) {
     const detail = (await r.text()).slice(0, 160);

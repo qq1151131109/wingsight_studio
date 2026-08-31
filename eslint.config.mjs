@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // 克隆的对标参考项目（第三方代码，不参与 lint/tsc）
     "references/**",
+    // langflow 引擎源码（subtree 并入的自有 fork，不参与前端 lint/tsc）
+    "langflow/**",
   ]),
 ]);
 

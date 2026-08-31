@@ -66,6 +66,7 @@ import {
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { isLookCard, resolveRowRefIds } from "@/lib/canvas/shotRefs";
+import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
 import {
   dispatchFocusEdit,
   FOCUS_EDIT_EVENT,
@@ -2740,20 +2741,166 @@ async function runAssetDecompose(opts: {
   }
 }
 
-/** 批量出图单张结果回填：rid → 行的 imageNodeId 节点置 ready/error。
- *  行数据读 live store（批量轮询与刷新恢复共用，防闭包过期） */
+/** 分镜表卡出图设置（ShotGenSettings 写入的数据，随卡持久化）：画幅 w:h、
+ *  每镜候选张数、模型覆盖。批量出图/补缺图从这里取参 */
+const ASPECT_OPTIONS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"];
+
+/** 分镜卡出图设置 chip：{画幅}·{N张}，点开 popover 改画幅/候选/模型
+ *  （模型缺省跟随项目级 store.imagegen，可本卡覆盖 data.gen）。
+ *  资产设定图不开放画幅——幅面与四格/平铺布局契约绑定 */
+function ShotGenSettings({ nodeId }: { nodeId: string }) {
+  const data = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId)?.data);
+  const project = useCanvasStore((s) => s.imagegen);
+  const { models } = useImageModels();
+  const [open, setOpen] = useState(false);
+  const aspect = String(data?.aspect ?? "").trim() || "16:9";
+  const genCount = Math.max(1, Math.min(4, Number(data?.genCount) || 1));
+  const cardGen = saneGen(data?.gen);
+  const effective = cardGen ?? project;
+  const option = findModelOption(effective.model, models);
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+  const pickModel = (modelId: string) => {
+    const opt = findModelOption(modelId, models);
+    useCanvasStore.getState().updateNodeData(nodeId, {
+      gen: {
+        model: modelId,
+        resolution: opt?.resolutions.includes(effective.resolution)
+          ? effective.resolution
+          : (opt?.default_resolution ?? effective.resolution),
+      },
+    });
+  };
+
+  return (
+    <span className="relative">
+      <button
+        type="button"
+        title={`本卡出图设置：画幅 ${aspect} · 每镜候选 ${genCount} 张 · 模型 ${
+          cardGen ? (option?.label ?? effective.model) : `跟随项目（${option?.label ?? effective.model}）`
+        }`}
+        className={`nodrag shrink-0 rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
+          cardGen ? "border-accent" : "border-hairline"
+        }`}
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((v) => !v);
+        }}
+      >
+        {aspect} · {genCount}张
+      </button>
+      {open ? (
+        <span
+          className="absolute bottom-full right-0 z-30 mb-1.5 block w-64 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <span className="block text-[10px] font-medium text-text-4">画幅（分镜图）</span>
+          <span className="mt-1 flex flex-wrap gap-1">
+            {ASPECT_OPTIONS.map((a) => (
+              <button
+                key={a}
+                type="button"
+                className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                  aspect === a
+                    ? "border-accent bg-accent-dim text-text"
+                    : "border-hairline text-text-3 hover:text-text"
+                }`}
+                onClick={() => useCanvasStore.getState().updateNodeData(nodeId, { aspect: a })}
+              >
+                {a}
+              </button>
+            ))}
+          </span>
+          <span className="mt-2 block text-[10px] font-medium text-text-4">每镜候选张数</span>
+          <span className="mt-1 flex gap-1">
+            {[1, 2, 4].map((n) => (
+              <button
+                key={n}
+                type="button"
+                className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                  genCount === n
+                    ? "border-accent bg-accent-dim text-text"
+                    : "border-hairline text-text-3 hover:text-text"
+                }`}
+                onClick={() =>
+                  useCanvasStore.getState().updateNodeData(nodeId, { genCount: n })
+                }
+              >
+                {n} 张
+              </button>
+            ))}
+          </span>
+          <span className="mt-2 block border-t border-hairline pt-1.5 text-[10px] font-medium text-text-4">
+            出图模型
+            {cardGen ? (
+              <button
+                type="button"
+                className="ml-2 text-accent hover:underline"
+                onClick={() =>
+                  useCanvasStore.getState().updateNodeData(nodeId, { gen: undefined })
+                }
+              >
+                回退跟随项目
+              </button>
+            ) : null}
+          </span>
+          <span className="mt-1 block max-h-32 space-y-0.5 overflow-y-auto">
+            {models === null ? (
+              <span className="block text-[10px] text-text-4">加载模型目录…</span>
+            ) : (
+              models.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
+                    m.id === effective.model ? "bg-accent-dim" : "hover:bg-surface-2"
+                  }`}
+                  onClick={() => pickModel(m.id)}
+                >
+                  <span className="block text-[11px] text-text">{m.label}</span>
+                  <span className="block text-[9px] text-text-4">{m.tag}</span>
+                </button>
+              ))
+            )}
+          </span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/** 批量出图单张结果回填：rid → 行的 imageNodeId 节点置 ready/error。 *  行数据读 live store（批量轮询与刷新恢复共用，防闭包过期）。
+ *  候选变体（rid 带 #k 后缀，一镜多张）：成功图并入该行图卡的 imageUrls
+ *  变体（主图取首张）；全部失败才置败——恢复轮询路径没有总量信息，
+ *  按「来一张并一张」尽力聚合，与主动出图路径的精确聚合互不冲突 */
 function applyShotImageItem(cardId: string, item: ShotImageResult) {
   const st = useCanvasStore.getState();
   const card = st.nodes.find((n) => n.id === cardId);
   const rows = (card?.data.rows as ShotRow[] | undefined) ?? [];
-  const targetId = rows.find((r) => r.rid === item.rid)?.imageNodeId;
+  const rowRid = item.rid.split("#")[0];
+  const row = rows.find((r) => r.rid === rowRid);
+  const targetId = row?.imageNodeId;
   if (!targetId || !st.nodes.some((n) => n.id === targetId)) return;
-  st.updateNodeData(
-    targetId,
-    item.ok && item.imageUrl
-      ? { imageUrl: item.imageUrl, status: "ready" }
-      : { status: "error", errorMessage: item.error || "出图失败" },
-  );
+  if (!(item.ok && item.imageUrl)) {
+    st.updateNodeData(targetId, { status: "error", errorMessage: item.error || "出图失败" });
+    return;
+  }
+  const url = item.imageUrl;
+  const node = st.nodes.find((n) => n.id === targetId);
+  const prevUrls = node?.data.imageUrls ?? [];
+  const merged = prevUrls.includes(url) ? prevUrls : [...prevUrls, url];
+  st.updateNodeData(targetId, {
+    status: "ready",
+    imageUrl: node?.data.imageUrl || url,
+    primaryIndex: node?.data.primaryIndex ?? 0,
+    ...(merged.length > 1 ? { imageUrls: merged } : {}),
+  });
 }
 
 /** agent 重启丢任务：把本卡所有停在 loading 的图卡置败（不静默悬挂）并清旗标 */
@@ -2838,6 +2985,8 @@ async function fillAssetImages(): Promise<string | null> {
             ? "prop"
             : (n.data.nodeType as "character" | "scene" | "prop"),
         visualNotes: `全局视觉风格：${projectStyle}`,
+        // 卡片级模型/档位覆盖（PromptBar chips 写入的 data.gen）
+        params: saneGen(n.data.gen) ?? undefined,
       })),
     );
     const done: string[] = [];
@@ -2893,6 +3042,9 @@ function countAssetsMissingImage(nodes: WingNode[]): number {
 }
 
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
+/** 分镜表生成预期时长（秒）：进度条按此推算百分比、封顶 95%（GenProgress 同款诚实进度，真实完成由轮询回填） */
+const SHOTLIST_GEN_EXPECTED = 45;
+
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
@@ -2900,6 +3052,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
+  // 生成已等秒数：驱动进度条与「排队较久」提示
+  const [genSec, setGenSec] = useState(0);
   const [rowSeq, setRowSeq] = useState(0);
   const [imgGenerating, setImgGenerating] = useState(false);
   // 行选择：null = 全选（默认全选，取消勾选即收窄到子集）
@@ -2954,6 +3108,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageJobId, id]);
+  // 生成等待计时：generating 期间每秒走表（归零在 generate() 启动时做）
+  useEffect(() => {
+    if (!generating) return;
+    const t = setInterval(() => setGenSec((s) => s + 1), 1000);
+    return () => clearInterval(t);
+  }, [generating]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const rows = d.rows ?? [];
@@ -2982,8 +3142,13 @@ function ShotListCard({ data, id, selected }: NodeProps) {
 
   /** 一键生成分镜（直连 langflow flow，不经聊天）：结果写回 rows */
   const generate = async () => {
-    if (generating || !scriptSource) return;
+    if (generating) return;
+    if (!scriptSource) {
+      setGenError("没有可拆的剧本正文：把剧本卡连线到本卡，或在本卡写正文");
+      return;
+    }
     setGenerating(true);
+    setGenSec(0);
     setGenError("");
     try {
       const next = await generateShotlist(scriptSource, {
@@ -3195,6 +3360,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       (d.visualStyle ?? "").trim() ? `分镜表风格：${(d.visualStyle ?? "").trim()}` : "",
       projectStyle.trim() ? `全局视觉风格：${projectStyle.trim()}` : "",
     ].filter(Boolean);
+    // 本卡出图设置（ShotGenSettings 写入）：画幅/每镜候选张数/模型覆盖
+    const aspect = (d.aspect ?? "").trim() || "16:9";
+    const genCount = Math.max(1, Math.min(4, Number(d.genCount) || 1));
+    const cardGen = saneGen(d.gen);
     const created: string[] = [];
     const jobs: { rid: string; nodeId: string }[] = [];
     const ridToNode = new Map<string, string>();
@@ -3273,26 +3442,62 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: jobs.map((j) => j.nodeId) } }),
     );
     try {
+      // 每镜 genCount 张候选：rid 带 #k 后缀，全部完成后聚合成该行图卡的
+      // 变体（imageUrls，主图取首张）——「一卡一图」画布语义不裂多卡
       const jobId = await startShotImageJob(
-        jobs.map((j) => {
+        jobs.flatMap((j) => {
           const t = targets.find((x) => x.row.rid === j.rid)!;
-          return {
-            rid: j.rid,
+          const base = {
             name: `镜头${t.seq + 1}`,
             description: composeRowPrompt(t.row),
             visualNotes: [refNotesFor(t.row), ...styleStack]
               .filter(Boolean)
               .join("；"),
             referenceImages: refImagesFor(t.row),
+            aspect,
           };
+          return Array.from({ length: genCount }, (_, k) => ({
+            rid: genCount > 1 ? `${j.rid}#${k}` : j.rid,
+            ...base,
+          }));
         }),
+        cardGen ?? undefined,
       );
       // jobId 落卡：出图中刷新/关标签后挂载续轮询收尾（完事即清）
       useCanvasStore.getState().updateNodeData(id, { imageJobId: jobId });
-      // 轮询任务：每张完成即点亮对应节点（ready/error），全部完成才收尾
-      const outcome = await pollShotImageJob(jobId, (item) =>
-        applyShotImageItem(id, item),
-      );
+      // 轮询任务：按镜聚合候选（张张计票，齐了才回填该行图卡）
+      const agg = new Map<string, { urls: string[]; errors: string[] }>();
+      const applyRow = (rowRid: string) => {
+        const a = agg.get(rowRid);
+        if (!a || a.urls.length + a.errors.length < genCount) return;
+        const ust = useCanvasStore.getState();
+        const nodeId = ridToNode.get(rowRid);
+        if (!nodeId) return;
+        if (a.urls.length === 0) {
+          ust.updateNodeData(nodeId, {
+            status: "error",
+            errorMessage: a.errors[0] || "出图失败",
+          });
+          return;
+        }
+        ust.updateNodeData(nodeId, {
+          status: "ready",
+          imageUrl: a.urls[0],
+          primaryIndex: 0,
+          ...(a.urls.length > 1 ? { imageUrls: a.urls } : {}),
+          ...(a.errors.length > 0
+            ? { errorMessage: `${a.errors.length}/${genCount} 张候选失败` }
+            : {}),
+        });
+      };
+      const outcome = await pollShotImageJob(jobId, (item) => {
+        const rowRid = item.rid.split("#")[0];
+        const a = agg.get(rowRid) ?? { urls: [], errors: [] };
+        agg.set(rowRid, a);
+        if (item.ok && item.imageUrl) a.urls.push(item.imageUrl);
+        else a.errors.push(item.error || "出图失败");
+        applyRow(rowRid);
+      });
       if (outcome === "gone")
         failLoadingShotImages(id, "出图任务已失效（agent 重启），请重试失败镜头");
       else if (outcome === "timeout")
@@ -3662,8 +3867,23 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         </div>
       </div>
       {generating ? (
-        <div className="ws-detail nodrag nowheel mt-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
-          分镜生成中…（从剧本卡「拆分镜表」或下方对话框触发）
+        <div className="ws-detail nodrag nowheel mt-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1.5 text-[10px] text-text-3">
+          <div className="flex items-center gap-1.5">
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
+            <span className="shrink-0 tabular-nums">
+              {genSec > SHOTLIST_GEN_EXPECTED * 1.5
+                ? `生成排队较久 · 已等 ${genSec}s`
+                : `分镜生成中 · ${genSec}s`}
+            </span>
+          </div>
+          <div className="mt-1 h-0.5 w-full overflow-hidden rounded-full bg-hairline-soft">
+            <div
+              className="h-full rounded-full bg-accent transition-[width] duration-1000 ease-linear"
+              style={{
+                width: `${Math.min(95, Math.round((genSec / SHOTLIST_GEN_EXPECTED) * 100))}%`,
+              }}
+            />
+          </div>
         </div>
       ) : null}
       {decomposeMsg ? (
@@ -3728,6 +3948,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
               </button>
             ) : null}
+          <ShotGenSettings nodeId={id} />
           <button
             type="button"
             disabled={imgGenerating || selectedGenRows.length === 0}

@@ -17,6 +17,12 @@ import {
   type AddRefDetail,
   type PromptPickDetail,
 } from "@/lib/canvas/events";
+import {
+  findModelOption,
+  saneGen,
+  useImageModels,
+  type ImagegenParams,
+} from "@/lib/imagegen";
 import { toggleFavorite } from "@/lib/prompt-library";
 import { optimizePrompt } from "@/lib/prompt-optimize";
 import { Lightbox } from "./Lightbox";
@@ -42,8 +48,7 @@ const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
   shotlist: "想让 AI 改这页分镜？如：按剧本重新生成 / 压缩到 6 镜 / 给第 3 镜加雨戏",
 };
 
-/** caret 前最后一个 @提及片段（"雨夜@女侠" → q="女侠"） */
-function detectMention(
+/** caret 前最后一个 @提及片段（"雨夜@女侠" → q="女侠"） */function detectMention(
   text: string,
   caret: number,
 ): { start: number; q: string } | null {
@@ -382,6 +387,9 @@ export default function PromptBar({
               {n} 张
             </button>
           ))}
+          {/* 卡片级出图模型/档位（写本卡 data.gen，缺省跟随项目）：
+              批量/重跑/聊天入口生成此卡时全部生效 */}
+          <ImagegenChips nodeId={nodeId} />
         </div>
       ) : null}
       {/* 输入区独占一行 + 随内容增高；动作行在下方右对齐（长提示词可完整阅读） */}
@@ -538,6 +546,133 @@ export default function PromptBar({
           onIndex={setPreview}
           onClose={() => setPreview(null)}
         />
+      ) : null}
+    </div>
+  );
+}
+
+/** 卡片级出图模型/档位 chips（open-storyboard-canvas 模型 chip 范式）：
+ *  显示本卡生效配置（data.gen 覆盖，缺省跟随项目级 store.imagegen），
+ *  点击弹出选择器写回卡上 data.gen——生成本卡图片的所有入口（面板直连/
+ *  补资产图/分镜批量）都读同一份覆盖。模型清单来自 agent 实探目录 */
+function ImagegenChips({ nodeId }: { nodeId: string }) {
+  const node = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId));
+  const project = useCanvasStore((s) => s.imagegen);
+  const { models, error, reload } = useImageModels();
+  const [open, setOpen] = useState(false);
+  const cardGen = saneGen(node?.data.gen);
+  const effective = cardGen ?? project;
+  const option = findModelOption(effective.model, models);
+  const pick = (patch: Partial<ImagegenParams>) => {
+    const base = cardGen ?? project;
+    const modelId = patch.model ?? base.model;
+    const opt = findModelOption(modelId, models);
+    const resolution =
+      patch.resolution ??
+      (opt?.resolutions.includes(base.resolution) ? base.resolution : opt?.default_resolution) ??
+      base.resolution;
+    useCanvasStore.getState().updateNodeData(nodeId, { gen: { model: modelId, resolution } });
+  };
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  return (
+    <div className="relative ml-auto flex items-center">
+      <button
+        type="button"
+        title={
+          cardGen
+            ? `本卡覆盖：${effective.model} · ${effective.resolution}（点击修改；可回退跟随项目）`
+            : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位）`
+        }
+        className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+          cardGen
+            ? "border-accent text-text"
+            : "border-hairline text-text-3 hover:text-text"
+        }`}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {option?.label ?? effective.model} · {effective.resolution}
+      </button>
+      {open ? (
+        <div className="absolute bottom-full right-0 z-30 mb-1.5 w-64 rounded-md border border-hairline bg-surface-1 p-2 shadow-lg">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-medium text-text-4">本卡出图模型</span>
+            {cardGen ? (
+              <button
+                type="button"
+                className="text-[10px] text-accent hover:underline"
+                onClick={() => {
+                  useCanvasStore.getState().updateNodeData(nodeId, { gen: undefined });
+                  setOpen(false);
+                }}
+              >
+                回退跟随项目
+              </button>
+            ) : null}
+          </div>
+          {error ? (
+            <p className="mt-1.5 text-[10px] text-danger">
+              {error}
+              <button type="button" className="ml-1 underline" onClick={reload}>
+                重试
+              </button>
+            </p>
+          ) : models === null ? (
+            <p className="mt-1.5 text-[10px] text-text-4">加载模型目录…</p>
+          ) : (
+            <>
+              <div className="mt-1 max-h-44 space-y-0.5 overflow-y-auto">
+                {models.map((m) => (
+                  <button
+                    key={m.id}
+                    type="button"
+                    className={`block w-full rounded px-1.5 py-1 text-left transition-colors ${
+                      m.id === effective.model
+                        ? "bg-accent-dim"
+                        : "hover:bg-surface-2"
+                    }`}
+                    onClick={() => pick({ model: m.id })}
+                  >
+                    <span className="block text-[11px] text-text">{m.label}</span>
+                    <span className="block text-[9px] text-text-4">{m.tag}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-1.5 flex items-center gap-1 border-t border-hairline pt-1.5">
+                <span className="text-[10px] text-text-4">档位</span>
+                {["1K", "2K", "4K"].map((r) => {
+                  const supported =
+                    findModelOption(effective.model, models)?.resolutions.includes(r) ?? true;
+                  return (
+                    <button
+                      key={r}
+                      type="button"
+                      disabled={!supported}
+                      title={supported ? undefined : "该模型不支持此档"}
+                      className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                        effective.resolution === r
+                          ? "border-accent bg-accent-dim text-text"
+                          : supported
+                            ? "border-hairline text-text-3 hover:text-text"
+                            : "cursor-not-allowed border-hairline text-text-4 opacity-40"
+                      }`}
+                      onClick={() => pick({ resolution: r })}
+                    >
+                      {r}
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
       ) : null}
     </div>
   );

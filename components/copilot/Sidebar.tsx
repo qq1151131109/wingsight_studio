@@ -158,7 +158,7 @@ export default function ThemedSidebar() {
         Header={ChatSidebarHeader}
         Button={AssistantFab}
         ErrorMessage={ErrorWithRetry}
-        defaultOpen
+        defaultOpen={false}
         clickOutsideToClose={false}
       />
     </div>

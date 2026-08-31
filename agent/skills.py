@@ -18,6 +18,8 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import Literal
 
+import models
+
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
 DECOMPOSE_FLOW_ID = os.environ.get("LANGFLOW_DECOMPOSE_FLOW_ID", "")
@@ -336,12 +338,14 @@ async def start_decompose_job(
     existing: Optional[List[Dict[str, Any]]] = None,
     auto_looks: bool = False,
     visual_style: str = "",
+    params: Optional[Dict[str, str]] = None,
 ) -> str:
     """启动资产拆解任务，立即返回 jobId（前端轮询 GET /assets/decompose/{jobId}）。
 
     auto_looks=True 时拆解完成后自动续跑角色出图链（juben 全自动范式：
     每角色先出定妆照，再以其为身份参考图逐个出 Look 造型图），
     结果写回 asset 条目（image_url / looks[i].image_url）。
+    params：出图模型/分辨率覆盖（models.resolve_imagegen_params 产物）。
     """
     job_id = uuid.uuid4().hex[:12]
     DECOMPOSE_JOBS[job_id] = {
@@ -374,7 +378,7 @@ async def start_decompose_job(
                         for e in existing or []
                     }
                     state["images_note"] = await _auto_asset_images(
-                        assets, state, visual_style, existed
+                        assets, state, visual_style, existed, params=params
                     )
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
@@ -399,6 +403,7 @@ async def _auto_asset_images(
     state: Dict[str, Any],
     visual_style: str,
     existed: Optional[set] = None,
+    params: Optional[Dict[str, str]] = None,
 ) -> str:
     """资产图自动链（juben collect_pending_character_materials 泛化）：
     ① 服饰结构图先行（Look 的一致性锚点之二）
@@ -424,7 +429,7 @@ async def _auto_asset_images(
 
     async def gen(shot: Dict[str, Any]) -> Dict[str, Any]:
         async with sem:
-            r = await _generate_single_image(shot)
+            r = await _generate_single_image(shot, params=params)
         total_done[0] += 1
         state["progress"] = {"done": total_done[0], "total": total_target[0]}
         return r
@@ -662,10 +667,11 @@ async def _decompose_legacy(
 
 
 async def generate_asset_images(
-    assets: List[Dict[str, Any]], config: Any = None
+    assets: List[Dict[str, Any]], config: Any = None, params: Optional[Dict[str, str]] = None
 ) -> str:
-    """逐资产并发出图（并发 3），每张完成即向聊天流推送进度（若有 config）。
+    """逐资产并发出图（并发 30），每张完成即向聊天流推送进度（若有 config）。
 
+    params：模型/分辨率覆盖（models.resolve_imagegen_params 产物）。
     成功的图片复制到 agent/static/assets/ 并以 /agent-service/assets/<file>
     相对路径回传（前端同源代理可直接 <img> 渲染）。
     """
@@ -700,6 +706,7 @@ async def generate_asset_images(
                             {"assets": [asset]}, ensure_ascii=False
                         ),
                         "api_key": DMX_API_KEY,
+                        **(params or {}),
                     }
                 },
             )
@@ -786,9 +793,12 @@ def get_storyboard_image_job(job_id: str) -> Optional[Dict[str, Any]]:
     return STORYBOARD_IMAGE_JOBS.get(job_id)
 
 
-async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
+async def _generate_single_image(
+    shot: Dict[str, Any], params: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
     """单张出图原语（直连 imagegen flow，不经聊天）：入参字段同批量出图
     请求（name/description/visualNotes?/assetType?/referenceImages?），
+    params 为模型/分辨率覆盖（models.resolve_imagegen_params 产物），
     返回 {ok, imageUrl?|error}。拆解自动出图链与批量出图任务共用。"""
     # flow 载荷只认 {type,name,description,visual_notes,reference_images?,search_query?}：
     # rid 不能进 payload（会被渲染进出图提示词）。
@@ -804,6 +814,10 @@ async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
     }
     if shot.get("visual_notes"):
         payload["visual_notes"] = flat(shot["visual_notes"])
+    # 资产级画幅覆写（分镜图幅面：9:16/21:9 等）；格式校验在 flow 侧，
+    # 不合法会得到中文报错并落到该图卡的 error 上
+    if shot.get("aspect"):
+        payload["aspect"] = flat(shot["aspect"])
     # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
     # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）
     ref_images = [
@@ -824,6 +838,7 @@ async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
                         {"assets": [payload]}, ensure_ascii=False
                     ),
                     "api_key": DMX_API_KEY,
+                    **(params or {}),
                 }
             },
         )
@@ -835,17 +850,33 @@ async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": False, "error": raw[:200]}
 
 
-async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
+async def start_storyboard_image_job(
+    shots: List[Dict[str, Any]], params: Optional[Dict[str, str]] = None
+) -> str:
     """启动分镜行批量出图任务（直连 imagegen flow，并发 30，不经聊天）。
 
-    shots: [{rid, name, description, visual_notes?}]，字段与出图 flow 的
-    资产载荷一致（type 固定 scene，镜头画面不是角色设定图）。
+    shots: [{rid, name, description, visual_notes?, aspect?,
+             params?: {model?, resolution?}}]，字段与出图 flow 的资产载荷
+    一致（type 固定 scene，镜头画面不是角色设定图）。params：请求级出图
+    模型/分辨率；镜头级 params 覆盖请求级（卡片级覆盖），逐镜头合并后
+    预校验——任一组合不合法整批 ValueError（端点转 400 明报）。
     立即返回 jobId；每张完成即写入任务状态，前端轮询增量取走。
     """
     if not IMAGEGEN_FLOW_ID:
         raise RuntimeError("未配置 LANGFLOW_IMAGEGEN_FLOW_ID（flow 见 agent/flows/asset-imagegen.json）")
     if not DMX_API_KEY:
         raise RuntimeError("未配置 DMX_API_KEY，出图不可用")
+    resolved: Dict[str, Optional[Dict[str, str]]] = {}
+    invalid: List[str] = []
+    for s in shots:
+        rid = str(s.get("rid", ""))
+        merged = {**(params or {}), **(s.get("params") or {})}
+        try:
+            resolved[rid] = models.resolve_imagegen_params(merged or None)
+        except ValueError as exc:
+            invalid.append(f"「{str(s.get('name') or rid) or rid}」{exc}")
+    if invalid:
+        raise ValueError("；".join(invalid))
     _prune_storyboard_image_jobs()
 
     # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
@@ -864,7 +895,7 @@ async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
     async def one(shot: Dict[str, Any]) -> None:
         rid = str(shot.get("rid", ""))
         async with sem:
-            result = await _generate_single_image(shot)
+            result = await _generate_single_image(shot, params=resolved.get(rid))
         STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = {"rid": rid, **result}
 
     async def run() -> None:

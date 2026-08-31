@@ -30,5 +30,5 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules", "references"]
+  "exclude": ["node_modules", "references", "langflow"]
 }

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { KeyRound, LogOut, ShieldCheck } from "lucide-react";
+import { KeyRound, LogOut, ShieldCheck, Workflow } from "lucide-react";
 import { clearToken } from "@/lib/auth";
 import {
   getAuthSession,
@@ -108,6 +108,22 @@ export default function AccountMenu() {
               onClick={() => {
                 setOpen(false);
                 router.push("/admin");
+              }}
+            />
+          ) : null}
+          {isAdmin ? (
+            <MenuButton
+              icon={<Workflow className="h-3.5 w-3.5" />}
+              label="Langflow"
+              onClick={() => {
+                setOpen(false);
+                // langflow 独立端口（setup-langflow.sh 起在 7860），绑同机；
+                // 用当前 host 拼地址：本机 dev= localhost:7860，服务器内网= 内网IP:7860
+                window.open(
+                  `${location.protocol}//${location.hostname}:7860/`,
+                  "_blank",
+                  "noopener",
+                );
               }}
             />
           ) : null}

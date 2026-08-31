@@ -13,6 +13,7 @@ import { useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
+import { saneImagegen } from "@/lib/imagegen";
 import {
   createProject,
   listProjects,
@@ -87,6 +88,7 @@ export default function ProjectManager() {
   const edges = useCanvasStore((s) => s.edges);
   const viewport = useCanvasStore((s) => s.viewport);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const imagegen = useCanvasStore((s) => s.imagegen);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!projectId || !useCanvasStore.getState().hydrated) return;
@@ -98,13 +100,13 @@ export default function ProjectManager() {
         nodes: s.nodes,
         edges: s.edges,
         viewport: s.viewport,
-        meta: { visualStyle: s.projectStyle },
+        meta: { visualStyle: s.projectStyle, imagegen: s.imagegen },
       });
     }, SYNC_DEBOUNCE_MS);
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [projectId, nodes, edges, viewport, projectStyle]);
+  }, [projectId, nodes, edges, viewport, projectStyle, imagegen]);
 
   // ---------- 离开工作台：冲刷未落盘的修改 ----------
   useEffect(() => {
@@ -116,7 +118,7 @@ export default function ProjectManager() {
           nodes: s.nodes,
           edges: s.edges,
           viewport: s.viewport,
-          meta: { visualStyle: s.projectStyle },
+          meta: { visualStyle: s.projectStyle, imagegen: s.imagegen },
         });
       }
     };
@@ -134,7 +136,7 @@ async function persist(
     nodes: unknown[];
     edges: unknown[];
     viewport: unknown;
-    meta?: { visualStyle?: string };
+    meta?: { visualStyle?: string; imagegen?: { model: string; resolution: string } };
   },
 ) {
   const run = saveChain.then(async () => {
@@ -209,6 +211,9 @@ async function activateProject(p: ProjectMeta) {
       useCanvasStore.setState({
         projectStyle: String((canvas as { meta?: { visualStyle?: string } }).meta?.visualStyle ?? ""),
       });
+      const meta = (canvas as { meta?: { imagegen?: unknown } }).meta;
+      if (meta && "imagegen" in meta)
+        useCanvasStore.setState({ imagegen: saneImagegen(meta.imagegen) });
       if (!p.name) {
         const list = await listProjects();
         const meta = list.find((x) => x.id === p.id);

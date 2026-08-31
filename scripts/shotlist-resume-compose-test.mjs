@@ -13,9 +13,15 @@ const BASE = "http://127.0.0.1:8008";
 const API = `${BASE}/agent-service`;
 const png1px =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+// 第二候选用的另一张 1px png（红），验证候选聚合不重复不丢
+const png1pxRed =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
 
 async function api(path, init) {
-  const r = await fetch(`${API}${path}`, init);
+  const r = await fetch(`${API}${path}`, {
+    ...init,
+    headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), ...(init?.headers ?? {}) },
+  });
   const text = await r.text();
   let body = null;
   try {
@@ -24,6 +30,28 @@ async function api(path, init) {
     body = text;
   }
   return { status: r.status, body };
+}
+
+// ---------- 认证（AUTH_ENABLED=true 时必须带 Bearer）----------
+// 密码来自根 .env.local（agent 首启自动生成回写）；auth 关闭时 TOKEN 为空直接跑
+function envLocal(key) {
+  for (const line of readFileSync(new URL("../.env.local", import.meta.url), "utf8").split("\n")) {
+    if (line.startsWith(`${key}=`)) return line.slice(key.length + 1).trim();
+  }
+  return "";
+}
+let TOKEN = "";
+{
+  const r = await fetch(`${BASE}/api/v1/auth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      username: envLocal("AUTH_USERNAME") || "admin",
+      password: envLocal("AUTH_PASSWORD"),
+    }),
+  });
+  if (r.ok) TOKEN = (await r.json()).access_token ?? "";
+  console.log(TOKEN ? "已登录（AUTH_ENABLED=true）" : "未取到 token（auth 关闭或密码不符，按匿名跑）");
 }
 
 const results = [];
@@ -94,7 +122,13 @@ await save(
 );
 
 const browser = await chromium.launch();
-const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
+// SPA 的 apiFetch 从 localStorage 取 Bearer：预置 token 免登录页重定向
+await context.addInitScript(
+  ([key, value]) => window.localStorage.setItem(key, value),
+  ["wingsight_studio_token", TOKEN],
+);
+const page = await context.newPage();
 
 // route mock：前两次 running，之后 done（一张成功一张失败）
 let jobCalls = 0;
@@ -277,7 +311,17 @@ await save(
       id: "n_e2e_sl",
       type: "shotlist",
       position: { x: 300, y: 0 },
-      data: { nodeType: "shotlist", title: "分镜表", rows: rowsD, status: "ready" },
+      data: {
+        nodeType: "shotlist",
+        title: "分镜表",
+        rows: rowsD,
+        status: "ready",
+        // 卡片级出图设置（ShotGenSettings 范式）：gen 覆盖项目默认、
+        // 竖屏画幅、每镜 2 候选（候选聚合进行图卡 imageUrls 变体）
+        gen: { model: "doubao-seedream-4-0-250828", resolution: "1K" },
+        aspect: "9:16",
+        genCount: 2,
+      },
     },
     imgNode("n_e2e_imgG", "ready", { imageUrl: png1px }),
     // 存量 Look 散卡（历史形态：有角色入边、无组框）
@@ -307,9 +351,20 @@ await save(
 );
 
 let genPosts = 0;
+let genPostParams = null;
+let genPostShots = null;
 await page.route("**/agent-service/storyboard/images", (route) => {
   if (route.request().method() !== "POST") return route.fulfill({ status: 405, body: "" });
   genPosts += 1;
+  // 出图请求必须带项目级出图参数（模型/分辨率随请求下发，服务端按目录校验），
+  // 卡片级 gen 覆盖时此处应为卡的覆盖值；shots 携带画幅与候选后缀 rid
+  try {
+    const body = JSON.parse(route.request().postData() || "{}");
+    genPostParams = body.params ?? null;
+    genPostShots = body.shots ?? null;
+  } catch {
+    genPostParams = "unparseable";
+  }
   return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobId: "e2e_job_gen" }) });
 });
 let genPolls = 0;
@@ -318,7 +373,13 @@ await page.route("**/agent-service/storyboard/images/e2e_job_gen", (route) => {
   const body =
     genPolls <= 1
       ? { status: "running", images: [] }
-      : { status: "done", images: [{ rid: "d2", ok: true, imageUrl: png1px }] };
+      : {
+          status: "done",
+          images: [
+            { rid: "d2#0", ok: true, imageUrl: png1px },
+            { rid: "d2#1", ok: true, imageUrl: png1pxRed },
+          ],
+        };
   return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
 });
 
@@ -378,6 +439,32 @@ await page.waitForTimeout(2500); // debounce 落库
     "E3 出图结果回填",
     target?.data?.status === "ready" && Boolean(target?.data?.imageUrl),
     `status=${target?.data?.status}`,
+  );
+  check(
+    "E4 卡片级 gen 覆盖进请求 params",
+    Boolean(genPostParams) &&
+      typeof genPostParams === "object" &&
+      genPostParams.model === "doubao-seedream-4-0-250828" &&
+      genPostParams.resolution === "1K",
+    `params=${JSON.stringify(genPostParams)}`,
+  );
+  check(
+    "E5 画幅与候选张数穿线（每镜 2 shots、9:16、后缀 rid）",
+    Array.isArray(genPostShots) &&
+      genPostShots.length === 2 &&
+      genPostShots.every((s) => s.aspect === "9:16") &&
+      genPostShots.map((s) => s.rid).join(",") === "d2#0,d2#1",
+    `shots=${JSON.stringify(genPostShots?.map((s) => ({ rid: s.rid, aspect: s.aspect })))}`,
+  );
+  check(
+    "E6 候选聚合成图卡变体（一卡两图，主图取首张）",
+    target?.data?.status === "ready" &&
+      target?.data?.imageUrl === png1px &&
+      Array.isArray(target?.data?.imageUrls) &&
+      target?.data?.imageUrls.length === 2 &&
+      target?.data?.imageUrls[1] === png1pxRed &&
+      target?.data?.primaryIndex === 0,
+    `imageUrls=${JSON.stringify(target?.data?.imageUrls)}`,
   );
 }
 

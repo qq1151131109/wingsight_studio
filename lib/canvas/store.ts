@@ -12,6 +12,7 @@ import {
   type NodeChange,
   type Viewport,
 } from "@xyflow/react";
+import { IMAGEGEN_DEFAULT, type ImagegenParams } from "@/lib/imagegen";
 
 /** 画布节点类型：文本 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 分组框 */
 export type WingNodeType =
@@ -91,6 +92,16 @@ export interface WingNodeData {
   /** image 卡：一次生成的多张候选（imageUrl 恒等于候选[primaryIndex]） */
   imageUrls?: string[];
   primaryIndex?: number;
+  /** 出图参数卡片级覆盖（模型/档位，目录见 agent/models.py）：缺省跟随
+   *  项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
+   *  分镜表卡可各自指定；生成本卡图片的入口全部读它 */
+  gen?: { model: string; resolution: string };
+  /** 分镜表卡：镜头图幅面（w:h，缺省 16:9）。资产卡设定图不走它——
+   *  幅面与布局契约（四格定妆照/道具平铺）绑定，不开放 */
+  aspect?: string;
+  /** 分镜表卡：批量出图每镜候选张数（1/2/4，缺省 1）。候选进该行的
+   *  唯一图片卡（imageUrls 变体），不裂多卡 */
+  genCount?: number;
   /** image 卡：本次生成所用的参考卡 id（资产/Look 卡）。批量出图按行解析
    *  写入并建参考连线；直连出图取自面板手动 @。重跑/重试复用 */
   refIds?: string[];
@@ -143,10 +154,14 @@ interface CanvasState {
   /** 项目级画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
    *  注入所有出图与分镜生成；存画布 meta，随项目持久化 */
   projectStyle: string;
+  /** 项目级出图默认（模型 + 分辨率，存 meta.imagegen）：所有出图入口
+   *  的生效配置；服务端按 agent/models.py 目录校验，非法组合 400 */
+  imagegen: ImagegenParams;
   projectName: string;
   /** 初始装载完成前不同步到服务端 */
   hydrated: boolean;
   setProjectStyle: (style: string) => void;
+  setImagegen: (patch: Partial<ImagegenParams>) => void;
   setProject: (id: string, name: string) => void;
   replaceCanvas: (
     nodes: WingNode[],
@@ -453,6 +468,7 @@ export const useCanvasStore = create<CanvasState>()(
       viewport: { x: 0, y: 0, zoom: 1 },
       projectId: null,
       projectStyle: "",
+      imagegen: IMAGEGEN_DEFAULT,
       projectName: "",
       hydrated: false,
       canUndoNow: false,
@@ -463,12 +479,22 @@ export const useCanvasStore = create<CanvasState>()(
       clipboardCount: 0,
 
       setProjectStyle: (style) => set({ projectStyle: style }),
+      setImagegen: (patch) =>
+        set((s) => ({ imagegen: { ...s.imagegen, ...patch } })),
       setSaveState: (saveState) => set({ saveState }),
       setHaloIds: (ids) => set({ haloIds: ids }),
       setAlignGuides: (g) => set({ alignGuides: g }),
 
+      // 切项目先落默认值：激活流程读到 meta.imagegen 再覆盖，
+      // 避免上一个项目的出图设置串到新项目
       setProject: (id, name) =>
-        set({ projectId: id, projectName: name, hydrated: false }),
+        set({
+          projectId: id,
+          projectName: name,
+          hydrated: false,
+          projectStyle: "",
+          imagegen: IMAGEGEN_DEFAULT,
+        }),
 
       replaceCanvas: (nodes, edges, viewport) => {
         // 项目切换/装载：撤销栈跨项目无意义；旧项目补默认宽度（resize 依赖）

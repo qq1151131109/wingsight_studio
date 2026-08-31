@@ -22,6 +22,7 @@ import {
 import {
   Camera,
   ChevronRight,
+  Image as ImageIcon,
   Info,
   Library,
   ListTree,
@@ -53,6 +54,7 @@ import {
   type FocusNodesDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
+import { useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import { nodeTypes, NodeInfoModal } from "./nodes";
@@ -536,19 +538,22 @@ function BottomDock({
   const saveState = useCanvasStore((s) => s.saveState);
   const zoom = useCanvasStore((s) => s.viewport.zoom);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const imagegen = useCanvasStore((s) => s.imagegen);
   const [stylePanel, setStylePanel] = useState(false);
+  const [imagegenPanel, setImagegenPanel] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
 
   // 弹窗开着时 Esc 关闭（弹窗经 portal 挂 body，画布的全局 Esc 管不到这里）
   useEffect(() => {
-    if (!stylePanel) return;
+    if (!stylePanel && !imagegenPanel) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       setStylePanel(false);
+      setImagegenPanel(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [stylePanel]);
+  }, [stylePanel, imagegenPanel]);
 
   const saveLabel =
     saveState === "saving"
@@ -607,6 +612,18 @@ function BottomDock({
           ) : null}
         </button>
       </div>
+      {/* 出图模型/分辨率（项目级默认，存 meta.imagegen）：所有出图入口生效 */}
+      <button
+        type="button"
+        title={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，出图面板可改）`}
+        className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
+          imagegenPanel ? "bg-surface-2 text-text" : ""
+        }`}
+        onClick={() => setImagegenPanel((v) => !v)}
+      >
+        <ImageIcon className="h-4 w-4" />
+        出图
+      </button>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
         <Undo2 className="h-4 w-4" />
@@ -702,6 +719,44 @@ function BottomDock({
           </div>
         </OverlayModal>
       ) : null}
+      {imagegenPanel ? (
+        <OverlayModal
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
+          onClick={() => setImagegenPanel(false)}
+        >
+          <div
+            className="flex max-h-[88vh] w-[min(28rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-text">出图设置</p>
+                <p className="mt-0.5 text-[11px] text-text-4">
+                  项目级默认：分镜出图、资产出图、拆解自动出图与聊天出图均生效，随项目保存。
+                </p>
+              </div>
+              <button
+                type="button"
+                title="关闭"
+                className="rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+                onClick={() => setImagegenPanel(false)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <ImagegenSettings />
+            <div className="mt-2 flex justify-end">
+              <button
+                type="button"
+                className="rounded-md border border-hairline px-2 py-0.5 text-[11px] text-text-2 transition-colors hover:border-accent hover:text-text"
+                onClick={() => setImagegenPanel(false)}
+              >
+                完成
+              </button>
+            </div>
+          </div>
+        </OverlayModal>
+      ) : null}
     </>
   );
 }
@@ -727,6 +782,105 @@ function DockBtn({
     >
       {children}
     </button>
+  );
+}
+
+/** 出图模型/分辨率设置（open-storyboard-canvas 的模型+参数 chip 范式，
+ *  简化为项目级单一配置）：目录来自 agent 实探清单（agent/models.py），
+ *  切模型时档位不支持则自动贴到该模型默认档（viedeo-workflow 联动式）。
+ *  非法组合服务端也会 400 明报——双保险，前端不做静默纠正以外的兜底 */
+function ImagegenSettings() {
+  const imagegen = useCanvasStore((s) => s.imagegen);
+  const { models, error, reload } = useImageModels();
+
+  const current = models?.find((m) => m.id === imagegen.model) ?? null;
+  const pick = (m: ImageModelOption) => {
+    const resolution = m.resolutions.includes(imagegen.resolution)
+      ? imagegen.resolution
+      : m.default_resolution;
+    useCanvasStore.getState().setImagegen({ model: m.id, resolution });
+  };
+
+  if (error)
+    return (
+      <div className="mt-3 rounded-md border border-danger/30 bg-surface-2/60 p-3 text-xs text-danger">
+        {error}
+        <button
+          type="button"
+          className="ml-2 underline underline-offset-2 hover:text-text"
+          onClick={reload}
+        >
+          重试
+        </button>
+      </div>
+    );
+  if (!models)
+    return <p className="mt-4 text-center text-xs text-text-4">加载模型目录…</p>;
+
+  return (
+    <div className="mt-3 space-y-3 overflow-y-auto">
+      <div className="space-y-1.5">
+        {models.map((m) => {
+          const active = m.id === imagegen.model;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              className={`flex w-full items-center justify-between gap-2 rounded-md border px-3 py-2 text-left transition-colors ${
+                active
+                  ? "border-accent bg-accent-dim"
+                  : "border-hairline hover:border-text-4"
+              }`}
+              onClick={() => pick(m)}
+            >
+              <span>
+                <span className="flex items-center gap-1.5 text-xs font-medium text-text">
+                  {m.label}
+                  {m.recommended ? (
+                    <span className="rounded bg-accent/15 px-1 py-px text-[9px] text-accent">
+                      推荐
+                    </span>
+                  ) : null}
+                </span>
+                <span className="mt-0.5 block text-[10px] text-text-4">{m.tag}</span>
+              </span>
+              {active ? <span className="h-2 w-2 shrink-0 rounded-full bg-accent" /> : null}
+            </button>
+          );
+        })}
+      </div>
+      <div>
+        <p className="text-[11px] font-medium text-text-4">清晰度</p>
+        <div className="mt-1 flex gap-1">
+          {["1K", "2K", "4K"].map((r) => {
+            const supported = current?.resolutions.includes(r) ?? true;
+            return (
+              <button
+                key={r}
+                type="button"
+                disabled={!supported}
+                title={supported ? undefined : `${current?.label ?? "该模型"}不支持 ${r} 档`}
+                className={`rounded border px-2.5 py-1 text-xs transition-colors ${
+                  imagegen.resolution === r
+                    ? "border-accent bg-accent-dim text-text"
+                    : supported
+                      ? "border-hairline text-text-2 hover:text-text"
+                      : "cursor-not-allowed border-hairline text-text-4 opacity-40"
+                }`}
+                onClick={() => useCanvasStore.getState().setImagegen({ resolution: r })}
+              >
+                {r}
+              </button>
+            );
+          })}
+        </div>
+        {!current ? (
+          <p className="mt-1 text-[10px] text-danger">
+            当前模型 {imagegen.model} 不在目录中，选一个上面列出的模型即可纠正
+          </p>
+        ) : null}
+      </div>
+    </div>
   );
 }
 
@@ -948,17 +1102,17 @@ function SelectionToolbar() {
 function EmptyState() {
   return (
     <div className="pointer-events-none absolute inset-0 z-0 flex items-center justify-center">
-      <div className="max-w-sm text-center">
+      {/* 三行短句各占一行（max-w 放宽到 md 保证不折行），避免长句在窄容器里
+          断出「直/接拖进来」这类破碎换行 */}
+      <div className="max-w-md text-center">
         <h2 className="font-editorial text-xl font-medium text-text-2">
           空白画布
         </h2>
-        <p className="mt-2 text-sm leading-relaxed text-text-3">
-          双击空白弹出「添加节点」菜单；把图片 / 视频 / 文本文件直接拖进来；
-          <br />
-          工具条（可拖拽落点）建卡，图片卡输入条 @ 引用角色直接生成，
-          <br />
-          或者让右侧助手帮你搭起故事板。
-        </p>
+        <div className="mt-2 space-y-1 text-sm leading-relaxed text-text-3">
+          <p>双击空白建卡，或直接拖入图片 / 视频 / 文本文件</p>
+          <p>工具条 / 右键菜单建卡连线，输入条 @ 引用角色直接生成</p>
+          <p>也可以让右侧助手帮你搭起故事板</p>
+        </div>
       </div>
     </div>
   );

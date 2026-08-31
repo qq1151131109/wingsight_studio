@@ -34,6 +34,7 @@ import {
   pollShotImageJob,
   startShotImageJob,
 } from "@/lib/shotlist";
+import { saneGen } from "@/lib/imagegen";
 
 /** 面板出图直连管线：跳过聊天 LLM，直连 imagegen flow（与拆解出图链/
  *  分镜批量出图同一条）。确定性任务不走 agent，快、省 token、不刷聊天屏。
@@ -109,6 +110,8 @@ async function directImagegen(
         visualNotes,
         referenceImages,
       })),
+      // 卡片级模型/档位覆盖（面板 chips 写入 data.gen），缺省跟随项目
+      saneGen(node.data.gen) ?? undefined,
     );
     const urls: string[] = [];
     let lastError = "";

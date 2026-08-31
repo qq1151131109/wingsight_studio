@@ -25,6 +25,7 @@ from langgraph.prebuilt import ToolNode
 from copilotkit import CopilotKitState
 
 import camera
+import models
 import skills
 
 # ---------- 状态 ----------
@@ -85,15 +86,24 @@ async def run_langflow_skill(
 
 
 @tool
-async def generate_asset_images(assets_json: str, config: RunnableConfig) -> str:
+async def generate_asset_images(
+    assets_json: str, config: RunnableConfig, model: str = "", resolution: str = ""
+) -> str:
     """为资产批量生成设定图（并发出图，每张完成会实时推送进度到聊天）。
 
     用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
     {"type":"character|scene|prop","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词"}
     （字段与 decompose_script 的输出一致）。返回每个资产的成败与 image_url。
+    用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
+    与各模型支持档位：
+    {"gpt-image-2-03": ["1K","2K","4K"], "doubao-seedream-4-0-250828": ["1K","2K","4K"], "doubao-seedream-4-5-251128": ["2K","4K"], "doubao-seedream-5-0-pro-260628": ["1K","2K"]}
+    seedream-5-0-pro 是多图融合模型：多张参考图合成一张（如「图1 的人物
+    穿上图2 的服装」），用户要求融合/组合多张参考图时优先选它。
 
     Args:
         assets_json: 资产数组 JSON 文本。
+        model: 出图模型 id（上表之一），留空用默认 gpt-image-2-03。
+        resolution: 清晰度档位（1K/2K/4K，须在该模型支持列表内），留空用模型默认。
     """
     try:
         assets = json.loads(assets_json)
@@ -101,7 +111,15 @@ async def generate_asset_images(assets_json: str, config: RunnableConfig) -> str
             return "assets_json 必须是资产数组 JSON"
     except json.JSONDecodeError as e:
         return f"assets_json 不是合法 JSON：{e}"
-    return await skills.generate_asset_images(assets, config=config)
+    params = None
+    if model.strip() or resolution.strip():
+        try:
+            params = models.resolve_imagegen_params(
+                {"model": model, "resolution": resolution}
+            )
+        except ValueError as e:
+            return str(e)
+    return await skills.generate_asset_images(assets, config=config, params=params)
 
 
 backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill]

@@ -18,7 +18,8 @@ AI 影视创作无限画布工作台：React Flow 画布 + CopilotKit 聊天 + L
 - `components/canvas/` 画布（`CanvasView`、`nodes.tsx` 自定义卡、`CanvasShortcuts` 撤销/粘贴、`AssetTray` 素材库面板 + 自动入库、`DirectorPanel` 导演台（语汇来自 `agent/camera.py` 经 `/agent-service/camera-vocab` 下发，编译成 body 的【摄影】段））；`components/copilot/` 桥接（`CanvasAgentBridge` 读写通道、`ProjectManager` 项目同步）；`components/shell/ActivityBar`
 - `lib/canvas/store.ts` zustand 画布状态（**服务端为唯一事实源**，localStorage 仅离线缓存；`addNode` 自动从 `data.nodeType` 推导 `node.type`，漏推导会渲染成空白默认节点）；`lib/canvas/ops.ts` canvas_ops 契约与校验
 - `agent/` Python 服务（FastAPI + LangGraph + ag-ui-langgraph，uv 管理）：`graph.py` 主图与系统提示、`skills.py` Langflow 调用（v1 阻塞 API + tweaks）、`projects.py` 项目/画布/聊天/素材库 SQLite、`compose.py` ffmpeg 视频拼接（compose 卡直连，不经 LLM）、`auth*.py` 认证、`camera.py` 摄影语汇库
-- `scripts/` 端到端测试（node 集成测试 + auth 冒烟）
+- `langflow/` langflow 引擎源码（自有 fork 经 `git subtree --squash` 并入，含 DMXAPI 出图修复、batch_asset_sheet 定制等补丁；已 tsconfig/eslint exclude）。重建环境：`./scripts/setup-langflow.sh`；更新 fork：`git subtree pull --prefix=langflow langflow main --squash`
+- `scripts/` 端到端测试（node 集成测试 + auth 冒烟）+ `setup-langflow.sh`（langflow 环境重建 + flows 导入 + flow id 回写）
 
 ## 常用命令
 
@@ -31,6 +32,7 @@ node scripts/agui-client-test.mjs               # 两轮工具调用闭环（需
 node scripts/script-to-canvas-test.mjs          # 剧本→建卡全链路
 node scripts/shotlist-resume-compose-test.mjs   # 分镜表断点恢复/补缺图/一键成片（自建测试项目+mock，不出真实图）
 python agent/auth-smoke-test.py                 # 认证冒烟
+./scripts/setup-langflow.sh                     # langflow 环境重建/首个部署（装 venv → 起 7860 → 导 flows → flow id 回写 .env.local）
 ```
 
 ## 架构铁律
@@ -47,7 +49,7 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 
 业务 flow 是**纯链式**（非 Agent 组件），只经 **v1 阻塞 API** 调用（agui 流不产 TEXT_MESSAGE）。
 
-- **版本化源在本项目 `agent/flows/`**（README 有 flow 清单 / flow id / tweaks 节点对照表）；langflow 自己的 SQLite 只是运行时存储，`~/Desktop/langflow` 是上游源码仓库，不放业务资产
+- **版本化源在本项目 `agent/flows/`**（README 有 flow 清单 / flow id / tweaks 节点对照表）；langflow 自己的 SQLite 只是运行时存储。**引擎源码 subtree 并入 `langflow/`**（fork：github.com/qq1151131109/langflow；flow id 是导入时生成的 UUID，换机器导入后会变——用 `scripts/setup-langflow.sh` 自动导 flow 并回写 `.env.local`）
 - **调用**：`skills.run_flow_blocking`（`POST /api/v1/run/{flow_id}`，超时 300s）；flow id 存根目录 `.env.local` 的 `LANGFLOW_*_FLOW_ID`。参数两种注法——tweaks 按**节点 id** 注入（Prompt 模板变量只收**字符串**，传 int 会 500），或拼进 `input_value` 文本头（分镜表生成即此式，不怕节点重建换 id）
 - **改 flow**：UI（localhost:7860）里改并**保存** → 下一次调用立即生效（运行时现读 DB，无需重启）；然后 `cd agent/flows && ./export.sh <flow_id> <文件>.json` 回写本目录保持一致。注意：删节点重建会换节点 id，代码里按 id 注参的（宣发文案 `PromptTemplate-Writer`、出图 `BatchAssetSheet-img02`）要同步；改自定义组件源码需重启 langflow（模块缓存）
 - **新建能力**：UI 画 flow → 调试 → `export.sh` 收进 `agent/flows/` → flow id 记入 `.env.local` → agent 加薄端点/技能包装（参考 `POST /storyboard/generate`）
@@ -55,7 +57,9 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 ## 已知坑
 
 - 画布基础交互（对标 Figma）：左拖空白=框选（`panOnDrag={[1]}` 是前提，另配 `selectionMode=Partial`）、中键/Space+拖/双指滚动=平移、⌘+滚/捏合=缩放、Alt+拖卡=原位克隆（store 的 `altDragClone` 改道拖动帧，注意"先改道后清表"）、双击空白=「添加节点」选择器、右键空白=上传/添加节点/撤销/重做/粘贴菜单（reference 产品范式）。滚轮语义按设备启发式切换（`CanvasView` 的 `onWheelCapture`：鼠标轮离散步进=缩放、触控板连续小步进=平移）。右键拖不做平移（macOS contextmenu 在 mousedown 即触发，会和右键菜单打架）。库级陷阱 2：RF 的 `onPointerCancel` 不清 `userSelectionRect`，pointercancel/漏 pointerup 会卡死框选——`CanvasView` 的 `SelectionGuard` 窗口级兜底，勿删
-- Langflow 的 SSRF 白名单在 `~/Desktop/langflow/.env` 的 `LANGFLOW_SSRF_ALLOWED_HOSTS`（含 dmxapi/amazonaws/deepseek 等）——出图报 Broken pipe / blocked IP 时先查这里，改后需重启 langflow
+- Langflow 的 SSRF 白名单在 `langflow/.env`（仓库内，随 fork 走）的 `LANGFLOW_SSRF_ALLOWED_HOSTS`（含 dmxapi/amazonaws/deepseek/volces 等——volces 是 seedream 系出图产物 URL 的落域，缺了在保存图片一步报错）——出图报 Broken pipe / blocked IP 时先查这里，改后需重启 langflow
+- 出图模型/分辨率切换：目录唯一事实源 `agent/models.py`（DMX 实探验证，双路径 generate+edit 通才收录；档位按 flow 真实计算尺寸探验——16 像素网格，16:9 4K=3840x2160），`GET /models/image` 下发。三级参数：项目级默认（`meta.imagegen`，底部坞「出图」）→ 卡片级覆盖（`data.gen`，PromptBar 模型 chip / 分镜卡出图设置写入；请求体里镜头级 params 赢过请求级）→ 聊天工具 model/resolution 入参。分镜画幅 `data.aspect`（ShotGenSettings，6 档，资产设定图不开放——幅面与布局契约绑定）；每镜候选张数 `data.genCount`（1/2/4，候选聚合成行图卡的 imageUrls 变体，任务 rid 带 `#k` 后缀）。非法组合整批 400 点名镜头；seedream 4.5 有最小像素约束（4:3 幅面 2K 档不够，见 models.py 注）
+- node 集成/E2E 测试直连 agent API 需认证（`AUTH_ENABLED=true`）：登录 `POST /api/v1/auth/token`（form 表单，admin + `.env.local` 的 `AUTH_PASSWORD`），脚本侧 fetch 带 Bearer、Playwright 侧 `context.addInitScript` 预置 localStorage `wingsight_studio_token`（先例 `scripts/shotlist-resume-compose-test.mjs` 头部）
 - `references/` 是外部参考项目（已 tsconfig exclude + gitignore，勿编译勿提交）；`agent/data/`、`agent/static/assets/`、`logs/` 均为运行时产物
 - 远程访问经隧道（bore/ddnsto），`allowedDevOrigins` 已放行，改访问域名需同步 next.config.ts
 - xyflow 12.11 的 `fitView` prop **不是只在挂载时生效**：StoreUpdater 监听它，prop 值一旦翻转就置 `fitViewQueued` 重新 fit（空画布建第一卡会怼到 maxZoom）。要"只挂载时 fit"就用 `useState` 初值冻结（`CanvasView` 的 `fitOnMount`），勿写回随状态变化的表达式
