@@ -392,7 +392,12 @@ async def api_storyboard_images(req: dict, user: auth.CurrentUser):
     shots = req.get("shots") or []
     if not isinstance(shots, list) or not shots:
         return Response(status_code=400, content="shots 为空", media_type="text/plain")
-    shots = shots[:24]  # 上限保护：一次批量最多 24 镜
+    if len(shots) > 200:
+        return Response(
+            status_code=400,
+            content=f"一次批量最多 200 张（收到 {len(shots)} 张），请分批出图",
+            media_type="text/plain",
+        )
     try:
         job_id = await skills.start_storyboard_image_job(shots)
     except RuntimeError as exc:

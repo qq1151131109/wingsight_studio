@@ -405,10 +405,10 @@ async def _auto_asset_images(
     ② 角色定妆照 / 场景概念图 / 道具设定图 并发
     ③ 角色 Look 造型图（参考图1=定妆照身份锚点，参考图2=绑定服饰的结构图）
     结果写回 asset 条目（image_url / looks[i].image_url）；单张失败记 error
-    不拖累其他。并发 3；每类上限 8、每角色 Look 上限 4（防成本失控）。
+    不拖累其他。并发 30；每类上限 8、每角色 Look 上限 4（防成本失控）。
     existed：画布已有 (type, name) 集合，命中跳过。返回汇报 note。"""
     existed = existed or set()
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(30)
     style_note = f"全局视觉风格：{visual_style}" if visual_style.strip() else ""
     total_done = [0]
     total_target = [0]
@@ -681,12 +681,12 @@ async def generate_asset_images(
     if not VOLC_SEARCH_API_KEY:
         assets = [{k: v for k, v in a.items() if k != "search_query"} for a in assets]
 
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(30)
     done = [0]
     total = len(assets)
     if config is not None:
         await _emit_progress(
-            config, f"开始为 {total} 项资产生成设定图（并发 3，每张完成会播报）…"
+            config, f"开始为 {total} 项资产生成设定图（并发 30，每张完成会播报）…"
         )
 
     async def one(asset: Dict[str, Any]) -> str:
@@ -836,7 +836,7 @@ async def _generate_single_image(shot: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
-    """启动分镜行批量出图任务（直连 imagegen flow，并发 3，不经聊天）。
+    """启动分镜行批量出图任务（直连 imagegen flow，并发 30，不经聊天）。
 
     shots: [{rid, name, description, visual_notes?}]，字段与出图 flow 的
     资产载荷一致（type 固定 scene，镜头画面不是角色设定图）。
@@ -859,7 +859,7 @@ async def start_storyboard_image_job(shots: List[Dict[str, Any]]) -> str:
         "images": {str(s.get("rid", "")): {"rid": str(s.get("rid", "")), "ok": False} for s in shots},
     }
 
-    sem = asyncio.Semaphore(3)
+    sem = asyncio.Semaphore(30)
 
     async def one(shot: Dict[str, Any]) -> None:
         rid = str(shot.get("rid", ""))

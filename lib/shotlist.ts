@@ -157,14 +157,16 @@ export type ShotImageResult = {
 export class ShotJobGoneError extends Error {}
 
 /** 轮询批量出图任务：每张完成即回调 onItem。返回 done/timeout/gone
- *  （gone=agent 重启丢内存任务表）。单次网络抖动不判死，超 deadline 才放弃。
+ *  （gone=agent 重启丢内存任务表）。单次网络抖动不判死；窗口参数是
+ *  「无进展空转」时长——每有新图完成即续期，批量再大也不会总时长误判
+ *  超时，只有任务彻底卡死（连续 10 分钟零进展）才放弃。
  *  批量出图、刷新恢复与面板直连出图共用 */
 export async function pollShotImageJob(
   jobId: string,
   onItem: (item: ShotImageResult) => void,
-  deadlineMs = 10 * 60 * 1000,
+  stallMs = 10 * 60 * 1000,
 ): Promise<"done" | "timeout" | "gone"> {
-  const deadline = Date.now() + deadlineMs;
+  let stallDeadline = Date.now() + stallMs;
   const applied = new Set<string>();
   for (;;) {
     await new Promise((r) => setTimeout(r, 2500));
@@ -173,16 +175,19 @@ export async function pollShotImageJob(
       job = await getShotImageJob(jobId);
     } catch (exc) {
       if (exc instanceof ShotJobGoneError) return "gone";
-      if (Date.now() > deadline) return "timeout";
+      if (Date.now() > stallDeadline) return "timeout";
       continue;
     }
+    let fresh = 0;
     for (const item of job.images) {
       if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
       applied.add(item.rid);
+      fresh += 1;
       onItem(item);
     }
+    if (fresh > 0) stallDeadline = Date.now() + stallMs;
     if (job.status === "done") return "done";
-    if (Date.now() > deadline) return "timeout";
+    if (Date.now() > stallDeadline) return "timeout";
   }
 }
 

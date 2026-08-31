@@ -74,6 +74,13 @@ async function directImagegen(
     `全局视觉风格：${projectStyle}`,
   ].join("；");
   const isCharacterLook = refNodes.some((n) => n.data.nodeType === "character");
+  // 手动 @ 引用落成连线（viedeo-workflow「mention=边」范式）：生成后面板
+  // chips 持续可见，不随本会话的输入框状态消失
+  for (const rid of new Set(opts.refIds)) {
+    if (rid === nodeId || st.edges.some((e) => e.target === nodeId && e.source === rid))
+      continue;
+    st.connect({ source: rid, target: nodeId });
+  }
   const description = (opts.prompt || `${node.data.title} ${node.data.body ?? ""}`).trim();
   const count = Math.max(1, Math.min(4, opts.count ?? 1));
   const first = st.nodes.find((n) => n.id === nodeId);

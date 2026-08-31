@@ -4,7 +4,8 @@
  * 直接进渲染管线会引发 xyflow 告警和布局错乱——必须在 loadCanvas 后过滤。
  */
 
-import { NODE_FOOTPRINT, type WingEdge, type WingNode } from "./store";
+import { NODE_FOOTPRINT, type ShotRow, type WingEdge, type WingNode } from "./store";
+import { resolveRowRefIds } from "./shotRefs";
 
 export interface SanitizeResult {
   nodes: WingNode[];
@@ -14,6 +15,8 @@ export interface SanitizeResult {
   fixedParents: number;
   /** 遗留 looks[] 迁移拆出的 Look 图片卡数（一张卡一张图） */
   migratedLooks: number;
+  /** 存量镜头图补参考：补写 refIds 的图卡数（参考连线另计） */
+  fixedShotRefs: number;
 }
 
 export function sanitizeCanvas(
@@ -162,6 +165,40 @@ export function sanitizeCanvas(
     }
   }
 
+  // 存量镜头图补参考：历史批量出图已把行级 @资产喂给出图 flow（一致性
+  // 锚点），但没把参考落到图卡（无 refIds、无连线），画布看不出派生关系。
+  // 按行解析补 refIds + 「资产→镜头图」连线；解析与运行时同源（shotRefs），
+  // 已有即跳过，装载幂等
+  const byId3 = new Map(cleanNodes.map((n) => [n.id, n]));
+  const allEdges = [...cleanEdges, ...extraEdges];
+  let fixedShotRefs = 0;
+  for (const s of cleanNodes) {
+    if (s.data.nodeType !== "shotlist" || !Array.isArray(s.data.rows)) continue;
+    for (const row of s.data.rows as ShotRow[]) {
+      const imgId = row?.imageNodeId;
+      if (!imgId || !byId3.has(imgId)) continue;
+      const refIds = resolveRowRefIds(row, cleanNodes, allEdges);
+      if (refIds.length === 0) continue;
+      const img = byId3.get(imgId)!;
+      const prev = (img.data.refIds as string[] | undefined) ?? [];
+      const merged = new Set([...prev, ...refIds]);
+      if (merged.size > prev.length) {
+        img.data.refIds = [...merged];
+        fixedShotRefs += 1;
+      }
+      for (const rid of refIds) {
+        if (allEdges.some((e) => e.source === rid && e.target === imgId)) continue;
+        const e = {
+          id: `e_${Math.random().toString(36).slice(2, 10)}`,
+          source: rid,
+          target: imgId,
+        };
+        allEdges.push(e);
+        extraEdges.push(e);
+      }
+    }
+  }
+
   return {
     nodes: [...cleanNodes, ...extraNodes],
     edges: [...cleanEdges, ...extraEdges],
@@ -169,5 +206,6 @@ export function sanitizeCanvas(
     removedEdges,
     fixedParents,
     migratedLooks,
+    fixedShotRefs,
   };
 }

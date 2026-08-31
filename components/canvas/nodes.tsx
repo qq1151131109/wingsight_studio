@@ -65,6 +65,7 @@ import {
   type WingNodeType,
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
+import { isLookCard, resolveRowRefIds } from "@/lib/canvas/shotRefs";
 import {
   dispatchFocusEdit,
   FOCUS_EDIT_EVENT,
@@ -2908,8 +2909,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   // 剧本卡「拆分镜表」的一次性远程触发（hook 须在 early return 之前）：
   // 剧本卡给本卡置位 autoGenerate 旗标 → 消费并走本卡 generate（带镜头数/
   // 风格/名单注入/refIds 绑定全套参数），避免跨卡直调的挂载时序问题。
-  // generate 在 guard 之后定义，经 ref 间接引用
+  // generate 在 guard 之后定义，经 ref 间接引用；latest-ref 渲染期赋值是
+  // 刻意模式（幂等、无渲染输出依赖），编译器规则按意图豁免
   const genRef = useRef<() => void>(() => {});
+  // eslint-disable-next-line react-hooks/refs
+  genRef.current = () => {
+    update({ autoGenerate: undefined });
+    void generate();
+  };
   const autoGen = d?.autoGenerate === true;
   useEffect(() => {
     if (!autoGen) return;
@@ -3088,69 +3095,12 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     return composeShotPrompt(r, (d.visualStyle ?? "").trim());
   };
 
-  /** 文本 @名称 兜底匹配：最长优先（防“小雨”误命中“小雨萍”），
-   *  已命中的区间不再被更短名覆盖；含服饰在内的四类资产 */
-  // Look 图卡判定：image 卡且有来自资产卡的连线 = 派生参考图（一张卡一张图
-  // 重构后，造型变体都是这种卡）；可被行内 @ 引用，出图时当一致性参考
-  const isLook = (n: WingNode | undefined) =>
-    Boolean(
-      n &&
-        n.data.nodeType === "image" &&
-        n.data.title &&
-        edges.some(
-          (e) =>
-            e.target === n.id &&
-            ["character", "scene", "prop", "costume"].includes(
-              String(nodes.find((m) => m.id === e.source)?.data.nodeType),
-            ),
-        ),
-    );
-
-  const mentionedRefIds = (text: string) => {
-    // 资产卡 + 角色派生的 Look 图卡（有连线来源的 image 卡）都可被 @；
-    // 长名优先匹配防「@角色名」误吞「@角色名·造型」
-    const cands = nodes
-      .filter(
-        (n) =>
-          (["character", "scene", "prop", "costume"].includes(
-            String(n.data.nodeType),
-          ) ||
-            isLook(n)) &&
-          n.data.title,
-      )
-      .sort(
-        (a, b) =>
-          (b.data.title as string).length - (a.data.title as string).length,
-      );
-    const found: string[] = [];
-    const spans: [number, number][] = [];
-    for (const n of cands) {
-      const token = `@${n.data.title}`;
-      let from = 0;
-      for (;;) {
-        const i = text.indexOf(token, from);
-        if (i === -1) break;
-        const end = i + token.length;
-        if (!spans.some(([s0, e0]) => i < e0 && end > s0)) {
-          spans.push([i, end]);
-          found.push(n.id);
-        }
-        from = i + 1;
-      }
-    }
-    return found;
-  };
-
-  /** 行引用解析：结构化 refIds 优先，文本 @名称 兜底，合并去重 */
-  const rowRefNodes = (r: ShotRow) => {
-    const ids = new Set<string>(r.refIds ?? []);
-    mentionedRefIds(`${r.action ?? ""}${r.dialogue ?? ""}`).forEach((id) =>
-      ids.add(id),
-    );
-    return [...ids]
+  /** 行引用解析 → 参考卡列表（共享解析器 shotRefs，与 sanitize 存量迁移
+   *  同源；结构化 refIds 优先，文本 @名称 最长匹配兜底） */
+  const rowRefNodes = (r: ShotRow) =>
+    resolveRowRefIds(r, nodes, edges)
       .map((nid) => nodes.find((n) => n.id === nid))
       .filter((n): n is WingNode => Boolean(n));
-  };
 
   /** 补资产图：画布上缺设定图的资产卡一键批量出图（画风闸内） */
   const fillAssets = async () => {
@@ -3177,12 +3127,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       onError: setGenError,
     });
     setDecomposing(false);
-  };
-
-  // autoGenerate 消费体：先清旗标（防重入）再触发生成
-  genRef.current = () => {
-    update({ autoGenerate: undefined });
-    void generate();
   };
 
   /** 批量物化镜头图（novanova 分镜视频的图片版）：选中行 → 画布右侧双列
@@ -3241,16 +3185,44 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     const created: string[] = [];
     const jobs: { rid: string; nodeId: string }[] = [];
     const ridToNode = new Map<string, string>();
+    // 参考落卡（open-ai-canvas「storyboard-asset-reference」范式）：行解析出的
+    // 参考资产写进图卡 refIds 并逐个建「资产→镜头图」连线——画布可见派生关系，
+    // 面板 chips（连线即引用）与重跑上下文随之自洽
+    const edgeKeys = new Set(st.edges.map((e) => `${e.source}\u0000${e.target}`));
     for (let i = 0; i < targets.length; i++) {
       const { row } = targets[i];
+      const refIds = resolveRowRefIds(row, st.nodes, st.edges);
+      const connectRefs = (nid: string) => {
+        for (const rid of refIds) {
+          const key = `${rid}\u0000${nid}`;
+          if (edgeKeys.has(key)) continue;
+          edgeKeys.add(key);
+          st.connect({ source: rid, target: nid });
+        }
+      };
       const existing = row.imageNodeId
         ? st.nodes.find((n) => n.id === row.imageNodeId)
         : null;
       if (existing) {
-        // 原卡重跑：保留位置与连线，只重置状态
+        // 原卡重跑：保留位置与连线；参考随本次行解析刷新（换参考清旧边不叠加）
+        const staleIds = new Set<string>();
+        for (const e of st.edges) {
+          if (e.target !== existing.id || refIds.includes(e.source)) continue;
+          const src = st.nodes.find((n) => n.id === e.source);
+          if (
+            !["character", "scene", "prop", "costume"].includes(
+              String(src?.data.nodeType),
+            )
+          )
+            continue;
+          staleIds.add(e.id);
+          edgeKeys.delete(`${e.source}\u0000${e.target}`);
+        }
+        if (staleIds.size > 0) useCanvasStore.getState().removeEdges([...staleIds]);
         useCanvasStore
           .getState()
-          .updateNodeData(existing.id, { status: "loading", errorMessage: undefined, imageUrl: undefined });
+          .updateNodeData(existing.id, { status: "loading", errorMessage: undefined, imageUrl: undefined, refIds });
+        connectRefs(existing.id);
         jobs.push({ rid: row.rid, nodeId: existing.id });
         ridToNode.set(row.rid, existing.id);
         continue;
@@ -3265,9 +3237,11 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           body: row.action ?? "",
           status: "loading",
           styleSnapshot: styleStack.join("；"),
+          ...(refIds.length > 0 ? { refIds } : {}),
         },
       });
       st.connect({ source: id, target: nid });
+      connectRefs(nid);
       created.push(nid);
       jobs.push({ rid: row.rid, nodeId: nid });
       ridToNode.set(row.rid, nid);
@@ -3796,7 +3770,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     (["character", "scene", "prop", "costume"].includes(
                       String(n.data.nodeType),
                     ) ||
-                      isLook(n)) &&
+                      isLookCard(n, nodes, edges)) &&
                     n.data.title &&
                     (n.data.title as string).includes(mention.draft),
                 );

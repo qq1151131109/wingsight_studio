@@ -42,11 +42,11 @@ if (pst !== 200 && pst !== 201) throw new Error(`建项目失败 ${pst}: ${JSON.
 const pid = proj.id ?? proj.project?.id;
 console.log(`测试项目: ${pid}`);
 
-const save = (nodes, edges) =>
+const save = (nodes, edges, meta) =>
   api(`/projects/${pid}/canvas`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ nodes, edges, viewport: { x: 0, y: 0, zoom: 0.6 } }),
+    body: JSON.stringify({ nodes, edges, viewport: { x: 0, y: 0, zoom: 0.6 }, ...(meta ? { meta } : {}) }),
   });
 
 const imgNode = (id, st, extra = {}) => ({
@@ -256,6 +256,121 @@ check(
   edgesC.some((e) => e.source === "n_e2e_v1" && e.target === compose?.id) &&
     edgesC.some((e) => e.source === "n_e2e_v2" && e.target === compose?.id),
 );
+
+// ---------- Part D/E：参考落卡（存量迁移 + 补缺图实跑，全 mock 不出真图） ----------
+const charNode = {
+  id: "n_e2e_char",
+  type: "character",
+  position: { x: 0, y: 500 },
+  data: { nodeType: "character", title: "雨夜侦探老陈", body: "风衣侦探。", imageUrl: png1px, status: "ready" },
+};
+const rowsD = [
+  // 历史批次形态：行文本带 @资产名 但无结构化 refIds、无参考连线
+  { rid: "d1", action: "@雨夜侦探老陈 立在雨中", imageNodeId: "n_e2e_imgG" },
+  { rid: "d2", action: "@雨夜侦探老陈 点燃打火机" },
+];
+await save(
+  [
+    scriptNode,
+    charNode,
+    {
+      id: "n_e2e_sl",
+      type: "shotlist",
+      position: { x: 300, y: 0 },
+      data: { nodeType: "shotlist", title: "分镜表", rows: rowsD, status: "ready" },
+    },
+    imgNode("n_e2e_imgG", "ready", { imageUrl: png1px }),
+  ],
+  [
+    { id: "e1", source: "n_e2e_script", target: "n_e2e_sl" },
+    { id: "e2", source: "n_e2e_sl", target: "n_e2e_imgG" },
+  ],
+  // 画风闸需要项目画风（出图直连管线硬闸）
+  { visualStyle: "测试画风：黑色电影，雨夜霓虹" },
+);
+
+let genPosts = 0;
+await page.route("**/agent-service/storyboard/images", (route) => {
+  if (route.request().method() !== "POST") return route.fulfill({ status: 405, body: "" });
+  genPosts += 1;
+  return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobId: "e2e_job_gen" }) });
+});
+let genPolls = 0;
+await page.route("**/agent-service/storyboard/images/e2e_job_gen", (route) => {
+  genPolls += 1;
+  const body =
+    genPolls <= 1
+      ? { status: "running", images: [] }
+      : { status: "done", images: [{ rid: "d2", ok: true, imageUrl: png1px }] };
+  return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+});
+
+await page.goto(`${BASE}/project/${pid}`);
+await page.waitForTimeout(1500);
+await page.evaluate(() => window.__wsSetViewport?.({ x: 0, y: 0, zoom: 0.5 }));
+await page.waitForTimeout(3500); // sanitize 迁移 + debounce 落库
+
+{
+  const { body: c } = await api(`/projects/${pid}/canvas`);
+  const imgG = (c?.nodes ?? []).find((n) => n.id === "n_e2e_imgG");
+  check(
+    "D1 存量迁移补参考连线（资产→镜头图）",
+    (c?.edges ?? []).some((e) => e.source === "n_e2e_char" && e.target === "n_e2e_imgG"),
+  );
+  check(
+    "D2 存量迁移补 refIds",
+    (imgG?.data?.refIds ?? []).includes("n_e2e_char"),
+    `refIds=${JSON.stringify(imgG?.data?.refIds)}`,
+  );
+}
+
+// E：补缺图实跑（genShotImages 新建卡路径）— 参考随行解析落卡 + 建线
+const buqueD = page.getByRole("button", { name: /补缺图·1/ }).first();
+const hasBuque = await buqueD.count();
+check("E0 补缺图按钮计数=1", hasBuque >= 1);
+if (hasBuque > 0) {
+  await buqueD.click();
+  await page.waitForTimeout(9000); // mock 轮询（2.5s 间隔）+ 收尾
+}
+await page.waitForTimeout(2500); // debounce 落库
+{
+  const { body: c } = await api(`/projects/${pid}/canvas`);
+  const created = (c?.nodes ?? []).filter(
+    (n) => n?.data?.nodeType === "image" && String(n?.data?.title ?? "").includes("镜头"),
+  );
+  const target = created[created.length - 1];
+  check(
+    "E1 补缺图建卡并落 refIds",
+    (target?.data?.refIds ?? []).includes("n_e2e_char"),
+    `refIds=${JSON.stringify(target?.data?.refIds)}`,
+  );
+  check(
+    "E2 新卡带资产参考连线",
+    (c?.edges ?? []).some((e) => e.source === "n_e2e_char" && e.target === target?.id),
+  );
+  check(
+    "E3 出图结果回填",
+    target?.data?.status === "ready" && Boolean(target?.data?.imageUrl),
+    `status=${target?.data?.status}`,
+  );
+}
+
+// D3 幂等：重载后参考连线/refIds 不重复不膨胀
+await page.goto(`${BASE}/project/${pid}`);
+await page.waitForTimeout(3500);
+{
+  const { body: c } = await api(`/projects/${pid}/canvas`);
+  const refEdges = (c?.edges ?? []).filter(
+    (e) => e.source === "n_e2e_char" && e.target === "n_e2e_imgG",
+  );
+  const imgG = (c?.nodes ?? []).find((n) => n.id === "n_e2e_imgG");
+  check(
+    "D3 迁移幂等（重载不重复补线/补 refIds）",
+    refEdges.length === 1 &&
+      (imgG?.data?.refIds ?? []).filter((x) => x === "n_e2e_char").length === 1,
+    `边=${refEdges.length} refIds=${JSON.stringify(imgG?.data?.refIds)}`,
+  );
+}
 
 await browser.close();
 

@@ -91,6 +91,9 @@ export interface WingNodeData {
   /** image 卡：一次生成的多张候选（imageUrl 恒等于候选[primaryIndex]） */
   imageUrls?: string[];
   primaryIndex?: number;
+  /** image 卡：本次生成所用的参考卡 id（资产/Look 卡）。批量出图按行解析
+   *  写入并建参考连线；直连出图取自面板手动 @。重跑/重试复用 */
+  refIds?: string[];
   /** 历史版本（每次重生成前把当前主图存档；对比/回滚用） */
   versions?: { url: string; at: string }[];
   /** 锁定：不可拖动、不可改标题（卡上工具条切换） */
@@ -155,6 +158,7 @@ interface CanvasState {
   updateNodeData: (id: string, patch: Partial<WingNodeData>) => void;
   deleteNodes: (ids: string[]) => void;
   connect: (connection: Connection | { source: string; target: string }) => void;
+  removeEdges: (ids: string[]) => void;
   onNodesChange: (changes: NodeChange<WingNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<WingEdge>[]) => void;
   onConnect: (connection: Connection) => void;
@@ -727,6 +731,13 @@ export const useCanvasStore = create<CanvasState>()(
             },
             state.edges,
           ),
+        }));
+      },
+
+      removeEdges: (ids) => {
+        const drop = new Set(ids);
+        set((state) => ({
+          edges: state.edges.filter((e) => !drop.has(e.id)),
         }));
       },
 

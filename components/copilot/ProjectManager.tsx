@@ -185,11 +185,19 @@ async function activateProject(p: ProjectMeta) {
         canvas.nodes as never,
         canvas.edges as never,
       );
-      if (clean.removedNodes || clean.removedEdges || clean.fixedParents) {
+      if (
+        clean.removedNodes ||
+        clean.removedEdges ||
+        clean.fixedParents ||
+        clean.fixedShotRefs
+      ) {
         console.warn(
           `[canvas] 装载消毒：剥离 ${clean.removedNodes} 个坏节点 / ${clean.removedEdges} 条坏连线 / ${clean.fixedParents} 个孤儿分组引用` +
             (clean.migratedLooks
               ? `；迁移 ${clean.migratedLooks} 张遗留 Look 图为独立卡片`
+              : "") +
+            (clean.fixedShotRefs
+              ? `；为 ${clean.fixedShotRefs} 张存量镜头图补写参考`
               : ""),
         );
       }
