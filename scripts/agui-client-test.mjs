@@ -9,7 +9,9 @@ const threadId = `itest-${Date.now()}`;
 
 const tools = [{
   name: "canvas_ops",
-  description: "操作无限画布。ops 是操作数组",
+  description:
+    "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝）。" +
+    '示例：{op:"add_node",nodeType:"script|character",title,body} / {op:"connect_nodes",fromId,toId}',
   parameters: {
     type: "object",
     properties: { ops: { type: "array", items: { type: "object" } } },
@@ -74,18 +76,27 @@ if (toolCalls.size === 0) {
   process.exit(1);
 }
 
-// —— 模拟浏览器执行 canvas_ops（简化 applyOps）——
+// —— 模拟浏览器执行 canvas_ops（与前端 normalizeOps 同契约：缺 op 硬拒并把错误回传）——
 const [tcId, tc] = [...toolCalls.entries()][0];
-const ops = JSON.parse(tc.args).ops;
+const rawOps = JSON.parse(tc.args).ops;
+const badIdx = rawOps
+  .map((o, i) => (typeof o?.op !== "string" ? i : -1))
+  .filter((i) => i >= 0);
+const ops = rawOps.filter((o) => typeof o?.op === "string");
 let n = 0;
 const createdIds = [];
 for (const op of ops)
   if (op.op === "add_node") createdIds.push({ id: `n_itest_${++n}`, op });
+const errors = badIdx.map((i) => `#${i}: 缺少 op 字段`);
 
 agent.addMessage({
   id: `tr_${Date.now()}`,
   role: "tool",
-  content: JSON.stringify({ applied: ops.length, createdIds: createdIds.map((c) => c.id), errors: [] }),
+  content: JSON.stringify({
+    applied: errors.length ? 0 : ops.length,
+    createdIds: errors.length ? [] : createdIds.map((c) => c.id),
+    errors,
+  }),
   toolCallId: tcId,
 });
 

@@ -576,7 +576,7 @@ export default function CanvasAgentBridge() {
   useCopilotAction({
     name: "canvas_ops",
     description:
-      "操作无限画布。ops 是操作数组，每个元素形如 " +
+      "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝），取值与形状：每个元素形如 " +
       '{op:"add_node",nodeType:"note|script|character|image|video|audio|compose|storyboard|shotlist",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl；shotlist 可带 rows 行数组）/ ' +
       '{op:"update_node",id,title,body}（分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
       '{op:"delete_nodes",ids:[...]} / ' +

@@ -12,9 +12,10 @@ import base64
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langchain.tools import tool
@@ -138,13 +139,52 @@ _VISION_MODEL_HINTS = (
     "gemini", "claude", "pixtral", "internvl",
 )
 
-
 def _vision_enabled() -> bool:
     explicit = (os.environ.get("AGENT_VISION_ENABLED") or "").strip().lower()
     if explicit:
         return explicit in ("1", "true", "yes", "on")
     model = (os.environ.get("AGENT_MODEL") or "deepseek-chat").lower()
     return any(h in model for h in _VISION_MODEL_HINTS)
+
+
+class _OneShotToolArgsCompatChatOpenAI(ChatOpenAI):
+    """工具调用流兼容层：把「name 与完整 arguments 同块到达」的工具调用
+    拆成 先 START（仅 name）→ 再 ARGS（纯参数增量）两段。
+
+    GLM 等网关不做 OpenAI 式参数分片，一个流块就带全量参数；ag-ui-langgraph
+    0.0.44 的编码器状态机只认「后续块才是 args 增量」，同块参数会被 START
+    吞掉（客户端收到空 arguments）。渐进式分片的模型（DeepSeek/OpenAI）
+    原样透传，不受影响。
+    """
+
+    def _split_one_shot_chunk(self, chunk: Any) -> Iterator[Any]:
+        tccs = list(getattr(chunk.message, "tool_call_chunks", None) or [])
+        if not any(t.get("name") and t.get("args") for t in tccs if isinstance(t, dict)):
+            yield chunk
+            return
+        start_tccs = [
+            {**t, "args": ""} if isinstance(t, dict) else t for t in tccs
+        ]
+        args_tccs = [
+            {**t, "name": None, "id": None} if isinstance(t, dict) else t for t in tccs
+        ]
+        start_msg = chunk.message.model_copy(
+            update={"tool_call_chunks": start_tccs, "content": ""}
+        )
+        args_msg = chunk.message.model_copy(
+            update={"tool_call_chunks": args_tccs, "content": ""}
+        )
+        yield ChatGenerationChunk(
+            message=start_msg, generation_info=chunk.generation_info
+        )
+        yield ChatGenerationChunk(message=args_msg, generation_info=None)
+
+    async def _astream(self, messages, stop=None, run_manager=None, **kwargs):
+        async for chunk in super()._astream(
+            messages, stop=stop, run_manager=run_manager, **kwargs
+        ):
+            for piece in self._split_one_shot_chunk(chunk):
+                yield piece
 
 
 _MEDIA_BLOCK_LABELS = {
@@ -431,7 +471,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     if _unanswered_frontend_calls(messages):
         return Command(goto=END, update={})
 
-    model = ChatOpenAI(
+    model = _OneShotToolArgsCompatChatOpenAI(
         model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("AGENT_API_KEY", ""),
