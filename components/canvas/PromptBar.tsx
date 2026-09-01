@@ -3,14 +3,21 @@
 /**
  * 生成输入条（生成输入面板的主体）：描述 + "@"引用画布卡片 → 点生成
  *   → GENERATE_EVENT → CanvasAgentBridge 组装指令发给 agent。
- * 引用以 chip 形式挂在输入条上（可删），不进正文——纯 textarea 实现。
- * 拖画布媒体到面板上 = 快捷加引用（ADD_REF_EVENT，nodes.tsx 的 mediaDragProps 发出）。
+ * 引用走 MentionInput 内联 chip（open-ai-canvas 结构化 token 范式）：@ 后
+ * chip 落在正文光标处，提交时带图引用自动编号 图1..图N，正文与引用同源、
+ * 无「上方一排 chip、正文手写图一图二」的脱节。连线引用（上游连进来的卡）
+ * 仍以 chip 亮在上方，不可删（移除=画布断线）。
+ * 拖画布媒体到面板上 = 快捷 @ 引用（ADD_REF_EVENT，nodes.tsx 的 mediaDragProps 发出）。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Sparkles, Star, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { assetThumbUrl } from "@/lib/asset-thumb";
+import MentionInput, {
+  type MentionInputHandle,
+  type MentionRead,
+} from "./MentionInput";
 import {
   ADD_REF_EVENT,
   FOCUS_NODES_EVENT,
@@ -69,7 +76,9 @@ export type GenerateDetail = {
   /** text=撰写/续写正文（note/script），image/video=媒体生成（结果回填对应
    *  URL 字段），shotlist=对话式修改分镜表（重生成/增删行） */
   kind: "image" | "video" | "text" | "shotlist";
+  /** 正文：内联 @ chip 已替换——带图引用→图N（首现顺序），无图引用→《标题》 */
   prompt: string;
+  /** 被 @ 的节点 id，按正文首现顺序（桥接层据此排参考图数组/注入编号契约） */
   refIds: string[];
   /** image 生成时的候选张数（1/2/4，缺省 1） */
   count?: number;
@@ -81,15 +90,6 @@ const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
   text: "想让 AI 写什么？@ 引用画布卡片补充设定",
   shotlist: "想让 AI 改这页分镜？如：按剧本重新生成 / 压缩到 6 镜 / 给第 3 镜加雨戏",
 };
-
-/** caret 前最后一个 @提及片段（"雨夜@女侠" → q="女侠"） */function detectMention(
-  text: string,
-  caret: number,
-): { start: number; q: string } | null {
-  const m = text.slice(0, caret).match(/@([^\s@]{0,20})$/);
-  if (!m) return null;
-  return { start: caret - m[0].length, q: m[1] };
-}
 
 /** 参考实体缩略（竞品通行的实体化 chip：viedeo-workflow/open-ai-canvas）：
  *  有图用缩略图，无图（文本/视频/音频）降级为类型首字徽标 */
@@ -750,7 +750,7 @@ function TextModelChip({ nodeId }: { nodeId: string }) {
   const defaultOption = findTextModelOption(TEXT_MODEL_DEFAULT_ID, models);
   const effectiveLabel = current
     ? (option?.label ?? current)
-    : (defaultOption?.label ?? "DeepSeek V4 Flash");
+    : (defaultOption?.label ?? TEXT_MODEL_DEFAULT_ID);
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -798,7 +798,9 @@ function TextModelChip({ nodeId }: { nodeId: string }) {
             >
               <span className="block text-[11px] text-text">跟随默认</span>
               <span className="block text-[9px] text-text-4">
-                DeepSeek V4 Flash · 快 · 便宜
+                {defaultOption
+                  ? `${defaultOption.label} · ${defaultOption.tag}`
+                  : TEXT_MODEL_DEFAULT_ID}
               </span>
             </button>
             {models === null ? (
