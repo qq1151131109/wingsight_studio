@@ -134,6 +134,12 @@ TEXT_MODELS: List[Dict[str, Any]] = [
         "tag": "长上下文 · DMX",
         "provider": "OpenAI Compatible",
     },
+    {
+        "id": "claude-sonnet-5",
+        "label": "Claude Sonnet 5",
+        "tag": "写作质量 · DMX",
+        "provider": "OpenAI Compatible",
+    },
 ]
 
 
