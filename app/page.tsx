@@ -291,9 +291,33 @@ function HomeInner() {
                     ) : null}
                   </div>
                 </div>
-                <p className="mt-2 text-[11px] text-text-4">
-                  编辑于 {formatTime(p.updated_at) || "未知时间"}
-                </p>
+                <div className="mt-2 flex items-center gap-1 text-[11px] text-text-4">
+                  {p.ownerName ? (
+                    <span
+                      className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] text-accent"
+                      data-tip={`归属：${p.ownerName}`} aria-label={`归属：${p.ownerName}`}
+                    >
+                      {p.ownerName}
+                    </span>
+                  ) : null}
+                  {(p.collaboratorNames ?? []).slice(0, 2).map((n) => (
+                    <span
+                      key={n}
+                      className="shrink-0 rounded bg-surface-2 px-1 py-px text-[10px] text-text-3"
+                      data-tip={`协作：${n}`} aria-label={`协作：${n}`}
+                    >
+                      {n}
+                    </span>
+                  ))}
+                  {(p.collaboratorNames?.length ?? 0) > 2 ? (
+                    <span className="shrink-0 text-[10px] text-text-4">
+                      +{(p.collaboratorNames ?? []).length - 2}
+                    </span>
+                  ) : null}
+                  <span className="truncate">
+                    编辑于 {formatTime(p.updated_at) || "未知时间"}
+                  </span>
+                </div>
               </div>
             ))}
           </div>

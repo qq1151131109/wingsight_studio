@@ -14,6 +14,9 @@ projects + canvases + chat_messages 三张表：画布整体 JSON 存取，
 import json
 import sqlite3
 import uuid
+
+import auth  # noqa: E402  (owner 用户名批量查询；auth 不反向依赖本模块，无环)
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
@@ -204,10 +207,15 @@ def list_projects(viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
             " ORDER BY updated_at DESC"
         ).fetchall()
     visible = [r for r in rows if can_access(viewer, r)]
+    # 批量补 owner 用户名（卡片展示；历史遗留 owner_id 如 default 不在用户表则原样透出）。
+    # 协作者字段存的就是用户名（JWT sub=username，can_access 按用户名比对），直接透传。
+    names = auth.usernames_by_ids([r["owner_id"] for r in visible])
     out: List[Dict[str, Any]] = []
     for r in visible:
         d = dict(r)
         d["collaborators"] = _collaborators_of(r)
+        d["ownerName"] = names.get(r["owner_id"], r["owner_id"])
+        d["collaboratorNames"] = _collaborators_of(r)
         # 前端按此隐藏重命名/删除等生命周期操作（协作者可见可分享但不管辖）
         d["canManage"] = (
             getattr(viewer, "role", "admin") == "admin" or r["owner_id"] == viewer.id

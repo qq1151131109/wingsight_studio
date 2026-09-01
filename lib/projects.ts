@@ -10,7 +10,11 @@ export interface ProjectMeta {
   updated_at: string;
   /** 归属与协作者（多人模式下由后端返回） */
   owner_id?: string;
+  /** owner 用户名（后端批量回填；历史遗留归属如 default 原样透出） */
+  ownerName?: string;
   collaborators?: string[];
+  /** 协作用户名（与 collaborators 的 id 一一对应，已剔除查不到的账号） */
+  collaboratorNames?: string[];
   /** 是否可执行重命名/删除等生命周期操作（owner/admin）；协作者为 false */
   canManage?: boolean;
 }

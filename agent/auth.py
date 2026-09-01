@@ -210,6 +210,19 @@ def user_get_by_id(user_id: str) -> dict | None:
     return d
 
 
+def usernames_by_ids(user_ids: list[str]) -> dict[str, str]:
+    """批量 id→username（项目列表 owner 展示用）；查不到的 id 不在返回里。"""
+    ids = sorted({i for i in user_ids if i})
+    if not ids:
+        return {}
+    with _conn() as conn:
+        marks = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT id, username FROM users WHERE id IN ({marks})", ids
+        ).fetchall()
+    return {r["id"]: r["username"] for r in rows}
+
+
 def user_create(username: str, password_hash: str, role: str = "member") -> dict:
     uid = uuid.uuid4().hex[:12]
     now = _now()
