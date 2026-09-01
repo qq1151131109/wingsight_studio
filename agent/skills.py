@@ -132,6 +132,7 @@ async def start_storyboard_gen_job(
                         **models.text_model_tweaks(model),
                     }
                 },
+                timeout=900,
             )
             # run_flow_blocking 失败不抛错、返回全角括号错误文案（拆解同款守卫）：
             # 明报真因，不落到 _parse_shot_rows 里被截括号伪装成 JSON 解析错
@@ -167,8 +168,17 @@ MAX_RESULT_CHARS = 1500
 # ---------- 通用：阻塞式调用 ----------
 
 
-async def run_flow_blocking(flow_id: str, input_value: str = "", tweaks: Optional[Dict[str, Any]] = None) -> str:
-    """阻塞式跑一个 flow，返回末端输出组件的消息文本。"""
+async def run_flow_blocking(
+    flow_id: str,
+    input_value: str = "",
+    tweaks: Optional[Dict[str, Any]] = None,
+    timeout: int = 300,
+) -> str:
+    """阻塞式跑一个 flow，返回末端输出组件的消息文本。
+
+    timeout：整链等待上限（秒）。分镜表生成实测可到 13 分钟+（大剧本 + 慢模型），
+    长流程调用方必须显式放宽，否则 httpx 超时被下面的守卫包装成"连不上"误导人。
+    """
     headers = {"Content-Type": "application/json"}
     if LANGFLOW_API_KEY:
         headers["x-api-key"] = LANGFLOW_API_KEY
@@ -182,7 +192,7 @@ async def run_flow_blocking(flow_id: str, input_value: str = "", tweaks: Optiona
         payload["tweaks"] = tweaks
 
     try:
-        async with httpx.AsyncClient(timeout=300) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(
                 f"{LANGFLOW_URL}/api/v1/run/{flow_id}",
                 headers=headers,
@@ -197,6 +207,10 @@ async def run_flow_blocking(flow_id: str, input_value: str = "", tweaks: Optiona
                 # 200 但响应体不是 JSON（截断/代理页/流式混入）：明报并带原文，
                 # 否则这里裸抛 JSONDecodeError，调用方只能看到 "Expecting value…"
                 return f"（langflow 响应不是 JSON（{exc}）：{resp.text[:120]}）"
+    except httpx.TimeoutException as exc:
+        # 超时 ≠ 连不上：langflow 多半还在后台跑，只是超过了等待上限
+        # （httpx 超时异常的 str 常为空串，不点明会被误读成服务挂了）
+        return f"（langflow 响应超时（>{timeout}s，flow 可能仍在后台执行）：{exc}）"
     except httpx.HTTPError as exc:
         return f"（连不上 langflow（{LANGFLOW_URL}）：{exc}）"
 

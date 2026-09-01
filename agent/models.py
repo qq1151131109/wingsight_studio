@@ -110,7 +110,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 # 字段 = langflow 的一等命名平台（langflow/src/bundles/platforms/ 扩展包声明，
 # 加平台见 bundles/platforms/README.md）：
 # - BigModel = 智谱官方（BIGMODEL_BASE_URL/BIGMODEL_API_KEY 全局变量）
-#   → glm-5.3-flash（出厂默认）/ glm-5.3
+#   → glm-5.3-flash / glm-5.3
 # - DeepSeek = DeepSeek 平台（DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY；本部署
 #   指向智谱 coding 网关——无 api.deepseek.com 官方键，改 BASE_URL 即切官方）
 #   → deepseek-v4-flash / v4-pro / v4-flash-vision-exp
@@ -120,15 +120,14 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 # （按组件名 tweaks，不走节点 id，重建不失效）。旧 "OpenAI"/
 # "OpenAI Compatible" 劫持命名已下线（连带 langflow 旧全局变量删除）。
 
-DEFAULT_TEXT_MODEL_ID = "glm-5.3-flash"
+DEFAULT_TEXT_MODEL_ID = "gpt-5.6-luna"
 
 TEXT_MODELS: List[Dict[str, Any]] = [
     {
         "id": "glm-5.3-flash",
         "label": "GLM 5.3 Flash",
-        "tag": "快 · 多模态 · 剧本拆解/分镜表默认 · 智谱官方",
+        "tag": "快 · 多模态 · 智谱官方",
         "provider": "BigModel",
-        "recommended": True,
     },
     {
         "id": "glm-5.3",
@@ -157,8 +156,9 @@ TEXT_MODELS: List[Dict[str, Any]] = [
     {
         "id": "gpt-5.6-luna",
         "label": "GPT 5.6 Luna",
-        "tag": "创意文案 · DMX",
+        "tag": "分镜/剧本默认 · 创意文案 · DMX",
         "provider": "DMX",
+        "recommended": True,
     },
     {
         "id": "gemini-3.7-flash",

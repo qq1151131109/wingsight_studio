@@ -29,8 +29,9 @@ export async function generateShotlist(
   const { jobId } = (await start.json()) as { jobId?: string };
   if (!jobId) throw new Error("生成任务启动失败");
 
-  // 轮询（代理 30s 掐断长请求，生成必须异步）
-  const deadline = Date.now() + 5 * 60 * 1000;
+  // 轮询（代理 30s 掐断长请求，生成必须异步）。agent 侧等待上限 900s
+  // （分镜表实测可到 13 分钟+），前端轮询窗口放宽到 15.5 分钟兜住它
+  const deadline = Date.now() + 15.5 * 60 * 1000;
   for (;;) {
     await new Promise((r) => setTimeout(r, 2500));
     const r = await apiFetch(`/agent-service/storyboard/generate/${jobId}`);

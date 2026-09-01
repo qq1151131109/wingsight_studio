@@ -383,7 +383,8 @@ async def api_storyboard_generate(req: dict, user: auth.CurrentUser):
     if not script:
         return Response(status_code=400, content="剧本内容为空", media_type="text/plain")
     try:
-        text_model = models.resolve_text_model(req.get("model"))
+        # 未选模型 → 目录默认（DEFAULT_TEXT_MODEL_ID），不再回落 flow 出厂 glm
+        text_model = models.resolve_text_model(req.get("model")) or models.DEFAULT_TEXT_MODEL_ID
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:
@@ -465,7 +466,8 @@ async def api_text_rewrite(req: dict, user: auth.CurrentUser):
     if not instruction:
         return Response(status_code=400, content="撰写/改写需要非空指令", media_type="text/plain")
     try:
-        text_model = models.resolve_text_model(req.get("model"))
+        # 未选模型 → 目录默认（DEFAULT_TEXT_MODEL_ID），不再回落 flow 出厂 glm
+        text_model = models.resolve_text_model(req.get("model")) or models.DEFAULT_TEXT_MODEL_ID
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:
