@@ -555,10 +555,20 @@ function CardShell({
 }
 
 /** 媒体区右上角的悬停操作簇（各媒体卡统一位置与样式） */
-function CornerActions({ children }: { children: React.ReactNode }) {
+function CornerActions({
+  children,
+  always,
+}: {
+  children: React.ReactNode;
+  /** 常显槽：不随 hover 显隐的重要入口（如版本历史），渲染在 hover 组左侧 */
+  always?: React.ReactNode;
+}) {
   return (
-    <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-      {children}
+    <span className="absolute right-1.5 top-1.5 flex items-start gap-1">
+      {always ? <span className="flex gap-1">{always}</span> : null}
+      <span className="flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+        {children}
+      </span>
     </span>
   );
 }
@@ -1197,6 +1207,10 @@ function AssetCard({ data, id, selected }: NodeProps) {
     update({ status: "loading", errorMessage: undefined });
     setImgJob(true);
     try {
+      // 卡片级出图覆盖（模型/档位/画幅，面板 chips 写入 data.gen）：
+      // 生成本卡图片的入口统一读它；无显式画幅=自动，卡上无参考图，
+      // flow 按资产类型默认幅面出图（四格定妆 16:9 / 道具平铺 4:3）
+      const cardGen = saneGen(d.gen);
       const jobId = await startCharacterImageJob({
         rid: id,
         name: d.title || "资产",
@@ -1204,6 +1218,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
         // 服饰卡的设定图按道具契约（4:3 单件）出图
         assetType: kind === "costume" ? "prop" : kind,
         visualNotes: projectStyle ? `全局视觉风格：${projectStyle}` : undefined,
+        aspect: cardGen?.aspect || undefined,
+        params: cardGen ?? undefined,
       });
       const usedStyle = projectStyle;
       const deadline = Date.now() + 5 * 60 * 1000;
@@ -1287,20 +1303,23 @@ function AssetCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
-            {versionCount > 0 ? (
-              <button
-                type="button"
-                data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
-                className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/55 px-1 py-0.5 text-[10px] text-white hover:bg-black/75"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setHistoryOpen(true);
-                }}
-              >
-                <History className="h-3 w-3" />V{versionCount + 1}
-              </button>
-            ) : null}
-            <CornerActions>
+            <CornerActions
+              always={
+                versionCount > 0 ? (
+                  <button
+                    type="button"
+                    data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
+                    className="nodrag flex items-center gap-0.5 rounded-md bg-black/55 px-1 py-1 text-[10px] text-white hover:bg-black/75"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setHistoryOpen(true);
+                    }}
+                  >
+                    <History className="h-3 w-3" />V{versionCount + 1}
+                  </button>
+                ) : undefined
+              }
+            >
               <button
                 type="button"
                 data-tip="AI 重新出设定图（用设定正文）" aria-label="AI 重新出设定图（用设定正文）"
@@ -1638,20 +1657,23 @@ function ImageCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
-            {versionCount > 0 ? (
-              <button
-                type="button"
-                data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
-                className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/55 px-1 py-0.5 text-[10px] text-white hover:bg-black/75"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setHistoryOpen(true);
-                }}
-              >
-                <History className="h-3 w-3" />V{versionCount + 1}
-              </button>
-            ) : null}
-            <CornerActions>
+            <CornerActions
+              always={
+                versionCount > 0 ? (
+                  <button
+                    type="button"
+                    data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
+                    className="nodrag flex items-center gap-0.5 rounded-md bg-black/55 px-1 py-1 text-[10px] text-white hover:bg-black/75"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setHistoryOpen(true);
+                    }}
+                  >
+                    <History className="h-3 w-3" />V{versionCount + 1}
+                  </button>
+                ) : undefined
+              }
+            >
               <a
                 href={d.imageUrl}
                 download={downloadName(d.title, d.imageUrl, "png")}
