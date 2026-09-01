@@ -73,7 +73,9 @@ curl -s --compressed -X POST http://localhost:7860/api/v1/flows/ \
 - agent 经 **v1 阻塞 API**（`/api/v1/run/{flow_id}`）调用，参数用 tweaks 按
   **节点 id** 注入；Prompt 模板变量只收字符串（传 int 会 500）
 - 文本模型切换走**组件名注入**（非节点 id，删节点重建不失效）：
-  `tweaks={"LanguageModelComponent": {"model_name": "<models.py TEXT_MODELS id>"}}`——
+  `tweaks={"LanguageModelComponent": {"model_name": "<models.py TEXT_MODELS id>", "provider": "<BigModel|DeepSeek|DMX>"}}`——
+  provider = langflow 一等平台名（声明在 langflow/src/bundles/platforms/，随包种子的
+  <前缀>_BASE_URL/<前缀>_API_KEY 全局变量路由）；
   LM 组件的 model_name 覆盖字段留空即用 flow 保存的模型，运行时覆盖经此通道；
   看图反推是视觉模型（gemini 固定，组件 model_name），不走此通道。
   目录与校验唯一事实源 `agent/models.py`（TEXT_MODELS，DMX chat 探针验证），

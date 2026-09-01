@@ -711,8 +711,9 @@
                 "value": [
                   {
                     "name": "deepseek-v4-flash",
-                    "provider": "OpenAI",
-                    "category": "OpenAI"
+                    "provider": "DeepSeek",
+                    "category": "OpenAI",
+                    "icon": "DeepSeek"
                   }
                 ],
                 "display_name": "Language Model",
@@ -732,9 +733,9 @@
                 "options": [
                   {
                     "name": "deepseek-v4-flash",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -745,9 +746,9 @@
                   },
                   {
                     "name": "deepseek-v4-pro",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -758,9 +759,9 @@
                   },
                   {
                     "name": "deepseek-v4-flash-vision-exp",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -771,9 +772,9 @@
                   },
                   {
                     "name": "Baichuan-M2",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -785,9 +786,9 @@
                   },
                   {
                     "name": "Baichuan-M2-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -799,9 +800,9 @@
                   },
                   {
                     "name": "Baichuan-M3",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -813,9 +814,9 @@
                   },
                   {
                     "name": "Baichuan-M3-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -827,9 +828,9 @@
                   },
                   {
                     "name": "Baichuan2-53B",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1270,8 +1271,9 @@
                 "value": [
                   {
                     "name": "gpt-5.6-luna",
-                    "provider": "OpenAI Compatible",
-                    "category": "OpenAI Compatible"
+                    "provider": "DMX",
+                    "category": "OpenAI Compatible",
+                    "icon": "DMX"
                   }
                 ],
                 "display_name": "Language Model",
@@ -1291,9 +1293,9 @@
                 "options": [
                   {
                     "name": "deepseek-v4-flash",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1304,9 +1306,9 @@
                   },
                   {
                     "name": "deepseek-v4-pro",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1317,9 +1319,9 @@
                   },
                   {
                     "name": "deepseek-v4-flash-vision-exp",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1330,9 +1332,9 @@
                   },
                   {
                     "name": "Baichuan-M2",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1344,9 +1346,9 @@
                   },
                   {
                     "name": "Baichuan-M2-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1358,9 +1360,9 @@
                   },
                   {
                     "name": "Baichuan-M3",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1372,9 +1374,9 @@
                   },
                   {
                     "name": "Baichuan-M3-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1386,9 +1388,9 @@
                   },
                   {
                     "name": "Baichuan2-53B",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1400,11 +1402,12 @@
                   },
                   {
                     "name": "gpt-5.6-luna",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "category": "OpenAI Compatible",
                     "metadata": {
                       "not_enabled_locally": true
-                    }
+                    },
+                    "icon": "DMX"
                   }
                 ]
               },
@@ -1837,8 +1840,9 @@
                 "value": [
                   {
                     "name": "gemini-3.7-flash",
-                    "provider": "OpenAI Compatible",
-                    "category": "OpenAI Compatible"
+                    "provider": "DMX",
+                    "category": "OpenAI Compatible",
+                    "icon": "DMX"
                   }
                 ],
                 "display_name": "Language Model",
@@ -1858,9 +1862,9 @@
                 "options": [
                   {
                     "name": "deepseek-v4-flash",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1871,9 +1875,9 @@
                   },
                   {
                     "name": "deepseek-v4-pro",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1884,9 +1888,9 @@
                   },
                   {
                     "name": "deepseek-v4-flash-vision-exp",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1897,9 +1901,9 @@
                   },
                   {
                     "name": "Baichuan-M2",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1911,9 +1915,9 @@
                   },
                   {
                     "name": "Baichuan-M2-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1925,9 +1929,9 @@
                   },
                   {
                     "name": "Baichuan-M3",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1939,9 +1943,9 @@
                   },
                   {
                     "name": "Baichuan-M3-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1953,9 +1957,9 @@
                   },
                   {
                     "name": "Baichuan2-53B",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -1967,11 +1971,12 @@
                   },
                   {
                     "name": "gemini-3.7-flash",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "category": "OpenAI Compatible",
                     "metadata": {
                       "not_enabled_locally": true
-                    }
+                    },
+                    "icon": "DMX"
                   }
                 ]
               },

@@ -25,6 +25,13 @@ if [ ! -x langflow/.venv/bin/langflow ]; then
   (cd langflow && uv sync)
 fi
 
+# ---------- 1.5) 平台扩展包（wingsight 自有 bundle，editable 安装） ----------
+if ! (cd langflow && .venv/bin/python -c "import lfx_platforms" >/dev/null 2>&1); then
+  echo "… 安装平台扩展包 bundles/platforms（lfx-platforms）"
+  (cd langflow && uv pip install -e src/bundles/platforms --no-deps)
+  echo "✓ lfx-platforms 已安装"
+fi
+
 # ---------- 2) 运行配置 ----------
 if [ ! -f langflow/.env ]; then
   cat > langflow/.env <<'EOF'
@@ -78,6 +85,50 @@ open(".env.local", "w", encoding="utf-8").write("\n".join(lines) + "\n")
 PY
   echo "✓ LANGFLOW_API_KEY 已生成并回写 .env.local"
 fi
+
+# ---------- 4.5) 平台变量种子（wingsight 平台 bundle：BigModel/DMX/DeepSeek） ----------
+# 幂等：已存在的变量不覆盖（换值走 langflow UI，或删变量后重跑本脚本）。
+# API key 取自根 .env.local 的 <前缀>_API_KEY，BASE_URL 为各平台缺省端点。
+echo "… 平台变量种子（BigModel/DMX/DeepSeek）"
+python3 - "$KEY" <<'PY'
+import json, sys, urllib.request
+from pathlib import Path
+
+key = sys.argv[1]
+base = "http://127.0.0.1:7860"
+
+def api(method, path, body=None):
+    req = urllib.request.Request(base + path, method=method,
+        headers={"x-api-key": key, "Content-Type": "application/json"},
+        data=json.dumps(body).encode() if body else None)
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read() or b"{}")
+
+env = {}
+for l in Path(".env.local").read_text(encoding="utf-8").splitlines():
+    if "=" in l and not l.strip().startswith("#"):
+        k, _, v = l.partition("=")
+        env[k.strip()] = v
+
+existing = {v.get("name") for v in api("GET", "/api/v1/variables/")}
+seeds = {
+    "BIGMODEL_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "BIGMODEL_API_KEY": env.get("BIGMODEL_API_KEY", ""),
+    "DMX_BASE_URL": "https://www.dmxapi.cn/v1",
+    "DMX_API_KEY": env.get("DMX_API_KEY", ""),
+    "DEEPSEEK_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "DEEPSEEK_API_KEY": env.get("DEEPSEEK_API_KEY", ""),
+}
+for name, value in seeds.items():
+    if name in existing:
+        continue
+    if not value:
+        print(f"  ⚠ {name} 缺 .env.local 键且变量不存在，跳过（平台在 UI 里不可用）")
+        continue
+    api("POST", "/api/v1/variables/", {"name": name, "value": value, "default_fields": []})
+    print(f"  ✓ {name}")
+print("✓ 平台变量种子完成")
+PY
 
 # ---------- 5) 导入 flows + 回写 id ----------
 python3 - "$KEY" <<'PY'

@@ -1,0 +1,167 @@
+{
+  "$schema": "https://schemas.langflow.org/extension/v1.json",
+  "id": "lfx-platforms",
+  "version": "0.1.0",
+  "name": "Wingsight Platforms",
+  "description": "Wingsight 自有的 OpenAI 兼容模型平台（智谱 BigModel / DMX / DeepSeek …）注册为一等命名 provider。加平台：providers[] 里加一条声明 + 重启 langflow，不改任何代码。",
+  "lfx": {
+    "compat": [
+      "1"
+    ]
+  },
+  "providers": [
+    {
+      "name": "BigModel",
+      "provider_id": "bigmodel",
+      "display_name": "智谱 BigModel",
+      "metadata": {
+        "icon": "BigModel",
+        "max_tokens_field_name": "max_tokens",
+        "variables": [
+          {
+            "variable_name": "BigModel Base URL",
+            "variable_key": "BIGMODEL_BASE_URL",
+            "description": "智谱开放平台 OpenAI 兼容端点，缺省 https://open.bigmodel.cn/api/paas/v4。",
+            "required": true,
+            "is_secret": false,
+            "is_list": false,
+            "options": [],
+            "langchain_param": "base_url",
+            "component_metadata": {
+              "mapping_field": "base_url",
+              "required": false,
+              "advanced": true,
+              "info": "Falls back to the BIGMODEL_BASE_URL environment variable"
+            }
+          },
+          {
+            "variable_name": "BigModel API Key",
+            "variable_key": "BIGMODEL_API_KEY",
+            "description": "智谱开放平台 API Key（ZhipuAI）。",
+            "required": true,
+            "is_secret": true,
+            "is_list": false,
+            "options": [],
+            "langchain_param": "api_key",
+            "component_metadata": {
+              "mapping_field": "api_key",
+              "required": false,
+              "advanced": true,
+              "info": "Falls back to the BIGMODEL_API_KEY environment variable"
+            }
+          }
+        ],
+        "api_docs_url": "https://docs.bigmodel.cn/cn/guide/start/overview",
+        "mapping": {
+          "model_class": "ChatOpenAI",
+          "model_param": "model"
+        }
+      },
+      "api_key_required": true,
+      "validator": "lfx_platforms.discovery:validate_platform_credentials",
+      "catalog_loader": "lfx_platforms.catalog:catalog_bigmodel"
+    },
+    {
+      "name": "DMX",
+      "provider_id": "dmx",
+      "display_name": "DMX API",
+      "metadata": {
+        "icon": "DMX",
+        "max_tokens_field_name": "max_tokens",
+        "variables": [
+          {
+            "variable_name": "DMX Base URL",
+            "variable_key": "DMX_BASE_URL",
+            "description": "DMXAPI OpenAI 兼容端点，缺省 https://www.dmxapi.cn/v1。",
+            "required": true,
+            "is_secret": false,
+            "is_list": false,
+            "options": [],
+            "langchain_param": "base_url",
+            "component_metadata": {
+              "mapping_field": "base_url",
+              "required": false,
+              "advanced": true,
+              "info": "Falls back to the DMX_BASE_URL environment variable"
+            }
+          },
+          {
+            "variable_name": "DMX API Key",
+            "variable_key": "DMX_API_KEY",
+            "description": "DMXAPI 聚合网关 API Key。",
+            "required": true,
+            "is_secret": true,
+            "is_list": false,
+            "options": [],
+            "langchain_param": "api_key",
+            "component_metadata": {
+              "mapping_field": "api_key",
+              "required": false,
+              "advanced": true,
+              "info": "Falls back to the DMX_API_KEY environment variable"
+            }
+          }
+        ],
+        "api_docs_url": "https://www.dmxapi.cn/docs",
+        "mapping": {
+          "model_class": "ChatOpenAI",
+          "model_param": "model"
+        }
+      },
+      "api_key_required": true,
+      "validator": "lfx_platforms.discovery:validate_platform_credentials",
+      "catalog_loader": "lfx_platforms.catalog:catalog_dmx"
+    },
+    {
+      "name": "DeepSeek",
+      "provider_id": "deepseek",
+      "display_name": "DeepSeek",
+      "metadata": {
+        "icon": "DeepSeek",
+        "max_tokens_field_name": "max_tokens",
+        "variables": [
+          {
+            "variable_name": "DeepSeek Base URL",
+            "variable_key": "DEEPSEEK_BASE_URL",
+            "description": "DeepSeek 官方 OpenAI 兼容端点，缺省 https://api.deepseek.com。",
+            "required": true,
+            "is_secret": false,
+            "is_list": false,
+            "options": [],
+            "langchain_param": "base_url",
+            "component_metadata": {
+              "mapping_field": "base_url",
+              "required": false,
+              "advanced": true,
+              "info": "Falls back to the DEEPSEEK_BASE_URL environment variable"
+            }
+          },
+          {
+            "variable_name": "DeepSeek API Key",
+            "variable_key": "DEEPSEEK_API_KEY",
+            "description": "DeepSeek 开放平台 API Key。",
+            "required": true,
+            "is_secret": true,
+            "is_list": false,
+            "options": [],
+            "langchain_param": "api_key",
+            "component_metadata": {
+              "mapping_field": "api_key",
+              "required": false,
+              "advanced": true,
+              "info": "Falls back to the DEEPSEEK_API_KEY environment variable"
+            }
+          }
+        ],
+        "api_docs_url": "https://api-docs.deepseek.com",
+        "mapping": {
+          "model_class": "ChatOpenAI",
+          "model_param": "model"
+        }
+      },
+      "api_key_required": true,
+      "validator": "lfx_platforms.discovery:validate_platform_credentials",
+      "catalog_loader": "lfx_platforms.catalog:catalog_deepseek"
+    }
+  ]
+}

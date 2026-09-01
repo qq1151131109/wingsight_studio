@@ -1,0 +1,37 @@
+[project]
+name = "lfx-platforms"
+version = "0.1.0"
+description = "Wingsight 自有的 OpenAI 兼容模型平台（智谱 BigModel / DMX / DeepSeek…）注册为一等 Langflow 模型 provider 的扩展包：加平台只改 extension.json 声明，不改代码。"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = { text = "MIT" }
+keywords = ["langflow", "lfx", "extension", "bundle", "model-provider", "wingsight"]
+
+dependencies = [
+    "lfx>=1.12.0.dev0,<2.0.0",
+    "langchain-openai>=1.1.6",
+    "httpx>=0.24.0,<1.0.0",
+]
+
+# manifest 经 [langflow.extensions] entry-point 被 lfx 扩展加载器发现；
+# editable 安装的 dist.files 只有 dist-info 时走 entry-point 回退找 manifest。
+[project.entry-points."langflow.extensions"]
+lfx-platforms = "lfx_platforms"
+
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+# extension.json 与模块同在包内，importlib.metadata.files(dist) 才能找到
+# manifest，registry 才能按点路径 import 发现/校验/目录可调用。
+packages = ["src/lfx_platforms"]
+include = ["src/lfx_platforms/extension.json", "src/lfx_platforms/*.py"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/lfx_platforms",
+    "extension.json",
+    "README.md",
+    "pyproject.toml",
+]

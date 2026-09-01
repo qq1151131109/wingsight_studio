@@ -106,16 +106,19 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 ]
 
 # ---------- 文本模型目录（剧本/分镜表/拆解/提示词优化等 LLM 文字生成） ----------
-# 三通道多目录（2026-09-01 探针验证），每条目 provider 字段决定通道：
-# - OpenAI provider = 智谱官方 coding 端点（langflow 全局变量
-#   OPENAI_BASE_URL/OPENAI_API_KEY）→ glm-5.3-flash（出厂默认）/ glm-5.3
-# - DeepSeek provider = DeepSeek 官方（DEEPSEEK_API_KEY 全局变量，fork 的
-#   instantiation.py 加了 base_url 分支，缺省 api.deepseek.com）
+# 平台化多目录（2026-09-01 探针验证 + 平台化根治），每条目 provider
+# 字段 = langflow 的一等命名平台（langflow/src/bundles/platforms/ 扩展包声明，
+# 加平台见 bundles/platforms/README.md）：
+# - BigModel = 智谱官方（BIGMODEL_BASE_URL/BIGMODEL_API_KEY 全局变量）
+#   → glm-5.3-flash（出厂默认）/ glm-5.3
+# - DeepSeek = DeepSeek 平台（DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY；本部署
+#   指向智谱 coding 网关——无 api.deepseek.com 官方键，改 BASE_URL 即切官方）
 #   → deepseek-v4-flash / v4-pro / v4-flash-vision-exp
-# - OpenAI Compatible provider = DMX（OPENAI_COMPATIBLE_BASE_URL/API_KEY）
-#   → gpt-5.6-luna / gemini-3.7-flash
+# - DMX = DMXAPI 聚合网关（DMX_BASE_URL/DMX_API_KEY）
+#   → gpt-5.6-luna / gemini-3.7-flash / claude-sonnet-5
 # 注入方式：调用侧经 text_model_tweaks() 同时注 model_name + provider
-# （按组件名 tweaks，不走节点 id，重建不失效）。旧 DMX 混合目录已下线。
+# （按组件名 tweaks，不走节点 id，重建不失效）。旧 "OpenAI"/
+# "OpenAI Compatible" 劫持命名已下线（连带 langflow 旧全局变量删除）。
 
 DEFAULT_TEXT_MODEL_ID = "glm-5.3-flash"
 
@@ -124,50 +127,50 @@ TEXT_MODELS: List[Dict[str, Any]] = [
         "id": "glm-5.3-flash",
         "label": "GLM 5.3 Flash",
         "tag": "快 · 多模态 · 剧本拆解/分镜表默认 · 智谱官方",
-        "provider": "OpenAI",
+        "provider": "BigModel",
         "recommended": True,
     },
     {
         "id": "glm-5.3",
         "label": "GLM 5.3",
         "tag": "强推理 · 质量优先 · 智谱官方",
-        "provider": "OpenAI",
+        "provider": "BigModel",
     },
     {
         "id": "deepseek-v4-flash",
         "label": "DeepSeek V4 Flash",
-        "tag": "快 · 便宜 · DeepSeek 官方",
+        "tag": "快 · 便宜 · DeepSeek V4（智谱 coding 网关）",
         "provider": "DeepSeek",
     },
     {
         "id": "deepseek-v4-pro",
         "label": "DeepSeek V4 Pro",
-        "tag": "深推理 · 质量档 · DeepSeek 官方",
+        "tag": "深推理 · 质量档 · DeepSeek V4（智谱 coding 网关）",
         "provider": "DeepSeek",
     },
     {
         "id": "deepseek-v4-flash-vision-exp",
         "label": "DeepSeek V4 Flash Vision",
-        "tag": "多模态 · 看图 · DeepSeek 官方",
+        "tag": "多模态 · 看图 · DeepSeek V4（智谱 coding 网关）",
         "provider": "DeepSeek",
     },
     {
         "id": "gpt-5.6-luna",
         "label": "GPT 5.6 Luna",
         "tag": "创意文案 · DMX",
-        "provider": "OpenAI Compatible",
+        "provider": "DMX",
     },
     {
         "id": "gemini-3.7-flash",
         "label": "Gemini 3.7 Flash",
         "tag": "长上下文 · DMX",
-        "provider": "OpenAI Compatible",
+        "provider": "DMX",
     },
     {
         "id": "claude-sonnet-5",
         "label": "Claude Sonnet 5",
         "tag": "写作质量 · DMX",
-        "provider": "OpenAI Compatible",
+        "provider": "DMX",
     },
 ]
 

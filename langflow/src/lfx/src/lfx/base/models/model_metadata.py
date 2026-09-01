@@ -131,49 +131,6 @@ MODEL_PROVIDER_METADATA: dict[str, Any] = {
             "model_param": "model",
         },
     },
-    "DeepSeek": {
-        # wingsight fork 补丁：DeepSeek 官方直连通道（api.deepseek.com，
-        # OpenAI 兼容线协议）。base_url 在 instantiation.py 的 chat 分支
-        # 解析（DEEPSEEK_BASE_URL 变量/env 可覆盖，缺省官方域名）。
-        "provider_id": "deepseek",
-        "icon": "DeepSeek",
-        "max_tokens_field_name": "max_tokens",
-        "variables": [
-            {
-                "variable_name": "DeepSeek API Key",
-                "variable_key": "DEEPSEEK_API_KEY",
-                "required": True,
-                "is_secret": True,
-                "is_list": False,
-                "options": [],
-                "langchain_param": "api_key",
-                "component_metadata": {
-                    "mapping_field": "api_key",
-                    "required": False,
-                    "advanced": True,
-                    "info": "Falls back to DEEPSEEK_API_KEY environment variable",
-                },
-            },
-            {
-                "variable_name": "DeepSeek Base URL",
-                "variable_key": "DEEPSEEK_BASE_URL",
-                "description": (
-                    "Optional. Point to a DeepSeek-compatible server. "
-                    "Leave empty for https://api.deepseek.com."
-                ),
-                "required": False,
-                "is_secret": False,
-                "is_list": False,
-                "options": [],
-                "langchain_param": "base_url",
-            },
-        ],
-        "api_docs_url": "https://api-docs.deepseek.com",
-        "mapping": {
-            "model_class": "ChatOpenAI",
-            "model_param": "model",
-        },
-    },
     "Anthropic": {
         "provider_id": "anthropic",
         "icon": "Anthropic",

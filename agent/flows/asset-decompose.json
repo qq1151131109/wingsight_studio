@@ -171,8 +171,8 @@
                 "value": [
                   {
                     "name": "deepseek-v4-flash",
-                    "icon": "OpenAI",
-                    "provider": "OpenAI",
+                    "icon": "DeepSeek",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -199,9 +199,9 @@
                 "options": [
                   {
                     "name": "deepseek-v4-flash",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -212,9 +212,9 @@
                   },
                   {
                     "name": "deepseek-v4-pro",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -225,9 +225,9 @@
                   },
                   {
                     "name": "deepseek-v4-flash-vision-exp",
-                    "icon": "OpenAI",
+                    "icon": "DeepSeek",
                     "category": "OpenAI",
-                    "provider": "OpenAI",
+                    "provider": "DeepSeek",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -238,9 +238,9 @@
                   },
                   {
                     "name": "Baichuan-M2",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -252,9 +252,9 @@
                   },
                   {
                     "name": "Baichuan-M2-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -266,9 +266,9 @@
                   },
                   {
                     "name": "Baichuan-M3",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -280,9 +280,9 @@
                   },
                   {
                     "name": "Baichuan-M3-Plus",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",
@@ -294,9 +294,9 @@
                   },
                   {
                     "name": "Baichuan2-53B",
-                    "icon": "Plug",
+                    "icon": "DMX",
                     "category": "OpenAI Compatible",
-                    "provider": "OpenAI Compatible",
+                    "provider": "DMX",
                     "metadata": {
                       "context_length": 128000,
                       "model_class": "ChatOpenAI",

@@ -42,6 +42,8 @@ dependencies = [
     "lfx-vllm>=0.1.0,<1.0.0",
     "lfx-openai-compatible>=0.1.2,<1.0.0",
     "lfx-google>=0.1.0,<1.0.0",
+    # wingsight 平台扩展包（自有 bundle，非上游）
+    "lfx-platforms>=0.1.0,<1.0.0",
     # langflow-extensions:bundle-deps-end
 ]
 
@@ -123,6 +125,7 @@ lfx-exa = { workspace = true }
 lfx-valkey = { workspace = true }
 lfx-google = { workspace = true }
 lfx-confluent = { workspace = true }
+lfx-platforms = { workspace = true }
 # langflow-extensions:bundle-sources-end
 torch = { index = "pytorch-cpu" }
 torchvision = { index = "pytorch-cpu" }
@@ -159,6 +162,8 @@ members = [
     "src/bundles/valkey",
     "src/bundles/google",
     "src/bundles/confluent",
+    # wingsight 平台扩展包（自有 bundle，非上游；见 bundles/platforms/README.md）
+    "src/bundles/platforms",
     # langflow-extensions:bundle-members-end
 ]
 
