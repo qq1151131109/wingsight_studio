@@ -1162,9 +1162,25 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [imgJob, setImgJob] = useState(false);
   const [styleHint, setStyleHint] = useState("");
   const [zoom, setZoom] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
+  const versionCount = d.versions?.length ?? 0;
+  /** 旧图入版本档案（AI 重出/上传覆盖前调用）：prompt 归因它当时的提示词 */
+  const archiveCurrent = () =>
+    d.imageUrl
+      ? {
+          versions: [
+            ...(d.versions ?? []),
+            {
+              url: d.imageUrl,
+              at: new Date().toISOString().slice(5, 16).replace("T", " "),
+              prompt: String(d.genPrompt ?? "").trim() || undefined,
+            },
+          ].slice(-12),
+        }
+      : {};
 
   /** AI 出主图（定妆照/概念图/设定图）：一张卡一张图。造型变体不再挂本卡
    *  （拆解自动出图链已物化成独立图片卡并连线），历史 looks 数据装载时迁移 */
@@ -1202,7 +1218,12 @@ function AssetCard({ data, id, selected }: NodeProps) {
         }
         const item = job.images[0];
         if (item?.ok && item.imageUrl) {
-          update({ imageUrl: item.imageUrl, status: "ready", styleSnapshot: usedStyle });
+          update({
+            imageUrl: item.imageUrl,
+            status: "ready",
+            styleSnapshot: usedStyle,
+            ...archiveCurrent(),
+          });
           return;
         }
         if (item?.error) throw new Error(item.error);
@@ -1227,7 +1248,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
     void (async () => {
       try {
         const url = await uploadAsset(f, f.type);
-        if (url) update({ imageUrl: url });
+        if (url) update({ imageUrl: url, ...archiveCurrent() });
       } finally {
         setUploading(false);
       }
@@ -1266,6 +1287,19 @@ function AssetCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
+            {versionCount > 0 ? (
+              <button
+                type="button"
+                data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
+                className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/55 px-1 py-0.5 text-[10px] text-white hover:bg-black/75"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHistoryOpen(true);
+                }}
+              >
+                <History className="h-3 w-3" />V{versionCount + 1}
+              </button>
+            ) : null}
             <CornerActions>
               <button
                 type="button"
@@ -1346,6 +1380,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
           onIndex={() => undefined}
           onClose={() => setZoom(false)}
         />
+      ) : null}
+      {historyOpen && d.imageUrl ? (
+        <VersionHistoryModal nodeId={id} data={d} onClose={() => setHistoryOpen(false)} />
       ) : null}
       <input
         ref={fileRef}
@@ -1543,7 +1580,24 @@ function ImageCard({ data, id, selected }: NodeProps) {
     void (async () => {
       try {
         const url = await uploadAsset(f, f.type, f.name);
-        if (url) update({ imageUrl: url, status: "ready" });
+        if (url)
+          update({
+            imageUrl: url,
+            status: "ready",
+            // 上传覆盖也入版本档案（prompt 归因旧图的 genPrompt）
+            ...(d.imageUrl
+              ? {
+                  versions: [
+                    ...(d.versions ?? []),
+                    {
+                      url: d.imageUrl,
+                      at: new Date().toISOString().slice(5, 16).replace("T", " "),
+                      prompt: String(d.genPrompt ?? "").trim() || undefined,
+                    },
+                  ].slice(-12),
+                }
+              : {}),
+          });
       } finally {
         setUploading(false);
       }
