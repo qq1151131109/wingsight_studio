@@ -305,6 +305,38 @@ function ToolBtn({
   );
 }
 
+/** 深缩放 LOD 三档（对标 Figma / open-ai-canvas 的缩放分层）：
+ *  full ≥0.25 完整卡；micro <0.25 只留 标题+媒体+生成态（chrome 真不渲染，
+ *  fiber/DOM 数随档位直落——拉远看全图后的平移流畅度与离开画布的卸载成本都吃这个）；
+ *  nano <0.08 连媒体也不挂（类型色块兜底，保画布结构可辨）。
+ *  选择器返回字符串只有跨阈值才重渲；viewport 在手势结束才写 store，
+ *  缩放过程中零重渲。E2E 最低 zoom 0.5，阈值留足余量 */
+type Lod = "full" | "micro" | "nano";
+const LOD_MICRO_ZOOM = 0.25;
+const LOD_NANO_ZOOM = 0.08;
+
+function useLod(): Lod {
+  return useCanvasStore((s) =>
+    s.viewport.zoom < LOD_NANO_ZOOM
+      ? "nano"
+      : s.viewport.zoom < LOD_MICRO_ZOOM
+        ? "micro"
+        : "full",
+  );
+}
+
+/** nano 档媒体兜底：类型色着色块（构图/规模可辨，图片解码缓存随卡释放） */
+function NanoBlock({ nodeType }: { nodeType: string }) {
+  const dot =
+    NODE_META[nodeType as keyof typeof NODE_META]?.dot ?? "var(--color-hairline)";
+  return (
+    <div
+      className="h-full w-full rounded"
+      style={{ background: `color-mix(in oklab, ${dot} 26%, var(--color-surface-2))` }}
+    />
+  );
+}
+
 function CardShell({
   id,
   data,
@@ -332,6 +364,7 @@ function CardShell({
   const flashing = useCanvasStore((s) => s.flashIds.includes(id));
   // LOD：低缩放时只留标题（布尔选择器，只有跨阈值才触发重渲）
   const tiny = useCanvasStore((s) => s.viewport.zoom < 0.5);
+  const lod = useLod();
   // @引用光环：被选中生成卡引用时点亮
   const halo = useCanvasStore((s) => s.haloIds.includes(id));
   const meta = NODE_META[data.nodeType];
@@ -525,7 +558,7 @@ function CardShell({
             style={{ color: meta.dot }}
           />
         ) : null}
-        {locked ? (
+        {lod !== "full" || locked ? (
           <span className="min-w-0 flex-1 truncate text-xs font-medium text-text-2">
             {data.title || "（无标题）"}
           </span>
@@ -857,6 +890,7 @@ function TextCard({
 }) {
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
   const [forceEdit, setForceEdit] = useState(false);
+  const lod = useLod();
   useEffect(() => {
     const onFocusEdit = (e: Event) => {
       if ((e as CustomEvent<FocusEditDetail>).detail?.nodeId === id)
@@ -908,39 +942,47 @@ function TextCard({
   };
   return (
     <CardShell id={id} data={data} selected={selected}>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <Editable
-          value={data.body ?? ""}
-          onSave={(body) => update({ body })}
-          multiline
-          fill
-          always
-          editingOn={forceEdit}
-          placeholder={
-            editorial
-              ? "直接输入剧本…选中后可在下方让 AI 写"
-              : "直接输入内容…选中后可在下方让 AI 写"
-          }
-          className={`ws-detail min-h-0 flex-1 text-xs leading-relaxed text-text-2 ${
-            editorial ? "font-editorial" : ""
-          } nowheel`}
-        />
-      </div>
-      {empty ? (
-        <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
-          选中卡片后可在下方输入区让 AI 撰写
+      {lod === "full" ? (
+        <>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <Editable
+              value={data.body ?? ""}
+              onSave={(body) => update({ body })}
+              multiline
+              fill
+              always
+              editingOn={forceEdit}
+              placeholder={
+                editorial
+                  ? "直接输入剧本…选中后可在下方让 AI 写"
+                  : "直接输入内容…选中后可在下方让 AI 写"
+              }
+              className={`ws-detail min-h-0 flex-1 text-xs leading-relaxed text-text-2 ${
+                editorial ? "font-editorial" : ""
+              } nowheel`}
+            />
+          </div>
+          {empty ? (
+            <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
+              选中卡片后可在下方输入区让 AI 撰写
+            </p>
+          ) : !editorial ? (
+            <div className="ws-detail mt-1.5 flex items-center gap-1">
+              <span className="text-[10px] tabular-nums text-text-4">
+                {(data.body ?? "").length} 字
+              </span>
+              <span className="flex-1" />
+              {genBtn("image", "生图")}
+              {genBtn("video", "生视频")}
+            </div>
+          ) : null}
+          {footer}
+        </>
+      ) : (data.body ?? "").trim() && lod === "micro" ? (
+        <p className="line-clamp-8 whitespace-pre-wrap text-[11px] leading-relaxed text-text-3">
+          {data.body}
         </p>
-      ) : !editorial ? (
-        <div className="ws-detail mt-1.5 flex items-center gap-1">
-          <span className="text-[10px] tabular-nums text-text-4">
-            {(data.body ?? "").length} 字
-          </span>
-          <span className="flex-1" />
-          {genBtn("image", "生图")}
-          {genBtn("video", "生视频")}
-        </div>
       ) : null}
-      {footer}
     </CardShell>
   );
 }
@@ -1164,6 +1206,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [zoom, setZoom] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const lod = useLod();
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const versionCount = d.versions?.length ?? 0;
@@ -1268,7 +1311,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
-        {d.status === "loading" ? (
+        {lod === "nano" ? (
+          <NanoBlock nodeType={d.nodeType} />
+        ) : d.status === "loading" ? (
           <GenProgress nodeId={id} expected={60} />
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
@@ -1293,50 +1338,52 @@ function AssetCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
-            <CornerActions>
-              <button
-                type="button"
-                data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
-                className="nodrag flex items-center gap-0.5 rounded-md bg-black/40 p-1 text-[10px] text-white hover:bg-black/60"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setHistoryOpen(true);
-                }}
-              >
-                <History className="h-3.5 w-3.5" />V{versionCount + 1}
-              </button>
-              <button
-                type="button"
-                data-tip="AI 重新出设定图（用设定正文）" aria-label="AI 重新出设定图（用设定正文）"
-                className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void genLook();
-                }}
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                data-tip={`更换${imgLabel}`} aria-label={`更换${imgLabel}`}
-                className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  fileRef.current?.click();
-                }}
-              >
-                <Upload className="h-3.5 w-3.5" />
-              </button>
-              <a
-                href={d.imageUrl}
-                download={downloadName(d.title, d.imageUrl, "png")}
-                title="下载"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Download className="h-3.5 w-3.5" />
-              </a>
-            </CornerActions>
+            {lod === "full" ? (
+              <CornerActions>
+                <button
+                  type="button"
+                  data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
+                  className="nodrag flex items-center gap-0.5 rounded-md bg-black/40 p-1 text-[10px] text-white hover:bg-black/60"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setHistoryOpen(true);
+                  }}
+                >
+                  <History className="h-3.5 w-3.5" />V{versionCount + 1}
+                </button>
+                <button
+                  type="button"
+                  data-tip="AI 重新出设定图（用设定正文）" aria-label="AI 重新出设定图（用设定正文）"
+                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void genLook();
+                  }}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  data-tip={`更换${imgLabel}`} aria-label={`更换${imgLabel}`}
+                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    fileRef.current?.click();
+                  }}
+                >
+                  <Upload className="h-3.5 w-3.5" />
+                </button>
+                <a
+                  href={d.imageUrl}
+                  download={downloadName(d.title, d.imageUrl, "png")}
+                  title="下载"
+                  className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </a>
+              </CornerActions>
+            ) : null}
           </div>
         ) : (
           <MediaEmpty
@@ -1351,7 +1398,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {!d.imageUrl && d.status !== "loading" ? (
+      {lod === "full" && !d.imageUrl && d.status !== "loading" ? (
         <button
           type="button"
           disabled={imgJob}
@@ -1366,17 +1413,23 @@ function AssetCard({ data, id, selected }: NodeProps) {
           {imgJob ? "生成中…" : "AI 出图（按设定正文）"}
         </button>
       ) : null}
-      {styleHint ? (
+      {lod === "full" && styleHint ? (
         <p className="ws-detail mt-1 text-[10px] text-warn">{styleHint}</p>
       ) : null}
-      <Editable
-        value={d.body ?? ""}
-        onSave={(body) => update({ body })}
-        multiline
-        always
-        placeholder={ASSET_BODY_PH[kind]}
-        className="ws-detail mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
-      />
+      {lod === "full" ? (
+        <Editable
+          value={d.body ?? ""}
+          onSave={(body) => update({ body })}
+          multiline
+          always
+          placeholder={ASSET_BODY_PH[kind]}
+          className="ws-detail mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+        />
+      ) : lod === "micro" && (d.body ?? "").trim() ? (
+        <p className="mt-1.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-relaxed text-text-3">
+          {d.body}
+        </p>
+      ) : null}
       {zoom && d.imageUrl ? (
         <Lightbox
           images={[{ src: d.imageUrl, title: d.title }]}
@@ -1563,6 +1616,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [maskOpen, setMaskOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const lod = useLod();
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
 
@@ -1620,7 +1674,9 @@ function ImageCard({ data, id, selected }: NodeProps) {
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
-        {d.status === "loading" ? (
+        {lod === "nano" ? (
+          <NanoBlock nodeType={d.nodeType} />
+        ) : d.status === "loading" ? (
           <GenProgress nodeId={id} expected={22} />
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
@@ -1642,7 +1698,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
-            <CornerActions>
+            {lod === "full" ? (
+              <CornerActions>
               <button
                 type="button"
                 data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
@@ -1719,6 +1776,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 <ZoomIn className="h-3.5 w-3.5" />
               </span>
             </CornerActions>
+            ) : null}
           </div>
         ) : (
           <MediaEmpty
@@ -1730,7 +1788,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {candidates.length > 1 || Boolean(d.failedCandidates) ? (
+      {lod === "full" && (candidates.length > 1 || Boolean(d.failedCandidates)) ? (
         <div className="ws-detail nowheel mt-1 flex items-center gap-1 overflow-x-auto">
           {candidates.length > 1 ? (
             <span className="shrink-0 text-[9px] text-text-4">
@@ -1781,7 +1839,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           ) : null}
         </div>
       ) : null}
-      {d.body ? (
+      {lod === "full" && d.body ? (
         <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
           {d.body}
         </p>
@@ -1993,6 +2051,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const framesFor = useRef("");
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const lod = useLod();
   // 选中即静音预览、失焦即停（对标 viedeo-workflow 的扫片体验）
   useEffect(() => {
     const v = videoRef.current;
@@ -2004,8 +2063,10 @@ function VideoCard({ data, id, selected }: NodeProps) {
       v.pause();
     }
   }, [selected]);
-  // 就绪后按选定帧数抽缩略图（异步；失败静默——跨域或解码不支持就不出条）
+  // 就绪后按选定帧数抽缩略图（异步；失败静默——跨域或解码不支持就不出条）。
+  // LOD 门控：micro/nano 不渲染缩略图条，抽帧解码纯浪费
   useEffect(() => {
+    if (lod !== "full") return;
     const url = (data as WingNodeData | undefined)?.videoUrl;
     const key = url ? `${url}_${frameCount}` : "";
     if (!url || framesFor.current === key) return;
@@ -2017,7 +2078,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
         setFrames([]);
       }
     })();
-  }, [data, frameCount]);
+  }, [data, frameCount, lod]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const versionCount = d.versions?.length ?? 0;
@@ -2072,6 +2133,17 @@ function VideoCard({ data, id, selected }: NodeProps) {
           <GenProgress nodeId={id} expected={90} />
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
+        ) : lod !== "full" ? (
+          lod === "nano" || !d.imageUrl ? (
+            <NanoBlock nodeType={d.nodeType} />
+          ) : (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={assetThumbUrl(d.imageUrl)}
+              alt={d.title}
+              className="ws-media-in h-full w-full object-contain"
+            />
+          )
         ) : d.videoUrl ? (
           <div className="nowheel nodrag group relative h-full w-full">
             <video
@@ -2142,13 +2214,13 @@ function VideoCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {d.body ? (
+      {lod === "full" && d.body ? (
         <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
           {d.body}
         </p>
       ) : null}
       {/* 抽帧条：hover 某帧出"+图"，点击抽原生分辨率帧建连线图片卡；帧数可切换 */}
-      {d.videoUrl && frames.length > 0 ? (
+      {lod === "full" && d.videoUrl && frames.length > 0 ? (
         <div className="ws-detail nowheel mt-1 flex items-center gap-1 overflow-x-auto">
           {[6, 12, 24].map((n) => (
             <button
@@ -2216,6 +2288,7 @@ function AudioCard({ data, id, selected }: NodeProps) {
   const update = makeUpdater(id);
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
+  const lod = useLod();
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
 
@@ -2237,7 +2310,14 @@ function AudioCard({ data, id, selected }: NodeProps) {
   return (
     <CardShell id={id} data={d} selected={selected}>
       <div className="mt-1.5 flex min-h-14 w-full flex-1 items-center justify-center rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5">
-        {d.audioUrl ? (
+        {lod !== "full" ? (
+          <div className="flex w-full items-center gap-1.5 text-text-3">
+            <Music className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-[11px]">
+              {d.title || "音频"}
+            </span>
+          </div>
+        ) : d.audioUrl ? (
           <AudioPlayer src={d.audioUrl} title={d.title ?? ""} />
         ) : (
           <MediaEmpty
@@ -2249,13 +2329,15 @@ function AudioCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      <Editable
-        value={d.title}
-        onSave={(title) => update({ title })}
-        className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
-        placeholder="（无标题）"
-      />
-      {d.body ? (
+      {lod === "full" ? (
+        <Editable
+          value={d.title}
+          onSave={(title) => update({ title })}
+          className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
+          placeholder="（无标题）"
+        />
+      ) : null}
+      {lod === "full" && d.body ? (
         <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
           {d.body}
         </p>
@@ -2298,6 +2380,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourcesKey]);
 
+  const lod = useLod();
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
 
@@ -2332,16 +2415,21 @@ function ComposeCard({ data, id, selected }: NodeProps) {
     <CardShell id={id} data={d} selected={selected}>
       {d.videoUrl ? (
         <div className="mt-1.5 min-h-28 w-full flex-1 overflow-hidden rounded-md border border-hairline-soft bg-surface-2">
-          <video
-            src={d.videoUrl}
-            controls
-            preload="metadata"
-            playsInline
-            className="nodrag nowheel ws-media-in h-full w-full bg-black object-contain"
-            onClick={(e) => e.stopPropagation()}
-          />
+          {lod !== "full" ? (
+            <NanoBlock nodeType={d.nodeType} />
+          ) : (
+            <video
+              src={d.videoUrl}
+              controls
+              preload="metadata"
+              playsInline
+              className="nodrag nowheel ws-media-in h-full w-full bg-black object-contain"
+              onClick={(e) => e.stopPropagation()}
+            />
+          )}
         </div>
       ) : null}
+      {lod === "full" ? (
       <div className="ws-detail mt-1.5 flex max-h-36 shrink-0 flex-col gap-1 overflow-auto nowheel">
         {items.length === 0 ? (
           <p className="rounded-md border border-dashed border-hairline px-2 py-3 text-center text-[10px] text-text-4">
@@ -2382,6 +2470,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
           ))
         )}
       </div>
+      ) : null}
       {d.status === "loading" ? (
         <GenProgress nodeId={id} expected={30} />
       ) : d.status === "error" ? (
@@ -2396,7 +2485,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
           <CircleAlert className="h-3.5 w-3.5" />
           {d.errorMessage || "合成失败"} · 点击重试
         </button>
-      ) : (
+      ) : lod === "full" ? (
         <button
           type="button"
           disabled={items.length === 0}
@@ -2409,7 +2498,7 @@ function ComposeCard({ data, id, selected }: NodeProps) {
           <Combine className="h-3.5 w-3.5" />
           合成成片（{items.length} 段）
         </button>
-      )}
+      ) : null}
     </CardShell>
   );
 }
@@ -2487,31 +2576,40 @@ function ShotChip({
 function StoryboardCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
+  const lod = useLod();
   if (!d || typeof d.nodeType !== "string") return null;
   return (
     <CardShell id={id} data={d} selected={selected}>
-      <div className="ws-detail mt-1.5 flex flex-wrap gap-1">
-        <ShotChip accent label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
-        <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize) => update({ shotSize })} />
-        <ShotChip label="运镜" value={d.cameraMove ?? ""} onSave={(cameraMove) => update({ cameraMove })} />
-        <ShotChip label="时长" value={d.duration ?? ""} onSave={(duration) => update({ duration })} />
-      </div>
-      <Editable
-        value={d.body ?? ""}
-        onSave={(body) => update({ body })}
-        multiline
-        always
-        placeholder="画面描述（谁、在哪、做什么）"
-        className="ws-detail nowheel mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
-      />
-      <Editable
-        value={d.dialogue ?? ""}
-        onSave={(dialogue) => update({ dialogue })}
-        multiline
-        always
-        placeholder="台词 / 旁白"
-        className="ws-detail mt-1.5 line-clamp-2 border-l-2 border-hairline pl-1.5 text-xs italic leading-relaxed text-text-3"
-      />
+      {lod === "full" ? (
+        <>
+          <div className="ws-detail mt-1.5 flex flex-wrap gap-1">
+            <ShotChip accent label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
+            <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize) => update({ shotSize })} />
+            <ShotChip label="运镜" value={d.cameraMove ?? ""} onSave={(cameraMove) => update({ cameraMove })} />
+            <ShotChip label="时长" value={d.duration ?? ""} onSave={(duration) => update({ duration })} />
+          </div>
+          <Editable
+            value={d.body ?? ""}
+            onSave={(body) => update({ body })}
+            multiline
+            always
+            placeholder="画面描述（谁、在哪、做什么）"
+            className="ws-detail nowheel mt-1.5 max-h-32 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+          />
+          <Editable
+            value={d.dialogue ?? ""}
+            onSave={(dialogue) => update({ dialogue })}
+            multiline
+            always
+            placeholder="台词 / 旁白"
+            className="ws-detail mt-1.5 line-clamp-2 border-l-2 border-hairline pl-1.5 text-xs italic leading-relaxed text-text-3"
+          />
+        </>
+      ) : (d.body ?? "").trim() && lod === "micro" ? (
+        <p className="line-clamp-6 whitespace-pre-wrap text-[11px] leading-relaxed text-text-3">
+          {d.body}
+        </p>
+      ) : null}
     </CardShell>
   );
 }
@@ -3313,6 +3411,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     rect: { left: number; top: number; bottom: number };
   } | null>(null);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const lod = useLod();
   // 剧本卡「拆分镜表」的一次性远程触发（hook 须在 early return 之前）：
   // 剧本卡给本卡置位 autoGenerate 旗标 → 消费并走本卡 generate（带镜头数/
   // 风格/名单注入/refIds 绑定全套参数），避免跨卡直调的挂载时序问题。
@@ -3895,6 +3994,11 @@ function ShotListCard({ data, id, selected }: NodeProps) {
 
   return (
     <CardShell id={id} data={d} selected={selected}>
+      {/* 深缩放（micro/nano）只留标题+统计概览：行编辑器是全画布最重的
+          DOM（每行= chips×4 + Editable×3 + 缩略图 + 行操作×5），拉远看
+          全图的平移/卸载成本主要就在这里 */}
+      {lod === "full" ? (
+      <>
       {/* 行编辑工具条（贴列表顶部）：加一行是编辑动作，跟着列表走 */}
       <div className="ws-detail nodrag nowheel mb-1 flex items-center">
         <button
@@ -4148,6 +4252,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           })}
         </div>
       </div>
+      </>
+      ) : null}
       {rowZoom ? (
         <Lightbox
           images={[{ src: rowZoom.url, title: `镜头 ${rowZoom.seq + 1}` }]}
@@ -4182,6 +4288,21 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       {genError ? (
         <p className="ws-detail mt-1 text-[10px] text-danger">{genError}</p>
       ) : null}
+      {/* 深缩放底栏只留统计概览（行操作/管线动作需拉近再用） */}
+      {lod !== "full" ? (
+        <p className="mt-1.5 flex items-center gap-1 border-t border-hairline pt-1.5 text-[10px] tabular-nums text-text-4">
+          {generating ? (
+            <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin text-accent" />
+          ) : null}
+          {rows.length} 镜
+          {imgAgg.ready + imgAgg.loading + imgAgg.error > 0
+            ? ` · 已出图 ${imgAgg.ready}${
+                imgAgg.loading > 0 ? ` · 出图中 ${imgAgg.loading}` : ""
+              }${imgAgg.error > 0 ? ` · 失败 ${imgAgg.error}` : ""}`
+            : ""}
+        </p>
+      ) : (
+      <>
       {/* 底栏 = 统计 + 行操作 + 管线动作（左→右即管线顺序：拆解资产 → 出图；
           出图降级样式+无参考行/大额确认防误触） */}
       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 border-t border-hairline pt-1.5 text-[10px] text-text-4">
@@ -4280,6 +4401,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           </button>
         </span>
       </div>
+      </>
+      )}
 
       {mention
         ? createPortal(
