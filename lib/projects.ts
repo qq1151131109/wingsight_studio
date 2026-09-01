@@ -11,6 +11,8 @@ export interface ProjectMeta {
   /** 归属与协作者（多人模式下由后端返回） */
   owner_id?: string;
   collaborators?: string[];
+  /** 是否可执行重命名/删除等生命周期操作（owner/admin）；协作者为 false */
+  canManage?: boolean;
 }
 
 const BASE = "/agent-service/projects";

@@ -8,7 +8,6 @@ import {
   LayoutGrid,
   Lightbulb,
   Loader2,
-  MoreHorizontal,
   Pencil,
   Search,
   Trash2,
@@ -62,7 +61,6 @@ function HomeInner() {
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortKey>("recent_edit");
   const [creating, setCreating] = useState(false);
-  const [menuPid, setMenuPid] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<ProjectMeta | null>(null);
   const [collabFor, setCollabFor] = useState<ProjectMeta | null>(null);
   const [error, setError] = useState("");
@@ -135,7 +133,6 @@ function HomeInner() {
     if (!name?.trim() || name.trim() === p.name) return;
     if (await renameProject(p.id, name.trim())) void refresh();
     else setError("重命名失败");
-    setMenuPid(null);
   };
 
   const remove = async () => {
@@ -253,58 +250,50 @@ function HomeInner() {
                   <h2 className="font-editorial line-clamp-2 min-h-[2.5rem] text-sm font-semibold text-text">
                     {p.name}
                   </h2>
-                  <button
-                    type="button"
-                    className="nodrag shrink-0 rounded-md p-1 text-text-4 opacity-0 transition-opacity hover:bg-surface-2 hover:text-text group-hover:opacity-100"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setMenuPid(menuPid === p.id ? null : p.id);
-                    }}
-                    data-tip="更多操作" aria-label="更多操作"
-                  >
-                    <MoreHorizontal className="h-4 w-4" />
-                  </button>
+                  {/* 操作常驻右上角（不折叠）；协作者不显示重命名/删除（无管辖权） */}
+                  <div className="nodrag flex shrink-0 items-center gap-0.5">
+                    <button
+                      type="button"
+                      className="rounded-md p-1.5 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCollabFor(p);
+                      }}
+                      data-tip="协作者" aria-label="协作者"
+                    >
+                      <Users className="h-4 w-4" />
+                    </button>
+                    {p.canManage ? (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded-md p-1.5 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void rename(p);
+                          }}
+                          data-tip="重命名" aria-label="重命名"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md p-1.5 text-text-4 transition-colors hover:bg-danger/10 hover:text-danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setDeleting(p);
+                          }}
+                          data-tip="删除" aria-label="删除"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
                 <p className="mt-2 text-[11px] text-text-4">
                   编辑于 {formatTime(p.updated_at) || "未知时间"}
                 </p>
-
-                {/* 卡片菜单 */}
-                {menuPid === p.id ? (
-                  <>
-                    <div
-                      className="fixed inset-0 z-10"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setMenuPid(null);
-                      }}
-                    />
-                    <div className="absolute right-3 top-10 z-20 flex w-32 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-                      <MenuButton
-                        icon={<Users className="h-3.5 w-3.5" />}
-                        label="协作者"
-                        onClick={() => {
-                          setCollabFor(p);
-                          setMenuPid(null);
-                        }}
-                      />
-                      <MenuButton
-                        icon={<Pencil className="h-3.5 w-3.5" />}
-                        label="重命名"
-                        onClick={() => void rename(p)}
-                      />
-                      <MenuButton
-                        icon={<Trash2 className="h-3.5 w-3.5" />}
-                        label="删除"
-                        danger
-                        onClick={() => {
-                          setDeleting(p);
-                          setMenuPid(null);
-                        }}
-                      />
-                    </div>
-                  </>
-                ) : null}
               </div>
             ))}
           </div>
@@ -332,34 +321,6 @@ function HomeInner() {
         />
       ) : null}
     </div>
-  );
-}
-
-function MenuButton({
-  icon,
-  label,
-  danger,
-  onClick,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={(e) => {
-        e.stopPropagation();
-        onClick();
-      }}
-      className={`flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-2 ${
-        danger ? "text-danger" : "text-text-2 hover:text-text"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
   );
 }
 
