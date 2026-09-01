@@ -58,28 +58,39 @@ async function directImagegen(
     window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
     return;
   }
-  // 参考 = 手动 @ 引用 + 上游连线卡（与面板 chip 展示一致），带图才收。
-  // 本卡已有图并入参考首位——「在带图的卡上出图」最常见心智就是改这张图
-  // （图生图），不收会静默变成纯文生图（孝庄太后项目踩坑）。refIds 先过
-  // 一遍存在性：已删卡的残留引用不再参与/不再持久化
+  // 参考 = 正文 @ 引用（编号序，排最前）+ 本卡已有图（未 @ 时作图生图锚点）
+  // + 上游连线卡，带图才收。refIds 先过一遍存在性：已删卡的残留引用不再
+  // 参与/不再持久化。模型收到的正文含「图N」指代，数组头部顺序与之一一对应，
+  // 头部再注入编号契约（图N=《卡名》），指代不再靠模型猜
   const validRefIds = opts.refIds.filter((rid) => st.nodes.some((n) => n.id === rid));
-  const refNodes = [
-    ...validRefIds
-      .map((rid) => st.nodes.find((n) => n.id === rid))
-      .filter((n): n is NonNullable<typeof n> => Boolean(n)),
-    ...st.edges
-      .filter((e) => e.target === nodeId && !validRefIds.includes(e.source))
-      .map((e) => st.nodes.find((n) => n.id === e.source))
-      .filter((n): n is NonNullable<typeof n> => Boolean(n)),
-  ].filter((n) => n.data.imageUrl);
-  const seenUrl = new Set<string>();
+  const mentionedNodes = validRefIds
+    .map((rid) => st.nodes.find((n) => n.id === rid))
+    .filter((n): n is NonNullable<typeof n> => Boolean(n));
+  const mentionedImgs = mentionedNodes.filter((n) => n.data.imageUrl);
+  // 带图 @ 引用超过 4 张（模型参考图上限）就明报，不静默截断——截断会让
+  // 正文里的「图5」凭空消失
+  if (mentionedImgs.length > 4) {
+    st.updateNodeData(nodeId, {
+      status: "error",
+      errorMessage: `带图的 @ 引用最多 4 张（当前 ${mentionedImgs.length} 张）：请减少引用，或引用文本卡参与描述`,
+    });
+    return;
+  }
+  const connectedNodes = st.edges
+    .filter((e) => e.target === nodeId && !validRefIds.includes(e.source))
+    .map((e) => st.nodes.find((n) => n.id === e.source))
+    .filter((n): n is NonNullable<typeof n> => Boolean(n))
+    .filter((n) => n.data.imageUrl);
   const selfImageUrl = node.data.imageUrl as string | undefined;
+  const selfMentioned = validRefIds.includes(nodeId);
+  const seenUrl = new Set<string>();
   const referenceImages = [
-    ...(selfImageUrl ? [selfImageUrl] : []),
-    ...refNodes.map((n) => n.data.imageUrl as string),
-  ]
-    .filter((u) => (seenUrl.has(u) ? false : (seenUrl.add(u), true)))
-    .slice(0, 4);
+    ...mentionedImgs.map((n) => n.data.imageUrl as string),
+    // 本卡原图自动并入（图生图锚点，孝庄太后项目踩坑）；正文里已 @ 自己
+    // 则尊重显式编号位次，不重复收
+    ...(!selfMentioned && selfImageUrl ? [selfImageUrl] : []),
+    ...connectedNodes.map((n) => n.data.imageUrl as string),
+  ].filter((u) => (seenUrl.has(u) ? false : (seenUrl.add(u), true)));
   // 明式引用（@ 或连线）却一张可用图都没收到 = 曾经「静默降级文生图」的
   // 根源，明报拦下让用户决策；空卡无引用的直接文生图不受影响
   const expectsRefs =
@@ -92,11 +103,29 @@ async function directImagegen(
     });
     return;
   }
+  // 编号契约（novanova buildImageReferencePromptText 范式）：把「图N」和
+  // 卡名/数组位次钉死，指代有事实源
+  const numberingNote = mentionedImgs.length
+    ? `参考图编号：${mentionedImgs
+        .map((n, i) => `图${i + 1}=《${n.data.title || "无题"}》`)
+        .join("、")}（图N 即第 N 张参考图）。`
+    : "";
   const visualNotes = [
-    ...refNodes.map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150)),
+    ...mentionedNodes.map((n) => {
+      const body = ((n.data.body as string) ?? "").slice(0, 150);
+      const idx = mentionedImgs.indexOf(n);
+      return idx >= 0
+        ? `图${idx + 1}=《${n.data.title || "无题"}》${body ? `：${body}` : ""}`
+        : `${n.data.title}：${body}`;
+    }),
+    ...connectedNodes.map(
+      (n) => `${n.data.title}：${((n.data.body as string) ?? "").slice(0, 150)}`,
+    ),
     `全局视觉风格：${projectStyle}`,
   ].join("；");
-  const isCharacterLook = refNodes.some((n) => n.data.nodeType === "character");
+  const isCharacterLook =
+    mentionedNodes.some((n) => n.data.nodeType === "character") ||
+    connectedNodes.some((n) => n.data.nodeType === "character");
   // 资产卡按自身类型出设定图（角色=四格定妆契约、服饰按道具契约、场景/道具
   // 同名）——此前只看引用卡里有没有角色卡，角色资产卡不带角色引用时被误标
   // 成 scene，提示词渲染成「无人空镜」出空场景
@@ -117,7 +146,9 @@ async function directImagegen(
       continue;
     st.connect({ source: rid, target: nodeId });
   }
-  const description = (opts.prompt || `${node.data.title} ${node.data.body ?? ""}`).trim();
+  const description = (
+    numberingNote + (opts.prompt || `${node.data.title} ${node.data.body ?? ""}`)
+  ).trim();
   const count = Math.max(1, Math.min(4, opts.count ?? 1));
   const first = st.nodes.find((n) => n.id === nodeId);
 

@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, Loader2, Sparkles, Star, X } from "lucide-react";
+import { ChevronDown, Loader2, Sparkles, Star } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import MentionInput, {
@@ -117,15 +117,6 @@ function RefThumb({ node, size = 20 }: { node: WingNode; size?: number }) {
   );
 }
 
-/** 候选排序：角色最前（一致性主场景），其次有图的卡 */
-const TYPE_ORDER: Record<string, number> = {
-  character: 0,
-  image: 1,
-  storyboard: 2,
-  script: 3,
-  note: 4,
-};
-
 export default function PromptBar({
   nodeId,
   kind,
@@ -146,11 +137,6 @@ export default function PromptBar({
   // 出图/生视频的生成基准=卡上正文（空提示词时桥接层回退「标题+正文」），
   // 预填出来让用户看得见、可改；文本/分镜面板是「下指令」，不预填
   const self = nodes.find((n) => n.id === nodeId);
-  const [refs, setRefs] = useState<WingNode[]>([]);
-  const [mention, setMention] = useState<{ start: number; q: string } | null>(
-    null,
-  );
-  const [hi, setHi] = useState(0);
   const [count, setCount] = useState(1);
   const [favSaved, setFavSaved] = useState(false);
   // 引用 chip 缩略图点击 → 大图预览（灯箱翻页仅限有图的引用）
@@ -161,8 +147,10 @@ export default function PromptBar({
   // 结果先预览，采用才覆盖正文；空卡直接落正文
   const [rwBusy, setRwBusy] = useState(false);
   const [rwResult, setRwResult] = useState<string | null>(null);
-  // 预填充（右键「AI 润色正文」等入口）：挂载时消费待取指令，已挂载则听事件
-  const [text, setText] = useState(() => {
+  // 内联引用编辑器（正文即引用载体）+ 序列化结果镜像（渲染/判空用）
+  const edRef = useRef<MentionInputHandle>(null);
+  const [lastRead, setLastRead] = useState<MentionRead | null>(null);
+  const [draft, setDraft] = useState(() => {
     const self0 = useCanvasStore
       .getState()
       .nodes.find((n) => n.id === nodeId);
@@ -173,12 +161,11 @@ export default function PromptBar({
       ? ((self0?.data.body as string) ?? "").trim()
       : "";
   });
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
 
   // 连线即引用（open-ai-canvas「已连接素材」/ novanova「mention 来自连线」）：
   // 上游连进来的卡本来就参与生成（桥接层 upstreamLines 注入），这里如实亮出
-  // 来。连线引用不可删（移除=画布断线），与手动 @ 引用合并展示
+  // 来。连线引用不可删（移除=画布断线）；手动 @ 引用已内联进正文，不再挂 chip
   const connectedRefs = useMemo(() => {
     const out: WingNode[] = [];
     for (const e of edges) {
@@ -195,42 +182,42 @@ export default function PromptBar({
     }
     return out;
   }, [edges, nodes, nodeId]);
-  const connectedIds = useMemo(
-    () => new Set(connectedRefs.map((n) => n.id)),
-    [connectedRefs],
-  );
-  // 合并展示：连线引用在前，手动 @ 在后（同 id 以连线版为准）
-  const shownRefs = [
-    ...connectedRefs,
-    ...refs.filter((r) => !connectedIds.has(r.id)),
-  ];
-  const previewImgs = shownRefs
+  const previewImgs = connectedRefs
     .filter((r) => Boolean(r.data.imageUrl))
     .map((r) => ({ src: r.data.imageUrl as string, title: r.data.title ?? "" }));
 
-  // AI 提示词辅助（✦ 双态：优化扩写 / 看图反推；产物回填草稿可再改）
+  const onEditorChange = useCallback((r: MentionRead) => {
+    setLastRead(r);
+    setDraft(r.display);
+  }, []);
+
+  // AI 提示词辅助（✦ 双态：优化扩写 / 看图反推；产物回填草稿可再改）。
+  // 图源 = 本卡原图 + 正文 @ 的带图引用（编号序）+ 连线引用
   const [aiBusy, setAiBusy] = useState(false);
-  const assistImages = [self?.data.imageUrl, ...previewImgs.map((p) => p.src)]
+  const mentionedImgs = (lastRead?.imageRefIds ?? [])
+    .map((id) => nodes.find((n) => n.id === id)?.data.imageUrl as string | undefined)
+    .filter((u): u is string => Boolean(u));
+  const assistImages = [
+    self?.data.imageUrl,
+    ...mentionedImgs,
+    ...previewImgs.map((p) => p.src),
+  ]
     .filter((u): u is string => Boolean(u))
     .slice(0, 4);
   const assistContext = [
-    ...shownRefs.map(
+    ...(lastRead?.mentionIds ?? [])
+      .map((id) => nodes.find((n) => n.id === id))
+      .filter((n): n is WingNode => Boolean(n))
+      .map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150)),
+    ...connectedRefs.map(
       (n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150),
     ),
     projectStyle.trim() ? `全局视觉风格：${projectStyle.trim()}` : "",
   ]
     .filter(Boolean)
     .join("；");
-  const aiLabel = text.trim() ? "优化" : "看图反推";
-  const canAssist = Boolean(text.trim()) || assistImages.length > 0;
-
-  // 输入框随内容自动增高（预填的长提示词完整可读，封顶后内部滚动）
-  useEffect(() => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, variant === "floating" ? 260 : 120)}px`;
-  }, [text, variant]);
+  const aiLabel = draft.trim() ? "优化" : "看图反推";
+  const canAssist = Boolean(draft.trim()) || assistImages.length > 0;
 
   const runAssist = async () => {
     if (aiBusy || !canAssist) return;
@@ -238,13 +225,12 @@ export default function PromptBar({
     setPanelError("");
     try {
       const out = await optimizePrompt({
-        mode: text.trim() ? "optimize" : "reversal",
-        prompt: text.trim(),
+        mode: draft.trim() ? "optimize" : "reversal",
+        prompt: draft.trim(),
         imageUrls: assistImages,
         contextNotes: assistContext,
       });
-      setText(out);
-      taRef.current?.focus();
+      edRef.current?.setValue(out);
     } catch (exc) {
       setPanelError(exc instanceof Error ? exc.message : "AI 辅助失败");
     } finally {
@@ -257,29 +243,29 @@ export default function PromptBar({
     const onPick = (e: Event) => {
       const { text } = (e as CustomEvent<PromptPickDetail>).detail;
       if (!text) return;
-      setText((prev) => (prev.trim() ? `${prev.trimEnd()}, ${text}` : text));
-      taRef.current?.focus();
+      const ed = edRef.current;
+      if (!ed) return;
+      const cur = ed.read().display;
+      ed.setValue(cur.trim() ? `${cur.trimEnd()}, ${text}` : text);
+      ed.focus();
     };
     window.addEventListener(PROMPT_PICK_EVENT, onPick);
     return () => window.removeEventListener(PROMPT_PICK_EVENT, onPick);
   }, []);
 
-  // 拖画布媒体到面板 = 快捷把该卡加为引用（对标 viedeo-workflow 的 drag-to-chat）
+  // 拖画布媒体到面板 = 快捷 @ 该卡（viedeo-workflow drag-to-chat 范式；
+  // 含本卡自己 = 快捷自引旧图做图生图）
   useEffect(() => {
     const onAddRef = (e: Event) => {
       const refId = (e as CustomEvent<AddRefDetail>).detail?.nodeId;
-      if (!refId || refId === nodeId) return;
-      setRefs((rs) => {
-        if (rs.some((r) => r.id === refId)) return rs;
-        const n = useCanvasStore.getState().nodes.find((x) => x.id === refId);
-        return n ? [...rs, n] : rs;
-      });
+      if (!refId) return;
+      edRef.current?.appendMention(refId);
     };
     window.addEventListener(ADD_REF_EVENT, onAddRef);
     return () => window.removeEventListener(ADD_REF_EVENT, onAddRef);
-  }, [nodeId]);
+  }, []);
 
-  // 面板已挂载时的预填充（挂载前的那份由 useState 初始化器消费）
+  // 面板已挂载时的预填充（挂载前的那份由 initialText 消费）
   useEffect(() => {
     if (kind !== "text") return;
     const onPrefill = (e: Event) => {
@@ -287,53 +273,17 @@ export default function PromptBar({
         return;
       const pre = consumeTextWritePrefill(nodeId);
       if (pre) {
-        setText(pre);
-        taRef.current?.focus();
+        edRef.current?.setValue(pre);
+        edRef.current?.focus();
       }
     };
     window.addEventListener(TEXTWRITE_PREFILL_EVENT, onPrefill);
     return () => window.removeEventListener(TEXTWRITE_PREFILL_EVENT, onPrefill);
   }, [nodeId, kind]);
 
-  const candidates = useMemo(() => {
-    if (!mention) return [];
-    const q = mention.q.toLowerCase();
-    return nodes
-      .filter(
-        (n) =>
-          n.id !== nodeId &&
-          n.data?.nodeType &&
-          n.data.nodeType !== "group" &&
-          !refs.some((r) => r.id === n.id) &&
-          !connectedIds.has(n.id),
-      )
-      .filter(
-        (n) =>
-          !q ||
-          (n.data.title ?? "").toLowerCase().includes(q) ||
-          (n.data.body ?? "").slice(0, 120).toLowerCase().includes(q),
-      )
-      .sort(
-        (a, b) =>
-          (TYPE_ORDER[a.data.nodeType] ?? 9) - (TYPE_ORDER[b.data.nodeType] ?? 9),
-      )
-      .slice(0, 6);
-  }, [nodes, mention, nodeId, refs, connectedIds]);
-
-  const pick = (n: WingNode) => {
-    if (!mention) return;
-    // 抠掉 "@查询词" 文本，引用变成 chip
-    setText(
-      text.slice(0, mention.start) +
-        text.slice(mention.start + 1 + mention.q.length),
-    );
-    setRefs((r) => [...r, n]);
-    setMention(null);
-    taRef.current?.focus();
-  };
-
   const submit = () => {
-    const prompt = text.trim();
+    const r = edRef.current?.read();
+    if (!r) return;
     // 画风闸：出图直连管线与非聊天出图同规，未选画风拦下并自动弹画风弹窗
     if (kind === "image" && !projectStyle.trim()) {
       setPanelError("未选画风：请在弹出的「项目画风」里设定，再出图");
@@ -342,10 +292,9 @@ export default function PromptBar({
     }
     setPanelError("");
     // 出图/生视频允许空提示词（=按卡上标题与正文重生成）；下指令类必须有问题
-    if (!prompt && refs.length === 0 && (kind === "text" || kind === "shotlist"))
-      return;
+    if (r.empty && (kind === "text" || kind === "shotlist")) return;
     if (kind === "text") {
-      void runTextRewrite(prompt);
+      void runTextRewrite(r.prompt);
       return;
     }
     window.dispatchEvent(
@@ -353,19 +302,17 @@ export default function PromptBar({
         detail: {
           nodeId,
           kind,
-          prompt,
-          refIds: refs.map((r) => r.id),
+          prompt: r.prompt,
+          refIds: r.mentionIds,
           ...(kind === "image" && count > 1 ? { count } : {}),
         },
       }),
     );
-    setText("");
-    setRefs([]);
-    setMention(null);
+    edRef.current?.setValue("");
   };
 
   /** 文本撰写直连管线：/text/rewrite（卡片级 textModel 在此生效），结果
-   *  预览采用才覆盖；空卡直接落正文。上下文 = 引用卡（连线+手动 @）拼装 */
+   *  预览采用才覆盖；空卡直接落正文。上下文 = 正文 @ 引用（编号序）+ 连线卡 */
   const runTextRewrite = async (instruction: string) => {
     if (rwBusy) return;
     setRwBusy(true);
@@ -373,8 +320,15 @@ export default function PromptBar({
     setPanelError("");
     try {
       const body = ((self?.data.body as string) ?? "").trim();
-      const context = shownRefs
-        .filter((n) => ((n.data.body as string) ?? "").trim())
+      const mentioned = (lastRead?.mentionIds ?? [])
+        .map((id) => nodes.find((n) => n.id === id))
+        .filter((n): n is WingNode => Boolean(n));
+      const context = [...mentioned, ...connectedRefs]
+        .filter(
+          (n, i, arr) =>
+            arr.findIndex((x) => x.id === n.id) === i &&
+            ((n.data.body as string) ?? "").trim(),
+        )
         .map((n) => {
           const label = NODE_META[n.data.nodeType]?.label ?? n.data.nodeType;
           return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim().slice(0, 800)}`;
@@ -389,7 +343,7 @@ export default function PromptBar({
       if (!body) {
         // 空卡直接落正文（无覆盖风险）
         useCanvasStore.getState().updateNodeData(nodeId, { body: result });
-        setText("");
+        edRef.current?.setValue("");
       } else {
         setRwResult(result);
       }
@@ -401,8 +355,8 @@ export default function PromptBar({
   };
 
   const floating = variant === "floating";
-  // 图生图锚点提示：本卡已有图时会自动并入参考首位（桥接层 directImagegen），
-  // 亮出 chip 让「为什么结果总像上一张」有据可查
+  // 图生图锚点提示：本卡已有图时自动并入参考（未在正文 @ 时排最前，
+  // 桥接层 directImagegen）；正文里 @ 本卡可显式指定它的编号位置
   const selfImageChip = kind === "image" && Boolean(self?.data.imageUrl);
   return (
     <div
@@ -410,32 +364,29 @@ export default function PromptBar({
         floating ? "border-0 bg-transparent p-0" : "mt-1.5 p-1.5"
       }`}
     >
-      {shownRefs.length > 0 || selfImageChip ? (
+      {connectedRefs.length > 0 || selfImageChip ? (
         <div className={`flex flex-wrap gap-1 ${floating ? "mb-1.5" : "mb-1"}`}>
           {selfImageChip ? (
             <span
               className="inline-flex items-center gap-1 rounded border border-solid border-accent-soft bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
-              title="本卡当前图将作为参考参与本次生成（图生图）；在画布上换图即更新"
+              title="本卡当前图自动作为参考参与本次生成（图生图）；在正文 @ 本卡可指定它的编号位置"
             >
               <RefThumb node={self as WingNode} />
               <span className="pr-0.5 text-accent">本卡原图</span>
             </span>
           ) : null}
-          {shownRefs.map((r, i) => {
+          {connectedRefs.map((r, i) => {
             const hasImg = Boolean(r.data.imageUrl);
-            const connected = connectedIds.has(r.id);
             // 该引用在可预览图片序列里的位次（前面的有图引用数）
-            const imgIdx = shownRefs
+            const imgIdx = connectedRefs
               .slice(0, i)
               .filter((x) => Boolean(x.data.imageUrl)).length;
             return (
               <span
                 key={r.id}
-                className={`inline-flex items-center gap-1 rounded border bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2 ${
-                  connected ? "border-dashed border-hairline" : "border-hairline"
-                }`}
+                className="inline-flex items-center gap-1 rounded border border-dashed border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
                 title={
-                  (connected ? "连线引用：此卡已连入本卡、参与本次生成（断开连线即移除）" : "") +
+                  "连线引用：此卡已连入本卡、参与本次生成（断开连线即移除）" +
                   ((r.data.body ?? "").trim()
                     ? `\n${(r.data.body as string).slice(0, 80)}`
                     : "")
@@ -473,16 +424,6 @@ export default function PromptBar({
                 >
                   @{r.data.title?.slice(0, 10) || "无题"}
                 </button>
-                {connected ? null : (
-                  <button
-                    type="button"
-                    data-tip="移除引用" aria-label="移除引用"
-                    className="text-text-4 hover:text-danger"
-                    onClick={() => setRefs((rs) => rs.filter((x) => x.id !== r.id))}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
               </span>
             );
           })}
@@ -506,7 +447,7 @@ export default function PromptBar({
                   .getState()
                   .updateNodeData(nodeId, { body: rwResult });
                 setRwResult(null);
-                setText("");
+                edRef.current?.setValue("");
               }}
             >
               采用
@@ -527,55 +468,18 @@ export default function PromptBar({
           AI 正在撰写…
         </p>
       ) : null}
-      {/* 输入区独占一行 + 随内容增高；参数/模型在底栏左侧，发送在右侧 */}
-      <div className="relative">
-        <textarea
-          ref={taRef}
-          value={text}
-          rows={floating ? 4 : 2}
+      {/* 输入区独占一行 + 随内容增高；参数/模型在底栏左侧，发送在右侧。
+          MentionInput：@ 内联 chip 编辑器（含候选弹层与整 chip 删除） */}
+      <div>
+        <MentionInput
+          ref={edRef}
+          nodeId={nodeId}
           placeholder={placeholder ?? KIND_PLACEHOLDER[kind]}
-          className={`w-full resize-none overflow-y-auto bg-transparent leading-relaxed text-text outline-none placeholder:text-text-4 ${
-            floating ? "px-1 py-1 text-sm" : "px-1 py-0.5 text-xs"
-          }`}
-          onChange={(e) => {
-            setText(e.target.value);
-            const m = detectMention(e.target.value, e.target.selectionStart);
-            setMention(m);
-            setHi(0);
-          }}
-          onClick={(e) => {
-            const m = detectMention(e.currentTarget.value, e.currentTarget.selectionStart);
-            setMention(m);
-            setHi(0);
-          }}
-          onKeyDown={(e) => {
-            if (mention && candidates.length > 0) {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setHi((h) => (h + 1) % candidates.length);
-                return;
-              }
-              if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setHi((h) => (h - 1 + candidates.length) % candidates.length);
-                return;
-              }
-              if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-                e.preventDefault();
-                pick(candidates[hi]);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.stopPropagation();
-                setMention(null);
-                return;
-              }
-            }
-            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              submit();
-            }
-          }}
+          initialText={draft || undefined}
+          minHeight={floating ? 96 : 44}
+          maxHeight={floating ? 260 : 120}
+          onChange={onEditorChange}
+          onSubmit={submit}
         />
       </div>
       {/* 底栏：左侧 = 生成参数（出图候选/模型、文本模型），右侧 = 辅助/收藏/发送
@@ -617,11 +521,11 @@ export default function PromptBar({
             type="button"
             disabled={aiBusy || !canAssist}
             data-tip={
-              text.trim()
+              draft.trim()
                 ? "AI 优化提示词：保留主体意图扩写成完整出图提示词，结果回填可再改"
                 : "看图反推：AI 按卡上图/参考图写出出图提示词，结果回填可再改"
             } aria-label={
-              text.trim()
+              draft.trim()
                 ? "AI 优化提示词：保留主体意图扩写成完整出图提示词，结果回填可再改"
                 : "看图反推：AI 按卡上图/参考图写出出图提示词，结果回填可再改"
             }
@@ -648,7 +552,7 @@ export default function PromptBar({
             floating ? "h-8 w-8 rounded-full" : "h-7 w-7 rounded-md"
           } ${favSaved ? "text-warn" : "text-text-2"}`}
           onClick={() => {
-            const t = text.trim();
+            const t = draft.trim();
             if (!t) return;
             toggleFavorite(t);
             setFavSaved(true);
@@ -686,37 +590,6 @@ export default function PromptBar({
           {kind === "text" ? (rwBusy ? "撰写中…" : "撰写") : kind === "shotlist" ? "修改" : "生成"}
         </button>
         </div>
-        {mention && candidates.length > 0 ? (
-          <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-64 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">            {candidates.map((c, i) => (
-              <button
-                key={c.id}
-                type="button"
-                // 阻止 mousedown 抢焦点导致 textarea 失焦闪烁
-                onMouseDown={(e) => e.preventDefault()}
-                className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${
-                  i === hi ? "bg-surface-2 text-text" : "text-text-2"
-                }`}
-                onClick={() => pick(c)}
-                onMouseEnter={() => setHi(i)}
-              >
-                <RefThumb node={c} size={24} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate">
-                    {c.data.title || "（无标题）"}
-                  </span>
-                  {(c.data.body ?? "").trim() ? (
-                    <span className="block truncate text-[9px] leading-tight text-text-4">
-                      {(c.data.body as string).slice(0, 48)}
-                    </span>
-                  ) : null}
-                </span>
-                <span className="ml-auto shrink-0 text-[10px] text-text-4">
-                  {NODE_META[c.data.nodeType]?.label}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : null}
       </div>
       {panelError ? (
         <p className="mt-1 px-1 text-[10px] leading-relaxed text-danger">
