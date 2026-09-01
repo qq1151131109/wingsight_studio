@@ -23,6 +23,8 @@ _HERE = Path(__file__).resolve().parent
 load_dotenv(_HERE / ".env")
 load_dotenv(_HERE.parent / ".env.local")
 
+from starlette.concurrency import run_in_threadpool
+
 import auth  # noqa: E402  (在 dotenv 之后导入，读取最终环境变量)
 import auth_routes  # noqa: E402
 import camera  # noqa: E402
@@ -31,6 +33,7 @@ import graph  # noqa: E402
 import models  # noqa: E402
 import projects  # noqa: E402
 import skills  # noqa: E402
+import thumbs  # noqa: E402
 import topic_routes  # noqa: E402
 import topics  # noqa: E402
 
@@ -79,6 +82,10 @@ def healthz() -> dict:
     }
 
 
+# 文件名是随机 hex、内容不可变 → 浏览器长缓存，二次进画布不再重下
+_CACHE_IMMUTABLE = {"Cache-Control": "public, max-age=31536000, immutable"}
+
+
 @app.get("/assets/{filename}")
 def serve_asset(filename: str) -> FileResponse:
     """出图结果的静态暴露（前端经 /agent-service/assets/... 同源访问）。"""
@@ -86,8 +93,17 @@ def serve_asset(filename: str) -> FileResponse:
     safe = Path(filename).name
     path = skills.ASSETS_DIR / safe
     if not path.is_file():
-        return FileResponse(status_code=404, path="/dev/null")
-    return FileResponse(path)
+        return Response(status_code=404)  # type: ignore[return-value]
+    return FileResponse(path, headers=_CACHE_IMMUTABLE)
+
+
+@app.get("/thumbs/{filename}")
+def serve_thumb(filename: str) -> FileResponse:
+    """图片缩略图（小尺寸展示用）；缺失时从同名原图现场生成，历史资产自愈。"""
+    path = thumbs.ensure(filename)
+    if path is None:
+        return Response(status_code=404)  # type: ignore[return-value]
+    return FileResponse(path, headers=_CACHE_IMMUTABLE)
 
 
 @app.post("/assets")
@@ -149,6 +165,8 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
     skills.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     fname = f"{_uuid.uuid4().hex[:12]}{ext}"
     (skills.ASSETS_DIR / fname).write_bytes(body)
+    if is_image:
+        await run_in_threadpool(thumbs.make_for, fname)
     return {"url": f"/agent-service/assets/{fname}"}
 
 
@@ -400,6 +418,41 @@ async def api_prompt_optimize(req: dict, user: auth.CurrentUser):
 @app.get("/prompt/optimize/{job_id}")
 async def api_prompt_optimize_status(job_id: str, user: auth.CurrentUser):
     job = skills.get_prompt_optimize_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="任务不存在", media_type="text/plain")
+    return {"status": job["status"], "result": job.get("result"), "error": job.get("error")}
+
+
+@app.post("/text/rewrite")
+async def api_text_rewrite(req: dict, user: auth.CurrentUser):
+    """文本撰写/改写（画布文本卡/剧本卡底部输入条直连管线，不经聊天 LLM）：
+    卡片级模型在此生效（data.textModel → resolve，聊天主循环不走这里）。
+    异步任务（Next 代理 30s 掐断长请求），前端轮询 GET。
+
+    req: {instruction, body?, context?, model?}——instruction 必填；
+    body 空=直接创作；context=引用卡/上游内容的前置拼装文本。
+    """
+    instruction = str(req.get("instruction") or "").strip()
+    body = str(req.get("body") or "")
+    context = str(req.get("context") or "")
+    if not instruction:
+        return Response(status_code=400, content="撰写/改写需要非空指令", media_type="text/plain")
+    try:
+        text_model = models.resolve_text_model(req.get("model"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
+        job_id = await skills.start_text_rewrite_job(
+            instruction, body, context, model=text_model or ""
+        )
+    except RuntimeError as exc:
+        return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@app.get("/text/rewrite/{job_id}")
+async def api_text_rewrite_status(job_id: str, user: auth.CurrentUser):
+    job = skills.get_text_rewrite_job(job_id)
     if job is None:
         return Response(status_code=404, content="任务不存在", media_type="text/plain")
     return {"status": job["status"], "result": job.get("result"), "error": job.get("error")}

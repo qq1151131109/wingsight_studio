@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import Literal
 
 import models
+import thumbs
 
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
@@ -120,7 +121,7 @@ async def start_storyboard_gen_job(
                 tweaks={
                     "LanguageModelComponent": {
                         "temperature": 0.4,
-                        **({"model_name": model} if model else {}),
+                        **models.text_model_tweaks(model),
                     }
                 },
             )
@@ -658,7 +659,7 @@ async def _decompose_one_type(
         tweaks={
             "LanguageModelComponent": {
                 "temperature": 0.1,
-                **({"model_name": model} if model else {}),
+                **models.text_model_tweaks(model),
             }
         },
     )
@@ -720,7 +721,7 @@ async def _decompose_legacy(
         tweaks={
             "LanguageModelComponent": {
                 "temperature": 0.1,
-                **({"model_name": model} if model else {}),
+                **models.text_model_tweaks(model),
             }
         },
     )
@@ -863,7 +864,7 @@ async def _emit_progress(config: Any, message: str) -> None:
         print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
 
 
-def _extract_image_url(raw: str) -> Optional[str]:
+async def _extract_image_url(raw: str) -> Optional[str]:
     """从单次出图 flow 结果里解析图片并归档到 /agent-service/assets/。
 
     成功返回可访问 URL；失败返回 None（调用方决定如何汇报错误）。
@@ -880,15 +881,17 @@ def _extract_image_url(raw: str) -> Optional[str]:
                 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
                 dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
                 shutil.copy2(src, ASSETS_DIR / dest)
+                # ffmpeg 产缩略图不能卡事件循环（批量出图并发跑在这条循环上）
+                await asyncio.to_thread(thumbs.make_for, dest)
                 return f"/agent-service/assets/{dest}"
     except (json.JSONDecodeError, IndexError, KeyError):
         pass
     return None
 
 
-def _format_asset_result(name: str, raw: str) -> str:
+async def _format_asset_result(name: str, raw: str) -> str:
     """把单资产 flow 结果整理为一行汇报（成功附 image_url）。"""
-    url = _extract_image_url(raw)
+    url = await _extract_image_url(raw)
     if url:
         return f"✓ {name}｜image_url={url}"
     if raw.startswith("（"):
@@ -979,7 +982,7 @@ async def _generate_single_image(
         )
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:200]}
-    url = _extract_image_url(raw)
+    url = await _extract_image_url(raw)
     if url:
         return {"ok": True, "imageUrl": url}
     return {"ok": False, "error": raw[:200]}
@@ -1203,7 +1206,7 @@ async def start_prompt_optimize_job(
         context = " ".join(str(context_notes or "")[:1200].split())
         input_value = f"【上下文设定】\n{context or '（无）'}\n\n【当前提示词】\n{text}"
         tweaks = (
-            {"LanguageModelComponent": {"model_name": model}} if model else None
+            {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
         )
     elif mode == "reversal":
         if not PROMPT_OPTIMIZE_IMAGE_FLOW_ID:
@@ -1250,6 +1253,68 @@ async def start_prompt_optimize_job(
             done = [k for k, v in PROMPT_OPTIMIZE_JOBS.items() if v["status"] == "done"]
             for k in done[:-49]:
                 PROMPT_OPTIMIZE_JOBS.pop(k, None)
+
+    asyncio.create_task(run())
+    return job_id
+
+
+# ── 文本撰写/改写（画布文本卡/剧本卡底部输入条的直连管线）──────────────────────
+# 指令+正文+参考上下文 → 处理后全文。模型解析 = 卡片 data.textModel → 出厂默认
+# （前端 TextModelChip 写卡，经 models.text_model_tweaks 注入组件名）。
+
+TEXTWRITE_FLOW_ID = os.environ.get("LANGFLOW_TEXTWRITE_FLOW_ID", "")
+
+TEXTWRITE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_text_rewrite_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return TEXTWRITE_JOBS.get(job_id)
+
+
+async def start_text_rewrite_job(
+    instruction: str,
+    body: str,
+    context: str = "",
+    model: str = "",
+) -> str:
+    """正文撰写/改写：instruction 必填；body 空=直接创作。异步任务（同
+    prompt-optimize 范式），结果为处理后的全文。"""
+    if not TEXTWRITE_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_TEXTWRITE_FLOW_ID（flow 见 agent/flows/text-write.json）"
+        )
+    instruction = str(instruction or "").strip()[:2000]
+    if not instruction:
+        raise RuntimeError("撰写/改写需要非空指令")
+    body = str(body or "")[:16000]
+    context = str(context or "")[:4000]
+    input_value = (
+        f"【指令】{instruction}\n"
+        f"【正文】\n{body or '（空，直接按指令与参考上下文创作）'}\n"
+        f"【参考上下文】\n{context or '（无）'}"
+    )
+    tweaks = (
+        {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
+    )
+
+    job_id = uuid.uuid4().hex[:12]
+    TEXTWRITE_JOBS[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run() -> None:
+        try:
+            raw = await run_flow_blocking(
+                TEXTWRITE_FLOW_ID, input_value=input_value, tweaks=tweaks
+            )
+            if raw.startswith("（"):
+                TEXTWRITE_JOBS[job_id].update(status="done", error=raw.strip("（）"))
+            else:
+                TEXTWRITE_JOBS[job_id].update(status="done", result=raw)
+        except Exception as e:  # noqa: BLE001
+            TEXTWRITE_JOBS[job_id].update(status="done", error=str(e)[:200])
+        finally:
+            done = [k for k, v in TEXTWRITE_JOBS.items() if v["status"] == "done"]
+            for k in done[:-49]:
+                TEXTWRITE_JOBS.pop(k, None)
 
     asyncio.create_task(run())
     return job_id

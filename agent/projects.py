@@ -208,6 +208,10 @@ def list_projects(viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
     for r in visible:
         d = dict(r)
         d["collaborators"] = _collaborators_of(r)
+        # 前端按此隐藏重命名/删除等生命周期操作（协作者可见可分享但不管辖）
+        d["canManage"] = (
+            getattr(viewer, "role", "admin") == "admin" or r["owner_id"] == viewer.id
+        )
         out.append(d)
     return out
 
@@ -227,7 +231,7 @@ def create_project(name: str, viewer: Any = ANON_VIEWER) -> Dict[str, str]:
 
 
 def delete_project(pid: str, viewer: Any = ANON_VIEWER) -> bool:
-    assert_access(viewer, pid)
+    _require_owner(viewer, pid)
     with _conn() as conn:
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (pid,))
         conn.execute("DELETE FROM canvases WHERE project_id = ?", (pid,))
@@ -238,7 +242,7 @@ def delete_project(pid: str, viewer: Any = ANON_VIEWER) -> bool:
 
 
 def rename_project(pid: str, name: str, viewer: Any = ANON_VIEWER) -> bool:
-    assert_access(viewer, pid)
+    _require_owner(viewer, pid)
     with _conn() as conn:
         cur = conn.execute(
             "UPDATE projects SET name = ?, updated_at = ? WHERE id = ?",
@@ -341,29 +345,38 @@ def list_collaborators(pid: str, viewer: Any = ANON_VIEWER) -> List[str]:
 
 
 def add_collaborator(pid: str, username: str, viewer: Any = ANON_VIEWER) -> List[str]:
-    row = _require_owner(viewer, pid)
+    """有访问权即可分享（owner 与协作者同等），但只能添加真实存在的用户。"""
+    row = assert_access(viewer, pid)
     collab = _collaborators_of(row)
     name = username.strip()
-    if name and name not in collab:
+    if not name:
+        return collab
+    import auth
+
+    if not any(u["username"] == name for u in auth.user_search(name)):
+        import fastapi
+
+        raise fastapi.HTTPException(status_code=404, detail="用户不存在")
+    if name not in collab:
         collab.append(name)
         _write_collaborators(pid, collab)
     return collab
 
 
 def remove_collaborator(pid: str, username: str, viewer: Any = ANON_VIEWER) -> List[str]:
-    row = _require_owner(viewer, pid)
+    row = assert_access(viewer, pid)
     collab = [c for c in _collaborators_of(row) if c != username.strip()]
     _write_collaborators(pid, collab)
     return collab
 
 
 def _require_owner(viewer: Any, pid: str) -> sqlite3.Row:
-    """管理协作者需要 owner 或 admin。"""
+    """改名/删除等生命周期操作需要 owner 或 admin（协作者可分享但不管辖）。"""
     row = assert_access(viewer, pid)
     if getattr(viewer, "role", "admin") != "admin" and row["owner_id"] != viewer.id:
         import fastapi
 
-        raise fastapi.HTTPException(status_code=403, detail="仅项目所有者可管理协作者")
+        raise fastapi.HTTPException(status_code=403, detail="仅项目所有者可执行此操作")
     return row
 
 

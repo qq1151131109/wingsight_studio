@@ -1,6 +1,6 @@
 {
   "name": "道具拆解",
-  "description": "从剧本/分镜稿中拆解出资产",
+  "description": null,
   "icon": null,
   "icon_bg_color": null,
   "gradient": null,
@@ -170,7 +170,7 @@
                 "name": "model",
                 "value": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "glm-5.3-flash",
                     "icon": "OpenAI",
                     "provider": "OpenAI",
                     "metadata": {
@@ -1261,10 +1261,10 @@
     }
   },
   "is_component": false,
-  "updated_at": "2026-08-28T09:07:51+00:00",
+  "updated_at": "2026-09-01T03:06:25+00:00",
   "webhook": false,
   "endpoint_name": null,
-  "tags": [],
+  "tags": null,
   "locked": false,
   "mcp_enabled": false,
   "action_name": null,

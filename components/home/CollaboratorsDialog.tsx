@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Loader2, Search, UserPlus, X } from "lucide-react";
 import { addCollaborator, removeCollaborator, searchUsers } from "@/lib/admin";
+import { getAuthSession, peekAuthSession } from "@/lib/auth-session";
 
 /**
- * 协作者管理弹窗（模式照搬 juben CollaboratorsDialog：
- * 按用户名搜索添加、二次确认移除；入口已限 owner/admin）。
+ * 协作者管理弹窗：打开即列出全部用户，点选直接添加（搜索框只做本机过滤）；
+ * 二次确认移除。入口已限 owner/admin。
  */
 export default function CollaboratorsDialog({
   pid,
@@ -22,12 +23,11 @@ export default function CollaboratorsDialog({
   onChanged: (collaborators: string[]) => void;
 }) {
   const [collaborators, setCollaborators] = useState(initial);
+  const [allUsers, setAllUsers] = useState<{ id: string; username: string }[] | null>(null);
+  const [me, setMe] = useState<string | null>(peekAuthSession()?.username ?? null);
   const [q, setQ] = useState("");
-  const [suggestions, setSuggestions] = useState<{ id: string; username: string }[]>([]);
-  const [searching, setSearching] = useState(false);
   const [busyName, setBusyName] = useState<string | null>(null);
   const [error, setError] = useState("");
-  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -35,32 +35,45 @@ export default function CollaboratorsDialog({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  // 输入防抖 → 用户检索（排除已是协作者的）；清空与 searching 置位在 onChange 同步处理
+  // 打开即拉全量用户（轻量接口，不含密码/角色）
   useEffect(() => {
-    if (!q.trim()) return;
-    debounce.current = setTimeout(() => {
-      void searchUsers(q.trim())
-        .then((users) =>
-          setSuggestions(users.filter((u) => !collaborators.includes(u.username))),
-        )
-        .finally(() => setSearching(false));
-    }, 300);
+    let alive = true;
+    void searchUsers("")
+      .then((users) => {
+        if (alive) setAllUsers(users);
+      })
+      .catch(() => {
+        if (alive) setAllUsers([]);
+      });
     return () => {
-      if (debounce.current) clearTimeout(debounce.current);
+      alive = false;
     };
-    // collaborators 变化时重新过滤建议列表
-  }, [q, collaborators]);
+  }, []);
 
-  const onQueryChange = (v: string) => {
-    setQ(v);
-    if (!v.trim()) {
-      if (debounce.current) clearTimeout(debounce.current);
-      setSuggestions([]);
-      setSearching(false);
-    } else {
-      setSearching(true);
-    }
-  };
+  // 当前用户名缺失时补拉（把「自己」从可添加列表排掉）
+  useEffect(() => {
+    if (me) return;
+    let alive = true;
+    void getAuthSession().then((s) => {
+      if (alive) setMe(s.username);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [me]);
+
+  // 可添加 = 全部用户 − 现有协作者 − 自己 − 内置单机账号；再按搜索词本机过滤
+  const candidates = useMemo(() => {
+    if (!allUsers) return [];
+    const kw = q.trim().toLowerCase();
+    return allUsers.filter(
+      (u) =>
+        !collaborators.includes(u.username) &&
+        u.username !== me &&
+        u.username !== "local" &&
+        (!kw || u.username.toLowerCase().includes(kw)),
+    );
+  }, [allUsers, collaborators, me, q]);
 
   const add = async (username: string) => {
     setBusyName(username);
@@ -69,9 +82,6 @@ export default function CollaboratorsDialog({
       const next = await addCollaborator(pid, username);
       setCollaborators(next);
       onChanged(next);
-      setSuggestions((s) => s.filter((u) => u.username !== username));
-      setQ("");
-      setSearching(false);
     } catch (e) {
       setError(e instanceof Error ? e.message : "添加失败");
     } finally {
@@ -100,7 +110,7 @@ export default function CollaboratorsDialog({
       onClick={onClose}
     >
       <div
-        className="ws-card w-full max-w-md p-5"
+        className="ws-card flex max-h-[80vh] w-full max-w-md flex-col p-5"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal
@@ -119,60 +129,89 @@ export default function CollaboratorsDialog({
         </div>
         <p className="mt-1 text-xs text-text-3">协作者可与所有者同等编辑本项目画布。</p>
 
-        {/* 搜索添加 */}
+        {/* 过滤（本机过滤，不打服务端） */}
         <div className="relative mt-4">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-text-4" />
           <input
             value={q}
-            onChange={(e) => onQueryChange(e.target.value)}
-            placeholder="按用户名搜索添加…"
-            className="w-full rounded-md border border-hairline bg-surface-2 py-1.5 pl-8 pr-8 text-sm text-text outline-none focus:border-accent"
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="过滤用户…"
+            className="w-full rounded-md border border-hairline bg-surface-2 py-1.5 pl-8 pr-3 text-sm text-text outline-none focus:border-accent"
           />
-          {searching ? (
-            <Loader2 className="absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 motion-safe:animate-spin text-text-4" />
-          ) : null}
-          {q.trim() && suggestions.length > 0 ? (
-            <div className="absolute z-10 mt-1 max-h-44 w-full overflow-auto rounded-md border border-hairline bg-surface-1 p-1 shadow-lg">
-              {suggestions.map((u) => (
-                <button
-                  key={u.id}
-                  type="button"
-                  disabled={busyName === u.username}
-                  onClick={() => void add(u.username)}
-                  className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm text-text-2 hover:bg-surface-2 hover:text-text"
-                >
-                  <span>{u.username}</span>
-                  <UserPlus className="h-3.5 w-3.5 text-accent" />
-                </button>
-              ))}
-            </div>
-          ) : null}
         </div>
         {error ? <p className="mt-2 text-xs text-danger">{error}</p> : null}
 
-        {/* 名册 */}
-        <div className="mt-4 flex flex-col gap-1">
-          {collaborators.length === 0 ? (
-            <p className="py-4 text-center text-xs text-text-4">暂无协作者</p>
-          ) : (
-            collaborators.map((name) => (
-              <div
-                key={name}
-                className="flex items-center justify-between rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5"
-              >
-                <span className="text-sm text-text">{name}</span>
-                <button
-                  type="button"
-                  disabled={busyName === name}
-                  onClick={() => void remove(name)}
-                  className="rounded p-1 text-text-4 transition-colors hover:bg-danger/10 hover:text-danger"
-                  data-tip="移除" aria-label="移除"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+        <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
+          {/* 现有协作者 */}
+          <section>
+            <h4 className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-4">
+              现有协作者（{collaborators.length}）
+            </h4>
+            {collaborators.length === 0 ? (
+              <p className="py-2 text-center text-xs text-text-4">暂无协作者</p>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {collaborators.map((name) => (
+                  <div
+                    key={name}
+                    className="flex items-center justify-between rounded-md border border-hairline-soft bg-surface-2 px-2.5 py-1.5"
+                  >
+                    <span className="text-sm text-text">{name}</span>
+                    <button
+                      type="button"
+                      disabled={busyName === name}
+                      onClick={() => void remove(name)}
+                      className="rounded p-1 text-text-4 transition-colors hover:bg-danger/10 hover:text-danger"
+                      data-tip="移除" aria-label="移除"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))
-          )}
+            )}
+          </section>
+
+          {/* 全部用户（可添加） */}
+          <section>
+            <h4 className="mb-1 text-[11px] font-medium uppercase tracking-wide text-text-4">
+              全部用户
+            </h4>
+            {allUsers === null ? (
+              <p className="flex items-center justify-center gap-2 py-3 text-xs text-text-4">
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                加载用户列表…
+              </p>
+            ) : candidates.length === 0 ? (
+              <p className="py-2 text-center text-xs text-text-4">
+                {q.trim() ? "没有匹配的用户" : "其他用户都已加入"}
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1">
+                {candidates.map((u) => (
+                  <div
+                    key={u.id}
+                    className="flex items-center justify-between rounded-md border border-hairline-soft bg-surface-1 px-2.5 py-1.5"
+                  >
+                    <span className="text-sm text-text-2">{u.username}</span>
+                    <button
+                      type="button"
+                      disabled={busyName === u.username}
+                      onClick={() => void add(u.username)}
+                      className="flex items-center gap-1 rounded p-1 text-accent transition-colors hover:bg-accent-dim disabled:opacity-50"
+                      data-tip="添加为协作者" aria-label={`添加 ${u.username}`}
+                    >
+                      {busyName === u.username ? (
+                        <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                      ) : (
+                        <UserPlus className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </div>
     </div>

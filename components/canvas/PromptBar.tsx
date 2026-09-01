@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Sparkles, Star, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import { assetThumbUrl } from "@/lib/asset-thumb";
 import {
   ADD_REF_EVENT,
   FOCUS_NODES_EVENT,
@@ -26,6 +27,7 @@ import {
 } from "@/lib/imagegen";
 import { toggleFavorite } from "@/lib/prompt-library";
 import { optimizePrompt } from "@/lib/prompt-optimize";
+import { rewriteText } from "@/lib/textwrite";
 import {
   findTextModelOption,
   TEXT_MODEL_DEFAULT_ID,
@@ -36,6 +38,31 @@ import { Lightbox } from "./Lightbox";
 
 /** 卡片输入条上的"直接生成"事件 */
 export const GENERATE_EVENT = "wingsight:generate";
+
+/** 文本撰写预填：右键「AI 润色正文」等入口把指令灌进面板（选中节点后弹出）。
+ *  面板可能尚未挂载（先 selectNodes 再灌），故走模块级待取 + 事件双通道 */
+export const TEXTWRITE_PREFILL_EVENT = "wingsight:textwrite-prefill";
+let pendingTextWritePrefill: {
+  nodeId: string;
+  instruction: string;
+  at: number;
+} | null = null;
+
+export function prefillTextWrite(nodeId: string, instruction: string): void {
+  pendingTextWritePrefill = { nodeId, instruction, at: Date.now() };
+  window.dispatchEvent(
+    new CustomEvent(TEXTWRITE_PREFILL_EVENT, { detail: { nodeId } }),
+  );
+}
+
+function consumeTextWritePrefill(nodeId: string): string {
+  const p = pendingTextWritePrefill;
+  if (p && p.nodeId === nodeId && Date.now() - p.at < 5000) {
+    pendingTextWritePrefill = null;
+    return p.instruction;
+  }
+  return "";
+}
 
 export type GenerateDetail = {
   nodeId: string;
@@ -73,7 +100,7 @@ function RefThumb({ node, size = 20 }: { node: WingNode; size?: number }) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
       <img
-        src={url}
+        src={assetThumbUrl(url)}
         alt=""
         className="shrink-0 rounded-sm bg-surface-2 object-contain"
         style={{ width: size, height: size }}
@@ -119,11 +146,6 @@ export default function PromptBar({
   // 出图/生视频的生成基准=卡上正文（空提示词时桥接层回退「标题+正文」），
   // 预填出来让用户看得见、可改；文本/分镜面板是「下指令」，不预填
   const self = nodes.find((n) => n.id === nodeId);
-  const selfBody =
-    kind === "image" || kind === "video"
-      ? ((self?.data.body as string) ?? "").trim()
-      : "";
-  const [text, setText] = useState(selfBody);
   const [refs, setRefs] = useState<WingNode[]>([]);
   const [mention, setMention] = useState<{ start: number; q: string } | null>(
     null,
@@ -131,10 +153,26 @@ export default function PromptBar({
   const [hi, setHi] = useState(0);
   const [count, setCount] = useState(1);
   const [favSaved, setFavSaved] = useState(false);
-  // 画风闸（出图直连管线与非聊天出图同规）：未选画风在本面板内联报错
-  const [panelError, setPanelError] = useState("");
   // 引用 chip 缩略图点击 → 大图预览（灯箱翻页仅限有图的引用）
   const [preview, setPreview] = useState<number | null>(null);
+  // 画风闸（出图直连管线与非聊天出图同规）：未选画风在本面板内联报错
+  const [panelError, setPanelError] = useState("");
+  // 文本撰写直连管线（/text/rewrite，卡片级 textModel 在此生效）：
+  // 结果先预览，采用才覆盖正文；空卡直接落正文
+  const [rwBusy, setRwBusy] = useState(false);
+  const [rwResult, setRwResult] = useState<string | null>(null);
+  // 预填充（右键「AI 润色正文」等入口）：挂载时消费待取指令，已挂载则听事件
+  const [text, setText] = useState(() => {
+    const self0 = useCanvasStore
+      .getState()
+      .nodes.find((n) => n.id === nodeId);
+    const pre =
+      kind === "text" ? consumeTextWritePrefill(nodeId) : "";
+    if (pre) return pre;
+    return kind === "image" || kind === "video"
+      ? ((self0?.data.body as string) ?? "").trim()
+      : "";
+  });
   const taRef = useRef<HTMLTextAreaElement>(null);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
 
@@ -241,6 +279,22 @@ export default function PromptBar({
     return () => window.removeEventListener(ADD_REF_EVENT, onAddRef);
   }, [nodeId]);
 
+  // 面板已挂载时的预填充（挂载前的那份由 useState 初始化器消费）
+  useEffect(() => {
+    if (kind !== "text") return;
+    const onPrefill = (e: Event) => {
+      if ((e as CustomEvent<{ nodeId: string }>).detail?.nodeId !== nodeId)
+        return;
+      const pre = consumeTextWritePrefill(nodeId);
+      if (pre) {
+        setText(pre);
+        taRef.current?.focus();
+      }
+    };
+    window.addEventListener(TEXTWRITE_PREFILL_EVENT, onPrefill);
+    return () => window.removeEventListener(TEXTWRITE_PREFILL_EVENT, onPrefill);
+  }, [nodeId, kind]);
+
   const candidates = useMemo(() => {
     if (!mention) return [];
     const q = mention.q.toLowerCase();
@@ -290,6 +344,10 @@ export default function PromptBar({
     // 出图/生视频允许空提示词（=按卡上标题与正文重生成）；下指令类必须有问题
     if (!prompt && refs.length === 0 && (kind === "text" || kind === "shotlist"))
       return;
+    if (kind === "text") {
+      void runTextRewrite(prompt);
+      return;
+    }
     window.dispatchEvent(
       new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
         detail: {
@@ -304,6 +362,42 @@ export default function PromptBar({
     setText("");
     setRefs([]);
     setMention(null);
+  };
+
+  /** 文本撰写直连管线：/text/rewrite（卡片级 textModel 在此生效），结果
+   *  预览采用才覆盖；空卡直接落正文。上下文 = 引用卡（连线+手动 @）拼装 */
+  const runTextRewrite = async (instruction: string) => {
+    if (rwBusy) return;
+    setRwBusy(true);
+    setRwResult(null);
+    setPanelError("");
+    try {
+      const body = ((self?.data.body as string) ?? "").trim();
+      const context = shownRefs
+        .filter((n) => ((n.data.body as string) ?? "").trim())
+        .map((n) => {
+          const label = NODE_META[n.data.nodeType]?.label ?? n.data.nodeType;
+          return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim().slice(0, 800)}`;
+        })
+        .join("\n");
+      const result = await rewriteText({
+        instruction,
+        body,
+        context,
+        model: String(self?.data.textModel ?? "").trim() || undefined,
+      });
+      if (!body) {
+        // 空卡直接落正文（无覆盖风险）
+        useCanvasStore.getState().updateNodeData(nodeId, { body: result });
+        setText("");
+      } else {
+        setRwResult(result);
+      }
+    } catch (exc) {
+      setPanelError(exc instanceof Error ? exc.message : "AI 撰写失败");
+    } finally {
+      setRwBusy(false);
+    }
   };
 
   const floating = variant === "floating";
@@ -382,6 +476,45 @@ export default function PromptBar({
           })}
         </div>
       ) : null}
+      {/* 文本撰写结果预览：采用才覆盖正文（误覆盖敏感，竞品全无的确认流） */}
+      {kind === "text" && rwResult !== null ? (
+        <div className="mb-1 rounded-md border border-accent-soft bg-surface-1 p-1.5">
+          <p className="px-0.5 text-[10px] text-text-3">
+            AI 生成结果 — 采用后覆盖卡片正文
+          </p>
+          <div className="mt-1 max-h-56 overflow-y-auto whitespace-pre-wrap px-0.5 text-xs leading-relaxed text-text">
+            {rwResult}
+          </div>
+          <div className="mt-1.5 flex gap-1.5">
+            <button
+              type="button"
+              className="rounded bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-85"
+              onClick={() => {
+                useCanvasStore
+                  .getState()
+                  .updateNodeData(nodeId, { body: rwResult });
+                setRwResult(null);
+                setText("");
+              }}
+            >
+              采用
+            </button>
+            <button
+              type="button"
+              className="rounded border border-hairline px-2.5 py-1 text-[11px] text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+              onClick={() => setRwResult(null)}
+            >
+              丢弃
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {rwBusy ? (
+        <p className="mb-1 flex items-center gap-1.5 px-1 text-[10px] text-text-3">
+          <Loader2 className="h-3 w-3 motion-safe:animate-spin" />
+          AI 正在撰写…
+        </p>
+      ) : null}
       {/* 输入区独占一行 + 随内容增高；参数/模型在底栏左侧，发送在右侧 */}
       <div className="relative">
         <textarea
@@ -459,9 +592,10 @@ export default function PromptBar({
               <ImagegenChips nodeId={nodeId} />
             </>
           ) : null}
-          {nodeType === "script" || nodeType === "shotlist" ? (
+          {nodeType === "script" || nodeType === "shotlist" || nodeType === "note" ? (
             /* 卡片级文本模型（写本卡 data.textModel，缺省跟随出厂默认）：
-                拆解资产/生成分镜表等 flow 生成全部生效；聊天撰写不经此 */
+                拆解资产/生成分镜表等 flow 全部生效；文本卡/剧本卡的「撰写」
+                直连管线（/text/rewrite）也按此模型执行 */
             <TextModelChip nodeId={nodeId} />
           ) : null}
         </div>
@@ -513,6 +647,7 @@ export default function PromptBar({
         </button>
         <button
           type="button"
+          disabled={rwBusy}
           data-tip={
             kind === "text"
               ? "让 AI 撰写（Ctrl+Enter）"
@@ -526,13 +661,17 @@ export default function PromptBar({
                 ? "让 AI 修改分镜表（Ctrl+Enter）"
                 : "生成（Ctrl+Enter）；清空提示词=按卡片标题与正文重生成"
           }
-          className={`flex shrink-0 items-center gap-1 bg-accent font-medium text-white transition-opacity hover:opacity-85 ${
+          className={`flex shrink-0 items-center gap-1 bg-accent font-medium text-white transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50 ${
             floating ? "h-8 rounded-full px-4 text-xs" : "h-7 rounded-md px-2 text-[11px]"
           }`}
           onClick={submit}
         >
-          <Sparkles className={floating ? "h-3.5 w-3.5" : "h-3 w-3"} />
-          {kind === "text" ? "撰写" : kind === "shotlist" ? "修改" : "生成"}
+          {rwBusy ? (
+            <Loader2 className={`motion-safe:animate-spin ${floating ? "h-3.5 w-3.5" : "h-3 w-3"}`} />
+          ) : (
+            <Sparkles className={floating ? "h-3.5 w-3.5" : "h-3 w-3"} />
+          )}
+          {kind === "text" ? (rwBusy ? "撰写中…" : "撰写") : kind === "shotlist" ? "修改" : "生成"}
         </button>
         </div>
         {mention && candidates.length > 0 ? (
@@ -584,10 +723,10 @@ export default function PromptBar({
   );
 }
 
-/** 文本模型 chip（输入条 · 选中剧本/分镜表卡时出现）：卡片级覆盖存
- *  data.textModel，空=跟随出厂默认（agent/models.py，deepseek-v4-flash）。
- *  驱动范围：剧本卡=拆解资产；分镜表卡=生成分镜 + 本卡拆解。
- *  聊天「撰写/修改」走聊天主循环模型，不经此 chip */
+/** 文本模型 chip（输入条 · 选中剧本/分镜表/文本卡时出现）：卡片级覆盖存
+ *  data.textModel，空=跟随出厂默认（agent/models.py）。
+ *  驱动范围：剧本卡=拆解资产；分镜表卡=生成分镜 + 本卡拆解；
+ *  文本卡/剧本卡「撰写」= 文本撰写直连管线（/text/rewrite 按此模型执行） */
 function TextModelChip({ nodeId }: { nodeId: string }) {
   const data = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId)?.data);
   const { models } = useTextModels();

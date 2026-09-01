@@ -63,7 +63,7 @@ import DeletableEdge from "./edges";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
 import NodeInputPanel from "./NodeInputPanel";
-import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
+import { prefillTextWrite } from "./PromptBar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
 import ShortcutsModal from "./ShortcutsModal";
 import OverlayModal from "./OverlayModal";
@@ -1957,16 +1957,12 @@ export default function CanvasView() {
                         icon={<WandSparkles className="h-4 w-4" />}
                         disabled={!(node?.data.body ?? "").trim()}
                         onClick={() => {
-                          window.dispatchEvent(
-                            new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
-                              detail: {
-                                nodeId: ctxMenu.id,
-                                kind: "text",
-                                prompt:
-                                  "润色当前正文：保持原意与事实不变，优化文笔、节奏与画面感，直接输出润色后的全文。",
-                                refIds: [],
-                              },
-                            }),
+                          // 选中节点弹出输入条并预填润色指令（直连管线，
+                          // 卡片级模型生效；用户可改指令再撰写）
+                          useCanvasStore.getState().selectNodes([ctxMenu.id]);
+                          prefillTextWrite(
+                            ctxMenu.id,
+                            "润色当前正文：保持原意与事实不变，优化文笔、节奏与画面感，直接输出润色后的全文。",
                           );
                           closeCtx();
                         }}

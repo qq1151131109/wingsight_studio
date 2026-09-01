@@ -1,5 +1,9 @@
 {
+  "name": "提示词优化-扩写",
   "description": "出图提示词 AI 辅助（优化扩写态）：当前提示词 → 扩写成完整出图提示词（纯原生链，deepseek 文本）",
+  "icon": null,
+  "icon_bg_color": null,
+  "gradient": null,
   "data": {
     "nodes": [
       {
@@ -166,7 +170,7 @@
                 "name": "model",
                 "value": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "glm-5.3-flash",
                     "icon": "OpenAI",
                     "provider": "OpenAI",
                     "metadata": {
@@ -1256,8 +1260,22 @@
       "zoom": 0.7149827279753261
     }
   },
-  "gradient": null,
-  "name": "提示词优化-扩写",
-  "icon_bg_color": null,
-  "icon": null
+  "is_component": false,
+  "updated_at": "2026-09-01T03:06:25+00:00",
+  "webhook": false,
+  "endpoint_name": null,
+  "tags": null,
+  "locked": false,
+  "mcp_enabled": false,
+  "action_name": null,
+  "action_description": null,
+  "access_type": "PRIVATE",
+  "flow_type": "workflow",
+  "a2a_enabled": false,
+  "a2a_card_overrides": null,
+  "id": "52eaeb8a-0b2a-4b3a-ab0c-20e75c6d3049",
+  "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
+  "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
+  "workspace_id": null,
+  "name_key": null
 }

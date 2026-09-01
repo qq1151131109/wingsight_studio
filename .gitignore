@@ -53,6 +53,7 @@ references/
 
 # 出图产物（运行时生成）
 agent/static/assets/
+agent/static/thumbs/
 
 # 项目持久化数据库
 agent/data/

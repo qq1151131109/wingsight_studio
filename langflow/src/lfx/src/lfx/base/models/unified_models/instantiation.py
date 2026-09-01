@@ -429,6 +429,18 @@ def get_llm(
         if openai_base_url_value:
             kwargs["base_url"] = transform_localhost_url(openai_base_url_value)
             connection_url_param = "base_url"
+    elif provider == "DeepSeek":
+        # wingsight fork 补丁：DeepSeek 官方直连（api.deepseek.com），
+        # DEEPSEEK_BASE_URL 变量/env 可覆盖；api_key 走通用
+        # DEEPSEEK_API_KEY 约定解析（get_api_key_for_provider）。
+        from lfx.utils.util import transform_localhost_url
+
+        provider_vars = unified_models_module.get_all_variables_for_provider(user_id, provider)
+        deepseek_base_url_value = (
+            provider_vars.get("DEEPSEEK_BASE_URL") or _env_if_allowed("DEEPSEEK_BASE_URL") or "https://api.deepseek.com"
+        )
+        kwargs["base_url"] = transform_localhost_url(deepseek_base_url_value)
+        connection_url_param = "base_url"
     elif provider == "OpenRouter":
         # OpenRouter speaks the OpenAI wire format. Point ChatOpenAI at the
         # OpenRouter base URL (declared in MODEL_PROVIDER_METADATA) and forward

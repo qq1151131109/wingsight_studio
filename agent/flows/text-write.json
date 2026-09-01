@@ -1,6 +1,6 @@
 {
-  "name": "选题两级结论",
-  "description": "研判线索+调研证据 → 建议卡或观察卡（证据驱动，选题池管线第 4 步）",
+  "name": "文本撰写",
+  "description": "正文撰写/改写：指令+正文+参考上下文 → 处理后全文（模型经 tweaks 组件名覆盖）",
   "icon": null,
   "icon_bg_color": null,
   "gradient": null,
@@ -33,7 +33,7 @@
                 "api_editable": false,
                 "input_types": [],
                 "dynamic": false,
-                "info": "Falls back to OPENAI_API_KEY environment variable",
+                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
                 "real_time_refresh": true,
                 "title_case": false,
                 "track_in_telemetry": false,
@@ -432,7 +432,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "system_message",
-                "value": "你是非虚构纪录片的选题调研员。用户消息是 JSON 载荷：{\"theme\": 主题, \"reason\": 研判理由, \"title\": 代表性热点, \"priorContext\": 先前结论（初扫为空）, \"evidencePack\": 调研证据（按检索轮次组织；每条含标签、查询词、结果；\"未检索到\"就是没查到，不得推测）}。基于研判线索与调研证据，先判断证据等级，再决定产出哪一级结论——证据不够就出观察卡，禁止编造立项建议。\n\n信源纪律（违反任何一条的输出作废）：\n- 结论只能建立在调研证据之上：不能用你的记忆补证据，不得从相邻事实自行推导\n- 信源分层：官方文书/机构通报 > 权威媒体具名报道 > 转载聚合 > 网络传言；网络传言不得作为事实依据\n- 涉及定性（人为因素、嫌疑、死因等）的断言必须有官方或权威媒体信源，否则一律不写\n- 建议卡要主动找最强相反解释：证据里与研判理由冲突的信息必须写进 event 或 competition_gap\n\n判断规则（证据驱动，先判等级再写内容）：\n- evidence_level = \"strong\"：事件基本事实可核实，且官方通报/深度报道/档案材料至少一类有实际入口 → 产出建议卡，写全 title/event/why_now/summary/angles/material_base/competition_gap/unit_kind/viewing_question/scale\n- evidence_level = \"thin\"：事件事实不清或材料入口缺失 → 产出观察卡，只写 event/gaps/observation，不得编造片名与讲法角度\n\n可拍单元与体量（仅建议卡）：\n- unit_kind 是\"拍谁/拍什么\"的归类：person=人物、object=一件物/一类物、case=一桩案件、era=一个年代/时期。从证据收成，不是新闻标题复述；归不出的说明单元不清，应降为观察卡\n- viewing_question 一句话：观众看完这部片回答什么问题。必须从 event/material_base 的具体事实里长出来（把\"第一次有连续的县廷日常记录\"问题化为\"帝国如何在一个县里运转\"），不得是口号\n- scale 诚实判断：材料只够撑单片就标 single；series（含人物传记式多集）必须给 series_thread——串珠问题，多个故事/多集共同回答的一个问题；没有串珠假设不得标 series；anthology=主题串珠选集（如\"每集一件国宝\"）\n- why_now 里\"该题材此前因场面成本不可拍、AI 生成使可行\"是合法理由\n\n共同纪律：\n- event 只写检索证据能支撑的已核实事实，每句都要能对应到某条证据；检索没有的不写，不加\"暗示\"\"可能涉及\"这类无信源推断\n- gaps 列出要立项还缺什么（如：无官方定性、无深度报道进场、无档案/判决文书入口、关键当事人信源未知）\n- 建议卡字段（why_now/material_base/competition_gap）只依据对应证据作答\n- 只输出 JSON（不要任何解释或 Markdown 围栏）\n\n建议卡格式：{\"evidence_level\": \"strong\", \"title\": \"...\", \"event\": \"...\", \"why_now\": \"...\", \"summary\": \"...\", \"angles\": [\"...\", \"...\"], \"material_base\": \"...\", \"competition_gap\": \"...\", \"unit_kind\": \"person|object|case|era\", \"viewing_question\": \"...\", \"scale\": \"single|series|anthology\", \"series_thread\": \"仅 scale=series 时给\"}\n观察卡格式：{\"evidence_level\": \"thin\", \"event\": \"...\", \"gaps\": [\"...\", \"...\"], \"observation\": \"一两句话：这条现在为什么不能拍、值得继续盯什么\"}",
+                "value": "你是影视创作团队的文字编辑，擅长剧本、大纲、设定与各类创作文本的撰写与修改。用户会给出「指令」「正文」「参考上下文」三部分：按指令对正文执行改写/续写/扩写/润色/摘要/翻译等操作。\n规则：\n- 只输出处理后的完整正文本身：不要任何解释、前后缀、开场白或 markdown 代码块\n- 指令为续写/扩写时：原样保留正文全部内容，再自然接着写，文风与已有内容一致\n- 指令为改写/润色时：保持原意与既有事实、设定不变，只优化表达\n- 正文为空时：直接按指令与参考上下文创作\n- 参考上下文中的角色、场景、事实与风格设定必须遵守，不得与既有设定冲突\n- 除翻译任务按指令目标语言外，输出简体中文",
                 "display_name": "System Message",
                 "advanced": false,
                 "api_editable": false,
@@ -479,7 +479,7 @@
                 "type": "slider",
                 "_input_type": "SliderInput"
               },
-              "is_refresh": false
+              "is_refresh": true
             },
             "description": "Runs a language model given a specified provider.",
             "icon": "brain-circuit",
@@ -571,7 +571,7 @@
               }
             },
             "tool_mode": false,
-            "last_updated": "2026-08-31T13:54:24.880Z"
+            "last_updated": "2026-08-28T09:07:47.032Z"
           },
           "showNode": true,
           "selected_output": "text_output"
@@ -1255,13 +1255,13 @@
       }
     ],
     "viewport": {
-      "x": -170.3742933780577,
-      "y": -76.98871905809347,
-      "zoom": 0.9236971347236809
+      "x": -161.5002262163336,
+      "y": -72.64137289871104,
+      "zoom": 0.7149827279753261
     }
   },
   "is_component": false,
-  "updated_at": "2026-09-01T03:16:47+00:00",
+  "updated_at": "2026-09-01T03:06:25+00:00",
   "webhook": false,
   "endpoint_name": null,
   "tags": null,
@@ -1273,7 +1273,7 @@
   "flow_type": "workflow",
   "a2a_enabled": false,
   "a2a_card_overrides": null,
-  "id": "89b6580f-61f8-415a-bcb7-0aa2bd4484ca",
+  "id": "bf90d1c2-031e-4848-b889-af8621dce020",
   "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
   "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
   "workspace_id": null,

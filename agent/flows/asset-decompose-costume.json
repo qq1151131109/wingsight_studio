@@ -13,7 +13,7 @@
           "x": 647.0736304730875,
           "y": 260.53513044466774
         },
-        "selected": false,
+        "selected": true,
         "data": {
           "id": "LanguageModelComponent-nFbmO",
           "type": "LanguageModelComponent",
@@ -170,7 +170,7 @@
                 "name": "model",
                 "value": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "glm-5.3-flash",
                     "icon": "OpenAI",
                     "provider": "OpenAI",
                     "metadata": {
@@ -571,7 +571,7 @@
               }
             },
             "tool_mode": false,
-            "last_updated": "2026-08-28T09:07:47.032Z"
+            "last_updated": "2026-08-31T13:55:44.599Z"
           },
           "showNode": true,
           "selected_output": "text_output"
@@ -1255,14 +1255,13 @@
       }
     ],
     "viewport": {
-      "x": -161.5002262163336,
-      "y": -72.64137289871104,
-      "zoom": 0.7149827279753261
-    },
-    "name": "资产拆解-服饰"
+      "x": -692.16410066853,
+      "y": -445.14861041920324,
+      "zoom": 1.8736383442265796
+    }
   },
   "is_component": false,
-  "updated_at": "2026-08-30T13:00:36+00:00",
+  "updated_at": "2026-09-01T03:06:25+00:00",
   "webhook": false,
   "endpoint_name": null,
   "tags": null,

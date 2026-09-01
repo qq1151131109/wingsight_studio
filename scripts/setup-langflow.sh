@@ -120,6 +120,7 @@ FLOWS = {
     "prompt-optimize-text.json": "LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID",
     "prompt-optimize-image.json": "LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID",
     "shotlist-generate.json": "LANGFLOW_SHOTLIST_FLOW_ID",
+    "text-write.json": "LANGFLOW_TEXTWRITE_FLOW_ID",
     "topic-triage.json": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "topic-research-plan.json": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
     "topic-research-followup.json": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",

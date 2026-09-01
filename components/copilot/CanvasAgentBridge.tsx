@@ -18,6 +18,7 @@ import {
   type OpResult,
 } from "@/lib/canvas/ops";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
+import { assetThumbUrl } from "@/lib/asset-thumb";
 import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import {
@@ -376,38 +377,8 @@ export default function CanvasAgentBridge() {
         );
         return;
       }
-      if (kind === "text") {
-        // 正文撰写：不置 loading（文本卡无该状态），agent 直接 update_node 写 body
-        const refLines = refIds
-          .map((rid) => st.nodes.find((n) => n.id === rid))
-          .filter((n): n is NonNullable<typeof n> => Boolean(n))
-          .map(
-            (n) =>
-              `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 200)}`,
-          )
-          .join("\n");
-        const content = [
-          `请为画布节点 ${nodeId}（「${node.data.title}」）撰写正文：`,
-          prompt || "（根据标题与卡片类型撰写，简洁有内容）",
-          refLines
-            ? `参考以下画布卡片的内容：\n${refLines}`
-            : "",
-          upstreamLines
-            ? `该卡连线的上游内容（续写/润色时保持连贯）：\n${upstreamLines}`
-            : "",
-          `完成后用 canvas_ops update_node 把全文写进该节点的 body 字段，不要改动标题等其他字段。`,
-        ]
-          .filter(Boolean)
-          .join("\n");
-        void appendMessage(
-          new TextMessage({
-            id: `gen_${nodeId}_${Date.now()}`,
-            role: Role.User,
-            content,
-          }),
-        );
-        return;
-      }
+      // kind === "text" 已迁至文本撰写直连管线（PromptBar → /text/rewrite，
+      // 卡片级模型生效），不再经聊天主循环
       st.updateNodeData(nodeId, {
         status: "loading",
         errorMessage: undefined,
@@ -728,7 +699,7 @@ export default function CanvasAgentBridge() {
                   {m.kind === "image" ? (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
-                      src={m.url}
+                      src={assetThumbUrl(m.url)}
                       alt={m.title}
                       className="h-20 w-full object-cover"
                     />
