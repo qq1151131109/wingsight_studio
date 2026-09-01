@@ -29,10 +29,10 @@ generate_image_responses）：参考图上限 10 张、size 显式像素上限
 
 画幅（aspects）：flow 的 compute_image_size 接受任意 w:h（16 像素网格、
 短边对齐档位），目录只收主流 6 档（分镜卡 ShotGenSettings 同款）；
-seedream-5-0-pro 例外——responses 通道显式像素上限 4194304，21:9 全档
-压不进（2K=3360x1440=4.84M）不收录。seedream-4-5 的最小像素约束
-（≥3686400）按档位收窄过 resolutions，幅面组合级（如 1:1 2K=2.07M
-不够）仍由 flow/上游报错点名，不在目录复制一份像素数学。
+seedream-5-0-pro 例外——responses 通道显式像素上限 4194304，21:9 2K
+（3360x1440=4.84M）超限，枚举不做按档位组合、整档不收录。seedream-4-5
+的最小像素约束（≥3686400）按档位收窄过 resolutions，幅面组合级（如
+1:1 2K=2.07M 不够）仍由 flow/上游报错点名，不在目录复制一份像素数学。
 
 这里只做目录与校验；调用拼装在 skills（tweaks 注入 model_name /
 resolution / reference_count 到 imagegen flow 的 BatchAssetSheet-img02 组件）。

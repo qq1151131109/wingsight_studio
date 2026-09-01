@@ -1039,7 +1039,12 @@ async def start_storyboard_image_job(
     invalid: List[str] = []
     for s in shots:
         rid = str(s.get("rid", ""))
+        # 请求级 params 是端点已解析的 {model_name, resolution}，镜头级
+        # params 是前端原始 {model, resolution}——统一成 model 键再校验，
+        # 否则请求级模型被当缺省、画幅/档位拿错模型对表
         merged = {**(params or {}), **(s.get("params") or {})}
+        if "model_name" in merged:
+            merged["model"] = merged.pop("model_name")
         try:
             # 画幅：镜头级显式 > 请求级（merged.aspect）；模型/档位同批校验，
             # 任一项不合法整批 400 点名镜头（绝不静默回退默认幅面）
@@ -1071,16 +1076,17 @@ async def start_storyboard_image_job(
 
     async def one(shot: Dict[str, Any]) -> None:
         rid = str(shot.get("rid", ""))
-        # 请求级画幅（卡片 data.gen.aspect）落到无显式画幅的镜头上：
-        # flow 载荷只认 shot 里的 aspect 字段
         p = resolved.get(rid) or {}
+        # 请求级画幅落到无显式画幅的镜头（flow 载荷只认 shot.aspect；
+        # aspect 不能留在 params 里——params 会被整体展开成组件 tweaks）
         if not str(shot.get("aspect") or "").strip() and p.get("aspect"):
             shot = {**shot, "aspect": p["aspect"]}
+        tweaks = {k: v for k, v in p.items() if k != "aspect"} or None
         try:
             async with sem:
                 if STORYBOARD_IMAGE_JOBS[job_id]["cancelled"]:
                     return
-                result = await _generate_single_image(shot, params=resolved.get(rid))
+                result = await _generate_single_image(shot, params=tweaks)
         except asyncio.CancelledError:
             # cancel_storyboard_image_job 取消了在途任务：httpx 请求中止，
             # 未完成的生成不再计费
