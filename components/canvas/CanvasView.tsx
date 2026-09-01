@@ -37,6 +37,7 @@ import {
   Undo2,
   WandSparkles,
   X,
+  Keyboard,
   ZoomIn as ZoomInIcon,
   ZoomOut,
   Maximize,
@@ -54,6 +55,8 @@ import {
   dispatchFocusEdit,
   FOCUS_NODES_EVENT,
   NODE_INFO_EVENT,
+  OPEN_ADD_MENU_EVENT,
+  OPEN_SHORTCUTS_EVENT,
   OPEN_STYLE_EVENT,
   type FocusNodesDetail,
   type NodeInfoDetail,
@@ -1006,7 +1009,7 @@ function BottomDock({
       </DockBtn>
       <button
         type="button"
-        data-tip="点击复位 100%（⌘0）" aria-label="点击复位 100%（⌘0）"
+        data-tip="点击复位 100%（⇧⌘0）" aria-label="点击复位 100%（⇧⌘0）"
         className="min-w-11 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={() => void zoomTo(1, { duration: 250 })}
       >
@@ -1015,8 +1018,14 @@ function BottomDock({
       <DockBtn title="放大（⌘=）" onClick={() => void zoomIn({ duration: 150 })}>
         <ZoomInIcon className="h-4 w-4" />
       </DockBtn>
-      <DockBtn title="适应视图" onClick={() => void fitView({ duration: 300, padding: 0.15 })}>
+      <DockBtn title="适应视图（⌘0）" onClick={() => void fitView({ duration: 300, padding: 0.15 })}>
         <Maximize className="h-4 w-4" />
+      </DockBtn>
+      <DockBtn
+        title="快捷键速查（?）"
+        onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SHORTCUTS_EVENT))}
+      >
+        <Keyboard className="h-4 w-4" />
       </DockBtn>
       {saveLabel ? (
         <>
@@ -1882,6 +1891,18 @@ export default function CanvasView() {
     },
     [nodes],
   );
+
+  // Tab 键（CanvasShortcuts）→ 视口中央弹「添加节点」选择器，与双击空白同菜单
+  useEffect(() => {
+    const onOpenAdd = () => {
+      const x = window.innerWidth / 2;
+      const y = window.innerHeight / 2;
+      const flow = screenToFlowPosition({ x, y });
+      setCtxMenu({ kind: "add", x, y, fx: flow.x, fy: flow.y });
+    };
+    window.addEventListener(OPEN_ADD_MENU_EVENT, onOpenAdd);
+    return () => window.removeEventListener(OPEN_ADD_MENU_EVENT, onOpenAdd);
+  }, [screenToFlowPosition]);
 
   const onSelectionContextMenu = useCallback(
     (event: React.MouseEvent<Element>, selNodes: WingNode[]) => {

@@ -62,6 +62,13 @@ export type PromptPickDetail = { text: string };
  *  与其让用户找底坞入口，不如拦下的同时把设定弹窗递到眼前 */
 export const OPEN_STYLE_EVENT = "wingsight:open-style";
 
+/** 底部坞「快捷键」按钮 → 打开快捷键速查表（ShortcutsModal 自听） */
+export const OPEN_SHORTCUTS_EVENT = "wingsight:open-shortcuts";
+
+/** Tab 键（CanvasShortcuts）→ 在视口中央打开「添加节点」选择器，
+ *  与双击空白共用 CanvasView 的 ctxMenu(kind=add) */
+export const OPEN_ADD_MENU_EVENT = "wingsight:open-add-menu";
+
 /** 分镜表标注重绘 → 桥接层转聊天指令（原图+标注图双参考，只改标注区域） */
 export const MASK_REDRAW_EVENT = "wingsight:mask-redraw";
 
