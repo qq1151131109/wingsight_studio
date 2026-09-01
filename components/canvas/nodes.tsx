@@ -1588,7 +1588,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
-                className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white opacity-0 transition-opacity hover:bg-black/60 group-hover:opacity-100"
+                className="absolute left-1.5 top-1.5 flex items-center gap-0.5 rounded-md bg-black/55 px-1 py-0.5 text-[10px] text-white hover:bg-black/75"
                 onClick={(e) => {
                   e.stopPropagation();
                   setHistoryOpen(true);
