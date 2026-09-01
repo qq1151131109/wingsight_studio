@@ -188,12 +188,16 @@ async function directImagegen(
     status: "loading",
     errorMessage: undefined,
     refIds: validRefIds,
-    // 重生成前把当前主图存进版本历史（可对比/回滚）
+    // 重生成前把当前主图存进版本历史（可对比/回滚），并归因它当时的提示词
     ...(first?.data.imageUrl
       ? {
           versions: [
             ...(first.data.versions ?? []),
-            { url: first.data.imageUrl as string, at: new Date().toISOString().slice(5, 16).replace("T", " ") },
+            {
+              url: first.data.imageUrl as string,
+              at: new Date().toISOString().slice(5, 16).replace("T", " "),
+              prompt: String(first.data.genPrompt ?? "").trim() || undefined,
+            },
           ].slice(-12),
         }
       : {}),
@@ -546,6 +550,7 @@ export default function CanvasAgentBridge() {
                 {
                   url: (node.data.imageUrl ?? node.data.videoUrl)!,
                   at: new Date().toISOString().slice(5, 16).replace("T", " "),
+                  prompt: String(node.data.genPrompt ?? "").trim() || undefined,
                 },
               ].slice(-12),
             }
@@ -693,7 +698,7 @@ export default function CanvasAgentBridge() {
       useCanvasStore.getState().updateNodeData(nodeId, {
         status: "loading",
         errorMessage: undefined,
-        // 旧图进版本历史
+        // 旧图进版本历史（归因它当时的提示词）
         versions: [
           ...(node.data.versions ?? []),
           ...(originUrl
@@ -701,6 +706,7 @@ export default function CanvasAgentBridge() {
                 {
                   url: originUrl,
                   at: new Date().toISOString().slice(5, 16).replace("T", " "),
+                  prompt: String(node.data.genPrompt ?? "").trim() || undefined,
                 },
               ]
             : []),

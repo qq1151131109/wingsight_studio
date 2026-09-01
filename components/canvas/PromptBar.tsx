@@ -157,8 +157,11 @@ export default function PromptBar({
     const pre =
       kind === "text" ? consumeTextWritePrefill(nodeId) : "";
     if (pre) return pre;
+    // 出图/生视频预填优先用上一次生成的提示词（genPrompt 快照），
+    // 没有才回退卡上正文——重开面板不丢当时敲的词
     return kind === "image" || kind === "video"
-      ? ((self0?.data.body as string) ?? "").trim()
+      ? (String(self0?.data.genPrompt ?? "").trim() ||
+          ((self0?.data.body as string) ?? "").trim())
       : "";
   });
   const projectStyle = useCanvasStore((s) => s.projectStyle);
@@ -309,10 +312,12 @@ export default function PromptBar({
           prompt: r.prompt,
           refIds: r.mentionIds,
           ...(kind === "image" && count > 1 ? { count } : {}),
-        },
+    },
       }),
     );
-    edRef.current?.setValue("");
+    // 出图/生视频生成后保留提示词（用户要求可追溯、方便接着改）；
+    // 分镜指令是一次性的，仍清空。文本撰写在 runTextRewrite 里自行清
+    if (kind === "shotlist") edRef.current?.setValue("");
   };
 
   /** 文本撰写直连管线：/text/rewrite（卡片级 textModel 在此生效），结果

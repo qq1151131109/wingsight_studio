@@ -122,8 +122,8 @@ export interface WingNodeData {
   /** image 卡：本次生成所用的参考卡 id（资产/Look 卡）。批量出图按行解析
    *  写入并建参考连线；直连出图取自面板手动 @。重跑/重试复用 */
   refIds?: string[];
-  /** 历史版本（每次重生成前把当前主图存档；对比/回滚用） */
-  versions?: { url: string; at: string }[];
+  /** 历史版本（每次重生成前把当前主图存档；对比/回滚用；prompt=产出该版的提示词，可追溯） */
+  versions?: { url: string; at: string; prompt?: string }[];
   /** 锁定：不可拖动、不可改标题（卡上工具条切换） */
   locked?: boolean;
   /** 分镜表：镜头行 */

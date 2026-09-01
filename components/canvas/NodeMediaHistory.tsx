@@ -12,7 +12,7 @@ import type { WingNodeData } from "@/lib/canvas/store";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 
-type Version = { url: string; at: string };
+type Version = { url: string; at: string; prompt?: string };
 
 function Thumb({
   url,
@@ -116,16 +116,24 @@ export default function VersionHistoryModal({
   const [selected, setSelected] = useState<Version | null>(null);
   const entries: Version[] = [
     ...versions,
-    ...(primary ? [{ url: primary, at: "当前" }] : []),
+    ...(primary ? [{ url: primary, at: "当前", prompt: data.genPrompt }] : []),
   ].reverse();
+  // 提示词追溯：选中的版本显示它的提示词，未选中显示当前版的
+  const detail = selected ?? entries.find((v) => v.at === "当前") ?? null;
 
   const restore = (v: Version) => {
     const st = useCanvasStore.getState();
     st.commitHistory();
-    const cur: Version = { url: primary, at: new Date().toISOString().slice(0, 16).replace("T", " ") };
+    const cur: Version = {
+      url: primary,
+      at: new Date().toISOString().slice(0, 16).replace("T", " "),
+      prompt: data.genPrompt,
+    };
     const rest = (data.versions ?? []).filter((x) => x.url !== v.url);
     st.updateNodeData(nodeId, {
       ...(isVideo ? { videoUrl: v.url } : { imageUrl: v.url }),
+      // 回滚旧版 = 连它当时的提示词一起恢复（面板再生成不串词）
+      genPrompt: v.prompt || data.genPrompt,
       versions: [...rest, cur],
     });
     onClose();
@@ -188,6 +196,16 @@ export default function VersionHistoryModal({
             ))}
           </div>
         )}
+        {detail?.prompt ? (
+          <div className="rounded-md border border-hairline-soft bg-surface-2 p-2">
+            <p className="text-[10px] text-text-4">
+              {detail.at === "当前" ? "当前版本提示词" : `历史 ${detail.at} 提示词`}
+            </p>
+            <p className="mt-0.5 line-clamp-4 whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
+              {detail.prompt}
+            </p>
+          </div>
+        ) : null}
 
         <p className="text-[10px] text-text-4">
           {selected ? "左右拖动滑杆对比两个版本" : "点击版本进入 A/B 对比；重生成时旧结果自动存档"}
