@@ -1253,3 +1253,65 @@ async def start_prompt_optimize_job(
 
     asyncio.create_task(run())
     return job_id
+
+
+# ── 文本撰写/改写（画布文本卡/剧本卡底部输入条的直连管线）──────────────────────
+# 指令+正文+参考上下文 → 处理后全文。模型解析 = 卡片 data.textModel → 出厂默认
+# （前端 TextModelChip 写卡，经 models.text_model_tweaks 注入组件名）。
+
+TEXTWRITE_FLOW_ID = os.environ.get("LANGFLOW_TEXTWRITE_FLOW_ID", "")
+
+TEXTWRITE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_text_rewrite_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return TEXTWRITE_JOBS.get(job_id)
+
+
+async def start_text_rewrite_job(
+    instruction: str,
+    body: str,
+    context: str = "",
+    model: str = "",
+) -> str:
+    """正文撰写/改写：instruction 必填；body 空=直接创作。异步任务（同
+    prompt-optimize 范式），结果为处理后的全文。"""
+    if not TEXTWRITE_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_TEXTWRITE_FLOW_ID（flow 见 agent/flows/text-write.json）"
+        )
+    instruction = str(instruction or "").strip()[:2000]
+    if not instruction:
+        raise RuntimeError("撰写/改写需要非空指令")
+    body = str(body or "")[:16000]
+    context = str(context or "")[:4000]
+    input_value = (
+        f"【指令】{instruction}\n"
+        f"【正文】\n{body or '（空，直接按指令与参考上下文创作）'}\n"
+        f"【参考上下文】\n{context or '（无）'}"
+    )
+    tweaks = (
+        {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
+    )
+
+    job_id = uuid.uuid4().hex[:12]
+    TEXTWRITE_JOBS[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run() -> None:
+        try:
+            raw = await run_flow_blocking(
+                TEXTWRITE_FLOW_ID, input_value=input_value, tweaks=tweaks
+            )
+            if raw.startswith("（"):
+                TEXTWRITE_JOBS[job_id].update(status="done", error=raw.strip("（）"))
+            else:
+                TEXTWRITE_JOBS[job_id].update(status="done", result=raw)
+        except Exception as e:  # noqa: BLE001
+            TEXTWRITE_JOBS[job_id].update(status="done", error=str(e)[:200])
+        finally:
+            done = [k for k, v in TEXTWRITE_JOBS.items() if v["status"] == "done"]
+            for k in done[:-49]:
+                TEXTWRITE_JOBS.pop(k, None)
+
+    asyncio.create_task(run())
+    return job_id
