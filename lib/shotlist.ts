@@ -154,8 +154,11 @@ export async function decomposeAssets(
 /** 分镜行批量出图请求（直连 imagegen flow，不经聊天）。
  *  description 传最终提示词或按行字段合成；visualNotes 并入一致性参考描述；
  *  referenceImages 传角色定妆照 URL（一致性锚点，flow 下载作参考图）；
- *  assetType 决定布局契约（角色 16:9 四格 / 道具 4:3，缺省 scene），
- *  aspect 覆写幅面（分镜图 9:16/21:9 等，资产设定图不传）；
+ *  referenceLabels 与 referenceImages 一一对应（{type,name}），flow 渲染
+ *  逐张职责声明（juben build_reference_usage 范式：定妆照只锁身份不继承
+ *  白底/多视图排版）；
+ *  assetType 决定布局契约（角色 16:9 四格 / 道具 4:3 / 镜头单幅剧照，
+ *  缺省 scene），aspect 覆写幅面（分镜图 9:16/21:9 等，资产设定图不传）；
  *  params 为镜头级模型/档位覆盖（卡片级 data.gen，赢过请求级 params） */
 export type ShotImageRequest = {
   rid: string;
@@ -164,6 +167,7 @@ export type ShotImageRequest = {
   visualNotes?: string;
   assetType?: "character" | "scene" | "prop" | "shot";
   referenceImages?: string[];
+  referenceLabels?: { type: string; name: string }[];
   aspect?: string;
   params?: { model: string; resolution: string };
 };

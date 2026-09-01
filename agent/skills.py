@@ -967,6 +967,16 @@ async def _generate_single_image(
     ]
     if ref_images:
         payload["reference_images"] = ref_images
+    # 逐张参考图职责标签（[{type,name}]，与 referenceImages 一一对应）：
+    # flow 据此渲染「参考图N（名）：只锁定什么/不继承什么」职责段——
+    # 定妆照的白底/多视图排版最容易污染剧照画面，笼统一句压不住
+    ref_labels = [
+        {"type": str(l.get("type") or ""), "name": str(l.get("name") or "")}
+        for l in (shot.get("referenceLabels") or shot.get("reference_labels") or [])
+        if isinstance(l, dict) and str(l.get("name") or "").strip()
+    ]
+    if ref_images and ref_labels:
+        payload["reference_labels"] = ref_labels[: len(ref_images)]
     try:
         tweaks: Dict[str, Dict[str, Any]] = {
             "BatchAssetSheet-img02": {

@@ -3634,15 +3634,24 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       const jobId = await startShotImageJob(
         jobs.flatMap((j) => {
           const t = targets.find((x) => x.row.rid === j.rid)!;
+          // 参考资产带图者才收：URL 与职责标签同源对齐（无图引用卡不占位）
+          const refAssets = rowRefNodes(t.row).filter((n) =>
+            Boolean(n.data.imageUrl),
+          );
           const base = {
             name: `镜头${t.seq + 1}`,
-            description: composeRowPrompt(t.row),
+            // @ 是画布引用记号，出图模型不认识——剥成裸名字（juben 剥 []同款）
+            description: composeRowPrompt(t.row).replace(/@/g, ""),
             // 镜头剧照契约（flow 侧 shot 布局：有人物有剧情，区别于场景空镜）
             assetType: "shot" as const,
             visualNotes: [refNotesFor(t.row), ...styleStack]
               .filter(Boolean)
               .join("；"),
-            referenceImages: refImagesFor(t.row),
+            referenceImages: refAssets.map((n) => n.data.imageUrl as string),
+            referenceLabels: refAssets.map((n) => ({
+              type: String(n.data.nodeType),
+              name: String(n.data.title || "无题"),
+            })),
             aspect,
           };
           return Array.from({ length: genCount }, (_, k) => ({

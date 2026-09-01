@@ -78,6 +78,39 @@ _TYPE_TAILS: dict[str, str] = {
 }
 _DEFAULT_TAIL = "图内为单件资产设定图，不添加任何其他角色或道具。"
 
+# 逐张参考图职责声明（juben build_reference_usage 范式）：按标签写明
+# 「只锁定什么、不继承什么」——定妆照的白底/多视图排版是最容易污染
+# 剧照画面的源头，笼统一句话压不住
+_REF_DUTIES: dict[str, str] = {
+    "character": (
+        "只用于锁定「{name}」的身份、脸型、五官、发型、年龄感与体格及其"
+        "当前造型；不继承该图的白底、多视图、转面排版或文字标注。"
+    ),
+    "scene": (
+        "只用于锁定「{name}」的空间、陈设、材质与年代特征；本镜头的机位、"
+        "光线与人物调度以本提示词为准，不照搬该图构图。"
+    ),
+    "prop": "只用于锁定「{name}」的形制、材质、比例与关键细节；不继承该图的背景与摆放。",
+    "costume": "只用于锁定「{name}」的形制、材质与色彩；不继承该图的白底与排版。",
+    "image": (
+        "作为画面基础参照：保留其构图、场景与已确认内容，仅按本提示词修改"
+        "需要变化的部分；不继承其排版与文字标注。"
+    ),
+}
+_DEFAULT_REF_DUTY = "只用于锁定该图所示资产的外观特征；不继承该图的排版与文字标注。"
+
+
+def _references_block(labels: list[dict[str, Any]] | None) -> str:
+    """有标签时生成逐张职责段（参考图N（名）：职责），无标签维持笼统注。"""
+    if not labels:
+        return _REFERENCE_NOTE
+    lines = ["各参考图职责（位次与传入顺序一致）："]
+    for i, lab in enumerate(labels, 1):
+        name = str(lab.get("name") or "")
+        duty = _REF_DUTIES.get(str(lab.get("type")), _DEFAULT_REF_DUTY)
+        lines.append(f"参考图{i}（{name}）：{duty.format(name=name)}")
+    return "\n".join(lines)
+
 _DEFAULT_TEMPLATE = """{layout}
 
 全局视觉风格（整张图的媒介、质感与调色以此为准，务必遵循）：
@@ -190,7 +223,7 @@ def render_asset_prompt(asset: dict[str, Any], template: str | None = None) -> s
         "description": str(asset.get("description") or ""),
         "visual_notes": str(asset.get("visual_notes") or ""),
         "type": asset_type,
-        "_reference_note": _REFERENCE_NOTE,
+        "_reference_note": _references_block(asset.get("reference_labels")),
         "_type_tail": _TYPE_TAILS.get(asset_type, _DEFAULT_TAIL),
         "_text_guard": _TEXT_GUARD,
     }
@@ -322,6 +355,11 @@ def parse_assets_payload(text: str, max_assets: int = 10) -> list[dict[str, Any]
             "search_query": str(a.get("search_query") or ""),
             "aspect": _aspect_of(a),
         "reference_images": [str(u) for u in (a.get("reference_images") or []) if str(u).strip()][:5],
+            "reference_labels": [
+                {"type": str(l.get("type") or ""), "name": str(l.get("name") or "")}
+                for l in (a.get("reference_labels") or [])
+                if isinstance(l, dict) and str(l.get("name") or "").strip()
+            ],
         }
         for a in assets
         if isinstance(a, dict) and str(a.get("type") or "") in LAYOUT_SPECS and str(a.get("name") or "").strip()

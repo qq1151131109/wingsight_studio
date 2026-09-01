@@ -104,6 +104,7 @@ export interface WingNodeData {
     assetType: "character" | "scene" | "prop" | "shot";
     visualNotes: string;
     referenceImages: string[];
+    referenceLabels?: { type: string; name: string }[];
   };
   /** 出图参数卡片级覆盖（模型/档位，目录见 agent/models.py）：缺省跟随
    *  项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/

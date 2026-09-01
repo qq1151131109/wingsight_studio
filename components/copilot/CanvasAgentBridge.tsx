@@ -148,7 +148,29 @@ async function directImagegen(
         : targetType === "scene" || targetType === "prop"
           ? targetType
           : undefined;
-  const assetType = targetAssetType ?? (isCharacterLook ? "character" : "scene");
+  // 分镜表派生的镜头图卡走 shot 剧照契约——否则带角色引用被误标成
+  // character（出成四格定妆）、无引用落 scene（无人空镜禁人物）
+  const fromShotlist = st.edges.some(
+    (e) =>
+      e.target === nodeId &&
+      st.nodes.find((m) => m.id === e.source)?.data.nodeType === "shotlist",
+  );
+  const assetType =
+    targetAssetType ??
+    (fromShotlist ? "shot" : isCharacterLook ? "character" : "scene");
+  // 逐张参考图职责标签（与 referenceImages 一一对应）：flow 渲染
+  // 「参考图N（名）：只锁定什么/不继承什么」——juben build_reference_usage 范式
+  const refLabelOf = (n: (typeof mentionedImgs)[number]) => ({
+    type: String(n.data.nodeType),
+    name: String(n.data.title || "无题"),
+  });
+  const referenceLabels = [
+    ...mentionedImgs.map(refLabelOf),
+    ...(!selfMentioned && selfImageUrl
+      ? [{ type: "image", name: "本卡原图" }]
+      : []),
+    ...connectedNodes.map(refLabelOf),
+  ];
   // 手动 @ 引用落成连线（viedeo-workflow「mention=边」范式）：生成后面板
   // chips 持续可见，不随本会话的输入框状态消失（已删卡的引用不落边）
   for (const rid of new Set(validRefIds)) {
@@ -185,6 +207,7 @@ async function directImagegen(
         assetType,
         visualNotes,
         referenceImages,
+        referenceLabels,
       })),
       // 卡片级模型/档位覆盖（面板 chips 写入 data.gen），缺省跟随项目
       cardGen ?? undefined,
@@ -193,7 +216,7 @@ async function directImagegen(
     useCanvasStore.getState().updateNodeData(nodeId, {
       imageJobId: jobId,
       genPrompt: opts.prompt,
-      genShot: { description, assetType, visualNotes, referenceImages },
+      genShot: { description, assetType, visualNotes, referenceImages, referenceLabels },
       failedCandidates: undefined,
     });
     const urls: string[] = [];
@@ -257,6 +280,7 @@ async function supplementCandidates(nodeId: string, count: number) {
         assetType: shot.assetType,
         visualNotes: shot.visualNotes,
         referenceImages: shot.referenceImages,
+        referenceLabels: shot.referenceLabels,
       })),
       saneGen(node.data.gen) ?? undefined,
     );

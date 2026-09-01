@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import pytest
 from lfx.components.tools import batch_asset_sheet as bas
@@ -41,6 +42,29 @@ class TestParseAssetsPayload:
         assets = parse_assets_payload(text, max_assets=10)
         assert len(assets) == 1 and assets[0]["type"] == "shot" and assets[0]["aspect"] == "16:9"
 
+    def test_reference_labels_parsed(self):
+        text = json.dumps(
+            {
+                "assets": [
+                    {
+                        "type": "shot",
+                        "name": "镜头1",
+                        "description": "d",
+                        "reference_images": ["/a.png", "/b.png"],
+                        "reference_labels": [
+                            {"type": "character", "name": "魑"},
+                            {"type": "scene", "name": "刚山溪谷"},
+                        ],
+                    }
+                ]
+            }
+        )
+        assets = parse_assets_payload(text, max_assets=10)
+        assert assets[0]["reference_labels"] == [
+            {"type": "character", "name": "魑"},
+            {"type": "scene", "name": "刚山溪谷"},
+        ]
+
 
 class TestRenderPrompt:
     def test_character_layout(self):
@@ -69,6 +93,25 @@ class TestRenderPrompt:
         assert "剧情剧照" in prompt and "分格" in prompt  # 禁参考图多格版式
         assert "镜头剧照：镜头1" in prompt  # 标题不是「设定图」
         assert "单件资产设定图" not in prompt  # 尾注按类型替换
+
+    def test_reference_labels_render_duties(self):
+        prompt = render_asset_prompt(
+            {
+                "type": "shot",
+                "name": "镜头1",
+                "description": "d",
+                "visual_notes": "v",
+                "reference_labels": [{"type": "character", "name": "魑"}],
+            }
+        )
+        assert "参考图1（魑）" in prompt and "不继承该图的白底、多视图" in prompt
+        assert "各参考图职责" in prompt
+
+    def test_no_labels_keeps_generic_note(self):
+        prompt = render_asset_prompt(
+            {"type": "character", "name": "魑", "description": "d", "visual_notes": "v"}
+        )
+        assert "各参考图职责" not in prompt and "参考图用于锁定形制" in prompt
 
     def test_custom_template(self):
         prompt = render_asset_prompt(
