@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import Literal
 
 import models
+import thumbs
 
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
@@ -863,7 +864,7 @@ async def _emit_progress(config: Any, message: str) -> None:
         print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
 
 
-def _extract_image_url(raw: str) -> Optional[str]:
+async def _extract_image_url(raw: str) -> Optional[str]:
     """从单次出图 flow 结果里解析图片并归档到 /agent-service/assets/。
 
     成功返回可访问 URL；失败返回 None（调用方决定如何汇报错误）。
@@ -880,15 +881,17 @@ def _extract_image_url(raw: str) -> Optional[str]:
                 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
                 dest = f"{uuid.uuid4().hex[:12]}{src.suffix or '.png'}"
                 shutil.copy2(src, ASSETS_DIR / dest)
+                # ffmpeg 产缩略图不能卡事件循环（批量出图并发跑在这条循环上）
+                await asyncio.to_thread(thumbs.make_for, dest)
                 return f"/agent-service/assets/{dest}"
     except (json.JSONDecodeError, IndexError, KeyError):
         pass
     return None
 
 
-def _format_asset_result(name: str, raw: str) -> str:
+async def _format_asset_result(name: str, raw: str) -> str:
     """把单资产 flow 结果整理为一行汇报（成功附 image_url）。"""
-    url = _extract_image_url(raw)
+    url = await _extract_image_url(raw)
     if url:
         return f"✓ {name}｜image_url={url}"
     if raw.startswith("（"):
@@ -979,7 +982,7 @@ async def _generate_single_image(
         )
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:200]}
-    url = _extract_image_url(raw)
+    url = await _extract_image_url(raw)
     if url:
         return {"ok": True, "imageUrl": url}
     return {"ok": False, "error": raw[:200]}
