@@ -10,11 +10,14 @@ const nextConfig: NextConfig = {
 
   // dev 服务器默认只信任 localhost 来源；放行本机回环/局域网/远程隧道域名
   // （192.168.100.204 = 本机，192.168.31.150 = wingsight 服务器部署内网 IP）
+  // ssl.uunat.com = 隧道域名：不在名单时 _next/static 全 403，页面卡在加载中
   allowedDevOrigins: [
     "localhost",
     "127.0.0.1",
     "ssl.ddnsto.net",
     "*.ddnsto.net",
+    "ssl.uunat.com",
+    "*.uunat.com",
     "*.trycloudflare.com",
     "bore.pub",
     "192.168.100.204",
