@@ -354,6 +354,42 @@ export default function PromptBar({
     }
   };
 
+  /** 文本撰写直连管线：/text/rewrite（卡片级 textModel 在此生效），结果
+   *  预览采用才覆盖；空卡直接落正文。上下文 = 引用卡（连线+手动 @）拼装 */
+  const runTextRewrite = async (instruction: string) => {
+    if (rwBusy) return;
+    setRwBusy(true);
+    setRwResult(null);
+    setPanelError("");
+    try {
+      const body = ((self?.data.body as string) ?? "").trim();
+      const context = shownRefs
+        .filter((n) => ((n.data.body as string) ?? "").trim())
+        .map((n) => {
+          const label = NODE_META[n.data.nodeType]?.label ?? n.data.nodeType;
+          return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim().slice(0, 800)}`;
+        })
+        .join("\n");
+      const result = await rewriteText({
+        instruction,
+        body,
+        context,
+        model: String(self?.data.textModel ?? "").trim() || undefined,
+      });
+      if (!body) {
+        // 空卡直接落正文（无覆盖风险）
+        useCanvasStore.getState().updateNodeData(nodeId, { body: result });
+        setText("");
+      } else {
+        setRwResult(result);
+      }
+    } catch (exc) {
+      setPanelError(exc instanceof Error ? exc.message : "AI 撰写失败");
+    } finally {
+      setRwBusy(false);
+    }
+  };
+
   const floating = variant === "floating";
   // 图生图锚点提示：本卡已有图时自动并入参考（未在正文 @ 时排最前，
   // 桥接层 directImagegen）；正文里 @ 本卡可显式指定它的编号位置
