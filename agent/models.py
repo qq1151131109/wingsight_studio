@@ -77,14 +77,16 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 ]
 
 # ---------- 文本模型目录（剧本/分镜表/拆解/提示词优化等 LLM 文字生成） ----------
-# 同样只收真实探针验证过的（2026-09-01，智谱官方 coding 端点实测文本/工具调用；
-# /models 列表交叉核对）。通道：langflow 全局变量 OPENAI_BASE_URL/OPENAI_API_KEY
-# 已指向官方端点，全部文本 flow 出厂模型与卡片级覆盖统一走智谱直连（不走 DMX）。
-# 注入方式：文本 flow 的 LanguageModelComponent 留空 model_name 覆盖字段，
-# 调用侧按组件名 tweaks 注 {"model_name": id}（切换不走节点 id，重建不失效）。
-# 未收录：glm-5-turbo / glm-5.1 / glm-5（/models 在售，未探针，按需补）、
-# glm-4.5 / glm-4.5-air / glm-4.7（旧档，保留在端点但目录不列）。
-# 旧 DMX 文本目录已整体下线——切官方通道后 DMX 型号在 flow 内会 404。
+# 三通道多目录（2026-09-01 探针验证），每条目 provider 字段决定通道：
+# - OpenAI provider = 智谱官方 coding 端点（langflow 全局变量
+#   OPENAI_BASE_URL/OPENAI_API_KEY）→ glm-5.3-flash（出厂默认）/ glm-5.3
+# - DeepSeek provider = DeepSeek 官方（DEEPSEEK_API_KEY 全局变量，fork 的
+#   instantiation.py 加了 base_url 分支，缺省 api.deepseek.com）
+#   → deepseek-v4-flash / v4-pro / v4-flash-vision-exp
+# - OpenAI Compatible provider = DMX（OPENAI_COMPATIBLE_BASE_URL/API_KEY）
+#   → gpt-5.6-luna / gemini-3.7-flash
+# 注入方式：调用侧经 text_model_tweaks() 同时注 model_name + provider
+# （按组件名 tweaks，不走节点 id，重建不失效）。旧 DMX 混合目录已下线。
 
 DEFAULT_TEXT_MODEL_ID = "glm-5.3-flash"
 
@@ -92,25 +94,61 @@ TEXT_MODELS: List[Dict[str, Any]] = [
     {
         "id": "glm-5.3-flash",
         "label": "GLM 5.3 Flash",
-        "tag": "快 · 多模态 · 剧本拆解/分镜表默认",
+        "tag": "快 · 多模态 · 剧本拆解/分镜表默认 · 智谱官方",
+        "provider": "OpenAI",
         "recommended": True,
     },
     {
         "id": "glm-5.3",
         "label": "GLM 5.3",
-        "tag": "强推理 · 质量优先",
+        "tag": "强推理 · 质量优先 · 智谱官方",
+        "provider": "OpenAI",
     },
     {
-        "id": "glm-5.2",
-        "label": "GLM 5.2",
-        "tag": "上一代旗舰",
+        "id": "deepseek-v4-flash",
+        "label": "DeepSeek V4 Flash",
+        "tag": "快 · 便宜 · DeepSeek 官方",
+        "provider": "DeepSeek",
     },
     {
-        "id": "glm-4.6",
-        "label": "GLM 4.6",
-        "tag": "旧稳档",
+        "id": "deepseek-v4-pro",
+        "label": "DeepSeek V4 Pro",
+        "tag": "深推理 · 质量档 · DeepSeek 官方",
+        "provider": "DeepSeek",
+    },
+    {
+        "id": "deepseek-v4-flash-vision-exp",
+        "label": "DeepSeek V4 Flash Vision",
+        "tag": "多模态 · 看图 · DeepSeek 官方",
+        "provider": "DeepSeek",
+    },
+    {
+        "id": "gpt-5.6-luna",
+        "label": "GPT 5.6 Luna",
+        "tag": "创意文案 · DMX",
+        "provider": "OpenAI Compatible",
+    },
+    {
+        "id": "gemini-3.7-flash",
+        "label": "Gemini 3.7 Flash",
+        "tag": "长上下文 · DMX",
+        "provider": "OpenAI Compatible",
     },
 ]
+
+
+def text_model_tweaks(model_id: Optional[str]) -> Dict[str, Any]:
+    """文本模型覆盖 tweaks：同时注 model_name 与 provider（通道路由）。
+
+    空 id → {}（flow 用自己保存的出厂模型）；未带 provider 的历史条目
+    → 只注 model_name（回落 flow 全局通道）。"""
+    if not model_id:
+        return {}
+    entry = find_text_model(model_id)
+    if entry and entry.get("provider"):
+        return {"model_name": model_id, "provider": entry["provider"]}
+    return {"model_name": model_id}
+
 
 
 def text_models_payload() -> List[Dict[str, Any]]:

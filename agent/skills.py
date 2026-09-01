@@ -120,7 +120,7 @@ async def start_storyboard_gen_job(
                 tweaks={
                     "LanguageModelComponent": {
                         "temperature": 0.4,
-                        **({"model_name": model} if model else {}),
+                        **models.text_model_tweaks(model),
                     }
                 },
             )
@@ -658,7 +658,7 @@ async def _decompose_one_type(
         tweaks={
             "LanguageModelComponent": {
                 "temperature": 0.1,
-                **({"model_name": model} if model else {}),
+                **models.text_model_tweaks(model),
             }
         },
     )
@@ -720,7 +720,7 @@ async def _decompose_legacy(
         tweaks={
             "LanguageModelComponent": {
                 "temperature": 0.1,
-                **({"model_name": model} if model else {}),
+                **models.text_model_tweaks(model),
             }
         },
     )
@@ -1203,7 +1203,7 @@ async def start_prompt_optimize_job(
         context = " ".join(str(context_notes or "")[:1200].split())
         input_value = f"【上下文设定】\n{context or '（无）'}\n\n【当前提示词】\n{text}"
         tweaks = (
-            {"LanguageModelComponent": {"model_name": model}} if model else None
+            {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
         )
     elif mode == "reversal":
         if not PROMPT_OPTIMIZE_IMAGE_FLOW_ID:
