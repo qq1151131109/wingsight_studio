@@ -431,7 +431,10 @@ async def api_prompt_optimize(req: dict, user: auth.CurrentUser):
     if mode == "reversal" and not image_urls:
         return Response(status_code=400, content="看图反推需要至少一张参考图", media_type="text/plain")
     try:
-        text_model = models.resolve_text_model(req.get("model"))
+        # 扩写态未选模型 → 目录默认；看图反推固定视觉模型，不吃文本默认
+        text_model = models.resolve_text_model(req.get("model")) or (
+            models.DEFAULT_TEXT_MODEL_ID if mode == "optimize" else None
+        )
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:
@@ -583,7 +586,8 @@ async def api_assets_decompose(req: dict, user: auth.CurrentUser):
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:
-        text_model = models.resolve_text_model(req.get("text_model"))
+        # 未选模型 → 目录默认（DEFAULT_TEXT_MODEL_ID），不再回落 flow 出厂 glm
+        text_model = models.resolve_text_model(req.get("text_model")) or models.DEFAULT_TEXT_MODEL_ID
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     try:

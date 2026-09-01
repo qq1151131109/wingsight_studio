@@ -1263,7 +1263,7 @@ async def run_skill(
 
 # ── 提示词 AI 辅助（面板 ✦ 双态按钮：优化扩写 / 看图反推）──────────────────────
 # 直连两个单用途 flow（前端已知态显式路由，不经聊天 LLM）：
-#   optimize  = 扩写（纯原生链，deepseek 文本）；reversal = 看图反推（gemini 视觉经 DMX）。
+#   optimize  = 扩写（纯原生链，未选模型走目录默认）；reversal = 看图反推（gpt-5.6-luna 视觉经 DMX）。
 # 产物回填面板输入框草稿，用户确认后才随生成落卡。
 
 PROMPT_OPTIMIZE_TEXT_FLOW_ID = os.environ.get("LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID", "")
@@ -1293,7 +1293,7 @@ async def start_prompt_optimize_job(
 ) -> str:
     """mode：调用方（前端按按钮态）显式路由——
     "optimize" 优化扩写（prompt 必填，纯文本，model 可覆盖文本模型，空=出厂 deepseek-v4-flash）；
-    "reversal" 看图反推（参考图必填，gemini 视觉）。"""
+    "reversal" 看图反推（参考图必填，gpt-5.6-luna 视觉，模型在 flow 的 model_name 字段换）。"""
     if mode == "optimize":
         if not PROMPT_OPTIMIZE_TEXT_FLOW_ID:
             raise RuntimeError(

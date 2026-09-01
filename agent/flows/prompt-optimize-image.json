@@ -1,5 +1,9 @@
 {
+  "name": "提示词优化-看图反推",
   "description": "出图提示词 AI 辅助（看图反推态）：参考图 → 反推出图提示词（单用途自定义组件，gemini 视觉经 DMX）",
+  "icon": null,
+  "icon_bg_color": null,
+  "gradient": null,
   "data": {
     "nodes": [
       {
@@ -101,7 +105,7 @@
                 "list": false,
                 "show": true,
                 "multiline": false,
-                "value": "deepseek-v4-flash",
+                "value": "gpt-5.6-luna",
                 "name": "model_name",
                 "display_name": "model_name",
                 "advanced": true,
@@ -494,8 +498,22 @@
       "zoom": 1
     }
   },
-  "gradient": null,
-  "name": "提示词优化-看图反推",
-  "icon_bg_color": null,
-  "icon": null
+  "is_component": false,
+  "updated_at": "2026-09-01T11:53:22+00:00",
+  "webhook": false,
+  "endpoint_name": null,
+  "tags": null,
+  "locked": false,
+  "mcp_enabled": false,
+  "action_name": null,
+  "action_description": null,
+  "access_type": "PRIVATE",
+  "flow_type": "workflow",
+  "a2a_enabled": false,
+  "a2a_card_overrides": null,
+  "id": "37f549e5-e87c-4a3a-b006-c91f79509b79",
+  "user_id": "32b76b44-73fd-4b6a-bfaa-f00e162592a8",
+  "folder_id": "da3303f8-7b24-44d0-8485-b71ab36e1a45",
+  "workspace_id": null,
+  "name_key": null
 }
