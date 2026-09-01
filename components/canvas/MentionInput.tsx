@@ -170,9 +170,12 @@ function readEditor(ed: HTMLDivElement): MentionRead {
     if (isMentionEl(n)) {
       const id = n.dataset.mentionId as string;
       const node = nodes.find((x) => x.id === id);
-      const title = node?.data.title || "无题";
+      // 幽灵 chip（引用的卡已删除）：序列化直接跳过——不往提示词塞《无题》、
+      // 不把死 id 传给 refIds；视觉上保留灰 chip 由用户自行删除
+      if (!node) continue;
+      const title = node.data.title || "无题";
       if (!mentionIds.includes(id)) mentionIds.push(id);
-      if (node?.data.imageUrl) {
+      if (node.data.imageUrl) {
         if (!imageRefIds.includes(id)) imageRefIds.push(id);
         prompt += `图${imageRefIds.indexOf(id) + 1}`;
       } else {

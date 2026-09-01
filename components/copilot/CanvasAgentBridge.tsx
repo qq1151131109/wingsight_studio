@@ -217,7 +217,8 @@ async function directImagegen(
         status: "ready",
         imageUrl: urls[0],
         primaryIndex: 0,
-        ...(urls.length > 1 ? { imageUrls: urls } : {}),
+        // 单张结果直接取代上一轮的候选条（重试/单张重生成时旧变体已过时）
+        imageUrls: urls.length > 1 ? urls : undefined,
         failedCandidates: failed > 0 ? failed : undefined,
       });
     } else {
