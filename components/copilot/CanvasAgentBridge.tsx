@@ -469,6 +469,9 @@ export default function CanvasAgentBridge() {
         return;
       }
       const what = node.data.nodeType === "video" ? "视频" : "设定图";
+      // 卡上自定画幅随消息带给 LLM（出图工具吃逐资产 aspect），聊天重出
+      // 不静默丢回类型默认幅面
+      const cardAspect = saneGen(node.data.gen)?.aspect ?? "";
       useCanvasStore.getState().updateNodeData(nodeId, {
         status: "loading",
         errorMessage: undefined,
@@ -477,7 +480,9 @@ export default function CanvasAgentBridge() {
         new TextMessage({
           id: `retry_${nodeId}_${Date.now()}`,
           role: Role.User,
-          content: `重新生成「${node.data.title}」的${what}`,
+          content: `重新生成「${node.data.title}」的${what}${
+            cardAspect ? `，画幅 ${cardAspect}` : ""
+          }`,
         }),
       );
     };

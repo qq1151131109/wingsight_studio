@@ -93,10 +93,12 @@ async def generate_asset_images(
     """为资产批量生成设定图（并发出图，每张完成会实时推送进度到聊天）。
 
     用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
-    {"type":"character|scene|prop|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词"}
+    {"type":"character|scene|prop|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词","aspect":"9:16"}
     （字段与 decompose_script 的输出一致；type=shot 是镜头剧照布局——
     有人物有剧情的单幅画面，分镜/镜头类出图用 shot 而不是 scene）。
-    返回每个资产的成败与 image_url。
+    aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：用户对画幅有要求
+    （竖版/横版/方图/宽幕）或重出带「画幅 N」标注的卡时传；不传按类型
+    默认幅面。返回每个资产的成败与 image_url。
     用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
     与各模型支持档位：
     {"gpt-image-2-03": ["1K","2K","4K"], "doubao-seedream-4-0-250828": ["1K","2K","4K"], "doubao-seedream-4-5-251128": ["2K","4K"], "doubao-seedream-5-0-pro-260628": ["1K","2K"]}

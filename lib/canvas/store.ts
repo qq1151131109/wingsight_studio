@@ -1317,7 +1317,10 @@ export function summarizeCanvas(
         : "";
     const body = n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
     const sel = selectedIds.includes(n.id) ? " [选中]" : "";
-    lines.push(`- ${n.id} [${meta.label}] ${title}${shot}${kids}${body}${sel}`);
+    // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
+    // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
+    const genNote = n.data.gen?.aspect ? `（画幅 ${n.data.gen.aspect}）` : "";
+    lines.push(`- ${n.id} [${meta.label}] ${title}${genNote}${shot}${kids}${body}${sel}`);
   }
   for (const e of edges) {
     lines.push(`- 连线 ${e.source} → ${e.target}`);

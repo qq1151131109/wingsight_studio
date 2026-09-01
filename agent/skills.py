@@ -818,6 +818,18 @@ async def generate_asset_images(
     if not VOLC_SEARCH_API_KEY:
         assets = [{k: v for k, v in a.items() if k != "search_query"} for a in assets]
 
+    # 画幅预检（任一不合法整批不跑，点名报错让 LLM 修正重调——与批量出图
+    # 端点同一铁律）；合法值随资产进 shot，_generate_single_image 认 shot.aspect
+    aspect_model = str((params or {}).get("model_name") or models.DEFAULT_MODEL_ID)
+    bad_aspects: List[str] = []
+    for a in assets:
+        try:
+            models.resolve_aspect(a.get("aspect"), aspect_model)
+        except ValueError as exc:
+            bad_aspects.append(f"「{str(a.get('name') or '?')}」{exc}")
+    if bad_aspects:
+        return "；".join(bad_aspects)
+
     sem = asyncio.Semaphore(30)
     done = [0]
     total = len(assets)
