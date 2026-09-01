@@ -701,7 +701,7 @@ function StylePresetList({
     }
   };
 
-  const cats = [MY_STYLE_CAT, "全部", ...STYLE_CATEGORIES];
+  const cats = ["全部", MY_STYLE_CAT, ...STYLE_CATEGORIES];
   const kw = q.trim();
   const mine = useMemo(
     () => (myStyles ?? []).filter((s) => !kw || s.name.includes(kw) || s.prompt.includes(kw)),
