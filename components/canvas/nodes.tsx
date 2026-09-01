@@ -2601,7 +2601,12 @@ async function runAssetDecompose(opts: {
     const imageNote = imagesNote ? `｜${imagesNote}` : "";
     const chars = assets;
     if (chars.length === 0) {
-      opts.onMsg("剧本里没拆出可用资产");
+      // 全空时 errors 字典就是真因（各类型 flow 的失败原因），直接亮出来，
+      // 不吞成「没拆出可用资产」让用户以为剧本没资产
+      const failNote = Object.entries(decompErrors)
+        .map(([t, e]) => `${t}：${e}`)
+        .join("；");
+      opts.onMsg(failNote ? `拆解失败：${failNote}` : "剧本里没拆出可用资产");
       return;
     }
     const st = useCanvasStore.getState();

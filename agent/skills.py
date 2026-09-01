@@ -34,7 +34,10 @@ DECOMPOSE_FLOW_IDS = {
 }
 
 def _parse_shot_rows(text: str) -> list[dict]:
-    """从 flow 输出文本中解析分镜 JSON 数组（容错：剥围栏、截取首尾括号）。"""
+    """从 flow 输出文本中解析分镜 JSON 数组（容错：剥围栏、截取首尾括号）。
+
+    解析失败带上原文片段——本函数常收到 run_flow_blocking 的错误文案
+    （截括号会截出 "[Errno ...]" 之类），不带上下文的报错无法定位真因。"""
     t = text.strip()
     if t.startswith("```"):
         t = t.strip("`").lstrip()
@@ -42,8 +45,13 @@ def _parse_shot_rows(text: str) -> list[dict]:
             t = t[4:].lstrip()
     start, end = t.find("["), t.rfind("]")
     if start == -1 or end <= start:
-        raise ValueError("输出里没有 JSON 数组")
-    arr = json.loads(t[start : end + 1])
+        raise ValueError(f"输出里没有 JSON 数组。原始输出前 120 字：{t[:120]}")
+    try:
+        arr = json.loads(t[start : end + 1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"分镜 JSON 解析失败（{exc}），截取片段开头：{t[start : start + 120]}"
+        ) from exc
     rows = []
     for i, it in enumerate(arr):
         if not isinstance(it, dict):
@@ -125,6 +133,10 @@ async def start_storyboard_gen_job(
                     }
                 },
             )
+            # run_flow_blocking 失败不抛错、返回全角括号错误文案（拆解同款守卫）：
+            # 明报真因，不落到 _parse_shot_rows 里被截括号伪装成 JSON 解析错
+            if text.startswith("（"):
+                raise RuntimeError(text.strip("（）"))
             state["rows"] = _parse_shot_rows(text)
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
@@ -179,7 +191,12 @@ async def run_flow_blocking(flow_id: str, input_value: str = "", tweaks: Optiona
             if resp.status_code >= 400:
                 detail = resp.text[:300]
                 return f"（langflow 返回 {resp.status_code}：{detail}）"
-            data = resp.json()
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                # 200 但响应体不是 JSON（截断/代理页/流式混入）：明报并带原文，
+                # 否则这里裸抛 JSONDecodeError，调用方只能看到 "Expecting value…"
+                return f"（langflow 响应不是 JSON（{exc}）：{resp.text[:120]}）"
     except httpx.HTTPError as exc:
         return f"（连不上 langflow（{LANGFLOW_URL}）：{exc}）"
 
