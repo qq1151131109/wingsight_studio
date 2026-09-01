@@ -92,6 +92,19 @@ export interface WingNodeData {
   /** image 卡：一次生成的多张候选（imageUrl 恒等于候选[primaryIndex]） */
   imageUrls?: string[];
   primaryIndex?: number;
+  /** image 卡：候选里失败的张数（>0 时行图卡亮「补出 N 张」） */
+  failedCandidates?: number;
+  /** image 卡：补出进行中的张数（行图卡补出按钮转圈） */
+  supplementing?: number;
+  /** image 卡：面板直连出图的入参快照（prompt=编号替换后的正文；
+   *  genShot=发给 flow 的载荷），补出/重试按此原样重跑，不再回退卡上正文 */
+  genPrompt?: string;
+  genShot?: {
+    description: string;
+    assetType: "character" | "scene" | "prop" | "shot";
+    visualNotes: string;
+    referenceImages: string[];
+  };
   /** 出图参数卡片级覆盖（模型/档位，目录见 agent/models.py）：缺省跟随
    *  项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
    *  分镜表卡可各自指定；生成本卡图片的入口全部读它 */

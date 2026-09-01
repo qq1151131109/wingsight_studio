@@ -968,18 +968,22 @@ async def _generate_single_image(
     if ref_images:
         payload["reference_images"] = ref_images
     try:
-        raw = await run_flow_blocking(
-            IMAGEGEN_FLOW_ID,
-            tweaks={
-                "BatchAssetSheet-img02": {
-                    "assets_payload": json.dumps(
-                        {"assets": [payload]}, ensure_ascii=False
-                    ),
-                    "api_key": DMX_API_KEY,
-                    **(params or {}),
-                }
-            },
-        )
+        tweaks: Dict[str, Dict[str, Any]] = {
+            "BatchAssetSheet-img02": {
+                "assets_payload": json.dumps(
+                    {"assets": [payload]}, ensure_ascii=False
+                ),
+                "api_key": DMX_API_KEY,
+                **(params or {}),
+            }
+        }
+        if ref_images:
+            # 按实际张数注入参考图上限——组件默认 3 会静默截断第 4 张起
+            # 的参考图（组件侧 int() 容忍字符串）
+            tweaks["BatchAssetSheet-img02"]["reference_count"] = str(
+                len(ref_images)
+            )
+        raw = await run_flow_blocking(IMAGEGEN_FLOW_ID, tweaks=tweaks)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:200]}
     url = await _extract_image_url(raw)
@@ -1025,6 +1029,7 @@ async def start_storyboard_image_job(
     job_id = uuid.uuid4().hex[:12]
     STORYBOARD_IMAGE_JOBS[job_id] = {
         "status": "running",
+        "cancelled": False,
         "images": {str(s.get("rid", "")): {"rid": str(s.get("rid", "")), "ok": False} for s in shots},
     }
 
@@ -1032,18 +1037,41 @@ async def start_storyboard_image_job(
 
     async def one(shot: Dict[str, Any]) -> None:
         rid = str(shot.get("rid", ""))
-        async with sem:
-            result = await _generate_single_image(shot, params=resolved.get(rid))
+        try:
+            async with sem:
+                if STORYBOARD_IMAGE_JOBS[job_id]["cancelled"]:
+                    return
+                result = await _generate_single_image(shot, params=resolved.get(rid))
+        except asyncio.CancelledError:
+            # cancel_storyboard_image_job 取消了在途任务：httpx 请求中止，
+            # 未完成的生成不再计费
+            result = {"ok": False, "error": "已取消", "cancelled": True}
         STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = {"rid": rid, **result}
 
     async def run() -> None:
+        job = STORYBOARD_IMAGE_JOBS[job_id]
+        job["tasks"] = [asyncio.create_task(one(s)) for s in shots]
         try:
-            await asyncio.gather(*[one(s) for s in shots])
+            await asyncio.gather(*job["tasks"], return_exceptions=True)
         finally:
-            STORYBOARD_IMAGE_JOBS[job_id]["status"] = "done"
+            job["status"] = "cancelled" if job["cancelled"] else "done"
 
     asyncio.create_task(run())
     return job_id
+
+
+def cancel_storyboard_image_job(job_id: str) -> bool:
+    """取消出图任务：未开跑的镜头直接跳过，在途的取消底层 http 请求。
+
+    已完成的任务返回 False（无可取消）。
+    """
+    job = STORYBOARD_IMAGE_JOBS.get(job_id)
+    if not job or job["status"] != "running":
+        return False
+    job["cancelled"] = True
+    for t in job.get("tasks", []):
+        t.cancel()
+    return True
 
 
 def _extract_json_objects_loose(text: str) -> Optional[str]:

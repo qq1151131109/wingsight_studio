@@ -22,8 +22,13 @@ doubao-seedream-5-0-pro 走 /v1/responses 多图融合接口（2~10 参考图
 generate_image_responses）：参考图上限 10 张、size 显式像素上限
 4194304，1K/2K 档显式尺寸全幅面通过、4K 超上限不开放。
 
+参考图上限（max_references）：seedream-5-0-pro 的 2~10 张融合是实测；
+其余模型走 images/edits 通道未做张数探针，按保守值 4 收录（超限探明后
+直接改这里）。上限由调用方（画布桥接层）按所选模型校验明报，flow 组件
+的 reference_count 由 skills 按实际张数注入，不再吃组件默认 3 的截断。
+
 这里只做目录与校验；调用拼装在 skills（tweaks 注入 model_name /
-resolution 到 imagegen flow 的 BatchAssetSheet-img02 组件）。
+resolution / reference_count 到 imagegen flow 的 BatchAssetSheet-img02 组件）。
 """
 
 from typing import Any, Dict, List, Optional
@@ -38,6 +43,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "resolutions": ["1K", "2K", "4K"],
         "default_resolution": "1K",
         "recommended": True,
+        "max_references": 4,
     },
     {
         "id": "gpt-image-2-ssvip",
@@ -45,6 +51,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "tag": "同 03 · DMX 推荐通道 · 服务更稳响应更快",
         "resolutions": ["1K", "2K", "4K"],
         "default_resolution": "1K",
+        "max_references": 4,
     },
     {
         "id": "doubao-seedream-4-0-250828",
@@ -52,6 +59,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "tag": "中文影视审美强 · 支持参考图 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
         "default_resolution": "1K",
+        "max_references": 4,
     },
     {
         "id": "doubao-seedream-4-5-251128",
@@ -59,6 +67,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "tag": "旗舰画质 · 2K/4K（4:3 幅面仅 4K）",
         "resolutions": ["2K", "4K"],
         "default_resolution": "2K",
+        "max_references": 4,
     },
     {
         "id": "doubao-seedream-5-0-pro-260628",
@@ -66,6 +75,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "tag": "多图融合 · 最多 10 张参考图合成 · 1K/2K",
         "resolutions": ["1K", "2K"],
         "default_resolution": "1K",
+        "max_references": 10,
     },
     {
         "id": "gemini-3.1-flash-image",
@@ -73,6 +83,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "tag": "谷歌系 Nano Banana 2 · 幅面/分辨率接口级精确 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
         "default_resolution": "1K",
+        "max_references": 4,
     },
 ]
 

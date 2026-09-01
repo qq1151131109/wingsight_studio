@@ -517,6 +517,13 @@ async def api_storyboard_images_status(job_id: str, user: auth.CurrentUser):
     return {"status": job["status"], "images": list(job["images"].values())}
 
 
+@app.delete("/storyboard/images/{job_id}")
+async def api_storyboard_images_cancel(job_id: str, user: auth.CurrentUser):
+    """取消出图任务：未开跑的镜头跳过，在途的中止底层 http 请求（不再计费）。"""
+    if not skills.cancel_storyboard_image_job(job_id):
+        return Response(status_code=409, content="任务不存在或已结束", media_type="text/plain")
+    return {"ok": True}
+
 @app.post("/assets/decompose")
 async def api_assets_decompose(req: dict, user: auth.CurrentUser):
     """剧本/分镜稿 → 结构化资产清单（异步任务：Next 代理 30s 掐断长请求，

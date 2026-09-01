@@ -19,7 +19,11 @@ import {
 } from "@/lib/canvas/ops";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import { assetThumbUrl } from "@/lib/asset-thumb";
-import { RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
+import {
+  CANCEL_GENERATION_EVENT,
+  RETRY_GENERATION_EVENT,
+  SUPPLEMENT_CANDIDATES_EVENT,
+} from "@/components/canvas/nodes";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import {
   FOCUS_EDIT_EVENT,
@@ -33,10 +37,11 @@ import {
   type RowGenerateDetail,
 } from "@/lib/canvas/events";
 import {
+  cancelShotImageJob,
   pollShotImageJob,
   startShotImageJob,
 } from "@/lib/shotlist";
-import { saneGen } from "@/lib/imagegen";
+import { findModelOption, loadImageModels, saneGen } from "@/lib/imagegen";
 
 /** 面板出图直连管线：跳过聊天 LLM，直连 imagegen flow（与拆解出图链/
  *  分镜批量出图同一条）。确定性任务不走 agent，快、省 token、不刷聊天屏。
@@ -67,12 +72,17 @@ async function directImagegen(
     .map((rid) => st.nodes.find((n) => n.id === rid))
     .filter((n): n is NonNullable<typeof n> => Boolean(n));
   const mentionedImgs = mentionedNodes.filter((n) => n.data.imageUrl);
-  // 带图 @ 引用超过 4 张（模型参考图上限）就明报，不静默截断——截断会让
-  // 正文里的「图5」凭空消失
-  if (mentionedImgs.length > 4) {
+  // 参考图上限按所选模型（agent/models.py 的 max_references：seedream-5-pro
+  // 融合通道实测 10 张，其余 edits 通道保守 4）。超限明报不静默截断——截断
+  // 会让正文里的「图N」凭空消失
+  const cardGen = saneGen(node.data.gen);
+  const effectiveModel = cardGen?.model ?? st.imagegen.model;
+  const maxRefs =
+    findModelOption(effectiveModel, await loadImageModels())?.max_references ?? 4;
+  if (mentionedImgs.length > maxRefs) {
     st.updateNodeData(nodeId, {
       status: "error",
-      errorMessage: `带图的 @ 引用最多 4 张（当前 ${mentionedImgs.length} 张）：请减少引用，或引用文本卡参与描述`,
+      errorMessage: `当前模型参考图上限 ${maxRefs} 张（已选 ${mentionedImgs.length} 张）：请减少 @ 引用，或换用支持 10 张参考图融合的 Seedream 5.0 Pro`,
     });
     return;
   }
@@ -177,20 +187,38 @@ async function directImagegen(
         referenceImages,
       })),
       // 卡片级模型/档位覆盖（面板 chips 写入 data.gen），缺省跟随项目
-      saneGen(node.data.gen) ?? undefined,
+      cardGen ?? undefined,
     );
+    // 入参快照：补出失败候选/重试按原样重跑；imageJobId 供卡上「取消」
+    useCanvasStore.getState().updateNodeData(nodeId, {
+      imageJobId: jobId,
+      genPrompt: opts.prompt,
+      genShot: { description, assetType, visualNotes, referenceImages },
+      failedCandidates: undefined,
+    });
     const urls: string[] = [];
     let lastError = "";
     const outcome = await pollShotImageJob(jobId, (item) => {
       if (item.ok && item.imageUrl) urls.push(item.imageUrl);
       else if (item.error) lastError = item.error;
     });
+    if (outcome === "cancelled") {
+      // 用户已取消：卡回原态（有图 ready，无图占位），轮询尾包幂等
+      const cur = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        status: cur?.data.imageUrl ? "ready" : undefined,
+        imageJobId: undefined,
+      });
+      return;
+    }
     if (urls.length > 0) {
+      const failed = count - urls.length;
       useCanvasStore.getState().updateNodeData(nodeId, {
         status: "ready",
         imageUrl: urls[0],
         primaryIndex: 0,
         ...(urls.length > 1 ? { imageUrls: urls } : {}),
+        failedCandidates: failed > 0 ? failed : undefined,
       });
     } else {
       useCanvasStore.getState().updateNodeData(nodeId, {
@@ -205,6 +233,53 @@ async function directImagegen(
     useCanvasStore.getState().updateNodeData(nodeId, {
       status: "error",
       errorMessage: (exc instanceof Error ? exc.message : "出图失败").slice(0, 200),
+    });
+  }
+}
+
+/** 候选补出：候选有失败张数时按入参快照（genShot）原样重跑 N 张，
+ *  成功结果追加进候选尾部；再失败重新计数，继续可补 */
+async function supplementCandidates(nodeId: string, count: number) {
+  const st = useCanvasStore.getState();
+  const node = st.nodes.find((n) => n.id === nodeId);
+  const shot = node?.data.genShot;
+  if (!node || !shot || node.data.supplementing) return;
+  const n = Math.max(1, Math.min(4, count));
+  st.updateNodeData(nodeId, { supplementing: n, failedCandidates: undefined });
+  const seq = Date.now().toString(36);
+  try {
+    const jobId = await startShotImageJob(
+      Array.from({ length: n }, (_, i) => ({
+        rid: `${nodeId}#s${seq}#${i}`,
+        name: (node.data.title as string) || "图片",
+        description: shot.description,
+        assetType: shot.assetType,
+        visualNotes: shot.visualNotes,
+        referenceImages: shot.referenceImages,
+      })),
+      saneGen(node.data.gen) ?? undefined,
+    );
+    const urls: string[] = [];
+    const outcome = await pollShotImageJob(jobId, (item) => {
+      if (item.ok && item.imageUrl) urls.push(item.imageUrl);
+    });
+    if (outcome === "cancelled") {
+      useCanvasStore.getState().updateNodeData(nodeId, { supplementing: undefined });
+      return;
+    }
+    const cur = useCanvasStore.getState().nodes.find((n2) => n2.id === nodeId);
+    const existing = (cur?.data.imageUrls as string[] | undefined) ?? [];
+    const appended = urls.filter((u) => !existing.includes(u));
+    const stillFailed = n - appended.length;
+    useCanvasStore.getState().updateNodeData(nodeId, {
+      supplementing: undefined,
+      failedCandidates: stillFailed > 0 ? stillFailed : undefined,
+      ...(appended.length ? { imageUrls: [...existing, ...appended] } : {}),
+    });
+  } catch {
+    useCanvasStore.getState().updateNodeData(nodeId, {
+      supplementing: undefined,
+      failedCandidates: n,
     });
   }
 }
@@ -338,10 +413,13 @@ export default function CanvasAgentBridge() {
       const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
       const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
       if (!node) return;
-      // 图片卡重试同样直连（不绕聊天）；视频仍走聊天指令（唯一视频执行层）
+      // 图片卡重试同样直连（不绕聊天）；重试优先用面板提交时的原提示词
+      // （genPrompt 快照），无快照（拆解链等入口）回退卡上正文
       if (node.data.nodeType === "image") {
         void directImagegen(nodeId, {
-          prompt: ((node.data.body as string) ?? "").trim(),
+          prompt:
+            String(node.data.genPrompt ?? "").trim() ||
+            ((node.data.body as string) ?? "").trim(),
           refIds: ((node.data.refIds as string[]) ?? []).filter(Boolean),
         });
         return;
@@ -480,7 +558,36 @@ export default function CanvasAgentBridge() {
       );
     };
     window.addEventListener(GENERATE_EVENT, onGenerate);
-    return () => window.removeEventListener(GENERATE_EVENT, onGenerate);
+
+    // 生成中「取消」：调 agent DELETE，卡片立即回原态（轮询尾包幂等）
+    const onCancelGen = async (e: Event) => {
+      const nodeId = (e as CustomEvent<{ nodeId: string }>).detail?.nodeId;
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      const jobId = node?.data.imageJobId as string | undefined;
+      if (!node || !jobId) return;
+      await cancelShotImageJob(jobId);
+      const cur = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
+      useCanvasStore.getState().updateNodeData(nodeId, {
+        status: cur?.data.imageUrl ? "ready" : undefined,
+        imageJobId: undefined,
+      });
+    };
+    window.addEventListener(CANCEL_GENERATION_EVENT, onCancelGen);
+
+    // 候选「补出 N 张」：沿用原入参快照重跑失败张数
+    const onSupplement = (e: Event) => {
+      const { nodeId, count } = (e as CustomEvent<{ nodeId: string; count?: number }>)
+        .detail;
+      if (!nodeId || !count) return;
+      void supplementCandidates(nodeId, count);
+    };
+    window.addEventListener(SUPPLEMENT_CANDIDATES_EVENT, onSupplement);
+
+    return () => {
+      window.removeEventListener(GENERATE_EVENT, onGenerate);
+      window.removeEventListener(CANCEL_GENERATION_EVENT, onCancelGen);
+      window.removeEventListener(SUPPLEMENT_CANDIDATES_EVENT, onSupplement);
+    };
   }, [appendMessage]);
 
   // 视频卡"AI 拉片"→ 抽帧已上传，组装逐帧分析指令（视觉模型看图，文本模型读 URL 清单）

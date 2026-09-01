@@ -102,6 +102,14 @@ import MaskEditDialog from "./MaskEditDialog";
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
 
+/** 取消生成事件：image 卡 loading 态的「取消」发出，桥接层调 agent DELETE
+ *  并把卡片回原态（未开跑镜头跳过、在途中止请求） */
+export const CANCEL_GENERATION_EVENT = "wingsight:cancel-generation";
+
+/** 候选补出事件：候选有失败张数时行图卡「补出 N 张」发出，桥接层沿用
+ *  原入参快照（genShot）补跑失败张数，成功结果追加进候选 */
+export const SUPPLEMENT_CANDIDATES_EVENT = "wingsight:supplement-candidates";
+
 /** 从一张卡右侧建下游卡并自动连线（AIGCCanvasFlow 的 hover "+" 模式）。
  *  锚点 = 源卡实际宽度 + 80、顶对齐（竞品用实际尺寸，默认表会在拉大卡上
  *  叠卡）；被占则 findFreePosition 向下找空位，连点加号自然纵向级联。
@@ -1364,6 +1372,10 @@ function GenProgress({
 }) {
   const [sec, setSec] = useState(0);
   const flipped = useRef(false);
+  // 任务 id 存在才可取消（面板直连出图在任务启动后写入）
+  const jobId = useCanvasStore(
+    (s) => s.nodes.find((n) => n.id === nodeId)?.data.imageJobId,
+  );
   useEffect(() => {
     const t = setInterval(() => setSec((s) => s + 1), 1000);
     return () => clearInterval(t);
@@ -1389,6 +1401,23 @@ function GenProgress({
       </div>
       <p className="mt-2 text-xs text-text-3">
         {slow ? `排队较久 · 已等 ${sec}s` : `生成中 ${pct}% · ${sec}s`}
+        {jobId ? (
+          <>
+            {" · "}
+            <button
+              type="button"
+              className="underline decoration-dotted underline-offset-2 hover:text-danger"
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(
+                  new CustomEvent(CANCEL_GENERATION_EVENT, { detail: { nodeId } }),
+                );
+              }}
+            >
+              取消
+            </button>
+          </>
+        ) : null}
       </p>
     </div>
   );
@@ -1645,11 +1674,13 @@ function ImageCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {candidates.length > 1 ? (
+      {candidates.length > 1 || Boolean(d.failedCandidates) ? (
         <div className="ws-detail nowheel mt-1 flex items-center gap-1 overflow-x-auto">
-          <span className="shrink-0 text-[9px] text-text-4">
-            候选{candidates.length}
-          </span>
+          {candidates.length > 1 ? (
+            <span className="shrink-0 text-[9px] text-text-4">
+              候选{candidates.length}
+            </span>
+          ) : null}
           {candidates.map((u, i) => (
             <button
               key={`${u}_${i}`}
@@ -1667,6 +1698,31 @@ function ImageCard({ data, id, selected }: NodeProps) {
               <img src={assetThumbUrl(u)} alt="" className="h-9 w-9 object-cover" />
             </button>
           ))}
+          {Boolean(d.failedCandidates) ? (
+            <button
+              type="button"
+              data-tip="重出失败的候选（沿用原提示词与参考图）" aria-label={`补出 ${d.failedCandidates} 张`}
+              disabled={Boolean(d.supplementing)}
+              className="flex shrink-0 items-center gap-0.5 rounded border border-dashed border-hairline px-1 py-1 text-[9px] text-text-3 transition-colors hover:border-accent hover:text-text disabled:opacity-50"
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(
+                  new CustomEvent(SUPPLEMENT_CANDIDATES_EVENT, {
+                    detail: { nodeId: id, count: d.failedCandidates },
+                  }),
+                );
+              }}
+            >
+              {d.supplementing ? (
+                <>
+                  <Loader2 className="h-3 w-3 motion-safe:animate-spin" />
+                  补出中…
+                </>
+              ) : (
+                `补出 ${d.failedCandidates} 张`
+              )}
+            </button>
+          ) : null}
         </div>
       ) : null}
       {d.body ? (

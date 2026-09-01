@@ -19,6 +19,8 @@ export type ImageModelOption = {
   resolutions: string[];
   default_resolution: string;
   recommended?: boolean;
+  /** 参考图上限（agent/models.py 声明：seedream-5-pro 10 张实测，其余保守 4） */
+  max_references?: number;
 };
 
 export async function fetchImageModels(): Promise<ImageModelOption[]> {

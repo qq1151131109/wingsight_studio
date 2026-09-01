@@ -99,13 +99,19 @@ await context.addInitScript(
 );
 const page = await context.newPage();
 
-// route mock：出图任务直接 done，捕获提交 payload
+// route mock：出图任务按 jobMode 响应（捕获提交 payload 供断言）
 let genPayload = null;
+let jobMode = "done"; // "done"（全部成功）| "partial"（仅第 1 张成功）| "running"（挂起）
+let deleteCalled = false;
+let lastShots = [];
+let lastDescription = "";
 await page.route(
   "**/agent-service/storyboard/images",
   async (route) => {
     if (route.request().method() === "POST") {
       genPayload = route.request().postDataJSON();
+      lastShots = genPayload?.shots ?? [];
+      lastDescription = String(lastShots[0]?.description ?? "");
       return route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -115,16 +121,25 @@ await page.route(
     return route.fallback();
   },
 );
-await page.route("**/agent-service/storyboard/images/e2e_mention_job", (route) =>
-  route.fulfill({
+await page.route("**/agent-service/storyboard/images/e2e_mention_job", (route) => {
+  if (route.request().method() === "DELETE") {
+    deleteCalled = true;
+    return route.fulfill({ status: 200, contentType: "application/json", body: '{"ok":true}' });
+  }
+  const images = lastShots.map((s, i) =>
+    jobMode === "partial" && i > 0
+      ? { rid: s.rid, ok: false, error: "模拟：候选失败" }
+      : { rid: s.rid, ok: true, imageUrl: pngBlue },
+  );
+  return route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify({
-      status: "done",
-      images: [{ rid: "n_tgt#0", ok: true, imageUrl: pngBlue }],
+      status: jobMode === "running" ? "running" : "done",
+      images: jobMode === "running" ? lastShots.map((s) => ({ rid: s.rid, ok: false })) : images,
     }),
-  }),
-);
+  });
+});
 
 await page.goto(`${BASE}/project/${pid}`);
 // 首访编译+水合较慢：等画布节点真的渲染出来
@@ -218,6 +233,42 @@ check(
   JSON.stringify(tgt?.data?.refIds ?? []) === JSON.stringify(["n_src", "n_tgt"]),
   JSON.stringify(tgt?.data?.refIds),
 );
+const tgtNode = page.locator(".react-flow__node").filter({ hasText: "目标卡" }).first();
+
+// ---- M12-M14：候选部分失败 → 补出（沿用入参快照） ----
+jobMode = "partial";
+await editor.click();
+await page.locator("button", { hasText: "2 张" }).first().click();
+await page.keyboard.type("，夜色深沉");
+await page.keyboard.press("Control+Enter");
+await page.waitForTimeout(3500); // 轮询间隔 2.5s
+const bu = tgtNode.locator("button", { hasText: "补出 1 张" });
+check("M12 部分失败亮出「补出 1 张」", (await bu.count()) === 1);
+const m12Desc = genPayload?.shots?.[0]?.description ?? ""; // 补出前的最后一次提交
+jobMode = "done";
+await bu.first().click();
+await page.waitForTimeout(3500);
+check(
+  "M13 补出成功追加候选（按钮消失）",
+  (await tgtNode.locator("button", { hasText: "补出" }).count()) === 0,
+);
+check(
+  "M14 补出沿用原入参快照（description 一致）",
+  genPayload?.shots?.[0]?.description === m12Desc,
+);
+
+// ---- M15-M17：生成中取消 ----
+jobMode = "running";
+await editor.click();
+await page.keyboard.type("再来一版");
+await page.keyboard.press("Control+Enter");
+await page.waitForTimeout(1000);
+const cancelBtn = tgtNode.locator("button", { hasText: "取消" });
+check("M15 生成中出现取消按钮", (await cancelBtn.count()) >= 1);
+await cancelBtn.first().click();
+await page.waitForTimeout(600);
+check("M16 取消请求已发（DELETE）", deleteCalled);
+check("M17 取消后卡回 ready（取消按钮消失）", (await tgtNode.locator("button", { hasText: "取消" }).count()) === 0);
 
 await browser.close();
 await api(`/projects/${pid}`, { method: "DELETE" });

@@ -188,7 +188,7 @@ export async function pollShotImageJob(
   jobId: string,
   onItem: (item: ShotImageResult) => void,
   stallMs = 10 * 60 * 1000,
-): Promise<"done" | "timeout" | "gone"> {
+): Promise<"done" | "timeout" | "gone" | "cancelled"> {
   let stallDeadline = Date.now() + stallMs;
   const applied = new Set<string>();
   for (;;) {
@@ -210,6 +210,7 @@ export async function pollShotImageJob(
     }
     if (fresh > 0) stallDeadline = Date.now() + stallMs;
     if (job.status === "done") return "done";
+    if (job.status === "cancelled") return "cancelled";
     if (Date.now() > stallDeadline) return "timeout";
   }
 }
@@ -238,14 +239,26 @@ export async function startShotImageJob(
   return data.jobId;
 }
 
+/** 取消出图任务：未开跑的镜头跳过，在途的中止底层请求（不再计费）。
+ *  任务不存在/已结束返回 false（前端按已结束处理即可） */
+export async function cancelShotImageJob(jobId: string): Promise<boolean> {
+  const r = await apiFetch(`/agent-service/storyboard/images/${jobId}`, {
+    method: "DELETE",
+  });
+  return r.ok;
+}
+
 export async function getShotImageJob(jobId: string): Promise<{
-  status: "running" | "done";
+  status: "running" | "done" | "cancelled";
   images: ShotImageResult[];
 }> {
   const r = await apiFetch(`/agent-service/storyboard/images/${jobId}`);
   if (r.status === 404) throw new ShotJobGoneError("出图任务不存在（agent 可能已重启）");
   if (!r.ok) throw new Error(`出图任务查询失败（${r.status}）`);
-  return (await r.json()) as { status: "running" | "done"; images: ShotImageResult[] };
+  return (await r.json()) as {
+    status: "running" | "done" | "cancelled";
+    images: ShotImageResult[];
+  };
 }
 
 /** 资产设定图生成：复用批量出图任务通道，按资产类型定幅面与布局。 */
