@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { Music, Search, Trash2, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNodeData } from "@/lib/canvas/store";
+import { assetThumbUrl } from "@/lib/asset-thumb";
 import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 import {
   deleteAsset,
@@ -194,7 +195,7 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
               <span className="h-8 w-11 shrink-0 overflow-hidden rounded bg-black/10">
                 {a.kind === "image" ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={a.url} alt="" className="h-full w-full object-cover" />
+                  <img src={assetThumbUrl(a.url)} alt="" className="h-full w-full object-cover" />
                 ) : a.kind === "video" ? (
                   <video src={a.url} muted preload="metadata" className="h-full w-full object-cover" />
                 ) : (

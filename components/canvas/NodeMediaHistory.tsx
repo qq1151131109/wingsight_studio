@@ -10,6 +10,7 @@ import { useRef, useState } from "react";
 import { GitCompareArrows, X } from "lucide-react";
 import type { WingNodeData } from "@/lib/canvas/store";
 import { useCanvasStore } from "@/lib/canvas/store";
+import { assetThumbUrl } from "@/lib/asset-thumb";
 
 type Version = { url: string; at: string };
 
@@ -37,7 +38,7 @@ function Thumb({
         <video src={url} muted preload="metadata" className="h-24 w-36 bg-black object-cover" />
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={url} alt={label} className="h-24 w-36 object-cover" />
+        <img src={assetThumbUrl(url)} alt={label} className="h-24 w-36 object-cover" />
       )}
       <span className="absolute left-1 top-1 rounded bg-black/55 px-1 py-0.5 text-[9px] text-white">
         {label}

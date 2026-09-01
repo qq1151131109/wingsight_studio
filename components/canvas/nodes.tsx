@@ -65,6 +65,7 @@ import {
   type WingNodeType,
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
+import { assetThumbUrl } from "@/lib/asset-thumb";
 import { isLookCard, preferLookRefs, resolveRowRefIds } from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
 import { downloadMedia } from "@/lib/download";
@@ -1252,7 +1253,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={d.imageUrl}
+              src={assetThumbUrl(d.imageUrl)}
               alt={d.title}
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
@@ -1549,7 +1550,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={d.imageUrl}
+              src={assetThumbUrl(d.imageUrl)}
               alt={d.title}
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
@@ -1663,7 +1664,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={u} alt="" className="h-9 w-9 object-cover" />
+              <img src={assetThumbUrl(u)} alt="" className="h-9 w-9 object-cover" />
             </button>
           ))}
         </div>
@@ -3788,7 +3789,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             const linked = r.imageNodeId
               ? nodes.find((n) => n.id === r.imageNodeId)
               : null;
-            const thumbUrl =
+            const rowImg =
               (r.imageUrl as string | undefined) ??
               (linked?.data.imageUrl as string | undefined);
             const thumbLoading = linked?.data.status === "loading";
@@ -3825,19 +3826,19 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       {i + 1}
                     </span>
                   </div>
-                  {thumbUrl ? (
+                  {rowImg ? (
                     <button
                       type="button"
                       data-tip="点击放大" aria-label="点击放大"
                       className="nodrag block"
                       onClick={(e) => {
                         e.stopPropagation();
-                        setRowZoom({ url: thumbUrl, seq: i });
+                        setRowZoom({ url: rowImg, seq: i });
                       }}
                     >
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
-                        src={thumbUrl}
+                        src={assetThumbUrl(rowImg)}
                         alt=""
                         className="aspect-video w-28 cursor-zoom-in rounded border border-hairline object-cover"
                       />
@@ -4186,7 +4187,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     {n.data.imageUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={n.data.imageUrl}
+                        src={assetThumbUrl(n.data.imageUrl)}
                         alt=""
                         className="h-6 w-8 rounded bg-surface-2 object-contain"
                       />
