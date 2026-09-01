@@ -173,7 +173,7 @@ const tgtBox = await page
   .boundingBox();
 await page.mouse.click(tgtBox.x + 40, tgtBox.y + 8);
 await page.waitForTimeout(1000);
-const editor = page.locator(".ws-mention-input");
+const editor = page.locator(".ws-detail .ws-mention-input");
 check("M0 输入条为内联引用编辑器", (await editor.count()) === 1);
 await editor.click();
 
@@ -193,7 +193,7 @@ if ((await dropdownA.count()) > 0) await dropdownA.first().click();
 await page.waitForTimeout(300);
 check(
   "M3 chip 内联进正文（token 落在光标处）",
-  (await page.locator('.ws-mention-input .ws-mention[data-mention-id="n_src"]').count()) === 1,
+  (await page.locator('.ws-detail .ws-mention-input .ws-mention[data-mention-id="n_src"]').count()) === 1,
 );
 check("M4 @ 查询词被抠掉、正文保留", (await editor.textContent()).includes("雨夜"));
 
@@ -202,7 +202,7 @@ await page.keyboard.press("Backspace");
 await page.waitForTimeout(200);
 check(
   "M5 Backspace 整颗 chip 删除",
-  (await page.locator('.ws-mention-input .ws-mention[data-mention-id="n_src"]').count()) === 0,
+  (await page.locator('.ws-detail .ws-mention-input .ws-mention[data-mention-id="n_src"]').count()) === 0,
 );
 
 // 裸 @（无查询词）：本卡自己钉顶，场景不被 7 张角色挤出（分桶轮转）
@@ -231,7 +231,7 @@ if ((await selfItem.count()) > 0) await selfItem.first().click();
 await page.waitForTimeout(200);
 check(
   "M7 自引 chip 落正文",
-  (await page.locator('.ws-mention-input .ws-mention[data-mention-id="n_tgt"]').count()) === 1,
+  (await page.locator('.ws-detail .ws-mention-input .ws-mention[data-mention-id="n_tgt"]').count()) === 1,
 );
 // 已 @ 过的卡不再进候选（token 去重）
 await page.keyboard.type("@", { delay: 60 });
@@ -307,6 +307,29 @@ await cancelBtn.first().click();
 await page.waitForTimeout(600);
 check("M16 取消请求已发（DELETE）", deleteCalled);
 check("M17 取消后卡回 ready（取消按钮消失）", (await tgtNode.locator("button", { hasText: "取消" }).count()) === 0);
+
+// ---- M18-M19：聊天侧栏 @ 内联 chip（与画布面板同款 MentionInput）----
+const chatBtn = page.locator("button").filter({ hasText: /助手/ }).first();
+if (await chatBtn.count()) await chatBtn.click();
+await page.waitForTimeout(1500);
+const chatEd = page.locator(".copilotKitSidebar .ws-mention-input").first();
+check("M18 聊天侧也挂内联引用编辑器", (await chatEd.count()) >= 1);
+if ((await chatEd.count()) >= 1) {
+  await chatEd.click();
+  await page.keyboard.type("@甲", { delay: 60 });
+  await page.waitForTimeout(400);
+  await page
+    .locator(".copilotKitSidebar button")
+    .filter({ hasText: "角色甲" })
+    .first()
+    .click();
+  await page.waitForTimeout(300);
+  check(
+    "M19 聊天侧 chip 内联进正文",
+    (await chatEd.locator('.ws-mention[data-mention-id="n_c0"]').count()) === 1,
+  );
+  // 不真发送（会消耗 LLM）；draft 不持久化，刷新即清
+}
 
 await browser.close();
 await api(`/projects/${pid}`, { method: "DELETE" });

@@ -162,6 +162,10 @@ export default function PromptBar({
       : "";
   });
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const projectImagegen = useCanvasStore((s) => s.imagegen);
+  const { models: imageModels } = useImageModels();
+  // 本卡生效的出图参数（卡片级覆盖 > 项目级）：容量计数按此模型口径
+  const cardGen = saneGen(self?.data.gen);
 
   // 连线即引用（open-ai-canvas「已连接素材」/ novanova「mention 来自连线」）：
   // 上游连进来的卡本来就参与生成（桥接层 upstreamLines 注入），这里如实亮出
@@ -506,6 +510,26 @@ export default function PromptBar({
                   {n} 张
                 </button>
               ))}
+              {/* 参考图容量计数（open-ai-canvas 按模型预算范式）：按本卡生效
+                  模型的 max_references 实时显示 @ 引用占用，超限红色预警 */}
+              {(() => {
+                const cap =
+                  findModelOption(
+                    cardGen?.model ?? projectImagegen.model,
+                    imageModels,
+                  )?.max_references ?? 4;
+                const used = lastRead?.imageRefIds.length ?? 0;
+                return (
+                  <span
+                    className={`shrink-0 whitespace-nowrap text-[10px] tabular-nums ${
+                      used > cap ? "text-danger" : "text-text-4"
+                    }`}
+                    title={`当前模型最多 ${cap} 张参考图（@ 引用的带图卡 + 本卡原图 + 连线卡）`}
+                  >
+                    参考 {used}/{cap}
+                  </span>
+                );
+              })()}
             </>
           ) : null}
           {nodeType === "script" || nodeType === "shotlist" || nodeType === "note" ? (

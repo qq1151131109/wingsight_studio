@@ -24,6 +24,7 @@ import {
 } from "react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { assetThumbUrl } from "@/lib/asset-thumb";
+import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 
 export type MentionRead = {
   /** 生成用正文：带图 chip→图N（按首现顺序编号），无图 chip→《标题》 */
@@ -45,6 +46,10 @@ export type MentionInputHandle = {
   setValue: (text: string) => void;
   /** 在末尾追加一颗引用 chip（拖卡进面板的快捷通道） */
   appendMention: (nodeId: string) => void;
+  /** 删掉光标前 n 个字符（宿主 /slash 菜单选用后抠查询词用） */
+  deleteBeforeCaret: (nChars: number) => void;
+  /** 光标处插入纯文本 */
+  insertAtCaret: (text: string) => void;
 };
 
 type Trigger = { textNode: Text; at: number; q: string };
@@ -84,10 +89,20 @@ function detectTrigger(ed: HTMLDivElement | null): Trigger | null {
 
 function buildMentionSpan(n: WingNode): HTMLSpanElement {
   const span = document.createElement("span");
+  fillMentionSpan(span, n);
+  return span;
+}
+
+/** chip 内容按节点现状填充：改名/换图后重复调用即可同步（渲染时解析派，
+ *  chip 只是 token 的皮，token 本身只存 id） */
+function fillMentionSpan(span: HTMLSpanElement, n: WingNode) {
   span.className = "ws-mention";
   span.contentEditable = "false";
   span.dataset.mentionId = n.id;
   const url = n.data.imageUrl as string | undefined;
+  const label = document.createElement("span");
+  label.textContent = `@${(n.data.title || "无题").slice(0, 10)}`;
+  span.replaceChildren();
   if (url) {
     const img = document.createElement("img");
     img.src = assetThumbUrl(url);
@@ -100,10 +115,7 @@ function buildMentionSpan(n: WingNode): HTMLSpanElement {
     if (meta?.dot) badge.style.color = meta.dot;
     span.appendChild(badge);
   }
-  const label = document.createElement("span");
-  label.textContent = `@${(n.data.title || "无题").slice(0, 10)}`;
   span.appendChild(label);
-  return span;
 }
 
 function placeCaret(ed: HTMLDivElement, offset: number) {
@@ -113,6 +125,28 @@ function placeCaret(ed: HTMLDivElement, offset: number) {
   const sel = window.getSelection();
   sel?.removeAllRanges();
   sel?.addRange(r);
+}
+
+/** caret 在纯文本坐标里的偏移（对 textContent 计数，宿主做 /slash 等自检用） */
+function caretOffset(ed: HTMLElement): number {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return 0;
+  const an = sel.anchorNode;
+  if (!an || !ed.contains(an)) return 0;
+  let total = 0;
+  const found = (function walk(node: Node): boolean {
+    if (node === an) {
+      total += sel.anchorOffset;
+      return true;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      total += node.textContent?.length ?? 0;
+      return false;
+    }
+    for (const c of Array.from(node.childNodes)) if (walk(c)) return true;
+    return false;
+  })(ed);
+  return found ? total : 0;
 }
 
 function caretToEnd(ed: HTMLDivElement) {
@@ -160,19 +194,38 @@ function readEditor(ed: HTMLDivElement): MentionRead {
 }
 
 type Props = {
-  nodeId: string;
+  /** 当前节点（画布面板场景）：带图时本卡进候选并钉顶；聊天侧无当前节点可省 */
+  nodeId?: string;
   placeholder?: string;
   initialText?: string;
   minHeight: number;
   maxHeight: number;
   /** 内容（含 chip 增删）变化时回吐序列化结果 */
   onChange?: (r: MentionRead) => void;
+  /** 光标/内容变化时回吐纯文本与 caret 偏移（宿主自检其它触发符，如 /slash） */
+  onCaret?: (info: { text: string; caret: number }) => void;
+  /** true = 裸 Enter 提交（onSubmit），Shift+Enter 换行（聊天侧）；
+   *  false（默认）= Enter 换行，Ctrl/Cmd+Enter 提交（画布面板） */
+  enterToSubmit?: boolean;
+  /** 宿主附加类名（样式兼容用） */
+  className?: string;
   /** Ctrl/Cmd+Enter（父层提交生成） */
   onSubmit?: () => void;
 };
 
 const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput(
-  { nodeId, placeholder, initialText, minHeight, maxHeight, onChange, onSubmit },
+  {
+    nodeId,
+    placeholder,
+    initialText,
+    minHeight,
+    maxHeight,
+    onChange,
+    onCaret,
+    enterToSubmit = false,
+    className,
+    onSubmit,
+  },
   ref,
 ) {
   const edRef = useRef<HTMLDivElement>(null);
@@ -180,6 +233,10 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   const cbRef = useRef(onChange);
   useEffect(() => {
     cbRef.current = onChange;
+  });
+  const caretCbRef = useRef(onCaret);
+  useEffect(() => {
+    caretCbRef.current = onCaret;
   });
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [hi, setHi] = useState(0);
@@ -216,9 +273,13 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   }, []);
 
   const syncTrigger = useCallback(() => {
-    if (composingRef.current) return;
-    setTrigger(detectTrigger(edRef.current));
-    setHi(0);
+    const ed = edRef.current;
+    if (!ed) return;
+    if (!composingRef.current) {
+      setTrigger(detectTrigger(ed));
+      setHi(0);
+      caretCbRef.current?.({ text: ed.textContent ?? "", caret: caretOffset(ed) });
+    }
   }, []);
 
   const resize = useCallback(() => {
@@ -230,6 +291,31 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   useEffect(() => {
     resize();
   }, [stats, resize]);
+
+  // chip 与节点数据同步（渲染时解析派）：改名/换图/删除实时反映到正文 chip，
+  // 已删除的加幽灵态——token 本身只存 id，此处只是刷新皮
+  useEffect(() => {
+    const ed = edRef.current;
+    if (!ed) return;
+    ed.querySelectorAll<HTMLSpanElement>(".ws-mention").forEach((span) => {
+      const n = nodes.find((x) => x.id === span.dataset.mentionId);
+      if (!n) {
+        span.classList.add("ws-mention-ghost");
+        span.title = "该卡已删除，生成时将被忽略";
+        return;
+      }
+      span.classList.remove("ws-mention-ghost");
+      span.title = `${n.data.title || "无题"}（点击定位画布卡片）`;
+      // 拖动节点时 nodes 每帧换引用：内容没变就别重建（防无谓 DOM 抖动）
+      const label = `@${(n.data.title || "无题").slice(0, 10)}`;
+      const url = n.data.imageUrl as string | undefined;
+      const img = span.querySelector("img");
+      const unchanged =
+        span.lastElementChild?.textContent === label &&
+        (url ? img?.getAttribute("src") === assetThumbUrl(url) : !img);
+      if (!unchanged) fillMentionSpan(span, n);
+    });
+  }, [nodes]);
 
   const candidates = useMemo(() => {
     if (!trigger) return [];
@@ -376,6 +462,33 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         caretToEnd(ed);
         emitChange();
       },
+      /** 删掉光标前 n 个字符（宿主 /slash 菜单选用后抠查询词用） */
+      deleteBeforeCaret: (nChars: number) => {
+        const ed = edRef.current;
+        if (!ed || nChars <= 0) return;
+        ed.focus();
+        const sel = window.getSelection();
+        const an = sel?.anchorNode;
+        if (!sel || sel.rangeCount === 0 || !an || an.nodeType !== Node.TEXT_NODE || !ed.contains(an))
+          return;
+        const off = sel.anchorOffset;
+        const start = Math.max(0, off - nChars);
+        (an as Text).deleteData(start, off - start);
+        const r = document.createRange();
+        r.setStart(an, start);
+        r.collapse(true);
+        sel.removeAllRanges();
+        sel.addRange(r);
+        emitChange();
+      },
+      /** 光标处插入纯文本 */
+      insertAtCaret: (text: string) => {
+        const ed = edRef.current;
+        if (!ed) return;
+        ed.focus();
+        document.execCommand("insertText", false, text);
+        emitChange();
+      },
     }),
     [emitChange],
   );
@@ -392,10 +505,22 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         data-placeholder={placeholder}
         className={`ws-mention-input w-full overflow-y-auto bg-transparent leading-relaxed text-text outline-none ${
           minHeight >= 80 ? "px-1 py-1 text-sm" : "px-1 py-0.5 text-xs"
-        }`}
+        } ${className ?? ""}`}
         style={{ minHeight, maxHeight }}
         onInput={syncTrigger}
-        onClick={syncTrigger}
+        onClick={(e) => {
+          // 点 chip = 定位并选中画布卡片（ai-moive/viedeo-workflow 范式）
+          const el = (e.target as HTMLElement).closest?.(".ws-mention");
+          const mid = el instanceof HTMLSpanElement ? el.dataset.mentionId : undefined;
+          if (mid) {
+            const st = useCanvasStore.getState();
+            st.selectNodes([mid]);
+            window.dispatchEvent(
+              new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [mid] } }),
+            );
+          }
+          syncTrigger();
+        }}
         onKeyUp={syncTrigger}
         onCompositionStart={() => {
           composingRef.current = true;
@@ -413,6 +538,8 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         }}
         onDrop={(e) => e.preventDefault()}
         onKeyDown={(e) => {
+          // IME 组合中的 Enter 是选字确认，编辑器层面不抢
+          if (e.nativeEvent.isComposing) return;
           if (trigger && candidates.length > 0) {
             if (e.key === "ArrowDown") {
               e.preventDefault();
@@ -436,13 +563,15 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
             }
           }
           if (e.key === "Enter") {
-            if (e.ctrlKey || e.metaKey) {
-              e.preventDefault();
+            // enterToSubmit（聊天侧）：裸 Enter 提交、Shift+Enter 换行；
+            // 默认（画布面板）：Enter 换行、Ctrl/Cmd+Enter 提交
+            const submitHit = enterToSubmit ? !e.shiftKey : e.ctrlKey || e.metaKey;
+            e.preventDefault();
+            if (submitHit) {
               onSubmit?.();
               return;
             }
             // \n 进同一文本节点（pre-wrap），DOM 结构保持只有 文本+chip
-            e.preventDefault();
             document.execCommand("insertText", false, "\n");
             return;
           }

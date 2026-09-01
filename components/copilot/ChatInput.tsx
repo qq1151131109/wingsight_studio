@@ -2,14 +2,14 @@
 
 /**
  * 自定义聊天输入框（替换 CopilotSidebar 默认 Input）：
- *  - "@"引用画布卡片：候选下拉（角色/图片优先）→ 引用变 chip，发送时把
+ *  - "@"引用画布卡片：MentionInput 内联 chip（与画布面板同款，open-ai-canvas
+ *    结构化 token 范式）——chip 落在正文光标处，改名/删除实时同步，发送时把
  *    引用卡内容（id/类型/标题/正文摘要）拼进消息，agent 可直接按 id 操作
  *  - 附件：📎 选择 / 粘贴 / 拖放；图片视频音频上传后作为 AG-UI 多模态
  *    part（url source）随消息发送——换视觉模型后服务端自动透传；文本类
  *    文档（txt/md/json/csv/srt ≤64KB）直接内联进消息，纯文本模型也能用
  *  - Enter 发送 / Shift+Enter 换行 / IME 组合输入安全（composing 时不发送）
  *  - 运行中显示停止按钮；复用 stock 的 .copilotKitInput 系列样式保持原生观感
- * mention 检测与候选排序和画布 PromptBar 同款逻辑。
  */
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -25,20 +25,13 @@ import {
   Square,
   X,
 } from "lucide-react";
-import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import { useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import MentionInput, {
+  type MentionInputHandle,
+  type MentionRead,
+} from "@/components/canvas/MentionInput";
 import { uploadAsset } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
-import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
-
-/** caret 前最后一个 @提及片段（"雨夜@女侠" → q="女侠"） */
-function detectMention(
-  text: string,
-  caret: number,
-): { start: number; q: string } | null {
-  const m = text.slice(0, caret).match(/@([^\s@]{0,20})$/);
-  if (!m) return null;
-  return { start: caret - m[0].length, q: m[1] };
-}
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
 function detectSlash(
@@ -57,16 +50,6 @@ interface SkillMeta {
   description: string;
   params: { name: string; desc: string }[];
 }
-
-/** 候选排序：角色最前（一致性主场景），其次有媒体的卡 */
-const TYPE_ORDER: Record<string, number> = {
-  character: 0,
-  image: 1,
-  video: 2,
-  storyboard: 3,
-  script: 4,
-  note: 5,
-};
 
 const NODE_TYPE_LABEL: Record<string, string> = {
   note: "文本",
@@ -135,16 +118,13 @@ export default function ChatInput({
 }: InputProps) {
   const nodes = useCanvasStore((s) => s.nodes);
   const { sendMessage } = useCopilotChatHeadless_c();
-  const [text, setText] = useState("");
-  const [refs, setRefs] = useState<WingNode[]>([]);
+  // 内联引用编辑器（与画布面板同款）：display 文本镜像 + 序列化结果
+  const edRef = useRef<MentionInputHandle>(null);
+  const [lastRead, setLastRead] = useState<MentionRead | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [mention, setMention] = useState<{ start: number; q: string } | null>(
-    null,
-  );
   const [slash, setSlash] = useState<{ start: number; q: string } | null>(null);
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [hi, setHi] = useState(0);
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   /** 进行中的上传（submit 时 await 全部完成；count 驱动按钮禁用态） */
   const uploadsRef = useRef<Map<string, Promise<void>>>(new Map());
@@ -179,62 +159,12 @@ export default function ChatInput({
       .slice(0, 6);
   }, [skills, slash]);
 
-  const candidates = useMemo(() => {
-    if (!mention) return [];
-    const q = mention.q.toLowerCase();
-    return nodes
-      .filter(
-        (n) =>
-          n.data?.nodeType &&
-          n.data.nodeType !== "group" &&
-          !refs.some((r) => r.id === n.id),
-      )
-      .filter(
-        (n) =>
-          !q ||
-          (n.data.title ?? "").toLowerCase().includes(q) ||
-          (n.data.body ?? "").slice(0, 120).toLowerCase().includes(q),
-      )
-      .sort(
-        (a, b) =>
-          (TYPE_ORDER[a.data.nodeType] ?? 9) - (TYPE_ORDER[b.data.nodeType] ?? 9),
-      )
-      .slice(0, 6);
-  }, [nodes, mention, refs]);
-
-  const autoGrow = () => {
-    const el = taRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-  };
-
-  const pick = (n: WingNode) => {
-    if (!mention) return;
-    // 抠掉 "@查询词" 文本，引用变成 chip
-    setText(
-      text.slice(0, mention.start) +
-        text.slice(mention.start + 1 + mention.q.length),
-    );
-    setRefs((r) => [...r, n]);
-    setMention(null);
-    requestAnimationFrame(() => taRef.current?.focus());
-  };
-
   const pickSkill = (s: SkillMeta) => {
     if (!slash) return;
     // 抠掉 "/查询词"，填入技能模板（用户接着补任务描述与参数）
-    const next =
-      text.slice(0, slash.start) + `调用技能「${s.name}」处理：` + text.slice(slash.start + 1 + slash.q.length);
-    setText(next);
+    edRef.current?.deleteBeforeCaret(slash.q.length + 1);
+    edRef.current?.insertAtCaret(`调用技能「${s.name}」处理：`);
     setSlash(null);
-    requestAnimationFrame(() => {
-      const el = taRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(next.length, next.length);
-      autoGrow();
-    });
   };
 
   // ---------- 附件：添加 / 上传 / 内联读取 ----------
@@ -293,17 +223,21 @@ export default function ChatInput({
   // ---------- 发送 ----------
 
   const submit = async () => {
-    const prompt = text.trim();
-    if (inProgress || (!prompt && refs.length === 0 && attachments.length === 0))
+    const r = lastRead;
+    const prompt = r?.display.trim() ?? "";
+    const mentioned = (r?.mentionIds ?? [])
+      .map((id) => nodes.find((n) => n.id === id))
+      .filter((n): n is WingNode => Boolean(n));
+    if (inProgress || (!prompt && mentioned.length === 0 && attachments.length === 0))
       return;
     // 等所有上传收尾（含失败的——失败项只进文本清单不阻塞发送）
     await Promise.allSettled([...uploadsRef.current.values()]);
 
     const current = attachments;
-    const refLines = refs
-      .map((r) => {
-        const label = NODE_TYPE_LABEL[r.data.nodeType] ?? r.data.nodeType;
-        return `- @${r.id} ${label}「${r.data.title ?? ""}」：${(r.data.body ?? "").slice(0, 200)}`;
+    const refLines = mentioned
+      .map((r2) => {
+        const label = NODE_TYPE_LABEL[r2.data.nodeType] ?? r2.data.nodeType;
+        return `- @${r2.id} ${label}「${r2.data.title ?? ""}」：${(r2.data.body ?? "").slice(0, 200)}`;
       })
       .join("\n");
     const attLines: string[] = [];
@@ -345,70 +279,39 @@ export default function ChatInput({
     } else {
       void onSend(textPart);
     }
-    setText("");
-    setRefs([]);
+    edRef.current?.setValue("");
     setAttachments([]);
-    setMention(null);
     setSlash(null);
-    requestAnimationFrame(() => {
-      if (taRef.current) taRef.current.style.height = "auto";
-    });
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (mention && candidates.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHi((h) => (h + 1) % candidates.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHi((h) => (h - 1 + candidates.length) % candidates.length);
-        return;
-      }
-      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-        e.preventDefault();
-        pick(candidates[hi]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setMention(null);
-        return;
-      }
-    }
-    if (slash && slashCandidates.length > 0) {
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        setHi((h) => (h + 1) % slashCandidates.length);
-        return;
-      }
-      if (e.key === "ArrowUp") {
-        e.preventDefault();
-        setHi((h) => (h - 1 + slashCandidates.length) % slashCandidates.length);
-        return;
-      }
-      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-        e.preventDefault();
-        pickSkill(slashCandidates[hi]);
-        return;
-      }
-      if (e.key === "Escape") {
-        e.stopPropagation();
-        setSlash(null);
-        return;
-      }
-    }
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+  // slash 菜单键盘导航（capture 阶段拦下，避免 MentionInput 的 Enter 提交抢先）
+  const onSlashKeyDownCapture = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (!(slash && slashCandidates.length > 0)) return;
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === "ArrowDown") {
       e.preventDefault();
-      void submit();
+      e.stopPropagation();
+      setHi((h) => (h + 1) % slashCandidates.length);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      e.stopPropagation();
+      setHi((h) => (h - 1 + slashCandidates.length) % slashCandidates.length);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      e.stopPropagation();
+      pickSkill(slashCandidates[hi]);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      setSlash(null);
     }
   };
 
   const uploading = uploadingCount > 0;
   const canSend =
-    !inProgress && (!!text.trim() || refs.length > 0 || attachments.length > 0);
+    !inProgress &&
+    (Boolean(lastRead?.display.trim()) ||
+      (lastRead?.mentionIds.length ?? 0) > 0 ||
+      attachments.length > 0);
 
   return (
     <div
@@ -422,39 +325,8 @@ export default function ChatInput({
       }}
     >
       <div className="copilotKitInput relative flex flex-col">
-        {refs.length > 0 || attachments.length > 0 ? (
+        {attachments.length > 0 ? (
           <div className="mb-1.5 flex flex-wrap gap-1">
-            {refs.map((r) => (
-              <button
-                key={r.id}
-                type="button"
-                // 点击 chip 定位画布节点；X 才是移除
-                data-tip={`点击在画布定位「${r.data.title || "无题"}」`} aria-label={`点击在画布定位「${r.data.title || "无题"}」`}
-                onClick={() =>
-                  window.dispatchEvent(
-                    new CustomEvent(FOCUS_NODES_EVENT, {
-                      detail: { ids: [r.id] },
-                    }),
-                  )
-                }
-                className="inline-flex items-center gap-1 rounded border border-hairline bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
-              >
-                <span
-                  className="ws-card-dot"
-                  style={{ background: NODE_META[r.data.nodeType]?.dot }}
-                />
-                <span className="max-w-28 truncate">
-                  @{r.data.title?.slice(0, 10) || "无题"}
-                </span>
-                <X
-                  className="h-3 w-3 text-text-4 hover:text-danger"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setRefs((rs) => rs.filter((x) => x.id !== r.id));
-                  }}
-                />
-              </button>
-            ))}
             {attachments.map((a) => (
               <span
                 key={a.key}
@@ -499,34 +371,38 @@ export default function ChatInput({
           </div>
         ) : null}
 
-        <textarea
-          ref={taRef}
-          value={text}
-          rows={1}
-          placeholder="问点什么…@ 引用画布卡片，可粘贴/拖入附件"
-          onChange={(e) => {
-            setText(e.target.value);
-            const m = detectMention(e.target.value, e.target.selectionStart);
-            setMention(m);
-            // @ 优先；无 @ 时检测 /slash
-            setSlash(m ? null : detectSlash(e.target.value, e.target.selectionStart));
-            setHi(0);
-            autoGrow();
-          }}
-          onClick={(e) => {
-            const m = detectMention(e.currentTarget.value, e.currentTarget.selectionStart);
-            setMention(m);
-            setSlash(m ? null : detectSlash(e.currentTarget.value, e.currentTarget.selectionStart));
-            setHi(0);
-          }}
-          onKeyDown={onKeyDown}
-          onPaste={(e) => {
+        <div
+          onKeyDownCapture={onSlashKeyDownCapture}
+          onPasteCapture={(e) => {
+            // 粘贴的文件走附件链路（文本粘贴交给编辑器）
             if (e.clipboardData.files?.length) {
               e.preventDefault();
+              e.stopPropagation();
               addFiles(e.clipboardData.files);
             }
           }}
-        />
+        >
+          <MentionInput
+            ref={edRef}
+            placeholder="问点什么…@ 引用画布卡片，可粘贴/拖入附件"
+            minHeight={28}
+            maxHeight={160}
+            enterToSubmit
+            className="copilotKitInputEditor"
+            onChange={setLastRead}
+            onCaret={({ text, caret }) => {
+              setSlash(detectSlash(text, caret));
+              setHi(0);
+            }}
+            onSubmit={() => {
+              if (slash && slashCandidates.length > 0) {
+                pickSkill(slashCandidates[hi]);
+                return;
+              }
+              void submit();
+            }}
+          />
+        </div>
 
         <div className="copilotKitInputControls mt-1.5 self-end">
           <button
@@ -570,33 +446,6 @@ export default function ChatInput({
             e.target.value = ""; // 允许重复选同一个文件
           }}
         />
-
-        {mention && candidates.length > 0 ? (
-          <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-60 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-            {candidates.map((c, i) => (
-              <button
-                key={c.id}
-                type="button"
-                // 阻止 mousedown 抢焦点导致 textarea 失焦闪烁
-                onMouseDown={(e) => e.preventDefault()}
-                className={`flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs ${
-                  i === hi ? "bg-surface-2 text-text" : "text-text-2"
-                }`}
-                onClick={() => pick(c)}
-                onMouseEnter={() => setHi(i)}
-              >
-                <span
-                  className="ws-card-dot shrink-0"
-                  style={{ background: NODE_META[c.data.nodeType]?.dot }}
-                />
-                <span className="truncate">{c.data.title || "（无标题）"}</span>
-                <span className="ml-auto shrink-0 text-[10px] text-text-4">
-                  {NODE_META[c.data.nodeType]?.label}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : null}
 
         {slash && slashCandidates.length > 0 ? (
           <div className="absolute bottom-full left-0 z-20 mb-1 max-h-48 w-72 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">

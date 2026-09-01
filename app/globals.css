@@ -311,6 +311,11 @@ body {
     background: var(--color-surface-2);
 }
 .ws-mention > span { max-width: 96px; overflow: hidden; text-overflow: ellipsis; }
+/* 幽灵 chip：引用的卡已被删除（生成时会被忽略） */
+.ws-mention-ghost { opacity: 0.55; border-style: dashed; filter: grayscale(1); }
+
+/* 聊天侧栏：MentionInput 与原 textarea 同版式（.copilotKitInput > textarea 的替代） */
+.copilotKitSidebar .copilotKitInput .ws-mention-input { font-size: 0.875rem; line-height: 1.6; }
 
 /* 生成中：媒体区的斜向扫描光带（对标 S-Copilot，配合进度文案） */
 .ws-loading-scan { position: relative; overflow: hidden; }
