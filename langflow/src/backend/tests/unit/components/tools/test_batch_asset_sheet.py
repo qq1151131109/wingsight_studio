@@ -36,13 +36,18 @@ class TestParseAssetsPayload:
         with pytest.raises(ValueError, match="资产清单"):
             parse_assets_payload("完全不是 JSON", max_assets=10)
 
+    def test_shot_type_passes(self):
+        text = '{"assets": [{"type": "shot", "name": "镜头1", "description": "溪谷薄雾", "visual_notes": "v", "aspect": "16:9"}]}'
+        assets = parse_assets_payload(text, max_assets=10)
+        assert len(assets) == 1 and assets[0]["type"] == "shot" and assets[0]["aspect"] == "16:9"
+
 
 class TestRenderPrompt:
     def test_character_layout(self):
         prompt = render_asset_prompt(
             {"type": "character", "name": "林万年", "description": "清末商人", "visual_notes": "长袍马褂"}
         )
-        assert "纯白" in prompt and "A-Pose" in prompt and "林万年" in prompt
+        assert "四格" in prompt and "胸像特写" in prompt and "林万年" in prompt
         assert "可读文字" in prompt  # 文字守卫
 
     def test_scene_layout(self):
@@ -56,6 +61,14 @@ class TestRenderPrompt:
             {"type": "prop", "name": "青花瓷瓶", "description": "清代瓷器", "visual_notes": "釉面"}
         )
         assert "浅灰" in prompt
+
+    def test_shot_layout(self):
+        prompt = render_asset_prompt(
+            {"type": "shot", "name": "镜头1", "description": "溪谷薄雾，小鹿饮水", "visual_notes": "古装真人纪录片"}
+        )
+        assert "剧情剧照" in prompt and "分格" in prompt  # 禁参考图多格版式
+        assert "镜头剧照：镜头1" in prompt  # 标题不是「设定图」
+        assert "单件资产设定图" not in prompt  # 尾注按类型替换
 
     def test_custom_template(self):
         prompt = render_asset_prompt(
