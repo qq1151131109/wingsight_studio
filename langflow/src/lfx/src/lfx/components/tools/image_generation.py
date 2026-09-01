@@ -31,6 +31,10 @@ _ROUND_TO = 16
 _RATIO_SPLIT_RE = re.compile(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})\s*$")
 _TIMEOUT_SECONDS = 180.0
 
+# 质量档位一律 high（gpt-image 系 images 接口质量参数，DMX 实测
+# generate/edit 通道均接受；high=最细渲染档，output_tokens 随之最高）
+_IMAGE_QUALITY = "high"
+
 # OpenAI 异步客户端类占位：默认 None，首次出图时经 _load_async_openai 懒加载
 # （lfx 组件模块导入期不拉起 openai）；挂为模块级名字便于测试 monkeypatch。
 AsyncOpenAI: Any = None
@@ -101,7 +105,7 @@ async def generate_image(
             ref_files.append(await asyncio.to_thread(path.read_bytes))
             ref_suffixes.append(path.suffix or ".png")
 
-    common = {"model": model, "prompt": prompt, "size": size, "n": 1}
+    common = {"model": model, "prompt": prompt, "size": size, "n": 1, "quality": _IMAGE_QUALITY}
     try:
         if ref_files:
             import io

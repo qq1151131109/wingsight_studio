@@ -541,6 +541,9 @@ function BottomDock({
   const zoom = useCanvasStore((s) => s.viewport.zoom);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const imagegen = useCanvasStore((s) => s.imagegen);
+  // 模型目录（模块级缓存，与出图面板/PromptBar 共享一次加载）：按钮显示
+  // 目录展示名，目录未到时回落模型 id
+  const { models: imageModels } = useImageModels();
   const [stylePanel, setStylePanel] = useState(false);
   const [imagegenPanel, setImagegenPanel] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
@@ -621,17 +624,22 @@ function BottomDock({
           ) : null}
         </button>
       </div>
-      {/* 出图模型/分辨率（项目级默认，存 meta.imagegen）：所有出图入口生效 */}
+      {/* 出图模型/分辨率（项目级默认，存 meta.imagegen）：所有出图入口生效；
+          按钮直显当前生效参数，不藏在一个词后面 */}
       <button
         type="button"
-        data-tip={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，出图面板可改）`} aria-label={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，出图面板可改）`}
+        data-tip={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，点击修改）`} aria-label={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，点击修改）`}
         className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
           imagegenPanel ? "bg-surface-2 text-text" : ""
         }`}
         onClick={() => setImagegenPanel((v) => !v)}
       >
-        <ImageIcon className="h-4 w-4" />
-        出图
+        <ImageIcon className="h-4 w-4 shrink-0" />
+        <span className="max-w-56 truncate">
+          {imageModels?.find((m) => m.id === imagegen.model)?.label ??
+            imagegen.model}{" "}
+          · {imagegen.resolution}
+        </span>
       </button>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
