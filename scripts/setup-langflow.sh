@@ -120,6 +120,10 @@ FLOWS = {
     "prompt-optimize-text.json": "LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID",
     "prompt-optimize-image.json": "LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID",
     "shotlist-generate.json": "LANGFLOW_SHOTLIST_FLOW_ID",
+    "topic-triage.json": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
+    "topic-research-plan.json": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
+    "topic-research-followup.json": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",
+    "topic-verdict.json": "LANGFLOW_TOPIC_VERDICT_FLOW_ID",
     "promo-copy.json": None,
 }
 skills_idx = next((i for i, l in enumerate(lines) if l.startswith("LANGFLOW_SKILLS_JSON=")), None)
@@ -163,11 +167,12 @@ for fname, var in FLOWS.items():
     changed = True
     print(f"  + 导入 {fname} → {new_id}")
 
-# 历史遗留：LANGFLOW_FLOW_ID 指向已删 flow（README 记录待清理），一律清除
-if any(l.startswith("LANGFLOW_FLOW_ID=") for l in lines):
-    lines = [l for l in lines if not l.startswith("LANGFLOW_FLOW_ID=")]
-    changed = True
-    print("  - 清除历史遗留 LANGFLOW_FLOW_ID")
+# 历史遗留：指向已删/已拆 flow 的旧键，一律清除
+for stale in ("LANGFLOW_FLOW_ID", "LANGFLOW_PROMPT_OPTIMIZE_FLOW_ID"):
+    if any(l.startswith(stale + "=") for l in lines):
+        lines = [l for l in lines if not l.startswith(stale + "=")]
+        changed = True
+        print(f"  - 清除历史遗留 {stale}")
 
 if changed:
     env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
