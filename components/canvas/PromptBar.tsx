@@ -32,7 +32,7 @@ import {
   useImageModels,
   type ImagegenParams,
 } from "@/lib/imagegen";
-import { toggleFavorite } from "@/lib/prompt-library";
+import { createMyPrompt } from "@/lib/prompt-library";
 import { optimizePrompt } from "@/lib/prompt-optimize";
 import { rewriteText } from "@/lib/textwrite";
 import {
@@ -488,6 +488,9 @@ export default function PromptBar({
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {kind === "image" ? (
             <>
+              {/* 卡片级出图模型/档位（写本卡 data.gen，缺省跟随项目）：
+                  批量/重跑/聊天入口生成此卡时全部生效；置于底栏最左 */}
+              <ImagegenChips nodeId={nodeId} />
               <span className="shrink-0 text-[10px] text-text-4">候选</span>
               {[1, 2, 4].map((n) => (
                 <button
@@ -503,9 +506,6 @@ export default function PromptBar({
                   {n} 张
                 </button>
               ))}
-              {/* 卡片级出图模型/档位（写本卡 data.gen，缺省跟随项目）：
-                  批量/重跑/聊天入口生成此卡时全部生效 */}
-              <ImagegenChips nodeId={nodeId} />
             </>
           ) : null}
           {nodeType === "script" || nodeType === "shotlist" || nodeType === "note" ? (
@@ -547,19 +547,25 @@ export default function PromptBar({
         ) : null}
         <button
           type="button"
-          data-tip={favSaved ? "已收藏" : "收藏当前输入到提示词库"} aria-label={favSaved ? "已收藏" : "收藏当前输入到提示词库"}
-          className={`grid shrink-0 place-items-center border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text ${
-            floating ? "h-8 w-8 rounded-full" : "h-7 w-7 rounded-md"
+          data-tip={favSaved ? "已存入提示词库" : "把当前输入存入提示词库（底部坞「提示词」可查看复用）"} aria-label={favSaved ? "已存入提示词库" : "把当前输入存入提示词库（底部坞「提示词」可查看复用）"}
+          className={`flex shrink-0 items-center gap-1 border border-hairline bg-surface-1 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed ${
+            floating ? "h-8 rounded-full px-3 text-xs" : "h-7 rounded-md px-2 text-[11px]"
           } ${favSaved ? "text-warn" : "text-text-2"}`}
           onClick={() => {
             const t = draft.trim();
             if (!t) return;
-            toggleFavorite(t);
-            setFavSaved(true);
-            setTimeout(() => setFavSaved(false), 1500);
+            createMyPrompt("", t)
+              .then(() => {
+                setFavSaved(true);
+                setTimeout(() => setFavSaved(false), 1500);
+              })
+              .catch((e: unknown) =>
+                setPanelError(e instanceof Error ? e.message : "存入提示词库失败"),
+              );
           }}
         >
-          <Star className={`h-3.5 w-3.5 ${favSaved ? "fill-current text-warn" : ""}`} />
+          <Star className={`h-3.5 w-3.5 ${favSaved ? "fill-current" : ""}`} />
+          {favSaved ? "已收藏" : "存入提示词库"}
         </button>
         <button
           type="button"
@@ -738,7 +744,7 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
   }, [open]);
 
   return (
-    <div ref={wrapRef} className="relative ml-auto flex items-center">
+    <div ref={wrapRef} className="relative flex items-center">
       <button
         type="button"
         data-tip={
@@ -759,7 +765,7 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
         <ChevronDown className="h-3 w-3 text-text-4" />
       </button>
       {open ? (
-        <div className="absolute bottom-full right-0 z-30 mb-1.5 w-64 rounded-md border border-hairline bg-surface-1 p-2 shadow-lg">
+        <div className="absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-md border border-hairline bg-surface-1 p-2 shadow-lg">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-medium text-text-4">本卡出图模型</span>
             {cardGen ? (
