@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -66,6 +66,9 @@ function HomeInner() {
   const [deleting, setDeleting] = useState<ProjectMeta | null>(null);
   const [collabFor, setCollabFor] = useState<ProjectMeta | null>(null);
   const [error, setError] = useState("");
+  // 软导航到未编译路由（dev 首访）要等按需编译数秒；startTransition 让
+  // isPending 覆盖全程，按钮转圈/卡片置灰，不再"点了没反应"
+  const [pending, startTransition] = useTransition();
 
   const refresh = useCallback(async () => {
     try {
@@ -117,7 +120,9 @@ function HomeInner() {
     setCreating(true);
     try {
       const p = await createProject(name.trim());
-      router.push(`/project/${p.id}`);
+      startTransition(() => {
+        router.push(`/project/${p.id}`);
+      });
     } catch {
       setError("新建项目失败");
     } finally {
@@ -164,10 +169,10 @@ function HomeInner() {
           <button
             type="button"
             onClick={() => void create()}
-            disabled={creating}
+            disabled={creating || pending}
             className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
           >
-            {creating ? (
+            {creating || pending ? (
               <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
             ) : (
               <FolderPlus className="h-3.5 w-3.5" />
@@ -229,12 +234,20 @@ function HomeInner() {
             />
           )
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div
+            className={`grid grid-cols-1 gap-3 transition-opacity sm:grid-cols-2 lg:grid-cols-3 ${
+              pending ? "pointer-events-none opacity-60" : ""
+            }`}
+          >
             {shown.map((p) => (
               <div
                 key={p.id}
                 className="ws-card group relative cursor-pointer p-4 transition-shadow hover:shadow-md"
-                onClick={() => router.push(`/project/${p.id}`)}
+                onClick={() =>
+                  startTransition(() => {
+                    router.push(`/project/${p.id}`);
+                  })
+                }
               >
                 <div className="flex items-start justify-between gap-2">
                   <h2 className="font-editorial line-clamp-2 min-h-[2.5rem] text-sm font-semibold text-text">
