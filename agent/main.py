@@ -486,9 +486,9 @@ async def api_storyboard_images(req: dict, user: auth.CurrentUser):
     长请求，无法阻塞等完）。前端轮询 GET /storyboard/images/{jobId}。
 
     req: {shots: [{rid, name, description, visual_notes?, aspect?,
-                   params?: {model?, resolution?}}],
-          params?: {model?, resolution?}}
-    镜头级 params 覆盖请求级（卡片级覆盖），逐镜头合并预校验。
+                   params?: {model?, resolution?, aspect?}}],
+          params?: {model?, resolution?, aspect?}}
+    镜头级 params/aspect 覆盖请求级（卡片级覆盖），逐镜头合并预校验。
     """
     shots = req.get("shots") or []
     if not isinstance(shots, list) or not shots:
@@ -503,6 +503,19 @@ async def api_storyboard_images(req: dict, user: auth.CurrentUser):
         params = models.resolve_imagegen_params(req.get("params"))
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
+    # 请求级画幅（卡片 data.gen.aspect 经 startShotImageJob params）落到
+    # 无显式画幅的镜头上，随镜头级画幅一起进任务预检（不合法 400 点名，
+    # 绝不静默丢弃让用户以为画幅生效了）
+    raw_params = req.get("params")
+    req_aspect = (
+        str((raw_params or {}).get("aspect") or "").strip()
+        if isinstance(raw_params, dict)
+        else ""
+    )
+    if req_aspect:
+        for s in shots:
+            if isinstance(s, dict) and not str(s.get("aspect") or "").strip():
+                s["aspect"] = req_aspect
     try:
         job_id = await skills.start_storyboard_image_job(shots, params=params)
     except RuntimeError as exc:

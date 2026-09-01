@@ -27,13 +27,24 @@ generate_image_responses）：参考图上限 10 张、size 显式像素上限
 直接改这里）。上限由调用方（画布桥接层）按所选模型校验明报，flow 组件
 的 reference_count 由 skills 按实际张数注入，不再吃组件默认 3 的截断。
 
+画幅（aspects）：flow 的 compute_image_size 接受任意 w:h（16 像素网格、
+短边对齐档位），目录只收主流 6 档（分镜卡 ShotGenSettings 同款）；
+seedream-5-0-pro 例外——responses 通道显式像素上限 4194304，21:9 全档
+压不进（2K=3360x1440=4.84M）不收录。seedream-4-5 的最小像素约束
+（≥3686400）按档位收窄过 resolutions，幅面组合级（如 1:1 2K=2.07M
+不够）仍由 flow/上游报错点名，不在目录复制一份像素数学。
+
 这里只做目录与校验；调用拼装在 skills（tweaks 注入 model_name /
 resolution / reference_count 到 imagegen flow 的 BatchAssetSheet-img02 组件）。
 """
 
+import re
 from typing import Any, Dict, List, Optional
 
 DEFAULT_MODEL_ID = "gpt-image-2-03"
+
+# 通用画幅枚举（分镜卡 ShotGenSettings 同款 6 档）；例外条目单独覆写
+DEFAULT_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 
 IMAGE_MODELS: List[Dict[str, Any]] = [
     {
@@ -41,6 +52,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "GPT Image 2",
         "tag": "均衡默认 · 参考图一致性好 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
+        "aspects": DEFAULT_ASPECTS,
         "default_resolution": "1K",
         "recommended": True,
         "max_references": 4,
@@ -50,6 +62,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "GPT Image 2 SSVIP",
         "tag": "同 03 · DMX 推荐通道 · 服务更稳响应更快",
         "resolutions": ["1K", "2K", "4K"],
+        "aspects": DEFAULT_ASPECTS,
         "default_resolution": "1K",
         "max_references": 4,
     },
@@ -58,14 +71,16 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Seedream 4.0",
         "tag": "中文影视审美强 · 支持参考图 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
+        "aspects": DEFAULT_ASPECTS,
         "default_resolution": "1K",
         "max_references": 4,
     },
     {
         "id": "doubao-seedream-4-5-251128",
         "label": "Seedream 4.5",
-        "tag": "旗舰画质 · 2K/4K（4:3 幅面仅 4K）",
+        "tag": "旗舰画质 · 2K/4K（方图与 4:3 幅面需 4K）",
         "resolutions": ["2K", "4K"],
+        "aspects": DEFAULT_ASPECTS,
         "default_resolution": "2K",
         "max_references": 4,
     },
@@ -74,6 +89,8 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Seedream 5.0 Pro",
         "tag": "多图融合 · 最多 10 张参考图合成 · 1K/2K",
         "resolutions": ["1K", "2K"],
+        # responses 通道显式像素上限：21:9 全档超限，不收录
+        "aspects": ["16:9", "9:16", "1:1", "4:3", "3:4"],
         "default_resolution": "1K",
         "max_references": 10,
     },
@@ -82,6 +99,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Gemini 3.1 Flash Image",
         "tag": "谷歌系 Nano Banana 2 · 幅面/分辨率接口级精确 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
+        "aspects": DEFAULT_ASPECTS,
         "default_resolution": "1K",
         "max_references": 4,
     },
@@ -232,3 +250,24 @@ def resolve_imagegen_params(raw: Any) -> Optional[Dict[str, str]]:
             f"{entry['label']} 不支持 {res} 档（支持：{'/'.join(entry['resolutions'])}）"
         )
     return {"model_name": entry["id"], "resolution": res}
+
+
+def resolve_aspect(raw: Any, model_id: str) -> Optional[str]:
+    """校验画幅覆写（w:h 字符串，可空；请求级缺省 + 镜头级覆盖由调用方合并）。
+
+    空 → None（自动：flow 按资产类型默认幅面——四格定妆 16:9 / 道具平铺
+    4:3；带参考图的直连出图由前端吸附参考图比例后传具体值）；格式不对或
+    模型不支持 → ValueError，端点转 400 中文报错，绝不静默回退（与模型/
+    档位同一铁律）。幅面×档位像素组合级约束（seedream-4-5 最小像素等）
+    不在这里复制 flow 的像素数学，仍由 flow/上游报错点名。"""
+    aspect = str(raw or "").strip()
+    if not aspect:
+        return None
+    if not re.fullmatch(r"\d{1,2}:\d{1,2}", aspect):
+        raise ValueError(f"画幅不合法：{aspect}（应为 w:h，如 16:9 / 9:16）")
+    entry = find_model(model_id)
+    if entry is not None and aspect not in entry["aspects"]:
+        raise ValueError(
+            f"{entry['label']} 不支持 {aspect} 画幅（支持：{'/'.join(entry['aspects'])}）"
+        )
+    return aspect

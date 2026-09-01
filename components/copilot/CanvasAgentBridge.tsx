@@ -41,7 +41,7 @@ import {
   pollShotImageJob,
   startShotImageJob,
 } from "@/lib/shotlist";
-import { findModelOption, loadImageModels, saneGen } from "@/lib/imagegen";
+import { findModelOption, loadImageModels, resolveAutoAspect, saneGen } from "@/lib/imagegen";
 
 /** 面板出图直连管线：跳过聊天 LLM，直连 imagegen flow（与拆解出图链/
  *  分镜批量出图同一条）。确定性任务不走 agent，快、省 token、不刷聊天屏。
@@ -181,6 +181,12 @@ async function directImagegen(
   const description = (
     numberingNote + (opts.prompt || `${node.data.title} ${node.data.body ?? ""}`)
   ).trim();
+  // 画幅：卡片级覆盖（面板「画幅」选择，data.gen.aspect）；空=自动——
+  // 跟随首位参考图真实比例（吸附模型支持档），无参考图回空（flow 按资产
+  // 类型默认幅面——四格定妆 16:9 / 道具平铺 4:3）
+  const cardAspect = (cardGen?.aspect ?? "").trim();
+  const aspect =
+    cardAspect || (await resolveAutoAspect(referenceImages[0], effectiveModel));
   const count = Math.max(1, Math.min(4, opts.count ?? 1));
   const first = st.nodes.find((n) => n.id === nodeId);
 
@@ -212,15 +218,23 @@ async function directImagegen(
         visualNotes,
         referenceImages,
         referenceLabels,
+        aspect: aspect || undefined,
       })),
-      // 卡片级模型/档位覆盖（面板 chips 写入 data.gen），缺省跟随项目
+      // 卡片级模型/档位/画幅覆盖（面板 chips 写入 data.gen），缺省跟随项目
       cardGen ?? undefined,
     );
     // 入参快照：补出失败候选/重试按原样重跑；imageJobId 供卡上「取消」
     useCanvasStore.getState().updateNodeData(nodeId, {
       imageJobId: jobId,
       genPrompt: opts.prompt,
-      genShot: { description, assetType, visualNotes, referenceImages, referenceLabels },
+      genShot: {
+        description,
+        assetType,
+        visualNotes,
+        referenceImages,
+        referenceLabels,
+        aspect: aspect || undefined,
+      },
       failedCandidates: undefined,
     });
     const urls: string[] = [];
@@ -277,7 +291,7 @@ async function supplementCandidates(nodeId: string, count: number) {
   const seq = Date.now().toString(36);
   try {
     const jobId = await startShotImageJob(
-      Array.from({ length: n }, (_, i) => ({
+      Array.from({ length: count }, (_, i) => ({
         rid: `${nodeId}#s${seq}#${i}`,
         name: (node.data.title as string) || "图片",
         description: shot.description,
@@ -285,6 +299,7 @@ async function supplementCandidates(nodeId: string, count: number) {
         visualNotes: shot.visualNotes,
         referenceImages: shot.referenceImages,
         referenceLabels: shot.referenceLabels,
+        aspect: shot.aspect,
       })),
       saneGen(node.data.gen) ?? undefined,
     );

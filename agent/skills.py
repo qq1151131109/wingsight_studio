@@ -1025,10 +1025,10 @@ async def start_storyboard_image_job(
     """启动分镜行批量出图任务（直连 imagegen flow，并发 30，不经聊天）。
 
     shots: [{rid, name, description, visual_notes?, aspect?,
-             params?: {model?, resolution?}}]，字段与出图 flow 的资产载荷
+             params?: {model?, resolution?, aspect?}}]，字段与出图 flow 的资产载荷
     一致（type 固定 scene，镜头画面不是角色设定图）。params：请求级出图
-    模型/分辨率；镜头级 params 覆盖请求级（卡片级覆盖），逐镜头合并后
-    预校验——任一组合不合法整批 ValueError（端点转 400 明报）。
+    模型/分辨率/画幅；镜头级 aspect 与 params 覆盖请求级（卡片级覆盖），
+    逐镜头合并后预校验——任一组合不合法整批 ValueError（端点转 400 明报）。
     立即返回 jobId；每张完成即写入任务状态，前端轮询增量取走。
     """
     if not IMAGEGEN_FLOW_ID:
@@ -1041,7 +1041,14 @@ async def start_storyboard_image_job(
         rid = str(s.get("rid", ""))
         merged = {**(params or {}), **(s.get("params") or {})}
         try:
-            resolved[rid] = models.resolve_imagegen_params(merged or None)
+            # 画幅：镜头级显式 > 请求级（merged.aspect）；模型/档位同批校验，
+            # 任一项不合法整批 400 点名镜头（绝不静默回退默认幅面）
+            p = models.resolve_imagegen_params(merged or None) or {}
+            p["aspect"] = models.resolve_aspect(
+                s.get("aspect") or merged.get("aspect"),
+                str(p.get("model_name") or models.DEFAULT_MODEL_ID),
+            )
+            resolved[rid] = p
         except ValueError as exc:
             invalid.append(f"「{str(s.get('name') or rid) or rid}」{exc}")
     if invalid:
@@ -1064,6 +1071,11 @@ async def start_storyboard_image_job(
 
     async def one(shot: Dict[str, Any]) -> None:
         rid = str(shot.get("rid", ""))
+        # 请求级画幅（卡片 data.gen.aspect）落到无显式画幅的镜头上：
+        # flow 载荷只认 shot 里的 aspect 字段
+        p = resolved.get(rid) or {}
+        if not str(shot.get("aspect") or "").strip() and p.get("aspect"):
+            shot = {**shot, "aspect": p["aspect"]}
         try:
             async with sem:
                 if STORYBOARD_IMAGE_JOBS[job_id]["cancelled"]:

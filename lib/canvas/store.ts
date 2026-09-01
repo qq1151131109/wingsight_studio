@@ -105,11 +105,13 @@ export interface WingNodeData {
     visualNotes: string;
     referenceImages: string[];
     referenceLabels?: { type: string; name: string }[];
+    /** 提交时解析定的画幅（自动已吸附参考图比例），补出原样重跑 */
+    aspect?: string;
   };
-  /** 出图参数卡片级覆盖（模型/档位，目录见 agent/models.py）：缺省跟随
-   *  项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
-   *  分镜表卡可各自指定；生成本卡图片的入口全部读它 */
-  gen?: { model: string; resolution: string };
+  /** 出图参数卡片级覆盖（模型/档位/画幅，目录见 agent/models.py）：缺省
+   *  跟随项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
+   *  分镜表卡可各自指定；生成本卡图片的入口全部读它。aspect 空=自动 */
+  gen?: { model: string; resolution: string; aspect?: string };
   /** 资产卡来源（character/scene/prop/costume）：拆解锚点卡 id（剧本卡/分镜表卡）。
    *  「补资产图」按它圈定本卡资产；聊天/agent 直建的资产卡无此字段不纳入 */
   assetSource?: string;

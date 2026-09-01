@@ -761,7 +761,14 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
       patch.resolution ??
       (opt?.resolutions.includes(base.resolution) ? base.resolution : opt?.default_resolution) ??
       base.resolution;
-    useCanvasStore.getState().updateNodeData(nodeId, { gen: { model: modelId, resolution } });
+    // 画幅：显式选择优先；换模型后当前画幅不被支持则回自动（空）
+    const aspects = opt?.aspects ?? [];
+    const rawAspect =
+      patch.aspect !== undefined ? patch.aspect : (base.aspect ?? "").trim();
+    const aspect = rawAspect && aspects.includes(rawAspect) ? rawAspect : "";
+    useCanvasStore
+      .getState()
+      .updateNodeData(nodeId, { gen: { model: modelId, resolution, aspect: aspect || undefined } });
   };
   useEffect(() => {
     if (!open) return;
@@ -778,19 +785,20 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
         type="button"
         data-tip={
           cardGen
-            ? `本卡覆盖：${effective.model} · ${effective.resolution}（点击修改；可回退跟随项目）`
-            : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位）`
+            ? `本卡覆盖：${effective.model} · ${effective.resolution} · ${effective.aspect || "自动"}（点击修改；可回退跟随项目）`
+            : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位/画幅）`
         } aria-label={
           cardGen
-            ? `本卡覆盖：${effective.model} · ${effective.resolution}（点击修改；可回退跟随项目）`
-            : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位）`
+            ? `本卡覆盖：${effective.model} · ${effective.resolution} · ${effective.aspect || "自动"}（点击修改；可回退跟随项目）`
+            : `跟随项目默认：${effective.model} · ${effective.resolution}（点击为本卡指定模型/档位/画幅）`
         }
         className={`flex items-center gap-0.5 whitespace-nowrap rounded px-1.5 py-1 text-[11px] transition-colors hover:bg-surface-2 ${
           cardGen ? "text-text" : "text-text-2"
         }`}
         onClick={() => setOpen((v) => !v)}
       >
-        {option?.label ?? effective.model} · {effective.resolution}
+        {option?.label ?? effective.model} · {effective.resolution} ·{" "}
+        {effective.aspect || "自动"}
         <ChevronDown className="h-3 w-3 text-text-4" />
       </button>
       {open ? (
@@ -863,6 +871,51 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
                   );
                 })}
               </div>
+              {/* 画幅（竞品通行的方框预览宫格）：空=自动——带参考图跟随首位
+                  参考图比例（吸附模型支持档），无参考图按资产类型默认幅面 */}
+              {(option?.aspects?.length ?? 0) > 0 ? (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1 border-t border-hairline pt-1.5">
+                  <span className="mr-0.5 text-[10px] text-text-4">画幅</span>
+                  <button
+                    type="button"
+                    data-tip="自动：有参考图跟随首位参考图比例，无参考图按类型默认幅面" aria-label="自动画幅"
+                    className={`flex flex-col items-center gap-0.5 rounded px-1 py-0.5 transition-colors ${
+                      !effective.aspect ? "bg-accent-dim text-text" : "text-text-3 hover:bg-surface-2 hover:text-text"
+                    }`}
+                    onClick={() => pick({ aspect: "" })}
+                  >
+                    <span className="block h-3 w-3 rounded-[2px] border border-dashed border-current opacity-80" />
+                    <span className="text-[8px] leading-none">自动</span>
+                  </button>
+                  {(option?.aspects ?? []).map((a) => {
+                    const [aw, ah] = a.split(":").map(Number);
+                    const h = Math.min(
+                      14,
+                      Math.max(5, Math.round((18 * (ah || 1)) / (aw || 1))),
+                    );
+                    const w = Math.round((h * (aw || 1)) / (ah || 1));
+                    return (
+                      <button
+                        key={a}
+                        type="button"
+                        data-tip={`画幅 ${a}`} aria-label={`画幅 ${a}`}
+                        className={`flex flex-col items-center gap-0.5 rounded px-1 py-0.5 transition-colors ${
+                          effective.aspect === a
+                            ? "bg-accent-dim text-text"
+                            : "text-text-3 hover:bg-surface-2 hover:text-text"
+                        }`}
+                        onClick={() => pick({ aspect: a })}
+                      >
+                        <span
+                          className="block rounded-[2px] border border-current opacity-80"
+                          style={{ width: w, height: h }}
+                        />
+                        <span className="text-[8px] leading-none">{a}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
             </>
           )}
         </div>

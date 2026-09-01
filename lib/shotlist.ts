@@ -4,6 +4,7 @@
 import { apiFetch } from "@/lib/auth";
 import { useCanvasStore } from "@/lib/canvas/store";
 import type { ShotRow } from "@/lib/canvas/store";
+import type { ImagegenParams } from "@/lib/imagegen";
 
 export async function generateShotlist(
   script: string,
@@ -158,8 +159,9 @@ export async function decomposeAssets(
  *  逐张职责声明（juben build_reference_usage 范式：定妆照只锁身份不继承
  *  白底/多视图排版）；
  *  assetType 决定布局契约（角色 16:9 四格 / 道具 4:3 / 镜头单幅剧照，
- *  缺省 scene），aspect 覆写幅面（分镜图 9:16/21:9 等，资产设定图不传）；
- *  params 为镜头级模型/档位覆盖（卡片级 data.gen，赢过请求级 params） */
+ *  缺省 scene），aspect 覆写幅面（分镜图 9:16/21:9；资产卡经 data.gen.aspect
+ *  也会落到这里）；params 为镜头级模型/档位/画幅覆盖（卡片级 data.gen，
+ *  赢过请求级 params） */
 export type ShotImageRequest = {
   rid: string;
   name: string;
@@ -169,7 +171,7 @@ export type ShotImageRequest = {
   referenceImages?: string[];
   referenceLabels?: { type: string; name: string }[];
   aspect?: string;
-  params?: { model: string; resolution: string };
+  params?: ImagegenParams;
 };
 
 export type ShotImageResult = {
@@ -221,10 +223,11 @@ export async function pollShotImageJob(
 
 /** 启动批量出图任务：Next 同源代理 30s 掐断长请求，必须异步任务 + 轮询。
  *  params 缺省取项目级出图设置（store.imagegen，底部坞「出图」），
- *  服务端按模型目录校验，非法组合 400 明报 */
+ *  服务端按模型目录校验模型/档位/画幅（请求级缺省，镜头级覆盖），非法
+ *  组合 400 明报 */
 export async function startShotImageJob(
   shots: ShotImageRequest[],
-  params?: { model: string; resolution: string },
+  params?: ImagegenParams,
 ): Promise<string> {
   const r = await apiFetch("/agent-service/storyboard/images", {
     method: "POST",
@@ -265,13 +268,21 @@ export async function getShotImageJob(jobId: string): Promise<{
   };
 }
 
-/** 资产设定图生成：复用批量出图任务通道，按资产类型定幅面与布局。 */
+/** 资产设定图生成：复用批量出图任务通道，按资产类型定幅面与布局；
+ *  params 透传卡片级出图覆盖（data.gen 的 model/resolution/aspect），
+ *  aspect 显式画幅覆写（空=按类型默认幅面） */
 export async function startCharacterImageJob(opts: {
   rid: string;
   name: string;
   description: string;
   assetType?: "character" | "scene" | "prop";
   visualNotes?: string;
+  aspect?: string;
+  params?: ImagegenParams;
 }): Promise<string> {
-  return startShotImageJob([{ ...opts, assetType: opts.assetType ?? "character" }]);
+  const { params, ...shot } = opts;
+  return startShotImageJob(
+    [{ ...shot, assetType: opts.assetType ?? "character" }],
+    params,
+  );
 }
