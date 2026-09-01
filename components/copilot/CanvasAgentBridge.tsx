@@ -159,9 +159,10 @@ async function directImagegen(
     targetAssetType ??
     (fromShotlist ? "shot" : isCharacterLook ? "character" : "scene");
   // 逐张参考图职责标签（与 referenceImages 一一对应）：flow 渲染
-  // 「参考图N（名）：只锁定什么/不继承什么」——juben build_reference_usage 范式
+  // 「参考图N（名）：只锁定什么/不继承什么」——juben build_reference_usage 范式。
+  // 考据参考图（调研采纳落卡）按 reference 职责（锁形制材质），不是改图语义
   const refLabelOf = (n: (typeof mentionedImgs)[number]) => ({
-    type: String(n.data.nodeType),
+    type: n.data.refSource === "research" ? "reference" : String(n.data.nodeType),
     name: String(n.data.title || "无题"),
   });
   const referenceLabels = [

@@ -13,10 +13,10 @@ export type ImagegenParams = {
   aspect?: string;
 };
 
-/** 项目级出图默认：gpt-image-2-03 · 1K（与 agent DEFAULT_MODEL_ID 一致） */
+/** 项目级出图默认：gpt-image-2-03 · 2K（与 agent DEFAULT_MODEL_ID 一致） */
 export const IMAGEGEN_DEFAULT: ImagegenParams = {
   model: "gpt-image-2-03",
-  resolution: "1K",
+  resolution: "2K",
 };
 
 export type ImageModelOption = {

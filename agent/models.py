@@ -53,7 +53,7 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "tag": "均衡默认 · 参考图一致性好 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
         "aspects": DEFAULT_ASPECTS,
-        "default_resolution": "1K",
+        "default_resolution": "2K",
         "recommended": True,
         "max_references": 4,
     },

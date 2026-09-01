@@ -30,9 +30,11 @@ import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
 import graph  # noqa: E402
+import imgresearch  # noqa: E402
 import models  # noqa: E402
 import projects  # noqa: E402
 import prompt_presets  # noqa: E402
+import ref_routes  # noqa: E402
 import skills  # noqa: E402
 import style_presets  # noqa: E402
 import style_routes  # noqa: E402
@@ -44,6 +46,7 @@ projects.init_db()
 topics.init_topics_db()
 style_presets.init_style_presets_db()
 prompt_presets.init_prompt_presets_db()
+imgresearch.init_ref_research_db()
 auth.init_auth_db()
 auth.ensure_auth_password()
 
@@ -67,6 +70,8 @@ app.include_router(topic_routes.router, prefix="/api/v1")
 app.include_router(style_routes.router, prefix="/api/v1")
 # 我的提示词（用户级提示词库 CRUD）
 app.include_router(prompt_presets.router, prefix="/api/v1")
+# 资产参考图调研（豆包搜图 + wikimedia；项目域资源挂根路径）
+app.include_router(ref_routes.router)
 
 
 agent = LangGraphAgent(

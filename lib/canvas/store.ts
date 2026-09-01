@@ -112,6 +112,9 @@ export interface WingNodeData {
    *  跟随项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
    *  分镜表卡可各自指定；生成本卡图片的入口全部读它。aspect 空=自动 */
   gen?: { model: string; resolution: string; aspect?: string };
+  /** image 卡：考据参考图（参考图调研面板采纳落卡）。出图职责段按
+   *  「锁定形制/材质/年代特征」渲染，而非「保留构图」的改图语义 */
+  refSource?: "research";
   /** 资产卡来源（character/scene/prop/costume）：拆解锚点卡 id（剧本卡/分镜表卡）。
    *  「补资产图」按它圈定本卡资产；聊天/agent 直建的资产卡无此字段不纳入 */
   assetSource?: string;

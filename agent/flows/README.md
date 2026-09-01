@@ -16,6 +16,8 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `prompt-optimize-text.json` | 提示词优化-扩写 | 出图提示词 AI 辅助（✦ 优化扩写态）：当前提示词 → 扩写成完整出图提示词。纯原生链（ChatInput→LLM→ChatOutput），prompt 在 system_message，参数走 input_value 文本头 | `LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
 | `prompt-optimize-image.json` | 提示词优化-看图反推 | 出图提示词 AI 辅助（✦ 看图反推态）：参考图 → 反推出图提示词。单用途自定义组件 `PromptImageReverseComponent`（gemini-2.5-flash 视觉经 DMX；deepseek 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
 | `style-reverse.json` | 画风反推 | 我的画风：参考图 → 画风描述（只提炼可复用画风，不带主体/构图）。单用途自定义组件 `StyleReverseComponent`（gemini 视觉经 DMX），与看图反推同范式不同提示词 | `LANGFLOW_STYLE_REVERSE_FLOW_ID` | `StyleReverse-main`（payload JSON + api_key） |
+| `ref-research-plan.json` | 参考图调研规划 | 资产参考图调研：资产上下文+已完成轮次 → 考据向搜索词（3-5 个）+ enough 判定（多轮补搜规划器，gpt-5.6-luna 经 DMX）。纯原生链，参数走 input_value JSON | `LANGFLOW_REF_PLAN_FLOW_ID` | 无（载荷走 input_value JSON） |
+| `ref-research-select.json` | 参考图终选 | 资产参考图调研：候选缩略图 → LLM 看图终选适合做生图（i2i）参考的几张 + 取舍说明。单用途自定义组件 `RefSelectComponent`（gpt-5.6-luna 视觉经 DMX；**上游单请求限 50 张图**，agent 侧分批；候选下载已并发化） | `LANGFLOW_REF_SELECT_FLOW_ID` | `RefSelect-main`（payload JSON + api_key） |
 | `text-write.json` | 文本撰写 | 画布文本卡/剧本卡「撰写」直连管线：指令+正文+参考上下文 → 处理后全文（续写保留原文、改写保原意、空正文直接创作）。卡片级 `data.textModel` 在此生效 | `LANGFLOW_TEXTWRITE_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
 
 注：两态由前端按按钮态显式路由（请求体 `mode: optimize\|reversal`，agent
@@ -43,11 +45,12 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `POST /assets/decompose` + `GET /assets/decompose/{jobId}` | 三路拆解（或合并版） | 剧本(+已有资产名单) → 类型化资产清单。**异步任务**：三路 flow 并发也常超 30s，阻塞等完必 500 |
 | `POST /storyboard/images` + `GET /storyboard/images/{jobId}` | 单资产出图 | 分镜行批量出图：起任务立即返回 jobId，前端轮询（每张完成即写回任务状态）。**必须异步**——Next 同源代理约 30s 掐断长请求，阻塞等完必 500 |
 | `POST /styles/reverse` + `GET /styles/reverse/{jobId}` | 画风反推 | 我的画风「从参考图反推」：起任务返回 jobId，前端轮询。路由 `agent/style_routes.py`（CRUD 同文件），任务机制同 prompt-optimize |
+| `POST /projects/{pid}/refs/research` + `GET .../refs/research/{jobId}` | 参考图调研规划+终选 | 资产参考图调研全链路：AI 出词（手填可覆盖）→ 豆包搜图+Wikimedia 双渠道 → 候选下载落盘 → gpt-5.6-luna 看图终选（recommended 落库）。**异步任务**：前端轮询。候选增删/采纳走 `/projects/{pid}/refs/candidates*`（采纳建参考卡连线进参考序列）。编排 `agent/imgresearch.py`，路由 `agent/ref_routes.py` |
 
 出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?}`
 （项目级出图设置，目录与校验见 `agent/models.py`，`GET /models/image` 下发），
 非法组合 400 明报；合法则经 tweaks 注入 `BatchAssetSheet-img02` 的
-`model_name` / `resolution`，缺省走 flow 默认（gpt-image-2-03 · 1K）。
+`model_name` / `resolution`，缺省走 flow 默认（gpt-image-2-03 · 2K）。
 
 ## 导出（langflow → 本目录）
 

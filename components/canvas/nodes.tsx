@@ -45,6 +45,7 @@ import {
   RefreshCw,
   RotateCcw,
   ScanSearch,
+  Search,
   Shirt,
   Trash2,
   Upload,
@@ -98,6 +99,7 @@ import {
 import { useDismissOnOutside } from "@/lib/useDismiss";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
+import RefResearchDialog from "./RefResearchDialog";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
@@ -1205,6 +1207,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [styleHint, setStyleHint] = useState("");
   const [zoom, setZoom] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [researchOpen, setResearchOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const lod = useLod();
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
@@ -1413,6 +1416,20 @@ function AssetCard({ data, id, selected }: NodeProps) {
           {imgJob ? "生成中…" : "AI 出图（按设定正文）"}
         </button>
       ) : null}
+      {lod === "full" ? (
+        <button
+          type="button"
+          data-tip="搜网络参考图（豆包搜图 + Wikimedia），采纳后自动建参考卡连线，出图时进参考序列" aria-label="找参考图"
+          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-hairline px-2 py-1 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+          onClick={(e) => {
+            e.stopPropagation();
+            setResearchOpen(true);
+          }}
+        >
+          <Search className="h-3 w-3" />
+          找参考图
+        </button>
+      ) : null}
       {lod === "full" && styleHint ? (
         <p className="ws-detail mt-1 text-[10px] text-warn">{styleHint}</p>
       ) : null}
@@ -1440,6 +1457,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
       ) : null}
       {historyOpen && d.imageUrl ? (
         <VersionHistoryModal nodeId={id} data={d} onClose={() => setHistoryOpen(false)} />
+      ) : null}
+      {researchOpen ? (
+        <RefResearchDialog nodeId={id} onClose={() => setResearchOpen(false)} />
       ) : null}
       <input
         ref={fileRef}

@@ -1395,6 +1395,110 @@ async def start_style_reverse_job(image_urls: Optional[List[str]]) -> str:
     return job_id
 
 
+# ── 资产参考图调研 flow 调用（planner 文本链 + 终选视觉链）──────────────────────
+
+REF_PLAN_FLOW_ID = os.environ.get("LANGFLOW_REF_PLAN_FLOW_ID", "")
+REF_SELECT_FLOW_ID = os.environ.get("LANGFLOW_REF_SELECT_FLOW_ID", "")
+
+
+def _parse_flow_json(raw: str, what: str) -> Dict[str, Any]:
+    """flow 返回文本 → 严格 JSON dict；解析失败明报（不静默兜底）。
+
+    注意错误伪装链：run_flow_blocking 会把 flow 内部错误当文本返回（以「（」
+    包裹的中文报错），先识别再解析，避免把错误文本截括号当 JSON。"""
+    text = (raw or "").strip()
+    if text.startswith("（") and text.endswith("）"):
+        raise RuntimeError(f"{what}失败：{text.strip('（）')}")
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        raise RuntimeError(f"{what}返回不是 JSON：{text[:120]}")
+    try:
+        out = json.loads(text[start : end + 1])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"{what}JSON 解析失败：{e}（原文：{text[:120]}）") from e
+    if not isinstance(out, dict):
+        raise RuntimeError(f"{what}返回不是 JSON 对象")
+    return out
+
+
+async def run_ref_plan_flow(
+    asset: Dict[str, Any], rounds: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """搜索词规划：资产上下文+已完成轮次 → {queries: [...], enough: bool}。"""
+    if not REF_PLAN_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_REF_PLAN_FLOW_ID（flow 见 agent/flows/ref-research-plan.json）"
+        )
+    payload = {"asset": asset, "rounds": rounds}
+    # 字段拍平成单行：tweaks 传输会把 \n 反转义成裸换行（imagegen 同款防坑）
+    input_value = " ".join(str(json.dumps(payload, ensure_ascii=False)).split())
+    # luna 偶发 JSON 格式抖动（temperature 0.5 下不守输出格式），重试一次；
+    # 连续失败才明报，不让单次抖动打死整个调研任务
+    last_error: Exception | None = None
+    for _ in range(2):
+        try:
+            raw = await run_flow_blocking(REF_PLAN_FLOW_ID, input_value=input_value)
+            out = _parse_flow_json(raw, "搜索词规划")
+            queries = [str(q).strip() for q in (out.get("queries") or []) if str(q).strip()][:5]
+            if queries:
+                return {"queries": queries, "enough": bool(out.get("enough"))}
+            last_error = RuntimeError("搜索词规划未产出有效关键词")
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+    raise last_error  # type: ignore[misc]
+
+
+async def run_ref_select_flow(
+    asset: Dict[str, Any], candidates: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """LLM 终选：看候选图 → {recommended: [index...], note: str}。
+
+    索引对应 candidates 顺序（0 基，payload 里已带全局 index），调用方
+    负责回填 recommended 字段。看图模型 gpt-5.6-luna（DMX gpt 通道）
+    上游单请求限 50 张图（100 张实测报 "Too many images in request: 51,
+    maximum allowed: 50"），批大小定 50，>50 自动分批合并推荐；单批失败
+    只记该批，不拖垮其余批。"""
+    if not REF_SELECT_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_REF_SELECT_FLOW_ID（flow 见 agent/flows/ref-research-select.json）"
+        )
+    if not DMX_API_KEY:
+        raise RuntimeError("未配置 DMX_API_KEY，参考图终选不可用")
+    if not candidates:
+        raise RuntimeError("终选需要至少一张候选图")
+
+    batches = [candidates[i : i + 50] for i in range(0, len(candidates), 50)]
+    recommended: List[int] = []
+    notes: List[str] = []
+    batch_errors: List[str] = []
+    for bi, batch in enumerate(batches, 1):
+        payload = {"asset": asset, "candidates": batch}
+        tweaks = {
+            "RefSelect-main": {
+                "payload": json.dumps(payload, ensure_ascii=False),
+                "api_key": DMX_API_KEY,
+            }
+        }
+        try:
+            raw = await run_flow_blocking(REF_SELECT_FLOW_ID, input_value="", tweaks=tweaks)
+            out = _parse_flow_json(raw, f"参考图终选（第{bi}批）")
+            recommended.extend(
+                int(i)
+                for i in (out.get("recommended") or [])
+                if isinstance(i, (int, float, str)) and str(i).strip().lstrip("-").isdigit()
+            )
+            if str(out.get("note") or "").strip():
+                notes.append(f"第{bi}批：{str(out['note']).strip()}")
+        except Exception as exc:  # noqa: BLE001 单批失败记批次，不拖垮其余批
+            batch_errors.append(f"第{bi}批：{str(exc)[:100]}")
+    if batch_errors and not recommended and not notes:
+        raise RuntimeError("；".join(batch_errors))
+    note = "；".join(notes)[:300]
+    if batch_errors:
+        note = (note + ("；" if note else "") + "；".join(batch_errors))[:300]
+    return {"recommended": sorted(set(recommended)), "note": note}
+
+
 # ── 文本撰写/改写（画布文本卡/剧本卡底部输入条的直连管线）──────────────────────
 # 指令+正文+参考上下文 → 处理后全文。模型解析 = 卡片 data.textModel → 出厂默认
 # （前端 TextModelChip 写卡，经 models.text_model_tweaks 注入组件名）。
