@@ -3299,8 +3299,11 @@ function countAssetsMissingImage(nodes: WingNode[], sourceId: string): number {
 }
 
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
-/** 分镜表生成预期时长（秒）：进度条按此推算百分比、封顶 95%（GenProgress 同款诚实进度，真实完成由轮询回填） */
-const SHOTLIST_GEN_EXPECTED = 45;
+/** 分镜生成预期时长（秒）：45s 底 + 剧本每 40 字 1s（大输入→大 JSON 输出线性
+ *  变慢），封顶 240s——按剧本字数动态估算，避免大剧本被 45s 静态预期误报"排队" */
+function shotlistExpected(scriptLen: number): number {
+  return Math.min(240, Math.max(45, Math.round(45 + scriptLen / 40)));
+}
 
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
@@ -3398,6 +3401,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       ups[0];
     return pick ? (pick.data.body ?? "").trim() : (d.body ?? "").trim();
   })();
+  // 进度条预期：随本次生成实际用的剧本长度伸缩
+  const genExpected = shotlistExpected(scriptSource.length);
 
   /** 一键生成分镜（直连 langflow flow，不经聊天）：结果写回 rows */
   const generate = async () => {
@@ -4176,8 +4181,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           <div className="flex items-center gap-1.5">
             <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
             <span className="shrink-0 tabular-nums">
-              {genSec > SHOTLIST_GEN_EXPECTED * 1.5
-                ? `生成排队较久 · 已等 ${genSec}s`
+              {genSec > genExpected * 1.5
+                ? `生成较慢 · 已等 ${genSec}s（大剧本通常需要几分钟）`
                 : `分镜生成中 · ${genSec}s`}
             </span>
           </div>
@@ -4185,7 +4190,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             <div
               className="h-full rounded-full bg-accent transition-[width] duration-1000 ease-linear"
               style={{
-                width: `${Math.min(95, Math.round((genSec / SHOTLIST_GEN_EXPECTED) * 100))}%`,
+                width: `${Math.min(95, Math.round((genSec / genExpected) * 100))}%`,
               }}
             />
           </div>
