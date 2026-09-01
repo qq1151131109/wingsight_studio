@@ -1,4 +1,4 @@
-/** 文本模型目录 API（agent /models/text，清单经 DMX chat 探针验证，
+/** 文本模型目录 API（agent /models/text，清单经智谱官方端点探针验证，
  *  见 agent/models.py）。剧本/分镜表/拆解等文本生成的模型选择唯一前端入口。 */
 import { useEffect, useState } from "react";
 
@@ -11,7 +11,7 @@ export type TextModelOption = {
   recommended?: boolean;
 };
 
-export const TEXT_MODEL_DEFAULT_ID = "deepseek-v4-flash";
+export const TEXT_MODEL_DEFAULT_ID = "glm-5.3-flash";
 
 export async function fetchTextModels(): Promise<TextModelOption[]> {
   const r = await apiFetch("/agent-service/models/text");

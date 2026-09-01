@@ -77,43 +77,38 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 ]
 
 # ---------- 文本模型目录（剧本/分镜表/拆解/提示词优化等 LLM 文字生成） ----------
-# 同样只收 DMX 网关真实探针验证过的（2026-08-31，1-token chat 实调）。
+# 同样只收真实探针验证过的（2026-09-01，智谱官方 coding 端点实测文本/工具调用；
+# /models 列表交叉核对）。通道：langflow 全局变量 OPENAI_BASE_URL/OPENAI_API_KEY
+# 已指向官方端点，全部文本 flow 出厂模型与卡片级覆盖统一走智谱直连（不走 DMX）。
 # 注入方式：文本 flow 的 LanguageModelComponent 留空 model_name 覆盖字段，
-# 调用侧按组件名 tweaks 注 {"model_name": id}（切换不走节点 id，重建不失效）：
-# - deepseek-v4-flash：探针通，各文本 flow 的出厂默认（与 flow 内保存一致）
-# - DMXAPI-glm-5 / DMXAPI-kimi-k2.5 / DMXAPI-qwen3.5-plus / DMXAPI-MiniMax-M2.5：探针通
-# 未收录：DMXAPI-deepseek-v4-pro（/models 列表有但调用 401「provider not exist」）、
-# DMXAPI-gemini-3.1-pro-preview（思考型，max_tokens 被思考吃光返回空文本，
-# 分镜表/拆解要 JSON 输出不能用）、DMXAPI-g-p-t-5.1（渠道欠费 403）
+# 调用侧按组件名 tweaks 注 {"model_name": id}（切换不走节点 id，重建不失效）。
+# 未收录：glm-5-turbo / glm-5.1 / glm-5（/models 在售，未探针，按需补）、
+# glm-4.5 / glm-4.5-air / glm-4.7（旧档，保留在端点但目录不列）。
+# 旧 DMX 文本目录已整体下线——切官方通道后 DMX 型号在 flow 内会 404。
 
-DEFAULT_TEXT_MODEL_ID = "deepseek-v4-flash"
+DEFAULT_TEXT_MODEL_ID = "glm-5.3-flash"
 
 TEXT_MODELS: List[Dict[str, Any]] = [
     {
-        "id": "deepseek-v4-flash",
-        "label": "DeepSeek V4 Flash",
-        "tag": "快 · 便宜 · 剧本拆解/分镜表默认",
+        "id": "glm-5.3-flash",
+        "label": "GLM 5.3 Flash",
+        "tag": "快 · 多模态 · 剧本拆解/分镜表默认",
         "recommended": True,
     },
     {
-        "id": "DMXAPI-glm-5",
-        "label": "GLM 5",
-        "tag": "中文创作强",
+        "id": "glm-5.3",
+        "label": "GLM 5.3",
+        "tag": "强推理 · 质量优先",
     },
     {
-        "id": "DMXAPI-kimi-k2.5",
-        "label": "Kimi K2.5",
-        "tag": "长文本 · 大纲/剧本向",
+        "id": "glm-5.2",
+        "label": "GLM 5.2",
+        "tag": "上一代旗舰",
     },
     {
-        "id": "DMXAPI-qwen3.5-plus",
-        "label": "Qwen 3.5 Plus",
-        "tag": "均衡通用",
-    },
-    {
-        "id": "DMXAPI-MiniMax-M2.5",
-        "label": "MiniMax M2.5",
-        "tag": "创意文案",
+        "id": "glm-4.6",
+        "label": "GLM 4.6",
+        "tag": "旧稳档",
     },
 ]
 

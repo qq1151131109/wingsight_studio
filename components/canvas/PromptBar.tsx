@@ -585,7 +585,7 @@ export default function PromptBar({
 }
 
 /** 文本模型 chip（输入条 · 选中剧本/分镜表卡时出现）：卡片级覆盖存
- *  data.textModel，空=跟随出厂默认（agent/models.py，deepseek-v4-flash）。
+ *  data.textModel，空=跟随出厂默认（agent/models.py，glm-5.3-flash）。
  *  驱动范围：剧本卡=拆解资产；分镜表卡=生成分镜 + 本卡拆解。
  *  聊天「撰写/修改」走聊天主循环模型，不经此 chip */
 function TextModelChip({ nodeId }: { nodeId: string }) {

@@ -170,7 +170,7 @@
                 "name": "model",
                 "value": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "glm-5.3-flash",
                     "icon": "OpenAI",
                     "provider": "OpenAI",
                     "metadata": {
@@ -1260,5 +1260,22 @@
       "zoom": 0.7149827279753261
     }
   },
-  "id": "f375432d-7346-4d01-a160-17891a50c04a"
+  "is_component": false,
+  "updated_at": "2026-09-01T03:06:25+00:00",
+  "webhook": false,
+  "endpoint_name": null,
+  "tags": null,
+  "locked": false,
+  "mcp_enabled": false,
+  "action_name": null,
+  "action_description": null,
+  "access_type": "PRIVATE",
+  "flow_type": "workflow",
+  "a2a_enabled": false,
+  "a2a_card_overrides": null,
+  "id": "f375432d-7346-4d01-a160-17891a50c04a",
+  "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
+  "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
+  "workspace_id": null,
+  "name_key": null
 }
