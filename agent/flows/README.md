@@ -15,6 +15,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 出图；`reference_images` 一致性锚点图会下载作参考。布局契约四类：`character` 四格定妆 / `scene` 无人空镜勘景 / `prop` 单件平铺（服饰卡按此契约）/ `shot` 剧情剧照（分镜行出图，有人物有剧情）。模型分流在组件内按模型名前缀：`doubao-seedream-5*` → `/v1/responses` 多图融合（`generate_image_responses`，2~10 参考图合成一张）；`gemini*` → v1beta `generateContent`（`generate_image_gemini`，Nano Banana 2：imageConfig 精确幅面/分辨率 1K/2K/4K、参考图 inlineData、认证 x-goog-api-key——Bearer 会挂起；**DMX 网关 aspectRatio 按「高:宽」解析，原语内已做翻转补偿，DMX 修正后需移除**）；其余走 OpenAI images 接口 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload / model_name / resolution） |
 | `prompt-optimize-text.json` | 提示词优化-扩写 | 出图提示词 AI 辅助（✦ 优化扩写态）：当前提示词 → 扩写成完整出图提示词。纯原生链（ChatInput→LLM→ChatOutput），prompt 在 system_message，参数走 input_value 文本头 | `LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
 | `prompt-optimize-image.json` | 提示词优化-看图反推 | 出图提示词 AI 辅助（✦ 看图反推态）：参考图 → 反推出图提示词。单用途自定义组件 `PromptImageReverseComponent`（gemini-2.5-flash 视觉经 DMX；deepseek 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
+| `style-reverse.json` | 画风反推 | 我的画风：参考图 → 画风描述（只提炼可复用画风，不带主体/构图）。单用途自定义组件 `StyleReverseComponent`（gemini 视觉经 DMX），与看图反推同范式不同提示词 | `LANGFLOW_STYLE_REVERSE_FLOW_ID` | `StyleReverse-main`（payload JSON + api_key） |
 | `text-write.json` | 文本撰写 | 画布文本卡/剧本卡「撰写」直连管线：指令+正文+参考上下文 → 处理后全文（续写保留原文、改写保原意、空正文直接创作）。卡片级 `data.textModel` 在此生效 | `LANGFLOW_TEXTWRITE_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
 
 注：两态由前端按按钮态显式路由（请求体 `mode: optimize\|reversal`，agent
@@ -41,6 +42,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `POST /topics/refresh`（轮询 `GET /topics` 的 refreshing） | 选题四 flow | 选题池策展刷新：材料窗口采集(80 条) → 研判 → 逐簇迭代取证 → 两级结论，单飞后台任务，一轮约 15 分钟。编排见 `agent/topic_pool.py`，路由 `agent/topic_routes.py` |
 | `POST /assets/decompose` + `GET /assets/decompose/{jobId}` | 三路拆解（或合并版） | 剧本(+已有资产名单) → 类型化资产清单。**异步任务**：三路 flow 并发也常超 30s，阻塞等完必 500 |
 | `POST /storyboard/images` + `GET /storyboard/images/{jobId}` | 单资产出图 | 分镜行批量出图：起任务立即返回 jobId，前端轮询（每张完成即写回任务状态）。**必须异步**——Next 同源代理约 30s 掐断长请求，阻塞等完必 500 |
+| `POST /styles/reverse` + `GET /styles/reverse/{jobId}` | 画风反推 | 我的画风「从参考图反推」：起任务返回 jobId，前端轮询。路由 `agent/style_routes.py`（CRUD 同文件），任务机制同 prompt-optimize |
 
 出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?}`
 （项目级出图设置，目录与校验见 `agent/models.py`，`GET /models/image` 下发），

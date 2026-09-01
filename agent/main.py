@@ -33,12 +33,15 @@ import graph  # noqa: E402
 import models  # noqa: E402
 import projects  # noqa: E402
 import skills  # noqa: E402
+import style_presets  # noqa: E402
+import style_routes  # noqa: E402
 import thumbs  # noqa: E402
 import topic_routes  # noqa: E402
 import topics  # noqa: E402
 
 projects.init_db()
 topics.init_topics_db()
+style_presets.init_style_presets_db()
 auth.init_auth_db()
 auth.ensure_auth_password()
 
@@ -58,6 +61,8 @@ app.add_middleware(
 app.include_router(auth_routes.router, prefix="/api/v1")
 # 选题池（生产前漏斗，跨项目全局）
 app.include_router(topic_routes.router, prefix="/api/v1")
+# 我的画风（用户自建画风预设 + 参考图反推）
+app.include_router(style_routes.router, prefix="/api/v1")
 
 
 agent = LangGraphAgent(

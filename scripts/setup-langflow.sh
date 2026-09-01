@@ -119,6 +119,7 @@ FLOWS = {
     "asset-imagegen.json": "LANGFLOW_IMAGEGEN_FLOW_ID",
     "prompt-optimize-text.json": "LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID",
     "prompt-optimize-image.json": "LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID",
+    "style-reverse.json": "LANGFLOW_STYLE_REVERSE_FLOW_ID",
     "shotlist-generate.json": "LANGFLOW_SHOTLIST_FLOW_ID",
     "text-write.json": "LANGFLOW_TEXTWRITE_FLOW_ID",
     "topic-triage.json": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",

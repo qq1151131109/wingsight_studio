@@ -58,21 +58,40 @@ async function directImagegen(
     window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
     return;
   }
-  // 参考 = 手动 @ 引用 + 上游连线卡（与面板 chip 展示一致），带图才收
+  // 参考 = 手动 @ 引用 + 上游连线卡（与面板 chip 展示一致），带图才收。
+  // 本卡已有图并入参考首位——「在带图的卡上出图」最常见心智就是改这张图
+  // （图生图），不收会静默变成纯文生图（孝庄太后项目踩坑）。refIds 先过
+  // 一遍存在性：已删卡的残留引用不再参与/不再持久化
+  const validRefIds = opts.refIds.filter((rid) => st.nodes.some((n) => n.id === rid));
   const refNodes = [
-    ...opts.refIds
+    ...validRefIds
       .map((rid) => st.nodes.find((n) => n.id === rid))
       .filter((n): n is NonNullable<typeof n> => Boolean(n)),
     ...st.edges
-      .filter((e) => e.target === nodeId && !opts.refIds.includes(e.source))
+      .filter((e) => e.target === nodeId && !validRefIds.includes(e.source))
       .map((e) => st.nodes.find((n) => n.id === e.source))
       .filter((n): n is NonNullable<typeof n> => Boolean(n)),
   ].filter((n) => n.data.imageUrl);
   const seenUrl = new Set<string>();
-  const referenceImages = refNodes
-    .map((n) => n.data.imageUrl as string)
+  const selfImageUrl = node.data.imageUrl as string | undefined;
+  const referenceImages = [
+    ...(selfImageUrl ? [selfImageUrl] : []),
+    ...refNodes.map((n) => n.data.imageUrl as string),
+  ]
     .filter((u) => (seenUrl.has(u) ? false : (seenUrl.add(u), true)))
     .slice(0, 4);
+  // 明式引用（@ 或连线）却一张可用图都没收到 = 曾经「静默降级文生图」的
+  // 根源，明报拦下让用户决策；空卡无引用的直接文生图不受影响
+  const expectsRefs =
+    validRefIds.length > 0 || st.edges.some((e) => e.target === nodeId);
+  if (expectsRefs && referenceImages.length === 0) {
+    st.updateNodeData(nodeId, {
+      status: "error",
+      errorMessage:
+        "未找到可用参考图：@ 引用/连线的卡上都没有图片。请引用带图的卡，或移除引用后直接文生图",
+    });
+    return;
+  }
   const visualNotes = [
     ...refNodes.map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150)),
     `全局视觉风格：${projectStyle}`,
@@ -92,8 +111,8 @@ async function directImagegen(
           : undefined;
   const assetType = targetAssetType ?? (isCharacterLook ? "character" : "scene");
   // 手动 @ 引用落成连线（viedeo-workflow「mention=边」范式）：生成后面板
-  // chips 持续可见，不随本会话的输入框状态消失
-  for (const rid of new Set(opts.refIds)) {
+  // chips 持续可见，不随本会话的输入框状态消失（已删卡的引用不落边）
+  for (const rid of new Set(validRefIds)) {
     if (rid === nodeId || st.edges.some((e) => e.target === nodeId && e.source === rid))
       continue;
     st.connect({ source: rid, target: nodeId });
@@ -105,7 +124,7 @@ async function directImagegen(
   st.updateNodeData(nodeId, {
     status: "loading",
     errorMessage: undefined,
-    refIds: opts.refIds,
+    refIds: validRefIds,
     // 重生成前把当前主图存进版本历史（可对比/回滚）
     ...(first?.data.imageUrl
       ? {

@@ -401,14 +401,26 @@ export default function PromptBar({
   };
 
   const floating = variant === "floating";
+  // 图生图锚点提示：本卡已有图时会自动并入参考首位（桥接层 directImagegen），
+  // 亮出 chip 让「为什么结果总像上一张」有据可查
+  const selfImageChip = kind === "image" && Boolean(self?.data.imageUrl);
   return (
     <div
       className={`ws-detail nodrag nowheel rounded-md border border-hairline bg-surface-2/60 ${
         floating ? "border-0 bg-transparent p-0" : "mt-1.5 p-1.5"
       }`}
     >
-      {shownRefs.length > 0 ? (
+      {shownRefs.length > 0 || selfImageChip ? (
         <div className={`flex flex-wrap gap-1 ${floating ? "mb-1.5" : "mb-1"}`}>
+          {selfImageChip ? (
+            <span
+              className="inline-flex items-center gap-1 rounded border border-solid border-accent-soft bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
+              title="本卡当前图将作为参考参与本次生成（图生图）；在画布上换图即更新"
+            >
+              <RefThumb node={self as WingNode} />
+              <span className="pr-0.5 text-accent">本卡原图</span>
+            </span>
+          ) : null}
           {shownRefs.map((r, i) => {
             const hasImg = Boolean(r.data.imageUrl);
             const connected = connectedIds.has(r.id);

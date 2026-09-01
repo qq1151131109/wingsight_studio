@@ -1258,6 +1258,58 @@ async def start_prompt_optimize_job(
     return job_id
 
 
+# ── 画风反推（我的画风：参考图 → 画风描述草稿）───────────────────────────────
+# 单用途 flow（style-reverse.json，gemini 视觉经 DMX），与看图反推同范式不同
+# 提示词：只提炼可复用画风，不带主体/构图。产物回填「新建画风」草稿框。
+
+STYLE_REVERSE_FLOW_ID = os.environ.get("LANGFLOW_STYLE_REVERSE_FLOW_ID", "")
+
+STYLE_REVERSE_JOBS: Dict[str, Dict[str, Any]] = {}
+
+
+def get_style_reverse_job(job_id: str) -> Optional[Dict[str, Any]]:
+    return STYLE_REVERSE_JOBS.get(job_id)
+
+
+async def start_style_reverse_job(image_urls: Optional[List[str]]) -> str:
+    if not STYLE_REVERSE_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_STYLE_REVERSE_FLOW_ID（flow 见 agent/flows/style-reverse.json）"
+        )
+    if not DMX_API_KEY:
+        raise RuntimeError("未配置 DMX_API_KEY，画风反推不可用")
+    urls = [_normalize_asset_url(u) for u in (image_urls or []) if str(u).strip()][:4]
+    if not urls:
+        raise RuntimeError("画风反推需要至少一张参考图")
+    # 字段拍平成单行：tweaks 传输会把 \n 反转义成裸换行（imagegen 同款防坑）
+    payload = {"image_urls": urls}
+    tweaks = {
+        "StyleReverse-main": {
+            "payload": json.dumps(payload, ensure_ascii=False),
+            "api_key": DMX_API_KEY,
+        }
+    }
+    job_id = uuid.uuid4().hex[:12]
+    STYLE_REVERSE_JOBS[job_id] = {"status": "running", "result": None, "error": None}
+
+    async def run() -> None:
+        try:
+            raw = await run_flow_blocking(STYLE_REVERSE_FLOW_ID, input_value="", tweaks=tweaks)
+            if raw.startswith("（"):
+                STYLE_REVERSE_JOBS[job_id].update(status="done", error=raw.strip("（）"))
+            else:
+                STYLE_REVERSE_JOBS[job_id].update(status="done", result=raw)
+        except Exception as e:  # noqa: BLE001
+            STYLE_REVERSE_JOBS[job_id].update(status="done", error=str(e)[:200])
+        finally:
+            done = [k for k, v in STYLE_REVERSE_JOBS.items() if v["status"] == "done"]
+            for k in done[:-49]:
+                STYLE_REVERSE_JOBS.pop(k, None)
+
+    asyncio.create_task(run())
+    return job_id
+
+
 # ── 文本撰写/改写（画布文本卡/剧本卡底部输入条的直连管线）──────────────────────
 # 指令+正文+参考上下文 → 处理后全文。模型解析 = 卡片 data.textModel → 出厂默认
 # （前端 TextModelChip 写卡，经 models.text_model_tweaks 注入组件名）。

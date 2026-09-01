@@ -25,11 +25,15 @@ import {
   Info,
   Library,
   ListTree,
+  Loader2,
   Lock,
   LockOpen,
   Palette,
+  Pencil,
+  Plus,
   Redo2,
   Search,
+  Trash2,
   Undo2,
   WandSparkles,
   X,
@@ -58,6 +62,14 @@ import { useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
 import { useCanvasPref } from "@/lib/canvas/prefs";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
+import {
+  createMyStyle,
+  deleteMyStyle,
+  listMyStyles,
+  reverseStyle,
+  updateMyStyle,
+  type MyStyle,
+} from "@/lib/styles";
 import { nodeTypes, NodeInfoModal } from "./nodes";
 import DeletableEdge from "./edges";
 import CanvasShortcuts from "./CanvasShortcuts";
@@ -440,8 +452,210 @@ function NodeSearch() {
   );
 }
 
-/** 画风预设浏览（juben 风格模板库 86 条）：分类过滤 + 搜索，点选即套用。
- *  选中态 = 项目画风与该预设 prompt 完全一致；手改文本后高亮自动消失 */
+/** 我的画风分类名（画风面板首个分类） */
+const MY_STYLE_CAT = "我的画风";
+
+/** 新建/编辑自建画风：名称 + 画风描述 + 可选封面；支持上传参考图让 AI 反推
+ *  画风描述（gemini 视觉 flow，异步任务轮询）。保存后落在「我的画风」分类，
+ *  所有项目可复用（owner 隔离）。 */
+function StyleEditDialog({
+  initial,
+  onClose,
+  onSaved,
+}: {
+  initial: MyStyle | null;
+  onClose: () => void;
+  onSaved: (s: MyStyle) => void;
+}) {
+  const [name, setName] = useState(initial?.name ?? "");
+  const [prompt, setPrompt] = useState(initial?.prompt ?? "");
+  const [coverUrl, setCoverUrl] = useState(initial?.coverUrl ?? "");
+  const [busy, setBusy] = useState<"" | "reverse" | "cover" | "save">("");
+  const [err, setErr] = useState("");
+  const reverseRef = useRef<HTMLInputElement>(null);
+  const coverRef = useRef<HTMLInputElement>(null);
+
+  const pickImage = async (file: File | undefined, kind: "reverse" | "cover") => {
+    if (!file) return;
+    setErr("");
+    setBusy(kind);
+    try {
+      const url = await uploadAsset(file, file.type, file.name);
+      if (!url) throw new Error("图片上传失败");
+      if (kind === "cover") {
+        setCoverUrl(url);
+      } else {
+        const text = await reverseStyle([url]);
+        if (!text.trim()) throw new Error("反推结果为空，换张参考图试试");
+        setPrompt(text.trim());
+        if (!coverUrl) setCoverUrl(url); // 反推图顺手当封面
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const save = async () => {
+    if (!name.trim() || !prompt.trim()) {
+      setErr("名称与画风描述不能为空");
+      return;
+    }
+    setErr("");
+    setBusy("save");
+    try {
+      const s = initial
+        ? await updateMyStyle(initial.id, {
+            name: name.trim(),
+            prompt: prompt.trim(),
+            coverUrl,
+          })
+        : await createMyStyle({ name: name.trim(), prompt: prompt.trim(), coverUrl });
+      onSaved(s);
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy("");
+    }
+  };
+
+  return (
+    <OverlayModal
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6"
+      onClick={busy === "save" ? undefined : onClose}
+    >
+      <div
+        className="w-[min(34rem,92vw)] rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-text">
+              {initial ? "编辑画风" : "新建画风"}
+            </p>
+            <p className="mt-0.5 text-[11px] text-text-4">
+              保存在「我的画风」，所有项目可复用；点选卡片即套用为项目画风
+            </p>
+          </div>
+          <button
+            type="button"
+            data-tip="关闭" aria-label="关闭"
+            className="rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <label className="mt-3 block text-[11px] font-medium text-text-2">名称</label>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="例：敦煌厚涂风"
+          maxLength={80}
+          className="mt-1 w-full rounded-md border border-hairline bg-surface-2/60 px-2 py-1.5 text-xs text-text outline-none focus:border-accent placeholder:text-text-4"
+        />
+        <div className="mt-2.5 flex items-center justify-between">
+          <label className="text-[11px] font-medium text-text-2">画风描述</label>
+          <button
+            type="button"
+            disabled={busy !== ""}
+            data-tip="上传参考图，AI 提炼画风描述" aria-label="上传参考图，AI 提炼画风描述"
+            className="flex items-center gap-1 rounded border border-hairline px-1.5 py-0.5 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text disabled:opacity-50"
+            onClick={() => reverseRef.current?.click()}
+          >
+            {busy === "reverse" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <WandSparkles className="h-3 w-3" />
+            )}
+            从参考图反推
+          </button>
+        </div>
+        <textarea
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          placeholder="点「从参考图反推」让 AI 起草，或直接写：媒介笔触、色彩、光线、质感、年代感…"
+          rows={5}
+          className="nowheel mt-1 w-full resize-none rounded-md border border-hairline bg-surface-2/60 p-2 text-xs leading-relaxed text-text outline-none focus:border-accent placeholder:text-text-4"
+        />
+        <div className="mt-2.5 flex items-center gap-2">
+          <span className="text-[11px] font-medium text-text-2">封面（可选）</span>
+          {coverUrl ? (
+            <>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={coverUrl}
+                alt="封面"
+                className="h-8 w-14 rounded border border-hairline object-cover"
+              />
+              <button
+                type="button"
+                className="text-[10px] text-text-3 transition-colors hover:text-danger"
+                onClick={() => setCoverUrl("")}
+              >
+                移除
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={busy !== ""}
+              className="rounded border border-dashed border-hairline px-2 py-0.5 text-[10px] text-text-3 transition-colors hover:border-accent-soft hover:text-text-2 disabled:opacity-50"
+              onClick={() => coverRef.current?.click()}
+            >
+              {busy === "cover" ? "上传中…" : "上传封面图"}
+            </button>
+          )}
+        </div>
+        {err ? <p className="mt-2 text-[11px] text-danger">{err}</p> : null}
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            type="button"
+            className="rounded-md border border-hairline px-3 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2"
+            onClick={onClose}
+          >
+            取消
+          </button>
+          <button
+            type="button"
+            disabled={busy !== "" || !name.trim() || !prompt.trim()}
+            className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-surface-1 transition-opacity hover:opacity-90 disabled:opacity-50"
+            onClick={() => void save()}
+          >
+            {busy === "save" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+            保存
+          </button>
+        </div>
+        <input
+          ref={reverseRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            void pickImage(e.target.files?.[0], "reverse");
+            e.target.value = "";
+          }}
+        />
+        <input
+          ref={coverRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => {
+            void pickImage(e.target.files?.[0], "cover");
+            e.target.value = "";
+          }}
+        />
+      </div>
+    </OverlayModal>
+  );
+}
+
+/** 画风预设浏览：首格「我的画风」（用户自建，可新建/编辑/删除/从参考图反推，
+ *  存 agent 按用户隔离）+ 内置库（juben 风格模板 87 条）：分类过滤 + 搜索，
+ *  点选即套用。选中态 = 项目画风与该预设 prompt 完全一致；手改文本后高亮
+ *  自动消失 */
 function StylePresetList({
   projectStyle,
   onPick,
@@ -449,17 +663,57 @@ function StylePresetList({
   projectStyle: string;
   onPick: (prompt: string) => void;
 }) {
+  const [myStyles, setMyStyles] = useState<MyStyle[] | null>(null);
+  const [editing, setEditing] = useState<MyStyle | "new" | null>(null);
+  const [opErr, setOpErr] = useState("");
   const [cat, setCat] = useState<string>("全部");
   const [q, setQ] = useState("");
-  const cats = ["全部", ...STYLE_CATEGORIES];
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const s = await listMyStyles();
+        if (!alive) return;
+        setMyStyles(s);
+        // 首次加载：已有自建画风则默认落在「我的画风」
+        setCat((c) => (c === "全部" && s.length > 0 ? MY_STYLE_CAT : c));
+      } catch {
+        if (alive) setMyStyles([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const upsert = useCallback((s: MyStyle) => {
+    setMyStyles((prev) => [s, ...(prev ?? []).filter((x) => x.id !== s.id)]);
+  }, []);
+  const remove = async (s: MyStyle) => {
+    if (!window.confirm(`删除画风「${s.name}」？已应用它的项目不受影响。`)) return;
+    setOpErr("");
+    try {
+      await deleteMyStyle(s.id);
+      setMyStyles((prev) => (prev ?? []).filter((x) => x.id !== s.id));
+    } catch (e) {
+      setOpErr(e instanceof Error ? e.message : "删除失败");
+    }
+  };
+
+  const cats = [MY_STYLE_CAT, "全部", ...STYLE_CATEGORIES];
+  const kw = q.trim();
+  const mine = useMemo(
+    () => (myStyles ?? []).filter((s) => !kw || s.name.includes(kw) || s.prompt.includes(kw)),
+    [myStyles, kw],
+  );
   const list = useMemo(() => {
-    const kw = q.trim();
     return STYLE_PRESETS.filter(
       (p) =>
         (cat === "全部" || p.category === cat) &&
         (!kw || p.name.includes(kw) || p.tagline.includes(kw) || p.prompt.includes(kw)),
     );
-  }, [cat, q]);
+  }, [cat, kw]);
   return (
     <div className="mt-3 flex min-h-0 flex-1 flex-col">
       <div className="flex items-center gap-1">
@@ -484,43 +738,141 @@ function StylePresetList({
           className="nodrag nowheel ml-auto w-24 rounded border border-hairline bg-surface-2/60 px-1.5 py-0.5 text-[10px] text-text outline-none focus:border-accent placeholder:text-text-4"
         />
       </div>
-      <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-md border border-hairline-soft bg-surface-2/40 p-2">
-        {list.length === 0 ? (
-          <p className="col-span-6 py-6 text-center text-[11px] text-text-4">没有匹配的画风</p>
-        ) : null}
-        {list.map((p) => {
-          const active = projectStyle === p.prompt;
-          return (
-            <button
-              key={p.id}
-              type="button"
-              data-tip={`${p.name}｜${p.tagline || p.category}`} aria-label={`${p.name}｜${p.tagline || p.category}`}
-              className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
-                active
-                  ? "border-accent ring-2 ring-accent"
-                  : "border-hairline hover:border-accent-soft"
-              }`}
-              onClick={() => onPick(p.prompt)}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={p.cover}
-                alt={p.name}
-                loading="lazy"
-                className="absolute inset-0 h-full w-full object-cover object-top"
-              />
-              {active ? (
-                <span className="absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full bg-accent text-[10px] font-bold text-surface-1">
-                  ✓
-                </span>
+      {opErr ? <p className="mt-1.5 text-[11px] text-danger">{opErr}</p> : null}
+      {cat === MY_STYLE_CAT ? (
+        <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-md border border-hairline-soft bg-surface-2/40 p-2">
+          {myStyles === null ? (
+            <p className="col-span-6 py-6 text-center text-[11px] text-text-4">加载中…</p>
+          ) : (
+            <>
+              <button
+                key="__new"
+                type="button"
+                data-tip="新建画风（可从参考图反推）" aria-label="新建画风（可从参考图反推）"
+                className="flex h-44 w-full flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-hairline text-text-3 transition-colors hover:border-accent-soft hover:text-text-2"
+                onClick={() => setEditing("new")}
+              >
+                <Plus className="h-5 w-5" />
+                <span className="text-[11px]">新建画风</span>
+              </button>
+              {myStyles.length === 0 ? (
+                <p className="col-span-5 self-center py-6 text-[11px] leading-relaxed text-text-4">
+                  还没有自建画风：点「新建画风」手写描述，或上传参考图让 AI
+                  反推；保存后所有项目可复用
+                </p>
               ) : null}
-              <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1.5 pb-1 pt-4 text-left text-[11px] font-medium text-white">
-                {p.name}
-              </span>
-            </button>
-          );
-        })}
-      </div>
+              {myStyles.length > 0 && mine.length === 0 ? (
+                <p className="col-span-5 py-6 text-center text-[11px] text-text-4">
+                  没有匹配的画风
+                </p>
+              ) : null}
+              {mine.map((s) => {
+                const active = projectStyle === s.prompt;
+                return (
+                  <div
+                    key={s.id}
+                    className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
+                      active
+                        ? "border-accent ring-2 ring-accent"
+                        : "border-hairline hover:border-accent-soft"
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      aria-label={`套用画风：${s.name}`}
+                      className="absolute inset-0 h-full w-full overflow-hidden text-left"
+                      onClick={() => onPick(s.prompt)}
+                    >
+                      {s.coverUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={s.coverUrl}
+                          alt={s.name}
+                          loading="lazy"
+                          className="absolute inset-0 h-full w-full object-cover object-top"
+                        />
+                      ) : (
+                        <span className="absolute inset-0 bg-surface-2" />
+                      )}
+                      {active ? (
+                        <span className="absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full bg-accent text-[10px] font-bold text-surface-1">
+                          ✓
+                        </span>
+                      ) : null}
+                      <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1.5 pb-1 pt-4 text-left text-[11px] font-medium text-white">
+                        {s.name}
+                      </span>
+                    </button>
+                    <span className="absolute left-1 top-1 hidden gap-0.5 group-hover:flex">
+                      <button
+                        type="button"
+                        data-tip="编辑" aria-label={`编辑画风：${s.name}`}
+                        className="grid h-5 w-5 place-items-center rounded bg-black/55 text-white transition-colors hover:bg-black/75"
+                        onClick={() => setEditing(s)}
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                      <button
+                        type="button"
+                        data-tip="删除" aria-label={`删除画风：${s.name}`}
+                        className="grid h-5 w-5 place-items-center rounded bg-black/55 text-white transition-colors hover:bg-danger"
+                        onClick={() => void remove(s)}
+                      >
+                        <Trash2 className="h-3 w-3" />
+                      </button>
+                    </span>
+                  </div>
+                );
+              })}
+            </>
+          )}
+        </div>
+      ) : (
+        <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-md border border-hairline-soft bg-surface-2/40 p-2">
+          {list.length === 0 ? (
+            <p className="col-span-6 py-6 text-center text-[11px] text-text-4">没有匹配的画风</p>
+          ) : null}
+          {list.map((p) => {
+            const active = projectStyle === p.prompt;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                data-tip={`${p.name}｜${p.tagline || p.category}`} aria-label={`${p.name}｜${p.tagline || p.category}`}
+                className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
+                  active
+                    ? "border-accent ring-2 ring-accent"
+                    : "border-hairline hover:border-accent-soft"
+                }`}
+                onClick={() => onPick(p.prompt)}
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={p.cover}
+                  alt={p.name}
+                  loading="lazy"
+                  className="absolute inset-0 h-full w-full object-cover object-top"
+                />
+                {active ? (
+                  <span className="absolute right-1.5 top-1.5 grid h-5 w-5 place-items-center rounded-full bg-accent text-[10px] font-bold text-surface-1">
+                    ✓
+                  </span>
+                ) : null}
+                <span className="absolute inset-x-0 bottom-0 truncate bg-gradient-to-t from-black/80 to-transparent px-1.5 pb-1 pt-4 text-left text-[11px] font-medium text-white">
+                  {p.name}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {editing ? (
+        <StyleEditDialog
+          initial={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+          onSaved={upsert}
+        />
+      ) : null}
     </div>
   );
 }
