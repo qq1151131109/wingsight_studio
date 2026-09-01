@@ -49,14 +49,21 @@ export type MentionInputHandle = {
 
 type Trigger = { textNode: Text; at: number; q: string };
 
-/** 候选排序：角色最前（一致性主场景），其次有图的卡 */
-const TYPE_ORDER: Record<string, number> = {
-  character: 0,
-  image: 1,
-  storyboard: 2,
-  script: 3,
-  note: 4,
-};
+/** 候选分桶轮转的类型顺序：角色最前（一致性主场景），随后有图生产类、
+ *  文本类、媒体类；桶内带图优先 */
+const TYPE_ORDER_KEYS = [
+  "character",
+  "image",
+  "scene",
+  "prop",
+  "costume",
+  "storyboard",
+  "script",
+  "note",
+  "video",
+  "audio",
+  "compose",
+];
 
 function isMentionEl(n: Node | null | undefined): n is HTMLSpanElement {
   return n instanceof HTMLSpanElement && Boolean(n.dataset.mentionId);
@@ -227,25 +234,50 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   const candidates = useMemo(() => {
     if (!trigger) return [];
     const q = trigger.q.toLowerCase();
-    return nodes
-      .filter((n) => {
-        if (!n.data?.nodeType || n.data.nodeType === "group") return false;
-        if (stats.tokenIds.includes(n.id)) return false;
-        // @ 自己：带图才候选（图生图迭代锚点，open-ai-canvas includeSelf 范式）
-        if (n.id === nodeId) return Boolean(n.data.imageUrl);
-        return true;
-      })
-      .filter(
-        (n) =>
-          !q ||
-          (n.data.title ?? "").toLowerCase().includes(q) ||
-          (n.data.body ?? "").slice(0, 120).toLowerCase().includes(q),
-      )
-      .sort(
+    const match = (n: WingNode) =>
+      !q ||
+      (n.data.title ?? "").toLowerCase().includes(q) ||
+      (n.data.body ?? "").slice(0, 120).toLowerCase().includes(q);
+    // @ 自己：带图才候选（图生图迭代锚点，open-ai-canvas includeSelf 范式）
+    const self =
+      nodeId !== undefined && stats.tokenIds.includes(nodeId)
+        ? null
+        : nodes.find(
+            (n) => n.id === nodeId && Boolean(n.data.imageUrl) && match(n),
+          ) ?? null;
+    const rest = nodes.filter((n) => {
+      if (n.id === nodeId) return false;
+      if (!n.data?.nodeType || n.data.nodeType === "group") return false;
+      if (stats.tokenIds.includes(n.id)) return false;
+      return match(n);
+    });
+
+    // 按类型分桶轮转取候选：角色优先，但场景/道具/服饰等不再被角色
+    // 挤出列表（旧版全局排序 + 截 6 条，拆解出的 6 张角色卡会把其它
+    // 类型和本卡自己全部挤出——「只能 @ 角色」的根因）。桶内带图优先
+    const byType = new Map<string, WingNode[]>();
+    for (const n of rest) {
+      const t = String(n.data.nodeType);
+      if (!byType.has(t)) byType.set(t, []);
+      byType.get(t)!.push(n);
+    }
+    for (const arr of byType.values())
+      arr.sort(
         (a, b) =>
-          (TYPE_ORDER[a.data.nodeType] ?? 9) - (TYPE_ORDER[b.data.nodeType] ?? 9),
-      )
-      .slice(0, 6);
+          Number(Boolean(b.data.imageUrl)) - Number(Boolean(a.data.imageUrl)),
+      );
+    const picked: WingNode[] = self ? [self] : [];
+    const PER_TYPE = 3;
+    for (let round = 0; picked.length < 10 && round < PER_TYPE; round++) {
+      for (const t of TYPE_ORDER_KEYS) {
+        const next = byType.get(t)?.[round];
+        if (next) {
+          picked.push(next);
+          if (picked.length >= 10) break;
+        }
+      }
+    }
+    return picked;
   }, [nodes, trigger, stats.tokenIds, nodeId]);
 
   const pick = useCallback(

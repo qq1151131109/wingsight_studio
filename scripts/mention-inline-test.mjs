@@ -86,6 +86,20 @@ await save(
       position: { x: 320, y: 0 },
       data: { nodeType: "image", title: "目标卡", status: "ready", imageUrl: pngRed },
     },
+    // 7 张角色卡 + 1 张场景卡：复现旧版「全局排序截 6 条」把非角色类型
+    // 和本卡自己挤出候选的拥挤场景
+    ...["甲", "乙", "丙", "丁", "戊", "己", "庚"].map((s, i) => ({
+      id: `n_c${i}`,
+      type: "character",
+      position: { x: 640 + (i % 4) * 200, y: Math.floor(i / 4) * 240 },
+      data: { nodeType: "character", title: `角色${s}`, status: "ready" },
+    })),
+    {
+      id: "n_scene",
+      type: "scene",
+      position: { x: 640, y: 480 },
+      data: { nodeType: "scene", title: "场景甲", status: "ready" },
+    },
   ],
   [],
   { visualStyle: "电影感写实" },
@@ -191,6 +205,19 @@ check(
   (await page.locator('.ws-mention-input .ws-mention[data-mention-id="n_src"]').count()) === 0,
 );
 
+// 裸 @（无查询词）：本卡自己钉顶，场景不被 7 张角色挤出（分桶轮转）
+await page.keyboard.type("@", { delay: 60 });
+await page.waitForTimeout(300);
+const bareDd = page.locator("button", { hasText: "本卡原图" });
+check("M5a 裸 @ 候选含本卡自己（钉顶）", (await bareDd.count()) > 0);
+check(
+  "M5b 裸 @ 候选含场景卡（不被角色挤出）",
+  (await page.locator("button", { hasText: "场景甲" }).count()) > 0,
+);
+await page.keyboard.press("Escape");
+await page.keyboard.press("Backspace"); // 抠掉裸 @，还原到「雨夜」继续后续流程
+await page.waitForTimeout(200);
+
 // 重新引用 + @ 本卡自己（includeSelf）
 await page.keyboard.type("@设", { delay: 60 });
 await page.waitForTimeout(300);
@@ -206,6 +233,17 @@ check(
   "M7 自引 chip 落正文",
   (await page.locator('.ws-mention-input .ws-mention[data-mention-id="n_tgt"]').count()) === 1,
 );
+// 已 @ 过的卡不再进候选（token 去重）
+await page.keyboard.type("@", { delay: 60 });
+await page.waitForTimeout(300);
+check(
+  "M7b 已 @ 过的卡不再进候选",
+  (await page.locator("button", { hasText: "设定图A" }).count()) === 0 &&
+    (await page.locator("button", { hasText: "本卡原图" }).count()) === 0,
+);
+await page.keyboard.press("Escape");
+await page.keyboard.press("Backspace");
+await page.waitForTimeout(200);
 
 // 提交：Ctrl+Enter → 捕获出图 payload
 await page.keyboard.press("Control+Enter");
