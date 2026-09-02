@@ -179,6 +179,8 @@ FLOWS = {
     "topic-verdict.json": "LANGFLOW_TOPIC_VERDICT_FLOW_ID",
     "topic-rescan-plan.json": "LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID",
     "topic-angle-gen.json": "LANGFLOW_TOPIC_ANGLE_FLOW_ID",
+    "ref-research-plan.json": "LANGFLOW_REF_PLAN_FLOW_ID",
+    "ref-research-select.json": "LANGFLOW_REF_SELECT_FLOW_ID",
     "promo-copy.json": None,
     "research-plan.json": "LANGFLOW_RESEARCH_PLAN_FLOW_ID",
     "research-extract.json": "LANGFLOW_RESEARCH_EXTRACT_FLOW_ID",
