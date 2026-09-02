@@ -24,6 +24,7 @@ from topic_pool import (
     get_rescan_job,
     set_auto_refresh,
     start_rescan_job,
+    verticals_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,7 @@ def list_topics(
         "topics": store.list_topics(status=status, vertical=vertical, source=source, q=q, limit=min(limit, 500)),
         "refreshing": SERVICE.refreshing,
         "lastRun": SERVICE.last_run(),
+        "verticals": verticals_payload(),
     }
 
 

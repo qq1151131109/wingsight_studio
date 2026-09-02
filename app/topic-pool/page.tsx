@@ -28,7 +28,7 @@ import {
   type AutoRefreshSchedule,
   type Topic,
   type TopicRefreshRun,
-  type TopicVertical,
+  type VerticalInfo,
 } from "@/lib/topics";
 
 /**
@@ -39,11 +39,8 @@ import {
 
 type StatusTab = "candidate" | "adopted" | "dismissed";
 
-const VERTICAL_LABEL: Record<TopicVertical, string> = { history: "历史", crime: "罪案" };
-const VERTICAL_DOT: Record<TopicVertical, string> = {
-  history: "var(--color-cool)",
-  crime: "var(--color-danger)",
-};
+/** 垂类标签/圆点色从 GET /topics 的 verticals 下发（后端注册表唯一事实源） */
+const FALLBACK_COLOR = "var(--color-text-4)";
 const SOURCE_LABEL: Record<string, string> = {
   material: "材料事件",
   anniversary: "周年节点",
@@ -85,7 +82,8 @@ function TopicPoolInner() {
   const [refreshing, setRefreshing] = useState(false);
   const [lastRun, setLastRun] = useState<TopicRefreshRun>({});
   const [statusTab, setStatusTab] = useState<StatusTab>("candidate");
-  const [vertical, setVertical] = useState<TopicVertical | "all">("all");
+  const [vertical, setVertical] = useState<string>("all");
+  const [verticals, setVerticals] = useState<VerticalInfo[]>([]);
   const [q, setQ] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -111,6 +109,7 @@ function TopicPoolInner() {
         setTopics(data.topics);
         setRefreshing(data.refreshing);
         setLastRun(data.lastRun);
+        if (data.verticals?.length) setVerticals(data.verticals);
         setSelectedId((prev) =>
           opts?.keepSelection === true && prev && data.topics.some((t) => t.id === prev)
             ? prev
@@ -137,6 +136,7 @@ function TopicPoolInner() {
         setTopics(data.topics);
         setRefreshing(data.refreshing);
         setLastRun(data.lastRun);
+        if (data.verticals?.length) setVerticals(data.verticals);
         setSelectedId(data.topics[0]?.id ?? null);
       } catch {
         if (alive) {
@@ -329,17 +329,26 @@ function TopicPoolInner() {
               </button>
             ))}
           </div>
-          <div className="flex rounded-md border border-hairline bg-surface-1 p-0.5">
-            {(["all", "history", "crime"] as const).map((v) => (
+          <div className="flex flex-wrap rounded-md border border-hairline bg-surface-1 p-0.5">
+            <button
+              type="button"
+              onClick={() => setVertical("all")}
+              className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                vertical === "all" ? "bg-surface-2 text-text shadow-sm" : "text-text-3 hover:text-text"
+              }`}
+            >
+              全部垂类
+            </button>
+            {verticals.map((v) => (
               <button
-                key={v}
+                key={v.id}
                 type="button"
-                onClick={() => setVertical(v)}
+                onClick={() => setVertical(v.id)}
                 className={`rounded px-2.5 py-1 text-xs transition-colors ${
-                  vertical === v ? "bg-surface-2 text-text shadow-sm" : "text-text-3 hover:text-text"
+                  vertical === v.id ? "bg-surface-2 text-text shadow-sm" : "text-text-3 hover:text-text"
                 }`}
               >
-                {v === "all" ? "全部垂类" : VERTICAL_LABEL[v]}
+                {v.label}
               </button>
             ))}
           </div>
@@ -390,6 +399,7 @@ function TopicPoolInner() {
                       topic={t}
                       selected={t.id === selectedId}
                       busy={busyId === t.id}
+                      verticals={verticals}
                       onSelect={() => setSelectedId(t.id)}
                     />
                   ))}
@@ -403,6 +413,7 @@ function TopicPoolInner() {
                       topic={t}
                       selected={t.id === selectedId}
                       busy={busyId === t.id}
+                      verticals={verticals}
                       onSelect={() => setSelectedId(t.id)}
                     />
                   ))}
@@ -415,6 +426,7 @@ function TopicPoolInner() {
                       topic={t}
                       selected={t.id === selectedId}
                       busy={busyId === t.id}
+                      verticals={verticals}
                       onSelect={() => setSelectedId(t.id)}
                     />
                   ))
@@ -429,6 +441,7 @@ function TopicPoolInner() {
               topic={selected}
               busy={busyId === selected.id}
               rescanBusy={rescanJob?.topicId === selected.id}
+              verticals={verticals}
               onAdopt={() => void doAdopt(selected)}
               onDismiss={() => void doDismiss(selected)}
               onRescan={() => void doRescan(selected)}
@@ -453,13 +466,16 @@ function TopicCard({
   topic,
   selected,
   busy,
+  verticals,
   onSelect,
 }: {
   topic: Topic;
   selected: boolean;
   busy: boolean;
+  verticals: VerticalInfo[];
   onSelect: () => void;
 }) {
+  const v = verticals.find((x) => x.id === topic.vertical);
   return (
     <button
       type="button"
@@ -469,8 +485,8 @@ function TopicCard({
       }`}
     >
       <div className="flex items-center gap-1.5">
-        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: VERTICAL_DOT[topic.vertical] }} />
-        <span className="text-[10px] text-text-4">{VERTICAL_LABEL[topic.vertical]}</span>
+        <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: v?.color ?? FALLBACK_COLOR }} />
+        <span className="text-[10px] text-text-4">{v?.label ?? topic.vertical}</span>
         <span className="text-[10px] text-text-4">· {SOURCE_LABEL[topic.source] ?? topic.source}</span>
         {busy ? <Loader2 className="ml-auto h-3 w-3 text-text-4 motion-safe:animate-spin" /> : null}
       </div>
@@ -512,6 +528,7 @@ function TopicDetail({
   topic,
   busy,
   rescanBusy,
+  verticals,
   onAdopt,
   onDismiss,
   onRescan,
@@ -519,12 +536,14 @@ function TopicDetail({
   topic: Topic;
   busy: boolean;
   rescanBusy: boolean;
+  verticals: VerticalInfo[];
   onAdopt: () => void;
   onDismiss: () => void;
   onRescan: () => void;
 }) {
   const r = topic.research;
   const strong = isStrong(topic);
+  const v = verticals.find((x) => x.id === topic.vertical);
   const rescanNote =
     topic.status === "candidate" && !strong
       ? topic.lastRescanAt
@@ -534,9 +553,9 @@ function TopicDetail({
   return (
     <div className="ws-card p-5">
       <div className="flex items-center gap-1.5">
-        <span className="h-2 w-2 rounded-full" style={{ background: VERTICAL_DOT[topic.vertical] }} />
+        <span className="h-2 w-2 rounded-full" style={{ background: v?.color ?? FALLBACK_COLOR }} />
         <span className="text-[11px] text-text-4">
-          {VERTICAL_LABEL[topic.vertical]} · {SOURCE_LABEL[topic.source] ?? topic.source} · 收录于{" "}
+          {v?.label ?? topic.vertical} · {SOURCE_LABEL[topic.source] ?? topic.source} · 收录于{" "}
           {formatTime(topic.createdAt)}
           {rescanNote ? ` · ${rescanNote}` : ""}
         </span>

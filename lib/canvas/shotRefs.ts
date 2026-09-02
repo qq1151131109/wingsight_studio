@@ -1,8 +1,13 @@
 /**
  * 分镜行 ↔ 资产卡引用解析（共享纯函数）：行内出图参考、行 @候选下拉、
  * sanitize 存量迁移三处共用同一实现，避免逻辑漂移。
- * 规则：结构化 refIds 优先，文本 @名称 兜底——最长名优先匹配（防「小雨」
- * 误命中「小雨萍」），已命中的区间不再被更短名覆盖。
+ * 三通道（命中优先级从高到低）：
+ * ① 结构化 refIds（行上字段，改名不失联）——resolveRowRefIds 合并；
+ * ② 文本 @名称——最长名优先匹配（防「小雨」误命中「小雨萍」），已命中的
+ *    区间不再被更短名覆盖；
+ * ③ 全名兜底（ai-moive-studio 按名解析范式）：行文本出现完整资产标题（无
+ *    @ 也认，≥2 字防单字误伤）——分镜先于资产生成时行文本天然含资产名，
+ *    资产后建/后出图在出图时活解析自动挂上，无需回填步骤。
  */
 
 import type { ShotRow, WingEdge, WingNode } from "./store";
@@ -33,7 +38,8 @@ export function isLookCard(
   });
 }
 
-/** 文本 @名称 兜底匹配：返回命中的候选卡 id（跨卡命中区间不重叠） */
+/** 文本引用匹配：@名称 显式档 + 全名兜底档，返回命中的候选卡 id（去重，
+ *  跨卡命中区间不重叠——@ 档区间优先，全名档只填空隙） */
 export function mentionedRefIds(
   text: string,
   nodes: WingNode[],
@@ -52,21 +58,27 @@ export function mentionedRefIds(
     );
   const found: string[] = [];
   const spans: [number, number][] = [];
-  for (const n of cands) {
-    const token = `@${n.data.title}`;
-    let from = 0;
-    for (;;) {
-      const i = text.indexOf(token, from);
-      if (i === -1) break;
-      const end = i + token.length;
-      if (!spans.some(([s0, e0]) => i < e0 && end > s0)) {
-        spans.push([i, end]);
-        found.push(n.id);
+  const scan = (tokenOf: (title: string) => string, minLen: number) => {
+    for (const n of cands) {
+      const title = n.data.title as string;
+      if (title.length < minLen) continue;
+      const token = tokenOf(title);
+      let from = 0;
+      for (;;) {
+        const i = text.indexOf(token, from);
+        if (i === -1) break;
+        const end = i + token.length;
+        if (!spans.some(([s0, e0]) => i < e0 && end > s0)) {
+          spans.push([i, end]);
+          found.push(n.id);
+        }
+        from = i + 1;
       }
-      from = i + 1;
     }
-  }
-  return found;
+  };
+  scan((t) => `@${t}`, 1); // @名称：显式引用
+  scan((t) => t, 2); // 全名兜底：完整标题、≥2 字（单字误伤率不可控）
+  return [...new Set(found)];
 }
 
 /** 行引用解析：结构化 refIds ∪ 文本 @名称 兜底，合并去重（refIds 在前） */

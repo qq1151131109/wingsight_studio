@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 import topics as store
+import tikhub
 import topic_pool
 import wikiday
 import podcastfeed
@@ -131,14 +132,115 @@ expect(eps[0]["snippet"] == "他独自守着大山" and eps[0]["feed"] == "故�
 
 print("播客 RSS 解析 ✓")
 
+# ---------- TikHub 解析与市场实查 ----------
+
+BILI_ENV = {"data": {"data": {"result": [
+    {"type": "video", "title": "宁夏<em class=\"keyword\">苏峪口</em>发掘纪实", "bvid": "BV1abc",
+     "author": "考古君", "play": 812345, "like": 9001, "pubdate": 1717300000},
+    {"type": "article", "title": "专栏不是视频应跳过"},
+]}}}
+bili = tikhub._parse_bilibili(BILI_ENV)
+expect(len(bili) == 1 and bili[0]["title"] == "宁夏苏峪口发掘纪实", "B站解析应剥高亮且只取视频")
+expect(bili[0]["play_count"] == 812345 and bili[0]["published_at"], "B站播放数与日期应归一")
+
+DOUYIN_ENV = {"data": {"aweme_list": [
+    {"aweme_info": {"desc": "悬案追凶三十年", "aweme_id": "7x1", "share_url": "https://v.douyin.com/x",
+                    "author": {"nickname": "央视频"}, "statistics": {"digg_count": 42921, "play_count": 0},
+                    "create_time": 1717300000}},
+]}}
+dy = tikhub._parse_douyin(DOUYIN_ENV)
+expect(len(dy) == 1 and dy[0]["like_count"] == 42921 and dy[0]["play_count"] is None, "抖音点赞有效、零播放归 None")
+
+XG = {"data": {"results": [
+    {"data": {"title": "考古纪录片全集", "group_id": "7g1", "user_info": {"name": "西瓜创客"},
+              "video_detail_info": {"video_watch_count": 3263483}, "publish_time": 1717300000}},
+]}}
+xg = tikhub._parse_xigua(XG)
+expect(xg[0]["play_count"] == 3263483 and xg[0]["url"] == "https://www.ixigua.com/7g1", "西瓜观看数与 URL 应归一")
+
+ZH = {"data": {"data": [
+    {"object": {"type": "article", "title": "南大碎尸案全新<em>真相</em>解读", "id": "2070", "votes": 2539,
+                "author": {"name": "考据党"}, "excerpt": "档案与报道交叉核对…"}},
+    {"object": {"type": "answer", "title": "回答对象应取问题标题", "id": "9", "voteup_count": 355,
+                "author": {"name": "答主"}, "question": {"name": "南大碎尸案为什么20年没能告破？", "id": "888"}}},
+    {"object": {"type": "article", "title": "", "id": "1"}},
+]}}
+zh = tikhub._parse_zhihu_articles(ZH)
+expect(len(zh) == 2, f"空标题条目应丢弃：{len(zh)}")
+expect(zh[0]["like_count"] == 2539 and zh[0]["url"].endswith("/p/2070") and zh[0]["kind"] == "article", "文章赞同数与 URL 应归一")
+expect(zh[1]["title"] == "南大碎尸案为什么20年没能告破？" and zh[1]["url"].endswith("/question/888") and zh[1]["kind"] == "answer", "回答应取问题标题与问题 URL")
+
+ZHOT = {"data": {"data": [
+    {"target": {"title": "为啥中国男人不爱买皮鞋了？", "url": "https://zhihu.com/question/1"}, "detail_text": "749 万热度"},
+]}}
+hot = tikhub.parse_zhihu_hot(ZHOT)
+expect(hot[0]["title"] == "为啥中国男人不爱买皮鞋了？" and hot[0]["heat_text"] == "749 万热度", "知乎热榜解析")
+
+zh_snippet = topic_pool._format_market_item(zh[0])
+expect("2539" in zh_snippet and "考据党" in zh_snippet and "档案与报道" in zh_snippet, f"知乎实查摘要应含赞同/作者/节选：{zh_snippet}")
+expect(len(topic_pool.MARKET_PROBE_PLATFORMS) == 4 and "zhihu" in topic_pool.MARKET_PROBE_PLATFORMS, "实查平台应为四平台含知乎")
+expect(topic_pool._fmt_count(12345) == "1.2万" and topic_pool._fmt_count(999) == "999" and topic_pool._fmt_count(None) == "—", "计数格式化")
+snippet = topic_pool._format_market_item({"play_count": 3263483, "like_count": None, "author": "西瓜创客", "published_at": "2024-06-02"})
+expect("326.3万" in snippet and "西瓜创客" in snippet, f"市场条目摘要应含计数与作者：{snippet}")
+
+# 无 key 时探针为 None；有 key 时返回可调用（不真发请求）
+os.environ.pop("TIKHUB_API_KEY", None)
+expect(topic_pool.build_market_probe() is None, "无 key 探针应为 None")
+os.environ["TIKHUB_API_KEY"] = "test-key"
+try:
+    probe = topic_pool.build_market_probe()
+    expect(callable(probe), "有 key 应返回探针函数")
+finally:
+    os.environ.pop("TIKHUB_API_KEY", None)
+
+
+# ---------- 知乎沉淀讨论信号采集（默认接线，客户端打桩） ----------
+
+
+async def run_zhihu_discussion_signal() -> None:
+    captured: list[str] = []
+
+    async def fake_search(platform, keyword, *, count=5):
+        captured.append(keyword)
+        return [
+            {"platform": "zhihu", "kind": "answer", "title": "南大碎尸案为什么20年没能告破？", "author": "考据党",
+             "url": "https://www.zhihu.com/question/1", "play_count": None, "like_count": 355,
+             "published_at": None, "excerpt": "档案与报道交叉核对…"},
+            {"platform": "zhihu", "kind": "article", "title": "低赞段子文不算信号", "author": None,
+             "url": None, "play_count": None, "like_count": 42, "published_at": None, "excerpt": ""},
+        ]
+
+    os.environ["TIKHUB_API_KEY"] = "test-key"
+    orig_client = tikhub.TikHubClient
+    tikhub.TikHubClient = lambda **kw: type("C", (), {"search_videos": staticmethod(fake_search)})()
+    try:
+        curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
+        signals = await curator.collect_zhihu_discussions()
+        expect(len(signals) == len(topic_pool.ZHIHU_DISCUSSION_SEEDS) * 3, f"每种子 1 条高赞（低赞被滤）：{len(signals)}")
+        crime_signals = [s for s in signals if s["vertical_seed"] == "crime"]
+        s = crime_signals[0]
+        expect(s["signal_type"] == "validated" and "悬案 真相" in s["source"], f"信号应带种子来源标注：{s['source']}")
+        expect("355" in s["snippet"], "信号应带赞同数")
+        expect(len(captured) == len(topic_pool.ZHIHU_DISCUSSION_SEEDS) * 3, "每垂类 3 个种子各查一次")
+    finally:
+        tikhub.TikHubClient = orig_client
+        os.environ.pop("TIKHUB_API_KEY", None)
+
+    expect(await TopicCurator(flow_runner=fake_flow_runner, search=fake_search).collect_zhihu_discussions() == [], "无 key 应返回空")
+    print("知乎沉淀讨论信号 ✓")
+
+
+print("TikHub 解析与市场实查 ✓")
+
 
 # ---------- 管线：fake flow + fake 搜索 ----------
 
 TRIAGE_OUT = [
-    # 采集序：history 4 种子（考古发布会/甲骨/简牍/档案）= index 0-3，crime 4-7；
-    # 甲骨在第 2 条（index 1），悬案自述在 crime 第 2 条（index 5）
+    # 采集序：history 4 种子（考古发布会/甲骨/简牍/档案）= index 0-3，crime 4-7，
+    # science 8-9（垂类注册表新种子）；甲骨在 index 1，悬案自述在 crime 第 2 条（index 5）
     {"members": [1], "vertical": "history", "theme": "商周甲骨新发现", "reason": "新材料罕见"},
     {"members": [5], "vertical": "crime", "theme": "悬案经办人自述", "reason": "一手信源进场"},
+    {"members": [8], "vertical": "science", "theme": "重大科学发现", "reason": "机构发布"},
 ]
 
 VERDICT_STRONG = {
@@ -175,7 +277,8 @@ RESCAN_VERDICT = {
 async def fake_flow_runner(flow_id: str, input_value: str) -> str:
     payload = json.loads(input_value)
     if flow_id == "f-triage":
-        assert "listing" in payload, "研判载荷应含 listing"
+        assert "listing" in payload and "verticals" in payload, "研判载荷应含 listing 与垂类清单"
+        assert {v["id"] for v in payload["verticals"]} >= {"history", "crime", "humanity", "science"}, "垂类清单应含注册表全部垂类"
         return json.dumps(TRIAGE_OUT, ensure_ascii=False)
     if flow_id == "f-plan":
         assert set(payload) == {"title", "theme", "reason"}, "规划载荷字段"
@@ -207,6 +310,8 @@ SIGNAL_TITLES = {
     f"再审改判 案件 {_Y}": "某悬案当年经办人退休后自述疑点",
     f"判决文书 公开 案件 {_Y}": "某待决案件判决文书首次公开",
     f"案件档案 解密 {_Y}": "某历史案件档案解密移交地方",
+    f"科学 重大发现 {_Y}": "某重大科学发现公布",
+    f"中国科学院 重大成果 发布 {_Y}": "中科院发布年度重大成果",
 }
 
 
@@ -234,6 +339,8 @@ async def _empty_feeds():
 wikiday.anniversary_window = _empty_window
 podcastfeed.fetch_all_feeds = _empty_feeds
 
+asyncio.run(run_zhihu_discussion_signal())
+
 
 async def run_signal_matrix() -> None:
     """多源聚合专测：四类采集器各自的信号标注与形态（独立 fake，不依赖上面）。"""
@@ -247,6 +354,8 @@ async def run_signal_matrix() -> None:
         f"再审改判 案件 {year}": "最高法再审改判一桩陈年旧案",
         f"判决文书 公开 案件 {year}": "某待决案件判决文书首次公开",
         f"案件档案 解密 {year}": "某历史案件档案解密移交地方",
+        f"科学 重大发现 {year}": "某重大科学发现公布",
+        f"中国科学院 重大成果 发布 {year}": "中科院发布年度重大成果",
         f"极昼工作室 报道 {year}": "极昼：外嫁女的胜诉之后",
         f"谷雨实验室 特稿 {year}": "谷雨：一个守灯塔的人",
         f"人物杂志 报道 {year}": "人物：退出大厂去修文物的年轻人",
@@ -277,7 +386,7 @@ async def run_signal_matrix() -> None:
         by_type: dict[str, list[dict]] = {}
         for s in signals:
             by_type.setdefault(s["signal_type"], []).append(s)
-        expect(len(by_type.get("material", [])) == 8, f"材料信号应 8 条：{len(by_type.get('material', []))}")
+        expect(len(by_type.get("material", [])) == 10, f"材料信号应 10 条（history4+crime4+science2）：{len(by_type.get('material', []))}")
         expect(len(by_type.get("validated", [])) == 5, f"已验证信号应特稿 4 + 播客 1：{len(by_type.get('validated', []))}")
         expect(len(by_type.get("benchmark", [])) == 4, f"对标信号应 4 条：{len(by_type.get('benchmark', []))}")
         expect(len(by_type.get("anniversary", [])) == 1, "周年信号应 1 条")
@@ -297,17 +406,31 @@ asyncio.run(run_signal_matrix())
 
 async def run_pipeline() -> None:
     store.set_setting(wikiday.CACHE_KEY, "")  # 清掉多源专测留下的周年缓存
-    curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
+
+    async def fake_probe(keyword: str) -> list[dict]:
+        return [
+            {"label": "同题实查:B站", "query": keyword,
+             "results": [{"title": "同题考古纪录片", "url": "https://b23.tv/x", "snippet": "播放 12.3万 · 考古君"}]},
+            {"label": "同题实查:西瓜", "query": keyword,
+             "results": [{"title": "考古纪录片全集", "url": "https://ixigua.com/y", "snippet": "播放 326.3万"}]},
+        ]
+
+    curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search, market_probe=fake_probe)
     result = await curator.run()
-    expect(result.collected == 8, f"8 条材料种子 × 每查 1 结果应采到 8 条，实际 {result.collected}")
-    expect(result.shortlisted == 2, f"研判应入围 2 条，实际 {result.shortlisted}")
+    expect(result.collected == 10, f"10 条材料种子（含 science2）× 每查 1 结果应采到 10 条，实际 {result.collected}")
+    expect(result.shortlisted == 3, f"研判应入围 3 条，实际 {result.shortlisted}")
     expect(result.created == 1, f"应产出 1 张建议卡，实际 {result.created}")
-    expect(result.observed == 1, f"应产出 1 张观察卡，实际 {result.observed}")
+    expect(result.observed == 2, f"应产出 2 张观察卡，实际 {result.observed}")
 
     cards = store.list_topics(status="candidate")
     strong = [c for c in cards if c["research"].get("evidence_level") == "strong"]
-    thin = [c for c in cards if c["research"].get("evidence_level") == "thin"]
-    expect(len(strong) == 1 and len(thin) == 1, "池内应一强一弱各一张")
+    thin = [c for c in cards if c["research"].get("evidence_level") != "strong"]
+    expect(len(strong) == 1 and len(thin) == 2, f"池内应一强两弱：{len(strong)}/{len(thin)}")
+    expect(any(c["vertical"] == "science" for c in thin), "science 垂类应贯通落库")
+    strong_map = strong[0]["research"]["source_map"]
+    probe_entries = [e for e in strong_map if str(e.get("label", "")).startswith("同题实查:")]
+    expect(len(probe_entries) == 2, f"市场实查条目应进证据包：{len(probe_entries)}")
+    expect(any("12.3万" in r.get("snippet", "") for e in probe_entries for r in e["results"]), "实查条目应带格式化计数")
     expect(strong[0]["research"]["scale"] == "series" and strong[0]["research"]["series_thread"], "系列卡应带串珠问题")
     expect(strong[0]["research"]["source_map"], "信源底账应留痕")
 
@@ -320,7 +443,7 @@ async def run_pipeline() -> None:
     VERDICT_THIN = dict(VERDICT_STRONG, title="悬案自述", angles=["自述"])
     curator2 = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
     third = await curator2.run()
-    expect(third.upgraded == 1 and third.created == 0, f"观察卡应升级：{third}")
+    expect(third.upgraded == 2 and third.created == 0, f"两张观察卡都应升级：{third}")
 
     print("管线编排 ✓")
 

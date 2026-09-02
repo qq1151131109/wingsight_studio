@@ -4,8 +4,16 @@
 
 import { apiFetch } from "@/lib/auth";
 
-export type TopicVertical = "history" | "crime";
+export type TopicVertical = string; // 垂类清单由 GET /topics 的 verticals 下发（注册表唯一事实源）
 export type TopicStatus = "candidate" | "adopted" | "dismissed" | "archived";
+
+/** 垂类描述（后端 VerticalSpec 注册表下发） */
+export interface VerticalInfo {
+  id: string;
+  label: string;
+  scope: string;
+  color?: string;
+}
 
 /** 信源底账的一条检索记录（管线全程留痕） */
 export interface SourceMapEntry {
@@ -97,6 +105,7 @@ export interface TopicListResult {
   topics: Topic[];
   refreshing: boolean;
   lastRun: TopicRefreshRun;
+  verticals?: VerticalInfo[];
 }
 
 export async function listTopics(params?: {

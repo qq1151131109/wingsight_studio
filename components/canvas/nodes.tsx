@@ -3808,7 +3808,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         setGenError("生成结果为空");
         return;
       }
-      // 生成结果自动绑 refIds：行内 @名称 与画布资产卡同名即绑定
+      // 生成结果自动绑 refIds：flow 每行输出的 assets 名单（agent 已按名单
+      // 校验过）+ 行内 @名称 与画布资产卡同名即绑定；assets 转完即弃不落库
       const titleToId = new Map(
         nodes
           .filter(
@@ -3825,16 +3826,22 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         const ids = new Set<string>();
         let i = action.indexOf("@");
         while (i !== -1) {
-          for (const [t, id] of titleToId) {
+          for (const [t, nid] of titleToId) {
             if (t && action.startsWith(t, i + 1)) {
-              ids.add(id);
+              ids.add(nid);
               i += t.length;
               break;
             }
           }
           i = action.indexOf("@", i + 1);
         }
-        return ids.size > 0 ? { ...r, refIds: [...ids] } : r;
+        for (const name of r.assets ?? []) {
+          const nid = titleToId.get(name);
+          if (nid) ids.add(nid);
+        }
+        const rest = { ...r };
+        delete rest.assets;
+        return ids.size > 0 ? { ...rest, refIds: [...ids] } : rest;
       });
       update({ rows: bound, status: "ready" });
     } catch (exc) {
@@ -3973,16 +3980,22 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       return;
     }
     // 软闸（asset-first 守护）：无参考行将纯文生图、一致性打折；合并大额
-    // 确认为一次弹窗。空镜/氛围镜头属合法场景，故警告不硬拦
-    const unrefCount = targets.filter(
-      (t) => refImagesFor(t.row).length === 0,
-    ).length;
-    if (unrefCount > 0 || targets.length > 8) {
+    // 确认为一次弹窗。点名具体镜头（解析走 refIds + @名称 + 全名兜底全通道）；
+    // 空镜/氛围镜头属合法场景，故警告不硬拦
+    const unrefSeqs = targets
+      .filter((t) => refImagesFor(t.row).length === 0)
+      .map((t) => t.seq + 1);
+    if (unrefSeqs.length > 0 || targets.length > 8) {
       const parts: string[] = [];
-      if (unrefCount > 0)
+      if (unrefSeqs.length > 0) {
+        const label =
+          unrefSeqs.length <= 6
+            ? unrefSeqs.map((s) => `镜${s}`).join("、")
+            : `${unrefSeqs.slice(0, 6).map((s) => `镜${s}`).join("、")} 等 ${unrefSeqs.length} 镜`;
         parts.push(
-          `有 ${unrefCount} 镜没有可参考的资产设定图（未拆解/资产未出图/未@引用），将纯文生图、角色一致性打折`,
+          `${label}未引用已出图的资产设定图，将纯文生图、角色一致性打折（行内 @资产名 可绑定参考）`,
         );
+      }
       if (targets.length > 8)
         parts.push(
           `将批量出图 ${targets.length} 张（每张需数十秒并消耗出图额度）`,
@@ -3990,8 +4003,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       const ask =
         parts.join("；") +
         "。" +
-        (unrefCount > 0
-          ? "建议先「拆解资产」并给资产出设定图。仍要继续？"
+        (unrefSeqs.length > 0
+          ? "可先拆解资产并出设定图，或在行内 @资产名。仍要继续？"
           : "确认开始？");
       if (!window.confirm(ask)) return;
     }

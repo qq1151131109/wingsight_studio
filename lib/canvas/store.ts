@@ -50,6 +50,9 @@ export interface ShotRow {
   imageNodeId?: string;
   /** 结构化 @引用（资产卡 id）：改名不失联；文本 @名称 仅作展示与兜底匹配 */
   refIds?: string[];
+  /** flow 一次性产出：该镜出现的资产名（生成时从名单逐字校验）。前端转成
+   *  refIds 后即剥离，不落库——引用的持久形态只有 refIds */
+  assets?: string[];
 }
 
 /** 景别枚举（搬 novanova 十大景别，前后端/flow 提示词共用同一集合） */

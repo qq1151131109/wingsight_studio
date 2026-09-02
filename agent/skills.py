@@ -63,6 +63,14 @@ def _parse_shot_rows(text: str) -> list[dict]:
     for i, it in enumerate(arr):
         if not isinstance(it, dict):
             continue
+        # 每行资产名数组（novanova referenceKey 范式的名字版）：乱给/缺给都
+        # 容忍——上游 start_storyboard_gen_job 会按名单二次校验
+        raw_assets = it.get("assets")
+        assets_list = (
+            [str(a).strip() for a in raw_assets if str(a).strip()]
+            if isinstance(raw_assets, list)
+            else []
+        )
         rows.append(
             {
                 "rid": f"r{i + 1}",
@@ -73,6 +81,7 @@ def _parse_shot_rows(text: str) -> list[dict]:
                 "lighting": str(it.get("lighting") or ""),
                 "sound": str(it.get("sound") or ""),
                 "dialogue": str(it.get("dialogue") or ""),
+                "assets": assets_list,
             }
         )
     return rows
@@ -145,7 +154,22 @@ async def start_storyboard_gen_job(
             # 明报真因，不落到 _parse_shot_rows 里被截括号伪装成 JSON 解析错
             if text.startswith("（"):
                 raise RuntimeError(text.strip("（）"))
-            state["rows"] = _parse_shot_rows(text)
+            rows = _parse_shot_rows(text)
+            # 结构化资产名按名单二次校验（novanova 强约束的名字版）：LLM 幻觉
+            # 出的名字剔除，不报废整路；名单为空时一律清空（此时前端靠行文本
+            # 全名兜底匹配画布资产）
+            roster = {
+                str(a.get("name")).strip()
+                for a in (assets or [])
+                if str(a.get("name") or "").strip()
+            }
+            for row in rows:
+                row["assets"] = (
+                    [a for a in row.get("assets", []) if a in roster]
+                    if roster
+                    else []
+                )
+            state["rows"] = rows
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
         finally:

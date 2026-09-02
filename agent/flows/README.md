@@ -25,7 +25,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 （组件内按 prompt 空否判态）已废弃删除。
 | `promo-copy.json` | 宣发文案生成 | 飞书宣发资料 → 三路大模型并行 → 合并文案 | `LANGFLOW_SKILLS_JSON`（技能注册内含 flowId） | `PromptTemplate-Writer`（title/count/platform/batch_kind/brief/form） |
 | `shotlist-generate.json` | 分镜表生成 | 剧本 → 分镜 rows（景别/运镜/时长/画面/台词） | `LANGFLOW_SHOTLIST_FLOW_ID` | 无（参数走 input_value 文本头注入） |
-| `topic-triage.json` | 选题研判 | 原始信号条目 → 聚类+判垂类(history/crime)+价值排序的短名单（选题池管线第 1 步） | `LANGFLOW_TOPIC_TRIAGE_FLOW_ID` | 无（载荷走 input_value JSON） |
+| `topic-triage.json` | 选题研判 | 多源信号条目（material/validated/benchmark/anniversary 四类研判方式）→ 聚类+判垂类（垂类清单随载荷下发，注册表见 `topic_pool.VERTICAL_SPECS`）+价值排序的短名单（选题池管线第 1 步） | `LANGFLOW_TOPIC_TRIAGE_FLOW_ID` | 无（载荷走 input_value JSON） |
 | `topic-research-plan.json` | 选题调研规划 | 热点+研判线索 → ≤4 条覆盖证据面的检索查询（第 2 步） | `LANGFLOW_TOPIC_PLAN_FLOW_ID` | 无（同上） |
 | `topic-research-followup.json` | 选题调研追查 | 已执行检索记录 → 判断证据是否足够，不足给 ≤3 条追加查询（第 3 步） | `LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID` | 无（同上） |
 | `topic-verdict.json` | 选题两级结论 | 研判线索+调研证据 → 建议卡或观察卡（证据驱动，信源纪律；第 4 步） | `LANGFLOW_TOPIC_VERDICT_FLOW_ID` | 无（同上） |

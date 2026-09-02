@@ -36,13 +36,65 @@ import topics as store
 
 logger = logging.getLogger(__name__)
 
-VERTICALS: tuple[str, ...] = ("history", "crime")
-VERTICAL_LABELS: dict[str, str] = {"history": "历史", "crime": "罪案"}
+# 垂类注册表：加垂类=加一条 spec（标签/边界/专属材料种子/色 token），零代码改动。
+# 垂类清单随研判载荷下发，flow prompt 不写死垂类。不同垂类信源结构不同：
+# history/crime 靠材料事件种子，humanity 的主信源是已验证内容流（特稿/播客），
+# science 靠机构发布与论文报道——material_seeds 为空的垂类由跨垂类源供给。
+@dataclass(frozen=True)
+class VerticalSpec:
+    id: str
+    label: str
+    color: str  # 前端色 token（垂类圆点）
+    scope: str  # 一句话边界，进研判载荷供垂类裁决
+    material_seeds: tuple[str, ...] = ()
+
+
+VERTICAL_SPECS: dict[str, VerticalSpec] = {
+    "history": VerticalSpec(
+        id="history", label="历史", color="var(--color-cool)",
+        scope="历史事件、历史人物、考古发现、文物、时代记忆（核心驱动是过去的事件与过去的人）",
+        material_seeds=(
+            "考古中国 发布会 {year}",
+            "考古新发现 {year}",
+            "出土简牍 整理公布 {year}",
+            "历史档案 解密公开 {year}",
+        ),
+    ),
+    "crime": VerticalSpec(
+        id="crime", label="罪案", color="var(--color-danger)",
+        scope="真实刑事案件、悬案旧案、司法与社会安全事件（核心驱动是案件与正义）",
+        material_seeds=(
+            "最高人民法院 典型案例 {year}",
+            "再审改判 案件 {year}",
+            "判决文书 公开 案件 {year}",
+            "案件档案 解密 {year}",
+        ),
+    ),
+    "humanity": VerticalSpec(
+        id="humanity", label="人文", color="var(--color-warm)",
+        scope="普通人的命运与当下社会生活：职业、教育、家庭、迁徙、口述记忆（核心驱动是当下的生活；特稿与叙事播客是主信源）",
+    ),
+    "science": VerticalSpec(
+        id="science", label="科普", color="var(--color-good)",
+        scope="自然科学新发现、技术进展、科学机构发布（核心驱动是世界的规律，人物服务于认知）",
+        material_seeds=(
+            "科学 重大发现 {year}",
+            "中国科学院 重大成果 发布 {year}",
+        ),
+    ),
+}
+VERTICALS: tuple[str, ...] = tuple(VERTICAL_SPECS)
+VERTICAL_LABELS: dict[str, str] = {k: v.label for k, v in VERTICAL_SPECS.items()}
+
+
+def verticals_payload() -> list[dict[str, str]]:
+    """垂类清单（进研判载荷与前端下发，prompt 不写死垂类）。"""
+    return [{"id": v.id, "label": v.label, "scope": v.scope, "color": v.color} for v in VERTICAL_SPECS.values()]
 
 # 单次刷新产出的选题卡上限（控制 LLM 与检索成本，宁少勿滥）
 MAX_CARDS_PER_REFRESH = 8
-# 研判调用喂入的原始条目上限（超出截断）
-TRIAGE_ITEMS_CAP = 200
+# 研判调用喂入的原始条目上限（超出截断）；四源信号量约 170-250，留头部余量
+TRIAGE_ITEMS_CAP = 300
 # 研判整批失败时对半拆开各研判一次（损失跨半聚类，保住本轮产出）
 _TRIAGE_SPLIT = 2
 # 每条查询的检索结果条数上限
@@ -57,24 +109,6 @@ UNIT_KINDS: tuple[str, ...] = ("person", "object", "case", "era")
 # 体量形态；series 必须带串珠问题（series_thread），缺了诚实地按 single
 SCALES: tuple[str, ...] = ("single", "series", "anthology")
 
-# 材料事件种子（只收"材料事件"：新出土/新公布/新判决/新研究/新档案解密；
-# 泛事件舆情只产新闻卡，不收）。年份锚防同一批结果反复命中（固定种子
-# 实测单轮产出率 1/80 的主因）。官方发布口（考古中国季度发布会、最高法
-# 典型案例）信噪比远高于泛词。
-MATERIAL_SEED_QUERIES: dict[str, tuple[str, ...]] = {
-    "history": (
-        "考古中国 发布会 {year}",
-        "考古新发现 {year}",
-        "出土简牍 整理公布 {year}",
-        "历史档案 解密公开 {year}",
-    ),
-    "crime": (
-        "最高人民法院 典型案例 {year}",
-        "再审改判 案件 {year}",
-        "判决文书 公开 案件 {year}",
-        "案件档案 解密 {year}",
-    ),
-}
 # 已验证内容种子：特稿媒体（谷雨/极昼/人物等）的每篇报道都是"编辑部+
 # 田野"双重把关过的人物选题，故事性已验证——管线判断纪录片化增量。
 # 微信公众号无公开 RSS，走澎湃/腾讯新闻的分发镜像（通道实测可达）。
@@ -103,6 +137,28 @@ RESCAN_FOLLOWUP_MAX_QUERIES = 2
 # 同一张卡两次复查的最小间隔（含建卡到首次复查的冷却）；手动深挖不受限
 RESCAN_COOLDOWN_HOURS = 24.0
 
+# 同题市场实查（TikHub）：B站=纪录片存量+播放数、抖音=短视频消费侧（点赞为
+# 热度）、西瓜=长片完整版存量、知乎=同题文章与赞同数（受众兴趣实证）。
+# 每簇取证只查一次四平台并发各 5 条（按请求计费，单轮刷新 ≤8 簇 = ≤32 请求）。
+# 未配 TIKHUB_API_KEY 时探针为 None，管线照旧（复查管线不实查，保持小预算）。
+# 微信搜一搜（维护中）与小红书（需 Token 勾权限）待开通后加入。
+MARKET_PROBE_PLATFORMS: tuple[str, ...] = ("bilibili", "douyin", "xigua", "zhihu")
+MARKET_PROBE_COUNT = 5
+MARKET_PROBE_LABELS: dict[str, str] = {"bilibili": "B站", "douyin": "抖音", "xigua": "西瓜", "zhihu": "知乎"}
+# 知乎热榜（讨论热度信号）每次刷新取的条数——已从信号源降级（泛娱乐占比高、
+# 快照不稳定），保留方法但默认不进采集矩阵
+ZHIHU_HOT_LIMIT = 15
+# 知乎沉淀讨论种子：按垂类搜高赞文章/回答——赞同数是"公众已验证兴趣"的
+# 沉淀性证据（不追热榜快照，追长期被搜索、被赞同的内容）
+ZHIHU_DISCUSSION_SEEDS: dict[str, tuple[str, ...]] = {
+    "history": ("近代史 考据", "考古 解读", "历史 冷知识"),
+    "crime": ("悬案 真相", "冤案 平反", "刑侦 细节"),
+    "humanity": ("普通人的故事", "小城 生活", "职业 真实经历"),
+    "science": ("科普 颠覆认知", "宇宙 未解之谜", "人体 冷知识"),
+}
+# 高赞阈值：低于此赞同数的条目不算"已验证兴趣"（噪声多）
+ZHIHU_MIN_VOTES = 100
+
 FLOW_IDS = {
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
@@ -125,6 +181,71 @@ def _year_anchor() -> str:
 
 FlowRunner = Callable[[str, str], Awaitable[str]]
 SearchFn = Callable[[str], Awaitable[dict[str, Any]]]
+# 市场探针：主题词 → 研究日志形态的同题实查条目（label/query/results）
+MarketProbeFn = Callable[[str], Awaitable[list[dict[str, Any]]]]
+
+
+def _fmt_count(value: int | None) -> str:
+    """计数格式化：12345 → '1.2万'；None → '—'。"""
+    if value is None or value <= 0:
+        return "—"
+    if value >= 10_000:
+        return f"{value / 10_000:.1f}万"
+    return str(value)
+
+
+def _format_market_item(item: dict[str, Any]) -> str:
+    parts: list[str] = []
+    if item.get("play_count"):
+        parts.append(f"播放 {_fmt_count(item['play_count'])}")
+    if item.get("like_count"):
+        parts.append(f"点赞 {_fmt_count(item['like_count'])}")
+    if item.get("author"):
+        parts.append(str(item["author"]))
+    if item.get("published_at"):
+        parts.append(str(item["published_at"]))
+    text = " · ".join(parts)
+    if item.get("excerpt"):
+        text = f"{text}｜{item['excerpt']}" if text else str(item["excerpt"])
+    return text
+
+
+def build_market_probe() -> MarketProbeFn | None:
+    """按环境构造同题市场探针；未配 TIKHUB_API_KEY 返回 None（管线照旧）。"""
+    api_key = os.environ.get("TIKHUB_API_KEY", "").strip()
+    if not api_key:
+        return None
+    import tikhub
+
+    client = tikhub.TikHubClient(
+        api_key=api_key,
+        base_url=os.environ.get("TIKHUB_BASE_URL", "").strip() or tikhub.DEFAULT_TIKHUB_BASE_URL,
+    )
+
+    async def probe(keyword: str) -> list[dict[str, Any]]:
+        outcomes = await asyncio.gather(
+            *(client.search_videos(p, keyword, count=MARKET_PROBE_COUNT) for p in MARKET_PROBE_PLATFORMS),
+            return_exceptions=True,
+        )
+        entries: list[dict[str, Any]] = []
+        for platform, outcome in zip(MARKET_PROBE_PLATFORMS, outcomes):
+            if isinstance(outcome, BaseException):
+                logger.warning("同题市场实查失败 platform=%s keyword=%s: %s", platform, keyword[:40], str(outcome)[:150])
+                continue
+            entries.append(
+                {
+                    "label": f"同题实查:{MARKET_PROBE_LABELS[platform]}",
+                    "query": keyword,
+                    "results": [
+                        {"title": str(it.get("title") or ""), "url": str(it.get("url") or ""), "snippet": _format_market_item(it)}
+                        for it in outcome
+                        if str(it.get("title") or "").strip()
+                    ],
+                }
+            )
+        return entries
+
+    return probe
 
 
 @dataclass
@@ -169,8 +290,10 @@ class TopicCurator:
         self,
         flow_runner: FlowRunner | None = None,
         search: SearchFn | None = None,
+        market_probe: MarketProbeFn | None = None,
     ) -> None:
-        # 默认接线：LLM 走 langflow 阻塞调用，检索走文本级联（懒导入，测试注 fake 不触发）
+        # 默认接线：LLM 走 langflow 阻塞调用，检索走文本级联（懒导入，测试注 fake 不触发）；
+        # 市场探针未显式注入且配了 key 时才构建（无 key 即 None，实查整段跳过）
         if flow_runner is None:
             import skills
 
@@ -179,8 +302,11 @@ class TopicCurator:
             from websearch import web_search
 
             search = web_search
+        if market_probe is None:
+            market_probe = build_market_probe()
         self.flow_runner = flow_runner
         self.search = search
+        self.market_probe = market_probe
 
     # --- flow 调用 -----------------------------------------------------------
 
@@ -214,11 +340,13 @@ class TopicCurator:
     # --- 采集：五源信号矩阵（材料事件 / 周年 / 已验证内容 / 对标片单） ---------
 
     async def collect_material_window(self) -> list[dict[str, Any]]:
-        """兼容旧测试面：材料事件采集（信号类型 material）。"""
-        return await self._collect_seed_queries(
-            {v: tuple(q.format(year=_year_anchor()) for q in qs) for v, qs in MATERIAL_SEED_QUERIES.items()},
-            signal_type="material",
-        )
+        """兼容旧测试面：材料事件采集（信号类型 material，按垂类注册表种子）。"""
+        seeds = {
+            vid: tuple(q.format(year=_year_anchor()) for q in spec.material_seeds)
+            for vid, spec in VERTICAL_SPECS.items()
+            if spec.material_seeds
+        }
+        return await self._collect_seed_queries(seeds, signal_type="material")
 
     async def _collect_seed_queries(
         self, seeds: dict[str | None, tuple[str, ...]], signal_type: str
@@ -331,15 +459,60 @@ class TopicCurator:
             signal_type="benchmark",
         )
 
+    async def collect_zhihu_discussions(self) -> list[dict[str, Any]]:
+        """知乎沉淀讨论信号：按垂类种子搜高赞文章/回答（TikHub，1 种子 1 请求）。
+
+        赞同数 ≥ ZHIHU_MIN_VOTES 才算"公众已验证兴趣"——收的是长期沉淀的
+        内容（谁在搜、什么被顶上去），不是热榜快照。归 validated：研判判断
+        纪录片化增量，纯段子/复述无材料纵深的不入围。
+        """
+        api_key = os.environ.get("TIKHUB_API_KEY", "").strip()
+        if not api_key:
+            return []
+        import tikhub
+
+        client = tikhub.TikHubClient(
+            api_key=api_key,
+            base_url=os.environ.get("TIKHUB_BASE_URL", "").strip() or tikhub.DEFAULT_TIKHUB_BASE_URL,
+        )
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        signals: list[dict[str, Any]] = []
+        for vertical, keywords in ZHIHU_DISCUSSION_SEEDS.items():
+            for keyword in keywords:
+                try:
+                    articles = await client.search_videos("zhihu", keyword, count=10)
+                except Exception as exc:  # noqa: BLE001 - 单种子失败不拖累
+                    logger.warning("知乎讨论搜索失败 keyword=%s: %s", keyword, str(exc)[:150])
+                    continue
+                for art in articles:
+                    votes = art.get("like_count") or 0
+                    if votes < ZHIHU_MIN_VOTES:
+                        continue
+                    signals.append(
+                        {
+                            "title": str(art["title"]),
+                            "platform": "zhihu",
+                            "source": f"知乎高赞:{keyword}",
+                            "url": art.get("url") or "",
+                            "provider": "tikhub",
+                            "vertical_seed": vertical,
+                            "signal_type": "validated",
+                            "snippet": f"赞同 {votes}｜{(art.get('excerpt') or '')[:100]}",
+                            "fetched_at": fetched_at,
+                        }
+                    )
+        return signals
+
     async def collect_signals(self) -> list[dict[str, Any]]:
-        """聚合五源信号（材料/周年/已验证内容/对标）；全部失败才返回空。"""
-        material, anniversary, validated, benchmark = await asyncio.gather(
+        """聚合五源信号（材料/周年/已验证内容/对标/知乎高赞讨论）；全部失败才返回空。"""
+        material, anniversary, validated, benchmark, zhihu = await asyncio.gather(
             self.collect_material_window(),
             self.collect_anniversaries(),
             self.collect_validated_content(),
             self.collect_benchmarks(),
+            self.collect_zhihu_discussions(),
         )
-        return material + anniversary + validated + benchmark
+        return material + anniversary + validated + benchmark + zhihu
 
     # --- 主流程 ---------------------------------------------------------------
 
@@ -427,7 +600,7 @@ class TopicCurator:
             for idx, item in enumerate(items)
         ]
         try:
-            raw_picks = await self._call_flow("triage", {"listing": listing})
+            raw_picks = await self._call_flow("triage", {"listing": listing, "verticals": verticals_payload()})
         except Exception as exc:  # noqa: BLE001 - 研判失败降级分批
             logger.warning("选题池研判调用失败: %s", str(exc)[:200])
             return None
@@ -466,6 +639,13 @@ class TopicCurator:
         )
         if followup:
             log.extend(await execute_queries(self.search, followup))
+
+        # 同题市场实查：真实播放计数进证据包，让结论的"对家与差异"有实证
+        if self.market_probe is not None:
+            try:
+                log.extend(await self.market_probe(pick.theme))
+            except Exception as exc:  # noqa: BLE001 - 实查失败不拖累文字取证
+                logger.warning("同题市场实查失败 theme=%s: %s", pick.theme[:50], str(exc)[:200])
         return log
 
     async def _plan_queries(self, key: str, payload: dict[str, Any], max_queries: int) -> list[dict[str, str]]:
