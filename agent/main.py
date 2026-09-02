@@ -362,9 +362,18 @@ async def api_delete_thread(pid: str, tid: str, user: auth.CurrentUser):
 
 @app.post("/chat/cancel")
 async def api_chat_cancel(req: dict, user: auth.CurrentUser):
-    """取消会话在途的后端工具（出图/拆解/技能调用）——「停止」「切会话」透传。"""
-    n = skills.cancel_chat_runs(str(req.get("threadId") or ""))
+    """取消会话在途的后端工具（出图/拆解/技能调用）——「停止」「切会话」透传；
+    带 jobId 时只取消该任务（任务面板的逐任务取消）。"""
+    n = skills.cancel_chat_runs(
+        str(req.get("threadId") or ""), str(req.get("jobId") or "")
+    )
     return {"ok": True, "cancelled": n}
+
+
+@app.get("/chat/jobs")
+def api_chat_jobs(user: auth.CurrentUser, threadId: str = ""):
+    """会话在途长任务清单（任务面板数据源：kind/title/done/total）。"""
+    return skills.list_chat_jobs(threadId)
 
 
 @app.get("/projects/{pid}/threads/{tid}/messages")

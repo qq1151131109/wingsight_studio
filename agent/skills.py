@@ -842,10 +842,10 @@ def _project_style_from_config(config: Any = None) -> str:
         return ""
 
 
-# ---------- 聊天运行任务取消（「停止」按钮 / 切会话透传后端，B3） ----------
+# ---------- 聊天长任务（取消 + 任务面板数据源；「停止」/ 切会话透传后端） ----------
 
-# langgraph thread_id -> 在途后端工具的 asyncio.Task 集合
-CHAT_RUN_TASKS: Dict[str, "set[asyncio.Task]"] = {}
+# job_id -> 在途任务档案。任务面板（GET /chat/jobs）按 threadId 拉这里。
+CHAT_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 def _thread_id_of_config(config: Any) -> str:
@@ -857,27 +857,73 @@ def _thread_id_of_config(config: Any) -> str:
         return ""
 
 
-def register_chat_run_task(thread_id: str, task: "asyncio.Task") -> None:
-    """把在途工具任务挂到会话名下；结束自动摘除。"""
-    if not thread_id:
+def start_chat_job(thread_id: str, kind: str, title: str, total: int = 0) -> str:
+    """登记一个聊天侧长任务，返回 job_id。total=0 表示进度不可数（单流任务）。"""
+    job_id = f"job{uuid.uuid4().hex[:8]}"
+    CHAT_JOBS[job_id] = {
+        "threadId": thread_id,
+        "kind": kind,
+        "title": title,
+        "done": 0,
+        "total": total,
+        "cancelled": False,
+        "tasks": set(),
+    }
+    return job_id
+
+
+def job_attach_task(job_id: str, task: "asyncio.Task") -> None:
+    """把在途任务挂到 job 名下；全部任务结束后 job 自动摘除。"""
+    job = CHAT_JOBS.get(job_id)
+    if not job:
         return
-    CHAT_RUN_TASKS.setdefault(thread_id, set()).add(task)
-    task.add_done_callback(
-        lambda _t: CHAT_RUN_TASKS.get(thread_id, set()).discard(task)
-    )
+
+    def _discard(t: "asyncio.Task") -> None:
+        job["tasks"].discard(t)
+        if not job["tasks"]:
+            CHAT_JOBS.pop(job_id, None)
+
+    job["tasks"].add(task)
+    task.add_done_callback(_discard)
 
 
-def cancel_chat_runs(thread_id: str) -> int:
-    """取消该会话在途的后端任务（在途 http 请求中止，不再计费）。返回取消数。"""
-    tasks = CHAT_RUN_TASKS.get(thread_id)
-    if not tasks:
-        return 0
+def job_set_progress(job_id: str, done: int) -> None:
+    job = CHAT_JOBS.get(job_id)
+    if job:
+        job["done"] = done
+
+
+def cancel_chat_runs(thread_id: str, job_id: str = "") -> int:
+    """取消该会话在途的后端任务（在途 http 请求中止，不再计费）。
+    job_id 非空时只取消该任务。返回取消数。"""
     n = 0
-    for t in list(tasks):
-        if not t.done():
-            t.cancel()
-            n += 1
+    for jid, job in list(CHAT_JOBS.items()):
+        if job["threadId"] != thread_id:
+            continue
+        if job_id and jid != job_id:
+            continue
+        job["cancelled"] = True
+        for t in list(job["tasks"]):
+            if not t.done():
+                t.cancel()
+                n += 1
     return n
+
+
+def list_chat_jobs(thread_id: str) -> List[Dict[str, Any]]:
+    """任务面板数据源：该会话全部在途任务（含进行中的进度）。"""
+    return [
+        {
+            "jobId": jid,
+            "kind": job["kind"],
+            "title": job["title"],
+            "done": job["done"],
+            "total": job["total"],
+            "cancelled": job["cancelled"],
+        }
+        for jid, job in CHAT_JOBS.items()
+        if job["threadId"] == thread_id
+    ]
 
 
 async def generate_asset_images(
@@ -921,6 +967,12 @@ async def generate_asset_images(
     total = len(assets)
     recent: List[str] = []
     last_emit = [0.0]
+    thread_id = _thread_id_of_config(config)
+    job_id = (
+        start_chat_job(thread_id, "imagegen", f"设定图 ×{total}", total)
+        if thread_id
+        else ""
+    )
     if config is not None:
         await _emit_progress(
             config, f"开始为 {total} 项资产生成设定图（并发 30，每张完成会播报）…"
@@ -944,6 +996,7 @@ async def generate_asset_images(
         async with sem:
             result = await _generate_single_image(shot, params=params)
         done[0] += 1
+        job_set_progress(job_id, done[0])
         if result.get("ok") and result.get("imageUrl"):
             line = f"✓ {name}｜image_url={result['imageUrl']}"
         else:
@@ -966,8 +1019,9 @@ async def generate_asset_images(
         return line
 
     tasks = [asyncio.create_task(one(a)) for a in assets]
-    for t in tasks:
-        register_chat_run_task(_thread_id_of_config(config), t)
+    if job_id:
+        for t in tasks:
+            job_attach_task(job_id, t)
     # return_exceptions：被 cancel_chat_runs 取消的任务以 CancelledError 收场，
     # 不炸整批——完成的照常返回，取消的单独立数说明
     results = await asyncio.gather(*tasks, return_exceptions=True)

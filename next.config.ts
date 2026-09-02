@@ -4,6 +4,14 @@ const nextConfig: NextConfig = {
   // 关掉左下角的 N 开发指示器（纯开发态装饰，与产品 UI 无关）
   devIndicators: false,
 
+  // 同源代理（rewrites → 8123）对上游 socket 的空闲超时：默认约 30s，
+  // 拆解/技能 flow 调用中段的静默期一过就把 AG-UI SSE 流掐断（前端报
+  // ERR_INCOMPLETE_CHUNKED_ENCODING / agent network error）。放宽到 10 分钟；
+  // 流式数据持续流动时会不断重置计时，真正的死连接最多多挂 10 分钟
+  experimental: {
+    proxyTimeout: 600_000,
+  },
+
   // langflow 代理（app/langflow/[[...path]]/route.ts）要求路径原样到达处理器：
   // Next 默认把 /a/ 308 成 /a，会吃掉 langflow API 依赖的尾斜杠
   skipTrailingSlashRedirect: true,

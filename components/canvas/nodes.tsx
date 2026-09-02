@@ -28,6 +28,7 @@ import {
   Download,
   Drama,
   Film,
+  GripVertical,
   Sparkles,
   Grid3X3,
   History,
@@ -770,6 +771,24 @@ function CardShell({
             className="min-w-0 flex-1 truncate text-xs font-medium text-text-2"
           />
         )}
+        {/* 拖到聊天输入框 = @ 引用该卡（novanova 拖拽引用范式）。nodrag 挡住
+            xyflow 节点拖动，HTML5 原生拖拽把节点 id 交给 ChatInput 落 chip */}
+        <span
+          draggable
+          className="ws-node-drag nodrag ml-auto shrink-0 cursor-grab rounded p-0.5 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100 active:cursor-grabbing"
+          data-tip="拖到聊天框引用此卡" aria-label="拖到聊天框引用此卡"
+          title={meta.label}
+          onDragStart={(e) => {
+            e.dataTransfer.setData(
+              "application/x-wingsight-node",
+              JSON.stringify({ id, title: data.title ?? "" }),
+            );
+            e.dataTransfer.setData("text/plain", data.title || id);
+            e.dataTransfer.effectAllowed = "copy";
+          }}
+        >
+          <GripVertical className="h-3 w-3" />
+        </span>
       </div>
       <div
         className={`ws-card relative flex min-h-0 flex-1 flex-col p-3 ${selected ? "selected" : ""} ${flashing ? "ws-flash" : ""} ${halo ? "ws-ref-halo" : ""}`}

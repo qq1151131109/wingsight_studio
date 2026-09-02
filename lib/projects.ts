@@ -156,6 +156,42 @@ export async function cancelChatRun(threadId: string | null | undefined): Promis
   }
 }
 
+/** 任务面板：逐任务取消 */
+export async function cancelChatJob(threadId: string, jobId: string): Promise<void> {
+  try {
+    await apiFetch(`/agent-service/chat/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId, jobId }),
+    });
+  } catch {
+    /* 静默 */
+  }
+}
+
+export interface ChatJob {
+  jobId: string;
+  kind: "imagegen" | "tool" | string;
+  title: string;
+  done: number;
+  /** 0 = 进度不可数（单流任务） */
+  total: number;
+  cancelled: boolean;
+}
+
+/** 会话在途长任务清单（任务面板轮询用）；失败静默返回空 */
+export async function listChatJobs(threadId: string): Promise<ChatJob[]> {
+  try {
+    const r = await apiFetch(
+      `/agent-service/chat/jobs?threadId=${encodeURIComponent(threadId)}`,
+    );
+    if (!r.ok) return [];
+    return r.json();
+  } catch {
+    return [];
+  }
+}
+
 export async function renameChatThread(
   pid: string,
   tid: string,

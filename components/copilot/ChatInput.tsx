@@ -15,12 +15,16 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { InputProps } from "@copilotkit/react-ui";
 import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
+import { langgraphAgent } from "@/app/agent-provider";
 import {
   ArrowUp,
+  Brain,
   FileText,
   Film,
   ImageIcon,
+  Loader2,
   Music,
+  Palette,
   Paperclip,
   Square,
   X,
@@ -31,7 +35,13 @@ import MentionInput, {
   type MentionInputHandle,
   type MentionRead,
 } from "@/components/canvas/MentionInput";
-import { uploadAsset, cancelChatRun } from "@/lib/projects";
+import {
+  uploadAsset,
+  cancelChatRun,
+  cancelChatJob,
+  listChatJobs,
+  type ChatJob,
+} from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
@@ -130,6 +140,86 @@ export default function ChatInput({
   /** 进行中的上传（submit 时 await 全部完成；count 驱动按钮禁用态） */
   const uploadsRef = useRef<Map<string, Promise<void>>>(new Map());
   const [uploadingCount, setUploadingCount] = useState(0);
+
+  // 长任务条：轮询会话在途后端任务（出图/拆解/技能），可逐任务取消。
+  // 聊天进度消息会滚走，这里常驻；无任务时整条隐藏
+  const threadId = useChatSession((s) => s.threadId);
+  const [jobs, setJobs] = useState<ChatJob[]>([]);
+
+  // 思考中指示条（novanova ThinkingBlock 范式）：@copilotkit/core 的事件转换器
+  // 不处理 REASONING_* 事件（hook 的 messages 里没有），所以直接订阅注册的
+  // HttpAgent——它自己会物化 role="reasoning" 的消息。运行中实时展示、出正文后收起
+  const agent = langgraphAgent;
+  const [thinking, setThinking] = useState("");
+  const agentRef = useRef<typeof agent | null>(null);
+  useEffect(() => {
+    // useAgent 可能每次渲染给新对象：同一实例只订阅一次，避免解绑风暴丢事件
+    if (!agent || agentRef.current === agent) return;
+    agentRef.current = agent;
+    let streaming = false;
+    let buffer = "";
+    return agent.subscribe({
+      // 包装 agent 只分发 core 认识的回调，但 raw onEvent 能看到全部事件
+      // （含 REASONING_*）——思考文本在这里自己攒
+      onEvent: (p) => {
+        const ev = (p as {
+          event?: {
+            type?: string;
+            event?: { event?: string; data?: { chunk?: { additional_kwargs?: { reasoning_content?: string }; content?: unknown } } };
+          };
+        }).event;
+        const t = String(ev?.type ?? "");
+        // 思考增量藏在 RAW 包装的 on_chat_model_stream 流事件里
+        //（core 不认识 REASONING_* 与 langchain 流事件，统一打成 RAW）
+        if (t === "RUN_FINISHED" || t === "RUN_ERROR") {
+          streaming = false;
+          setThinking("");
+          return;
+        }
+        if (t !== "RAW") return;
+        const stream = ev?.event;
+        if (stream?.event !== "on_chat_model_stream") return;
+        const chunk = stream.data?.chunk;
+        const reasoning = chunk?.additional_kwargs?.reasoning_content;
+        if (process.env.NODE_ENV !== "production")
+          console.log(
+            "[ticker] stream:",
+            stream.event,
+            "rc:",
+            typeof reasoning === "string" ? reasoning.length : String(reasoning),
+            "content:",
+            typeof chunk?.content === "string" ? chunk.content.length : "-",
+            "streaming:",
+            streaming,
+          );
+        if (typeof reasoning === "string" && reasoning) {
+          if (!streaming) {
+            streaming = true;
+            buffer = "";
+          }
+          buffer += reasoning;
+          setThinking(buffer.slice(-160));
+        } else if (chunk?.content) {
+          // 正文开始输出 → 思考结束，指示条收起
+          streaming = false;
+          setThinking("");
+        }
+      },
+    }).unsubscribe;
+  }, [agent]);
+  useEffect(() => {
+    let alive = true;
+    const tick = async () => {
+      const list = threadId ? await listChatJobs(threadId) : [];
+      if (alive) setJobs(list);
+    };
+    void tick();
+    const timer = setInterval(tick, 3000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [threadId]);
 
   // 技能清单：挂载拉一次（slash 菜单数据源），失败静默（菜单只是不出现）
   useEffect(() => {
@@ -319,6 +409,21 @@ export default function ChatInput({
       className="copilotKitInputContainer"
       onDragOver={(e) => e.preventDefault()}
       onDrop={(e) => {
+        // 画布卡拖进来 = @ 引用（novanova 拖拽引用范式）：把手携带节点 id，
+        // 落成 chip（appendMention 自带去重），不当作文件附件
+        const nodeRaw = e.dataTransfer.getData("application/x-wingsight-node");
+        if (nodeRaw) {
+          e.preventDefault();
+          try {
+            const { id } = JSON.parse(nodeRaw) as { id?: string };
+            if (id && useCanvasStore.getState().nodes.some((n) => n.id === id)) {
+              edRef.current?.appendMention(id);
+            }
+          } catch {
+            /* 非法载荷忽略 */
+          }
+          return;
+        }
         if (e.dataTransfer.files?.length) {
           e.preventDefault();
           addFiles(e.dataTransfer.files);
@@ -326,6 +431,45 @@ export default function ChatInput({
       }}
     >
       <div className="copilotKitInput relative flex flex-col">
+        {thinking ? (
+          <div className="ws-thinking-row mb-1.5 flex items-center gap-1.5 rounded-md border border-accent-soft bg-surface-1 px-2 py-1 text-[11px] text-text-3">
+            <Brain className="h-3 w-3 shrink-0 text-accent motion-safe:animate-pulse" />
+            <span className="min-w-0 flex-1 truncate">思考中：{thinking}</span>
+          </div>
+        ) : null}
+        {jobs.length > 0 ? (
+          <div className="mb-1.5 flex flex-col gap-1">
+            {jobs.map((j) => (
+              <div
+                key={j.jobId}
+                className="ws-task-row flex items-center gap-1.5 rounded-md border border-hairline bg-surface-2 px-2 py-1 text-[11px] text-text-2"
+              >
+                {j.kind === "imagegen" ? (
+                  <Palette className="h-3 w-3 shrink-0 text-accent" />
+                ) : (
+                  <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin text-accent" />
+                )}
+                <span className="min-w-0 flex-1 truncate">{j.title}</span>
+                {j.total > 0 ? (
+                  <span className="shrink-0 tabular-nums text-text-3">
+                    {j.done}/{j.total}
+                  </span>
+                ) : null}
+                <button
+                  type="button"
+                  data-tip="取消此任务" aria-label={`取消任务：${j.title}`}
+                  className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-danger"
+                  onClick={() => {
+                    if (threadId) void cancelChatJob(threadId, j.jobId);
+                    setJobs((list) => list.filter((x) => x.jobId !== j.jobId));
+                  }}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {attachments.length > 0 ? (
           <div className="mb-1.5 flex flex-wrap gap-1">
             {attachments.map((a) => (

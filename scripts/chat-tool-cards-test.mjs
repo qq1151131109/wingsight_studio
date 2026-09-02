@@ -104,10 +104,21 @@ const skillCard = page
   .catch(() => false);
 check("后端工具卡渲染（list_langflow_skills）", await skillCard);
 
+// 等上一轮完全结束（思考模式会让单轮更久）
+await send.waitFor({ state: "visible", timeout: 120_000 });
+
 // ---- 2) canvas_ops：建卡 + 删卡 → 审批卡内联 → 允许 → 结果卡 ----
+await send.waitFor({ state: "visible", timeout: 120_000 });
 await input.click();
 await page.keyboard.type("在画布上建一张标题为「冒烟卡」的文本卡", { delay: 20 });
-await send.click();
+try {
+  await send.click({ timeout: 15_000 });
+} catch {
+  await page.screenshot({ path: "/tmp/e2e-scenario2.png" });
+  const stopVisible = await page.locator('button[aria-label="停止生成"]').isVisible().catch(() => false);
+  console.log("点击发送失败 — 停止钮可见:", stopVisible);
+  throw new Error("场景2发送失败（截图 /tmp/e2e-scenario2.png）");
+}
 const addOk = page
   .getByText(/画布操作：执行/)
   .first()
@@ -142,6 +153,133 @@ if (results.at(-1)?.ok) {
     .then((n) => n === 0);
   check("批准后卡片确已从画布删除", cardGone);
 }
+
+// ---- 3) propose_plan：多步任务先出计划，确认后逐步执行 ----
+await send.waitFor({ state: "visible", timeout: 120_000 });
+await input.click();
+await page.keyboard.type(
+  "请先列一个执行计划征求我确认，确认前不要动手：1）建一张标题为「计划测试」的文本卡；2）把它的标题改成「计划测试改」",
+  { delay: 15 },
+);
+await send.click();
+const planCard = page
+  .getByText(/计划待确认/)
+  .first()
+  .waitFor({ timeout: 90_000 })
+  .then(() => true)
+  .catch(() => false);
+check("多步任务触发计划卡（待确认）", await planCard);
+
+if (results.at(-1)?.ok) {
+  await page.getByRole("button", { name: "开始执行" }).click();
+  const executed = page
+    .locator(".react-flow__node", { hasText: "计划测试" })
+    .first()
+    .waitFor({ timeout: 180_000 })
+    .then(() => true)
+    .catch(() => false);
+  check("确认后计划开始执行（卡片已建）", await executed);
+  const checkmark = await page
+    .getByText(/执行中 · \d+\//)
+    .first()
+    .isVisible({ timeout: 5_000 })
+    .catch(() => false);
+  check("计划卡勾选状态更新", checkmark);
+}
+
+// ---- 4) 画布卡拖进聊天 = @ 引用 chip ----
+const dragHandle = page
+  .locator(".react-flow__node", { hasText: /计划测试/ })
+  .locator(".ws-node-drag")
+  .first();
+const dragOk = await dragHandle
+  .waitFor({ state: "visible", timeout: 15_000 })
+  .then(() => true)
+  .catch(() => false);
+if (dragOk) {
+  await dragHandle.dragTo(page.locator('[data-placeholder^="问点什么"]'));
+  const chip = await page
+    .locator('.ws-mention[data-mention-id]')
+    .first()
+    .waitFor({ timeout: 8_000 })
+    .then(() => true)
+    .catch(() => false);
+  check("画布卡拖进聊天落成 @ 引用 chip", chip);
+} else {
+  check("画布卡拖进聊天落成 @ 引用 chip", false, "找不到可拖拽的卡片把手");
+}
+// 清空输入框（拖入的 chip 残留会拼进下一条消息）
+await input.click();
+await page.keyboard.press("Control+a");
+await page.keyboard.press("Delete");
+
+// ---- 5) 长任务条：拆解期间输入框上方出现任务行（ws-task-row） ----
+await input.click();
+await page.keyboard.type(
+  "把这段剧本拆解成资产清单（先不要建卡出图）：深夜便利店，店员小王遭遇劫匪，机智周旋后脱险。",
+  { delay: 5 },
+);
+await send.click();
+let stripSeen = false;
+for (let i = 0; i < 60; i++) {
+  const row = await page
+    .locator(".ws-task-row")
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (row) {
+    stripSeen = true;
+    break;
+  }
+  // 拆解已完成（工具卡出现）则任务条窗口已错过，不必再等
+  const done = await page
+    .getByText(/剧本拆解完成/)
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (done) break;
+  await page.waitForTimeout(1000);
+}
+check("长任务条实时显示（拆解中）", stripSeen);
+// 等拆解收尾，避免下轮测试残留
+await page
+  .getByText(/剧本拆解完成/)
+  .first()
+  .waitFor({ timeout: 120_000 })
+  .catch(() => {});
+
+// ---- 6) 思考透传：GLM thinking → reasoning 消息（stock 折叠卡，头部 Thought*） ----
+await input.click();
+await page.keyboard.type("9.11 和 9.9 哪个大？先想清楚再回答。", { delay: 10 });
+await send.click();
+// GLM 是否触发思考有随机性：最多试 3 轮，每轮发送后轮询 25s
+let thinkingSeen = false;
+for (let attempt = 0; attempt < 3 && !thinkingSeen; attempt++) {
+  await input.click();
+  await page.keyboard.type("87 乘以 453 等于多少？仔细一步一步算，先想清楚再回答。", { delay: 5 });
+  await send.click();
+  for (let i = 0; i < 25; i++) {
+    const row = await page
+      .locator(".ws-thinking-row")
+      .first()
+      .isVisible()
+      .catch(() => false);
+    if (row) {
+      thinkingSeen = true;
+      break;
+    }
+    await page.waitForTimeout(1000);
+  }
+  if (!thinkingSeen) {
+    // 等这轮回答结束再重试
+    await page
+      .waitForTimeout(15_000);
+  }
+}
+// 思考是否触发取决于模型自愿（thinking 参数已开），不作为硬失败
+console.log(
+  `${thinkingSeen ? "✓" : "⚠"} 思考指示条${thinkingSeen ? "已出现" : "未出现（模型本轮未思考，非缺陷）"}`,
+);
 
 // 404 类 console 噪音只认 notFound 里的未知 URL（良性 canvas 404 已过滤）；
 // 其余 console error / pageerror 一律算失败

@@ -9,10 +9,10 @@ import {
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
-import { CheckCircle2, CircleAlert, FileText, Wrench } from "lucide-react";
+import { CheckCircle2, CircleAlert, Crosshair, FileText, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
-import { buildRefSequence } from "@/lib/canvas/refSequence";
+import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import {
   applyOps,
   normalizeOps,
@@ -26,13 +26,14 @@ import BackendToolCards, {
   ToolCard,
   useToolApproval,
 } from "./toolCards";
+import PlanTools from "./planCards";
 import { assetThumbUrl } from "@/lib/asset-thumb";
+import { CANCEL_GENERATION_EVENT, RETRY_GENERATION_EVENT } from "@/components/canvas/nodes";
 import {
-  CANCEL_GENERATION_EVENT,
-  RETRY_GENERATION_EVENT,
+  GENERATE_EVENT,
   SUPPLEMENT_CANDIDATES_EVENT,
-} from "@/components/canvas/nodes";
-import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
+  type GenerateDetail,
+} from "@/components/canvas/PromptBar";
 import {
   FOCUS_EDIT_EVENT,
   FOCUS_NODES_EVENT,
@@ -478,22 +479,35 @@ export default function CanvasAgentBridge() {
     },
     render: ({ status, args, result }) => {
       const id = String((args as { id?: unknown })?.id ?? "");
-      const title =
-        useCanvasStore.getState().nodes.find((n) => n.id === id)?.data.title || id;
+      const node = useCanvasStore.getState().nodes.find((n) => n.id === id);
+      const title = node?.data.title || id;
+      const missing = typeof result === "string" && result.startsWith("节点 ");
       if (status !== "complete") {
         return <RunningRow icon={<FileText />} title={`正在读取「${title}」`} />;
       }
       return (
         <ToolCard
           icon={<FileText />}
-          title={
-            typeof result === "string" && result.startsWith("节点 ")
-              ? result
-              : `已读取「${title}」`
-          }
-          ok={!(typeof result === "string" && result.startsWith("节点 "))}
+          title={missing ? result : `已读取「${title}」`}
+          ok={!missing}
           detail={typeof result === "string" ? result : undefined}
-        />
+        >
+          {node ? (
+            <button
+              type="button"
+              data-tip="在画布上定位这张卡" aria-label="在画布上定位这张卡"
+              className="mt-1.5 inline-flex items-center gap-1 rounded-md border border-hairline bg-surface-1 px-2 py-1 text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
+                )
+              }
+            >
+              <Crosshair className="h-3 w-3" />
+              定位到画布
+            </button>
+          ) : null}
+        </ToolCard>
       );
     },
   });
@@ -995,8 +1009,13 @@ export default function CanvasAgentBridge() {
     },
   });
 
-  // 聊天流里的工具卡（后端 6 工具）挂载在桥上——同处 CopilotKit 上下文，零额外装配
-  return <BackendToolCards />;
+  // 聊天流里的工具卡（后端 6 工具）与计划卡挂载在桥上——同处 CopilotKit 上下文，零额外装配
+  return (
+    <>
+      <BackendToolCards />
+      <PlanTools />
+    </>
+  );
 }
 
 /** canvas_ops 执行中的卡片：有挂起审批时内联展示审批卡（其余时候是执行行） */

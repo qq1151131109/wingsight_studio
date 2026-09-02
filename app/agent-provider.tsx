@@ -23,6 +23,10 @@ const langgraphAgent = new HttpAgent({
   ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
 });
 
+/** 原始 agent 实例的旁路订阅口（思考透传等需要完整事件流的场景用：
+ *  core 注册表里的包装 agent 只转发生命周期子集事件） */
+export { langgraphAgent };
+
 export function AgentProvider({ children }: { children: React.ReactNode }) {
   // 全站主题同步（juben 时间规则：边界自动切换 / 多标签同步），只挂一次
   useEffect(() => startThemeSync(), []);

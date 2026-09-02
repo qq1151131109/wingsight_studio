@@ -1,48 +1,54 @@
 # Agent 对话体验对标：竞品拆解与差距梳理
 
-> 2026-09-02 盘点。方法：本项目代码实查（含未提交改动）+ `references/` 下 8 个竞品源码扫描，所有结论带文件路径证据。
-> 用途：聊天下一轮优化（P0/P1/P2）的决策输入。现状盘点另一份沉淀在会话记忆 `wingsight-chat-ux-review`。
+> 2026-09-02 盘点并落地第一轮优化。方法：本项目代码实查 + `references/` 下 8 个竞品源码扫描，所有结论带文件路径证据。
+> **落地状态（同日晚）**：P0 五项全修、P1 四项落地、P2 第一层（工具卡分型 + 审批内联）落地，E2E `scripts/chat-tool-cards-test.mjs` 全绿。文中所有状态标记已刷新到落地后；带 ✅ 的同时给出实现位置。
+> 决策过程沉淀在会话记忆 `wingsight-chat-ux-review`（含 CopilotKit v1.69.3 的 API 事实，改聊天前先读）。
 
 ---
 
 ## 0. TL;DR
 
-- 我们的前两轮打磨把**基础盘**做齐了：持久化、多会话、@引用、附件、进度消息、审批、建议 chips 都在且能跑。
-- 但当前存在 **4 个真 bug 级断链**（工具白名单矛盾、会话记忆串台、停止不取消后端、切会话竞态），属于"先修才能谈体验"。
-- 与竞品的差距不在单点功能，而在**消息流的结构化**：竞品把聊天流做成"消息 / 工具卡 / 审批卡 / 计划卡 / 任务面板"的分型 feed，我们仍是"纯文本消息 + 一个 canvas_ops 自定义卡"，其余 6 个后端工具全走 stock 默认渲染。
+- 前两轮打磨做齐了**基础盘**（持久化、多会话、@引用、附件、进度消息、建议 chips），本轮把 **4 个真 bug 断链**全部修掉（工具白名单矛盾、会话记忆串台、停止不取消后端、切会话竞态），并落地了与竞品差距最大的**结构化消息流第一层**：后端工具卡分型渲染 + 破坏性操作审批内联聊天流。
+- 落地过程中揪出一个**更严重的潜伏回归**：聊天输入打字不触发 onChange（MentionInput 提取重构时丢失链路），发送按钮/Enter 完全失灵——已修。
+- 剩余差距集中在 P2 后半：计划卡、任务面板、思考透传、工具级回滚、画布节点拖入聊天。
 
 ---
 
-## 1. 我们现状盘点（截至 2026-09-02）
+## 1. 我们现状盘点（2026-09-02 落地后）
 
 ### 1.1 已落地能力
 
 | 能力 | 位置 |
 |---|---|
-| 聊天持久化 + 多会话（SQLite chat_threads/chat_messages） | `agent/projects.py:63-76,408-545`、`components/copilot/ChatPersistence.tsx` |
-| 会话搜索 / 导出 md | `components/copilot/ThreadsBar.tsx:48-80,181-188` |
-| 后端工具进度消息（progress_ 前缀，不落库） | `agent/skills.py:920-937`、`agent/graph.py:63,79`、逐张出图播报 `skills.py:883,911` |
-| 空态建议 chips（写死 4 条，仅空会话显示） | `components/copilot/Sidebar.tsx:69-110` |
-| 输入框 @画布卡引用（token 存节点 id、chip 点击定位） | `ChatInput.tsx:385-404`、`components/canvas/MentionInput.tsx` |
-| /slash 技能菜单 | `ChatInput.tsx:37-44,134-160,450-484` |
-| 图片/文档附件（≤6 个、文本 ≤64KB 内联、拖放+粘贴） | `ChatInput.tsx:172-217,318-325,376-383` |
-| 破坏性操作审批（原生 confirm 弹窗，Promise 阻塞） | `components/copilot/CanvasAgentBridge.tsx:787-805,936-974` |
-| 失败消息重试本轮 | `Sidebar.tsx:24-45` |
-| canvas_ops 结果缩略图回显 + 点击定位画布 | `CanvasAgentBridge.tsx:892-930` |
-| 工具卡耗时显示 | `CanvasAgentBridge.tsx:807-809,876-883` |
-| 停止按钮（**仅掐客户端 run**） | `ChatInput.tsx:416-424` |
-| 夜间模式、IME 安全输入、复制、重新生成（stock） | `Sidebar.tsx`、`MentionInput.tsx:543-579` |
+| 聊天持久化 + 多会话（SQLite chat_threads/chat_messages） | `agent/projects.py`、`components/copilot/ChatPersistence.tsx` |
+| 会话 id ↔ agent 记忆贯通（✅ 本轮）：UI threadId 直通 `<CopilotKit threadId>`（v1 官方 prop，内部 ThreadsProvider→agent.threadId），新会话现场铸造 id、首存时服务端同 id 建会话——**UI 会话 = LangGraph checkpoint，一一对应** | `lib/chat/session.ts`（agentThreadId）、`app/agent-provider.tsx`、`agent/projects.py` create_thread 收客户端 id |
+| 真取消（✅ 本轮）：`POST /chat/cancel` 按 thread_id 取消在途后端工具（出图逐张 task、拆解/技能整工具任务，在途 http 中止不再计费）；停止按钮 / 切会话 / 删当前会话 / 切项目四处触发；出图批 `gather(return_exceptions)` 取消不炸整批 | `agent/skills.py` CHAT_RUN_TASKS、`agent/main.py`、`ChatInput.tsx`、`ThreadsBar.tsx` |
+| 删会话连带清 agent checkpoint（adelete_thread） | `agent/main.py` api_delete_thread |
+| 后端工具卡分型渲染（✅ 本轮 P2）：6 个 LangGraph 工具 render-only 注册（`available:"disabled"` 拦截 stock 灰盒）——出图卡带成败/取消计数 + 结果图缩略条、拆解/技能/调研/查进度状态卡、长文本 `<details>` 折叠 | `components/copilot/toolCards.tsx` |
+| read_node 从静默变卡片（✅ 本轮 P2） | `CanvasAgentBridge.tsx` |
+| 破坏性操作审批内联聊天流（✅ 本轮 P2）：原生 confirm → 审批卡（人话影响摘要 + 允许/拒绝），挂起请求走 zustand store | `toolCards.tsx` useToolApproval + `CanvasAgentBridge.tsx` CanvasOpsRunning |
+| 聊天输入修复（✅ 本轮）：MentionInput onInput 非 IME 组合时回吐 onChange——此前发送按钮永不点亮、Enter 静默失败 | `components/canvas/MentionInput.tsx` |
+| 错误人话化（✅ 本轮）：网络/登录/限流/超时/额度/5xx 映射，原文折叠"错误详情" | `Sidebar.tsx` friendlyError |
+| 进度节流（✅ 本轮）：出图进度静默 ≥3s 或全部完成才播累计行（30 张图 ~31 条 → ~8 条） | `agent/skills.py` generate_asset_images |
+| canvasSummary 注入收敛（✅ 本轮）：去掉末尾重复 SystemMessage，仅 system prompt 一份 | `agent/graph.py` chat_node |
+| 导出 md 修复（✅ 本轮）：`WS_PARTS::` envelope 解码 + 多模态 parts 转可读 Markdown | `lib/chat/content.ts`、`ThreadsBar.tsx` |
+| 会话搜索 / 导出 md | `components/copilot/ThreadsBar.tsx` |
+| 后端工具进度消息（progress_ 前缀，不落库） | `agent/skills.py` _emit_progress |
+| 空态建议 chips、@画布卡引用（chip 点击定位）、/slash 技能菜单、图片/文档附件（拖放+粘贴）、失败重试、canvas_ops 结果缩略图回显 + 定位、工具卡耗时、夜间模式、IME 安全输入 | `Sidebar.tsx` / `ChatInput.tsx` / `MentionInput.tsx` / `CanvasAgentBridge.tsx` |
 
-### 1.2 真 bug（进入优化前必须先修）
+### 1.2 本轮修复的 bug 台账
 
-| # | 问题 | 证据 |
+| # | 问题（原状） | 修法 |
 |---|---|---|
-| B1 | **read_node 断链**：系统提示两处让模型调 `read_node`，但 `FRONTEND_TOOL_ALLOWLIST={"canvas_ops"}` 在 bind_tools 时把它滤掉，模型拿不到 schema、照提示调用必失败 | `agent/graph.py:244` vs `graph.py:440,453`；前端已注册 `CanvasAgentBridge.tsx:415` |
-| B2 | **会话与模型记忆串台**：UI threadId（`lib/chat/session.ts`）从未传给 `<CopilotKit>`；ag-ui 按 thread_id 存 LangGraph checkpoint 且消息去重后追加 → 「新会话」只清 UI、模型带旧会话记忆；切历史会话也不恢复对应 checkpoint | `app/agent-provider.tsx:29`（无 threadId prop）；`agent/graph.py:649-705` |
-| B3 | **停止只掐客户端**：聊天触发的 `generate_asset_images` 后端循环继续烧钱跑完；聊天工具链路无取消端点（对照分镜批量出图有 `DELETE /storyboard/images/{job}`） | `agent/main.py:574-579`（仅分镜有） |
-| B4 | **运行中切会话竞态**：切会话不 abort 进行中 run，流式增量继续写已被替换的 messages，1.2s debounce 整表覆盖保存可能把 A 会话内容写进 B | `ThreadsBar.tsx:211-214`、`ChatPersistence.tsx:107-214` |
+| B1 | read_node 断链：系统提示两处让模型调用，但 `FRONTEND_TOOL_ALLOWLIST={"canvas_ops"}` 把它滤掉，调用必失败 | 白名单补 read_node（`agent/graph.py:385`） |
+| B2 | 会话与模型记忆串台：UI threadId 从未接 CopilotKit，ag-ui 按内部单一 thread_id 存 checkpoint，「新会话」只清界面、模型带旧记忆 | threadId prop 直通 + 客户端铸造 id 两边同源（见 1.1） |
+| B3 | 停止只掐客户端：`generate_asset_images` 后端循环继续烧钱 | CHAT_RUN_TASKS 注册表 + /chat/cancel（见 1.1） |
+| B4 | 运行中切会话竞态：不 abort run，流式增量写已被换掉的 messages，保存可能把 A 会话内容写进 B | threadId 切换时框架自带 detach/abort + 前端 cancel 透传 + 水合前快照防覆盖 |
+| B5 | 导出 md 把多模态消息导成 `WS_PARTS::` 原始 JSON | 编解码抽 `lib/chat/content.ts` 共享，导出走 contentToMarkdown |
+| B6 | **聊天输入失灵（潜伏回归，落地 E2E 时发现）**：MentionInput 提取重构后 onInput 只更新 @ 触发器不回吐 onChange → lastRead 恒空 → 发送按钮禁用、Enter 被守卫静默拦截；画布 PromptBar 同病 | onInput 非 IME 组合时补 emitChange（`MentionInput.tsx`） |
+| B7 | **长聊天流 ~30s 被掐（结构性，本-round 任务条 E2E 复现）**：Next 同源代理对上游 socket 的空闲超时（`experimental.proxyTimeout`，默认 30s）——拆解/技能 flow 中段静默期一过，SSE 流被 destroy（ERR_INCOMPLETE_CHUNKED_ENCODING / agent network error） | `next.config.ts` 设 `experimental.proxyTimeout: 600_000`；流式数据会重置空闲计时，真正的死连接最多多挂 10 分钟 |
 
-小 bug：导出 md 未 decode `WS_PARTS::` envelope，多模态消息导出成原始 JSON（`ThreadsBar.tsx:66`，envelope 编码在 `ChatPersistence.tsx:44-46`）；点赞点踩是 CopilotKit stock 纯前端 state，无后端落库。
+另：点赞点踩是 CopilotKit stock 纯前端 state（无后端落库）——未动，属 P2 深化项。
 
 ---
 
@@ -67,7 +73,7 @@
 
 - **输入**：slash 技能菜单（选中替换为 `@[skill:id]` token，同我们）；@ mention 芯片高亮，支持**文件拖到芯片上替换**（`canvas-resource-mention-textarea.tsx`）；图片粘贴；语音输入（`conversation/voice-recording-button.tsx`）。
 - **assistant 文本自动变 chips**：`canvas-agent-chat-ui.tsx` 从助手回复里提取可点击的快捷选项。
-- **审批/工具卡**：AgentPendingToolCard 审批卡带影响指标（操作/节点/删除/生成计数）+ `<details>` 技术详情折叠；完成的 AgentToolCard 同样可折叠看 JSON 详情。
+- **审批/工具卡**：AgentPendingToolCard 审批卡带影响指标（操作/节点/删除/生成计数）+ `<details>` 技术详情折叠；完成的 AgentToolCard 同样可折叠看 JSON 详情。（✅ 我们已对标第一层）
 - **撤销体系**：`canvas-assistant-panel.tsx`——ops 写回前 snapshot + validate + postcondition 校验，**按批撤销**（工具栏显示可撤销批数）；读写工具白名单分流。
 - **断点恢复**：cinematic 会话 durable-ack（`lib/canvas/canvas-agent-session.ts`）。
 - **多任务**：`canvas-active-task-panel.tsx` 并行任务进度、可取消。
@@ -115,23 +121,21 @@
 
 | # | 能力 | 我们 |
 |---|---|---|
-| G1 | 消息流分型：message / tool / approval / plan / status 各有专属卡 | ❌ 仅 canvas_ops 一张自定义卡，6 个后端工具走 stock 默认 |
-| G2 | 工具卡可展开看参数/结果 JSON 详情 | ❌ 无 |
-| G3 | 审批内联聊天流（非原生 confirm）+ 影响摘要 | ❌ 原生 confirm，且只盖删卡/成组（`CanvasAgentBridge.tsx:788-790`），整卡覆写不审 |
-| G4 | 错误消息人话化 + 重试/恢复草稿 | ⚠️ 有重试按钮，但错误原文裸甩（`Sidebar.tsx:30`） |
-| G5 | 工具执行状态实时可见（执行中/成功/失败） | ⚠️ 只有 canvas_ops 卡 + progress 文本消息 |
-| G6 | 结果自动写回画布 + 可撤销 | ⚠️ 有写回，只有全画布 undo，无按批/按工具撤销 |
+| G1 | 消息流分型：message / tool / approval / plan / status 各有专属卡 | ✅ tool + approval 已做（`toolCards.tsx`）；plan / status 未做 |
+| G2 | 工具卡可展开看参数/结果详情 | ✅ `<details>` 折叠 |
+| G3 | 审批内联聊天流（非原生 confirm）+ 影响摘要 | ✅ 第一层（人话摘要；成本/时长预估未做；覆盖仍只删卡/成组，整卡覆写未纳审） |
+| G4 | 错误消息人话化 + 重试/恢复草稿 | ✅ friendlyError + 重试本轮（恢复草稿/诊断包未做） |
+| G5 | 工具执行状态实时可见 | ✅ 工具卡 executing 态 + 节流进度行 |
+| G6 | 结果自动写回画布 + 可撤销 | ⚠️ 写回有；仅全画布 undo，无按批/按工具撤销 |
 | G7 | 流式 markdown + 打字中指示 | ⚠️ 有流式，无打字光标/动画 |
-| G8 | @引用画布资源 | ✅ 已做（且 chip 点击定位领先多数竞品） |
-| G9 | 多会话 + 历史 + 新建 | ✅ 已做（含搜索/导出，领先） |
-| G10 | 画布上下文自动注入 | ✅ 已做（但一轮注入 3 份，token 浪费） |
-
-结论：G8/G9 我们领先，**G1-G6 是主差距**。
+| G8 | @引用画布资源 | ✅ 领先（chip 点击定位、实时同步） |
+| G9 | 多会话 + 历史 + 新建 | ✅ 领先（含搜索/导出） |
+| G10 | 画布上下文自动注入 | ✅（本轮去重为单份注入） |
 
 ## 4. 独有亮点（差异化借鉴候选）
 
 - open-storyboard-canvas：工具级 rollbackToken、审批影响摘要/成本预估/过期、计划可编辑、生成任务断点恢复面板、预算控制、诊断包、token 估算、「定位输入/定位结果」双按钮。
-- open-ai-canvas：按批撤销、ops postcondition 校验、语音输入、durable-ack 恢复、assistant 文本自动变 chips、语音输入。
+- open-ai-canvas：按批撤销、ops postcondition 校验、语音输入、durable-ack 恢复、assistant 文本自动变 chips。
 - novanova：SSE 重连 + requestId 幂等、队列状态机、思考流 reducer、**画布节点拖入聊天**、风格 chips。
 - ai-moive-studio：审批卡内选执行模型。
 - viedeo-workflow：Chat/Agent 双模式、消息级重发、图片「从该 prompt 生成」。
@@ -140,27 +144,27 @@
 
 ## 5. 差距对照总表
 
-按体验维度归拢（✅=有，⚠️=半吊子，❌=无）：
+按体验维度归拢（✅=有，⚠️=半吊子，❌=无；✅/⚠️ 后括号为落地位置）：
 
 ### 5.1 消息流渲染
 | 项 | 竞品 | 我们 |
 |---|---|---|
-| 工具卡分型渲染 | ✅ 全员 | ❌ 后端工具全 stock 默认；read_node 静默无卡（B1） |
-| 工具卡折叠看详情 | ✅ open-ai-canvas 等 | ❌ |
-| 思考/推理展示（流式+折叠） | ✅ novanova / open-storyboard | ❌ |
+| 工具卡分型渲染 | ✅ 全员 | ✅ 后端 6 工具 + read_node（toolCards.tsx）；plan/status 卡未做 |
+| 工具卡折叠看详情 | ✅ open-ai-canvas 等 | ✅ `<details>` |
+| 思考/推理展示（流式+折叠） | ✅ novanova / open-storyboard | ❌（需 v2 或自建 reasoning 通道） |
 | 打字中指示 | ✅ open-ai-canvas「正在推演」/ ai-moive 打字机 | ❌ 只有三点 activityIcon |
-| 进度聚合成任务卡 | ✅ ai-moive「执行中 N」/ 多家任务面板 | ❌ progress 文本逐条刷屏（30 张图=30 条消息） |
+| 进度聚合成任务卡 | ✅ ai-moive「执行中 N」/ 多家任务面板 | ⚠️ 节流累计行（同 id 原地更新受 ag-ui 桥 message_id 单次认领限制，真聚合要等 feed 分型） |
 | 消息级时间戳 | 部分有 | ❌（DB 有 created_at，前端不显示） |
-| 消息编辑/分支/重发 | ✅ viedeo-workflow 消息级重发 | ❌ |
+| 消息编辑/分支/重发 | ✅ viedeo-workflow 消息级重发 | ❌（仅失败重试本轮） |
 
 ### 5.2 任务执行模型
 | 项 | 竞品 | 我们 |
 |---|---|---|
 | 计划先行可编辑 + 逐项打勾 | ✅ open-storyboard / novanova | ❌ |
-| 审批内联 + 影响摘要/成本预估 | ✅ open-storyboard / open-ai-canvas | ⚠️ 原生 confirm、覆盖窄 |
-| 运行中继续输入 / 排队 | ✅ 多家 | ❌ inProgress 禁发（`ChatInput.tsx:231`） |
-| 真取消（后端停） | ✅ novanova cancel / open-ai-canvas 任务可取消 | ❌ B3 |
-| 断点恢复在聊天/任务面板呈现 | ✅ open-storyboard GenerationTasksPanel | ⚠️ 分镜出图有恢复，聊天链路无 |
+| 审批内联 + 影响摘要 | ✅ open-storyboard / open-ai-canvas | ✅ 第一层（CanvasOpsRunning + ApprovalCard）；成本/时长预估、整卡覆写纳审未做 |
+| 运行中继续输入 / 排队 | ✅ 多家 | ❌ inProgress 禁发（`ChatInput.tsx`） |
+| 真取消（后端停） | ✅ novanova cancel / open-ai-canvas 任务可取消 | ✅ /chat/cancel 四处触发 |
+| 断点恢复在聊天/任务面板呈现 | ✅ open-storyboard GenerationTasksPanel | ⚠️ 分镜出图有恢复，聊天链路无面板 |
 | 步数/成本预算 | ✅ open-storyboard agentBudget | ❌ |
 
 ### 5.3 画布↔聊天联动
@@ -169,13 +173,13 @@
 | 聊天→画布定位 | ✅ | ✅ FOCUS_NODES（领先） |
 | 工具卡「定位输入/定位结果」双按钮 | ✅ open-storyboard | ❌ 只有结果定位 |
 | 画布节点**拖进**聊天成引用 | ✅ novanova / viedeo-workflow | ❌ 只有 @ 菜单选择 |
-| 聊天内图片放大/下载/重生成 | ✅ viedeo-workflow「从该 prompt 生成」 | ❌ 只能点击定位（Lightbox 仅画布） |
+| 聊天内图片放大/下载/重生成 | ✅ viedeo-workflow「从该 prompt 生成」 | ⚠️ 出图卡缩略条可开原图；Lightbox 仍仅画布 |
 | 工具级/按批回滚 | ✅ open-storyboard / open-ai-canvas | ❌ 全画布 undo |
 
 ### 5.4 会话与输入
 | 项 | 竞品 | 我们 |
 |---|---|---|
-| 会话 id 贯通模型侧记忆 | ✅（各家会话隔离正常） | ❌ B2 串台 |
+| 会话 id 贯通模型侧记忆 | ✅ | ✅ threadId 直通 + 客户端铸造 id |
 | 会话重命名体验 | — | ⚠️ window.prompt 风格割裂 |
 | 上下文 token 估算显示 | ✅ open-storyboard | ❌ |
 | 语音输入 | ✅ open-ai-canvas | ❌ |
@@ -185,44 +189,46 @@
 ### 5.5 错误恢复
 | 项 | 竞品 | 我们 |
 |---|---|---|
-| 错误人话化 | ✅ | ❌ 原文 slice(160) 裸甩 |
-| 恢复草稿重发 / 诊断包 | ✅ open-storyboard | ❌ |
+| 错误人话化 | ✅ | ✅ friendlyError + 详情折叠 |
+| 恢复草稿重发 / 诊断包 | ✅ open-storyboard | ❌（有重试本轮） |
 | 幂等/断线重连 | ✅ novanova SSE | ⚠️ ag-ui 自带流，无重连保障 |
 
 ---
 
-## 6. 优化路线草案（供讨论）
+## 6. 优化路线（2026-09-02 执行后状态）
 
-### P0 —— 修 bug（小改动，先恢复信任）
-1. read_node 白名单矛盾：`FRONTEND_TOOL_ALLOWLIST` 补 read_node，或删提示词两处（B1）。
-2. threadId 接入 `<CopilotKit>`，会话切换/新建贯通 LangGraph checkpoint（B2）。
-3. 聊天工具链路加后端取消端点，停止按钮透传（B3）。
-4. 切会话 abort 进行中 run + 保存竞态防护（B4）。
-5. 导出 md decode `WS_PARTS::`（5 分钟级）。
+### P0 —— 修 bug ✅ 全部完成
+1. ✅ read_node 白名单矛盾（B1）。
+2. ✅ threadId 接入 `<CopilotKit>`，会话切换/新建贯通 LangGraph checkpoint（B2）。
+3. ✅ 聊天工具链路后端取消端点 `POST /chat/cancel`，停止按钮透传（B3）。
+4. ✅ 切会话 abort + 取消透传（B4，框架 detach + 前端 cancel）。
+5. ✅ 导出 md decode `WS_PARTS::`。
+6. ✅（执行中发现）聊天输入 onChange 断链修复（B6）。
 
-### P1 —— 体验补课（不动架构，复用现有消息通道）
-1. 错误人话化映射表 +「重试」保留。
-2. 进度消息聚合：同任务 progress 合并为一张动态更新的进度卡（可先从出图链路做起）。
-3. 审批覆盖扩大：整卡 body 覆写（AI 重写剧本/分镜卡）纳入确认。
-4. 聊天内图片接 Lightbox（放大/下载，动作区沿用画布灯箱注入模式）。
-5. 上下文去重：canvasSummary 三处注入收敛为一处。
-6. 会话重命名换成对话框；多行输入、发送后气泡渲染成 chip 样式。
+### P1 —— 体验补课 ✅ 基本完成
+1. ✅ 错误人话化映射表 +「重试」保留。
+2. ⚠️ 进度消息：聚合改为**源头节流**（同 id 原地更新受 ag-ui 桥限制，见 5.1）。
+3. ❌ 审批覆盖扩大（整卡 body 覆写纳入确认）——未做，待与 P2 审批分级一起设计。
+4. ⚠️ 聊天内图片：出图卡缩略条可开原图；接画布 Lightbox 未做。
+5. ✅ 上下文去重：canvasSummary 收敛为 system prompt 单份。
+6. ❌ 会话重命名对话框 / 发送后气泡 chip 样式——未做（低价值顺位）。
 
-### P2 —— 结构化 feed（单独立项，对标 open-storyboard-canvas）
-> **进度 2026-09-02：第 1、3 项已落地第一层**——`components/copilot/toolCards.tsx`：6 个后端工具
-> 注册 render-only action（`available:"disabled"`，框架按工具名拦截 stock 渲染）分型成卡；
-> read_node 从静默变卡片；canvas_ops 破坏性操作审批从原生 confirm 换成聊天流内联审批卡
-> （zustand store 驱动，聊天消息列表不需重渲染也能出现/点击）。E2E：`scripts/chat-tool-cards-test.mjs`。
-> 落地中发现并修复：聊天输入打字不触发 onChange（MentionInput 提取时丢了 onInput→emitChange
-> 链路，发送按钮/Enter 全体失灵，画布面板 PromptBar 同病）——onInput 非 IME 组合时补 emitChange。
+### P2 —— 结构化 feed（进行中）
+> **已落地第一层 + 计划先行**：`components/copilot/toolCards.tsx`（后端 6 工具 render-only 卡 +
+> `available:"disabled"` 拦截 stock 渲染）、`components/copilot/planCards.tsx`（propose_plan 阻塞确认 +
+> update_plan 实时打勾，zustand store 驱动流内更新）、read_node 卡片化、审批卡内联。
+> E2E：`scripts/chat-tool-cards-test.mjs`（真实 LLM，9 断言全绿）。
+> 落地时确认的框架事实：v1 useCopilotAction 无 handler 无 available 会 throw
+> "Invalid action configuration"；render 不能返回 null（返回空 fragment）；render props =
+> {status, args(自动解析), result(ToolMessage 字符串)}。
 
-1. 消息流分型：tool/approval/plan/status 卡片体系，工具卡折叠看详情（✅ 后端工具+审批已做；plan/status 未做）
-2. 计划先行：拆解/批量出图类任务先出计划卡确认再执行，逐项打勾。
-3. 审批卡内联化 + 影响摘要（✅ 已内联；影响摘要有人话描述，成本/时长预估未做）
-4. 任务面板：长任务独立面板、并行展示、可取消、断点恢复入口。
-5. 思考透传：V4 思考模式 + AG-UI ReasoningMessage 事件族已在协议层，缺 UI（novanova ThinkingBlock 范式或 v2 折叠组件）。
-6. 画布节点拖进聊天、工具卡「定位输入/定位结果」双按钮。
-7. 工具级回滚 / 按批撤销（依赖 ops snapshot 体系，参考 open-ai-canvas postcondition 校验）。
+1. ✅ 消息流分型：tool/approval/plan 卡；status 卡未做。
+2. ✅ 计划先行：propose_plan（≥3 步任务先确认，流内计划卡 + 开始执行/暂缓）+ update_plan（每步打勾实时更新）；计划可编辑修订未做。系统提示加「计划先行」节（graph.py，单步操作不出计划）。
+3. ✅ 审批卡内联化 + 人话影响摘要；成本/时长预估、按影响分级未做。
+4. ✅ 任务面板第一层：输入框上方常驻任务条（`ws-task-row`）——`GET /chat/jobs?threadId=` 轮询（3s）拉 `skills.CHAT_JOBS`，展示出图进度 done/total、逐任务取消（/chat/cancel 带 jobId）；独立面板/断点恢复入口未做。
+5. ⚠️ 思考透传（2026-09-02 落地第一层）：协议链路已打通——GLM `thinking:enabled` 吐 reasoning_content（langchain-openai 1.6 默认丢弃 → graph.py 兼容子类 `_convert_chunk_to_generation_chunk` 捡回进 additional_kwargs）→ ag-ui 桥发 REASONING_MESSAGE_* 事件 → core 不认识、打成 RAW 包装事件透给浏览器。UI 用输入框上方「思考中」指示条（`ChatInput.tsx` ws-thinking-row，直接订阅原始 agent 实例的 onEvent 攒增量；注意 useAgent 返回的是 core 包装 agent，其 messages 与订阅回调都过滤了 reasoning）。思考触发与否取决于模型自愿，E2E 中为软断言。消息内嵌折叠卡（novanova ThinkingBlock 完整形态）仍需 v2。
+6. ✅ 画布节点拖进聊天（卡片标题行拖拽把手 → ChatInput 落 @chip，复用 appendMention，`nodrag` 与 xyflow 拖动隔离）+ read_node 卡「定位到画布」按钮；通用工具卡「定位输入/定位结果」双按钮未做。
+7. ❌ 工具级回滚 / 按批撤销（依赖 ops snapshot 体系，参考 open-ai-canvas postcondition 校验）。
 
 ### 明确不做（本轮结论）
 - OpenLovart 式的非流式聊天；消息级分支编辑（CopilotKit v1 下成本高，先做重发）；语音输入（优先级最低）。
@@ -232,6 +238,13 @@
 ## 附：我们的相对优势（保持并继续放大）
 
 - @引用 chip 体系：token 存节点 id、点击定位、改名/删除实时同步——比 open-ai-canvas 的文本 token 更稳。
-- 多会话 + 搜索 + 导出 md，会话管理完整度高于全部竞品。
+- 多会话 + 搜索 + 导出 md，会话管理完整度高于全部竞品；会话 id 与模型 checkpoint 同源（多数竞品未做这层贯通）。
 - 附件全链路（多模态 parts → 非视觉模型降级 URL 清单）已实测可用。
 - 分镜批量出图的断点恢复/补缺图——聊天链路的任务面板（P2-4）可以直接复用这套 job 机制。
+- 破坏性操作审批 + 真取消贯通到后端工具（多数竞品的 cancel 只停客户端）。
+
+## 附：回归与验证入口
+
+- `scripts/chat-tool-cards-test.mjs` —— 聊天工具卡 + 审批内联 + 输入链路（真实 LLM，自建项目隔离）。
+- `node scripts/agui-client-test.mjs` —— AG-UI 两轮工具调用闭环（注：「第 1 轮操作数量不足」告警是既有的 GLM 首轮不带 op 字段问题，与聊天改动无关，stash 实验已验证 HEAD 同样失败）。
+- `pnpm exec tsc --noEmit && pnpm exec eslint components lib app`。

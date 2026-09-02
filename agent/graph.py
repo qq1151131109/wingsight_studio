@@ -62,9 +62,12 @@ async def decompose_script(script: str, config: RunnableConfig) -> str:
         script: 剧本原文（尽量完整传入，不要自行摘要）。
     """
     await skills._emit_progress(config, "正在拆解剧本，提取角色 / 场景 / 道具清单…")
+    job_id = skills.start_chat_job(
+        skills._thread_id_of_config(config), "tool", "拆解剧本"
+    )
     task = asyncio.current_task()
     if task is not None:
-        skills.register_chat_run_task(skills._thread_id_of_config(config), task)
+        skills.job_attach_task(job_id, task)
     return await skills.decompose_script(script)
 
 
@@ -89,9 +92,12 @@ async def run_langflow_skill(
                 return "params_json 必须是 JSON 对象字符串"
         except json.JSONDecodeError as e:
             return f"params_json 不是合法 JSON：{e}"
+    job_id = skills.start_chat_job(
+        skills._thread_id_of_config(config), "tool", f"技能「{skill}」"
+    )
     task = asyncio.current_task()
     if task is not None:
-        skills.register_chat_run_task(skills._thread_id_of_config(config), task)
+        skills.job_attach_task(job_id, task)
     return await skills.run_skill(skill, input_text, params)
 
 
@@ -386,7 +392,10 @@ backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
 # read_node：系统提示两处指示模型用它在摘要截断时取卡片全文，必须在册
-FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "read_node"}
+# 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
+# read_node：系统提示两处指示模型用它在摘要截断时取卡片全文，必须在册；
+# propose_plan / update_plan：计划先行（多步任务先确认后执行、逐步打勾）
+FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "read_node", "propose_plan", "update_plan"}
 
 
 # ---------- 多模态附件（图片/视频随消息上传） ----------
@@ -406,6 +415,15 @@ def _vision_enabled() -> bool:
     return any(h in model for h in _VISION_MODEL_HINTS)
 
 
+def _thinking_enabled() -> bool:
+    """思考模式开关：GLM 系默认开（网关认 thinking 参数）；换非思考模型时用
+    AGENT_THINKING=0 关闭，反之 =1 强制开。"""
+    explicit = (os.environ.get("AGENT_THINKING") or "").strip().lower()
+    if explicit:
+        return explicit in ("1", "true", "yes", "on")
+    return "glm" in (os.environ.get("AGENT_MODEL") or "").lower()
+
+
 class _OneShotToolArgsCompatChatOpenAI(ChatOpenAI):
     """工具调用流兼容层：把「name 与完整 arguments 同块到达」的工具调用
     拆成 先 START（仅 name）→ 再 ARGS（纯参数增量）两段。
@@ -414,7 +432,26 @@ class _OneShotToolArgsCompatChatOpenAI(ChatOpenAI):
     0.0.44 的编码器状态机只认「后续块才是 args 增量」，同块参数会被 START
     吞掉（客户端收到空 arguments）。渐进式分片的模型（DeepSeek/OpenAI）
     原样透传，不受影响。
+
+    兼任 reasoning_content 恢复：langchain-openai 1.6 按官方 API 规格丢弃
+    第三方思考字段，而 ag-ui 桥靠 additional_kwargs.reasoning_content 发
+    REASONING_MESSAGE_* 事件（思考透传的唯一通道）——这里从原始 delta 捡回。
     """
+
+    def _convert_chunk_to_generation_chunk(
+        self, chunk: dict, default_chunk_class: type, base_generation_info: dict | None
+    ) -> ChatGenerationChunk | None:
+        generation_chunk = super()._convert_chunk_to_generation_chunk(
+            chunk, default_chunk_class, base_generation_info
+        )
+        if generation_chunk is None:
+            return None
+        choices = chunk.get("choices") or []
+        delta = (choices[0].get("delta") or {}) if choices else {}
+        reasoning = delta.get("reasoning_content")
+        if reasoning:
+            generation_chunk.message.additional_kwargs["reasoning_content"] = reasoning
+        return generation_chunk
 
     def _split_one_shot_chunk(self, chunk: Any) -> Iterator[Any]:
         tccs = list(getattr(chunk.message, "tool_call_chunks", None) or [])
@@ -579,6 +616,12 @@ cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s�
 ## 生成管线（Langflow 技能）
 涉及批量生成（宣发文案等）时，先用 list_langflow_skills 查可用技能，再用 run_langflow_skill 调用。
 
+## 计划先行（多步任务）
+≥3 步的任务（拆解→建卡→出图全链路、批量出图、整理画布等）：先用 propose_plan 列出计划征求用户确认
+（title + steps，每步一句动词开头的短句、可独立验证）；确认前绝不执行。用户确认后按顺序执行，
+每完成一步调 update_plan(planId, step=步程序号) 打勾再继续，全部完成后简短汇报；用户暂缓则不执行，
+问清想调整什么。单步操作（建一张卡、单张出图、改一句）直接做，不出计划。
+
 ## 深度调研（纪录片/罪案的故事取证）
 用户要选题论证、背景资料、史实核实、人物/事件深挖时：用 start_deep_research 发起 → 把开题（观看问题+查证方向）讲给用户听并请确认/修改 → confirm_research_plan 开跑 → 用 canvas_ops 建调研卡（nodeType:"research"，researchId=任务id）并 connect_nodes 连到相关卡。进度/结果用 get_research_result 查；完成后的卷宗（含 S 编号来源引用）是写剧本/文稿的事实权威——引用保留 S 编号，争议按双版本呈现不定论。
 
@@ -682,11 +725,22 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
       assistant 的 tool_call 缺响应时补占位响应
     - 纯文本模型：content 为多模态块数组的用户消息降级成纯文本
       （媒体块 → URL 清单，见 _flatten_media_message）
+    - AIMessage 的 reasoning_content 剥除：思考属本轮瞬态，回传给模型
+      既浪费 token 也不被 API 接受
     """
     flatten_media = not _vision_enabled()
     result: List[Any] = []
     pending: Dict[str, str] = {}
     for m in messages:
+        ak = getattr(m, "additional_kwargs", None)
+        if isinstance(m, AIMessage) and isinstance(ak, dict) and "reasoning_content" in ak:
+            m = m.model_copy(
+                update={
+                    "additional_kwargs": {
+                        k: v for k, v in ak.items() if k != "reasoning_content"
+                    }
+                }
+            )
         if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
             result.append(m)
             for tc in m.tool_calls:
@@ -733,12 +787,20 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     if _unanswered_frontend_calls(messages):
         return Command(goto=END, update={})
 
+    # 思考模式（GLM 系默认开）：模型先流式输出 reasoning_content 再给正文，
+    # ag-ui 桥转成 reasoning 消息在聊天里折叠展示
+    thinking_kwargs = (
+        {"extra_body": {"thinking": {"type": "enabled"}}}
+        if _thinking_enabled()
+        else {}
+    )
     model = _OneShotToolArgsCompatChatOpenAI(
         model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("AGENT_API_KEY", ""),
         temperature=0.3,
         streaming=True,
+        **thinking_kwargs,
     )
 
     model_with_tools = model.bind_tools(
