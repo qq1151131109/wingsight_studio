@@ -40,6 +40,7 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 - **不做 fallback、不兼容历史版本**：除非用户主动提出，失败就报错让用户决策，不要静默降级/兜底方案；改数据结构、API、字段时直接改到位并迁移，不保留旧字段/旧格式的兼容读取（历史遗留值一律清除而非静默叠加）
 - **画风闸（juben image_style_required 范式）**：出图类操作（分镜批量出图 / 资产卡 AI 出图 / 拆解自动出图链）要求画风已选——唯一入口 = 底部坞「画风」（全局）。无画风只拦视觉产物，文字流程（拆解/分镜表生成）与聊天自由出图不拦。前端三入口拦截 + `start_decompose_job` 兜底（visual_style 为空记 images_note）。分镜表卡原 visualStyle 字段已无 UI，遗留值静默叠加不参与闸
 - **图生图参考（输入条直连管线 directImagegen）**：本卡已有图自动并入参考首位（面板亮「本卡原图」chip）——「在带图的卡上出图 = 改这张图」；参考序列 = 本卡原图 + @引用/上游连线卡（去重 ≤4，refIds 生成时自愈已删卡）。显式引用（@/连线）存在却一张可用图都没有时**明报拦下**（不发任务，卡上出错误说明），不静默降级文生图（孝庄太后项目踩坑：引用空卡+已删卡被静默丢，纯文生图被当成「没参考」）；空卡无引用的纯文生图不受影响
+- **图片卡动作分层（"看图干活"进大图）**：缩略图悬浮条只留 版本V/复制提示词/重新生成/放大——标注重绘、九宫格切图、候选「设为主图」、版本「恢复」在灯箱里做（`Lightbox` 的 `actions` 注入，gallery 快照带 meta，动作只对本卡图片出现；他卡图片与 PromptBar 引用预览无动作区）。openZoom 快照顺序 = 主图→候选→版本→他卡主图。恢复版本 = 当前版入档 + genPrompt 回滚（与 `NodeMediaHistory.restore` 同逻辑，两处改一起改）。MaskEditDialog 画布自适应大屏 `min(92vw,1400px)`（入口在灯箱）
 - 前端与 agent 间一切流量走**同源代理**（`next.config.ts` rewrites：`/agent-service*`、`/api/v1/*` → 127.0.0.1:8123）。密钥（AGENT/LANGFLOW/DMX key）只存在根目录 `.env.local`（agent 经 dotenv 读取），**绝不下发浏览器、绝不提交**
 - 主 Agent 是**瘦编排者**：系统提示只放"宪法"（`graph.py` SYSTEM_PROMPT），任务知识一律放 Langflow 技能或工具 docstring。新增能力 = 新工具/技能，不是加提示词
 - **LLM 生成类能力一律走 Langflow**（做成 flow，不在 agent 代码里直调模型/写死提示词）；唯一例外是聊天主循环本身（`graph.py` LangGraph 直连 DeepSeek）。约定与清单见下节「Langflow 工作流」

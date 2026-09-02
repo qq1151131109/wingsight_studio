@@ -31,6 +31,7 @@ import {
   Grid3X3,
   History,
   Image as ImageIcon,
+  ImageUp,
   Info,
   Landmark,
   Lock,
@@ -48,6 +49,7 @@ import {
   Search,
   Shirt,
   Trash2,
+  Undo2,
   Upload,
   X,
   ZoomIn,
@@ -1679,9 +1681,13 @@ async function splitImageToGrid(nodeId: string, url: string, title: string) {
 function ImageCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
-  // 放大查看：进入时快照画布全部图片（可翻页）
+  // 放大查看：进入时快照画布全部图片（可翻页）。本卡的候选/版本一并入列
+  // 并带 meta——灯箱上下文动作（标注重绘/九宫格/设为主图/恢复版本）只对本卡
+  // 图片出现："看图干活"的操作在大图做，缩略图悬浮条只留快捷动作
   const [zoom, setZoom] = useState<number | null>(null);
-  const [gallery, setGallery] = useState<{ src: string; title: string }[]>([]);
+  const [gallery, setGallery] = useState<
+    { src: string; title?: string; meta?: unknown }[]
+  >([]);
   const [uploading, setUploading] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [maskOpen, setMaskOpen] = useState(false);
@@ -1691,13 +1697,76 @@ function ImageCard({ data, id, selected }: NodeProps) {
   if (!d || typeof d.nodeType !== "string") return null;
 
   const openZoom = () => {
-    const gal = useCanvasStore
-      .getState()
-      .nodes.filter((n) => n.data.nodeType === "image" && n.data.imageUrl)
-      .map((n) => ({ src: n.data.imageUrl as string, title: n.data.title }));
+    const gal: {
+      src: string;
+      title?: string;
+      meta?: {
+        nodeId: string;
+        kind: "primary" | "candidate" | "version";
+        idx?: number;
+        at?: string;
+        prompt?: string;
+      };
+    }[] = [];
+    for (const n of useCanvasStore.getState().nodes) {
+      if (n.data.nodeType !== "image" || !n.data.imageUrl) continue;
+      if (n.id === id) {
+        gal.push({
+          src: d.imageUrl!,
+          title: d.title ?? "",
+          meta: { nodeId: id, kind: "primary" },
+        });
+        (d.imageUrls ?? []).forEach((u, i) => {
+          if (u && u !== d.imageUrl)
+            gal.push({
+              src: u,
+              title: `${d.title ?? ""} · 候选${i + 1}`,
+              meta: { nodeId: id, kind: "candidate", idx: i },
+            });
+        });
+        (d.versions ?? []).forEach((v, i) =>
+          gal.push({
+            src: v.url,
+            title: `${d.title ?? ""} · ${v.at}`,
+            meta: {
+              nodeId: id,
+              kind: "version",
+              idx: i,
+              at: v.at,
+              prompt: v.prompt,
+            },
+          }),
+        );
+      } else {
+        gal.push({
+          src: n.data.imageUrl as string,
+          title: n.data.title,
+          meta: { nodeId: n.id, kind: "primary" },
+        });
+      }
+    }
     setGallery(gal);
     const idx = gal.findIndex((g) => g.src === d.imageUrl);
     setZoom(idx >= 0 ? idx : 0);
+  };
+
+  // 恢复历史版本（与 NodeMediaHistory.restore 同逻辑：当前版入档、目标版
+  // 出档回主图，genPrompt 一并回滚防串词；灯箱动作区调用）
+  const restoreVersion = (v: { url: string; at?: string; prompt?: string }) => {
+    const st = useCanvasStore.getState();
+    st.commitHistory();
+    st.updateNodeData(id, {
+      imageUrl: v.url,
+      genPrompt: v.prompt || d.genPrompt,
+      versions: [
+        ...(d.versions ?? []).filter((x) => x.url !== v.url),
+        {
+          url: d.imageUrl!,
+          at: new Date().toISOString().slice(5, 16).replace("T", " "),
+          prompt: String(d.genPrompt ?? "").trim() || undefined,
+        },
+      ],
+    });
   };
 
   const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1781,15 +1850,6 @@ function ImageCard({ data, id, selected }: NodeProps) {
               >
                 <History className="h-3 w-3" />V{versionCount + 1}
               </button>
-              <a
-                href={d.imageUrl}
-                download={downloadName(d.title, d.imageUrl, "png")}
-                title="下载"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Download className="h-3.5 w-3.5" />
-              </a>
               {d.body ? (
                 <button
                   type="button"
@@ -1805,28 +1865,6 @@ function ImageCard({ data, id, selected }: NodeProps) {
                   <Copy className="h-3.5 w-3.5" />
                 </button>
               ) : null}
-              <button
-                type="button"
-                data-tip="标注重绘：涂出想改的区域让 AI 重绘" aria-label="标注重绘：涂出想改的区域让 AI 重绘"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setMaskOpen(true);
-                }}
-              >
-                <Brush className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                data-tip="九宫格切图：拆成 9 张卡" aria-label="九宫格切图：拆成 9 张卡"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void splitImageToGrid(id, d.imageUrl!, d.title ?? "");
-                }}
-              >
-                <Grid3X3 className="h-3.5 w-3.5" />
-              </button>
               <button
                 type="button"
                 data-tip="重新生成" aria-label="重新生成"
@@ -1920,6 +1958,83 @@ function ImageCard({ data, id, selected }: NodeProps) {
           index={zoom}
           onIndex={setZoom}
           onClose={() => setZoom(null)}
+          actions={(item, api) => {
+            const meta = item.meta as
+              | {
+                  nodeId: string;
+                  kind: "primary" | "candidate" | "version";
+                  idx?: number;
+                  at?: string;
+                  prompt?: string;
+                }
+              | undefined;
+            if (meta?.nodeId !== id) return null;
+            const btn =
+              "rounded-full p-1.5 text-white/80 hover:bg-white/20 hover:text-white disabled:opacity-40";
+            return (
+              <>
+                {meta.kind === "candidate" ? (
+                  <button
+                    type="button"
+                    data-tip="设为主图" aria-label="设为主图"
+                    className={btn}
+                    disabled={item.src === d.imageUrl}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      update({
+                        primaryIndex: meta.idx ?? 0,
+                        imageUrl: item.src,
+                      });
+                    }}
+                  >
+                    <ImageUp className="h-4 w-4" />
+                  </button>
+                ) : null}
+                {meta.kind === "version" ? (
+                  <button
+                    type="button"
+                    data-tip="恢复此版本（当前版自动存档）" aria-label="恢复此版本（当前版自动存档）"
+                    className={btn}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      restoreVersion({
+                        url: item.src,
+                        at: meta.at,
+                        prompt: meta.prompt,
+                      });
+                      api.close();
+                    }}
+                  >
+                    <Undo2 className="h-4 w-4" />
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  data-tip="标注重绘：涂出想改的区域让 AI 重绘" aria-label="标注重绘：涂出想改的区域让 AI 重绘"
+                  className={btn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    api.close();
+                    setMaskOpen(true);
+                  }}
+                >
+                  <Brush className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
+                  data-tip="九宫格切图：拆成 9 张卡" aria-label="九宫格切图：拆成 9 张卡"
+                  className={btn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    api.close();
+                    void splitImageToGrid(id, item.src, item.title ?? "");
+                  }}
+                >
+                  <Grid3X3 className="h-4 w-4" />
+                </button>
+              </>
+            );
+          }}
         />
       ) : null}
       {historyOpen ? (
@@ -3504,10 +3619,11 @@ async function runBatchResearchForCard(
     return null;
   }
   const searches = targets.length * 2 * 5; // ≤2 轮 × ≤5 查询（豆包+wikimedia 计次口径）
+  const estMin = Math.max(2, Math.ceil(targets.length / 10) * 2);
   const ask =
     targets.length === 1
-      ? `为「${targets[0].data.title}」调研参考图（约 1 分钟，消耗约 ${searches} 次搜索配额）？`
-      : `将为 ${targets.length} 个资产串行调研参考图（每个约 1 分钟，消耗约 ${searches} 次搜索配额）。开始？`;
+      ? `为「${targets[0].data.title}」调研参考图（约 1-2 分钟，消耗约 ${searches} 次搜索配额）？`
+      : `将为 ${targets.length} 个资产 10 路并发调研参考图（预计约 ${estMin} 分钟，消耗约 ${searches} 次搜索配额）。开始？`;
   if (!window.confirm(ask)) return null;
   onProgress(`批量调研中 0/${targets.length}…`);
   return runBatchRefResearch(

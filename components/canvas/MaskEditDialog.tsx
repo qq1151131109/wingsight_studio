@@ -117,7 +117,7 @@ export default function MaskEditDialog({
       onClick={onClose}
     >
       <div
-        className="flex max-h-[88vh] w-full max-w-3xl flex-col gap-2.5 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[92vh] w-[min(96vw,1500px)] flex-col gap-2.5 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
@@ -186,7 +186,7 @@ export default function MaskEditDialog({
 
         <canvas
           ref={canvasRef}
-          className="nodrag nowheel mx-auto w-full max-w-[720px] cursor-crosshair rounded-lg border border-hairline bg-surface-2"
+          className="nodrag nowheel mx-auto w-full max-w-[min(92vw,1400px)] cursor-crosshair rounded-lg border border-hairline bg-surface-2"
           onPointerDown={(e) => {
             e.currentTarget.setPointerCapture(e.pointerId);
             drawing.current = true;

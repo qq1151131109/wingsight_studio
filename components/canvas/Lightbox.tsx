@@ -20,16 +20,26 @@ import {
   downloadMedia,
 } from "@/lib/download";
 
+export type LightboxImage = { src: string; title?: string; meta?: unknown };
+
+/** 上下文动作：开灯箱方按当前图 meta 注入操作钮（如图卡的标注重绘/九宫格/
+ *  设为主图/恢复版本——"看图干活"的动作在大图里做，缩略图悬浮条只留快捷键）。
+ *  返回 null = 当前图无动作（如 PromptBar 引用预览、他卡图片）。 */
 export function Lightbox({
   images,
   index,
   onIndex,
   onClose,
+  actions,
 }: {
-  images: { src: string; title: string }[];
+  images: LightboxImage[];
   index: number;
   onIndex: (i: number) => void;
   onClose: () => void;
+  actions?: (
+    item: LightboxImage,
+    api: { close: () => void },
+  ) => React.ReactNode;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -309,9 +319,17 @@ export function Lightbox({
         </button>
         <span className="text-white/40">滚轮缩放 · 拖拽平移</span>
       </div>
-      {/* 操作条（对标竞品详情弹窗）：下载/复制图片/复制链接/新标签打开，
-           与关闭聚在右上角同一视觉区 */}
+      {/* 操作条（对标竞品详情弹窗）：上下文动作 + 下载/复制图片/复制链接/
+           新标签打开，与关闭聚在右上角同一视觉区 */}
       <div className="absolute right-4 top-4 flex items-center gap-2">
+        {actions ? (() => {
+          const node = actions(cur, { close: onClose });
+          return node ? (
+            <div className="flex items-center gap-0.5 rounded-full bg-black/50 px-1.5 py-0.5">
+              {node}
+            </div>
+          ) : null;
+        })() : null}
         <div className="flex items-center gap-0.5 rounded-full bg-black/50 px-1.5 py-0.5">
           {flash ? <span className="mr-1 px-1 text-xs text-white/90">{flash}</span> : null}
           <button

@@ -27,6 +27,7 @@ import hashlib
 import json
 import logging
 import os
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -63,11 +64,20 @@ MATERIAL_SEED_QUERIES: dict[str, tuple[str, ...]] = {
     "crime": ("悬案旧案重审", "再审改判 案件", "判决文书 公开 案件", "案件档案 解密"),
 }
 
+# 观察卡复查（兑现"证据变硬时自动升级"的承诺）：每轮刷新尾部顺带取最久
+# 未扫的几张薄卡做缺口导向小预算复查；也支持单卡手动深挖（异步任务）。
+RESCAN_BATCH_SIZE = 3
+RESCAN_PLAN_MAX_QUERIES = 3
+RESCAN_FOLLOWUP_MAX_QUERIES = 2
+# 同一张卡两次复查的最小间隔（含建卡到首次复查的冷却）；手动深挖不受限
+RESCAN_COOLDOWN_HOURS = 24.0
+
 FLOW_IDS = {
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
     "followup": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",
     "verdict": "LANGFLOW_TOPIC_VERDICT_FLOW_ID",
+    "rescan_plan": "LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID",
 }
 
 
@@ -108,6 +118,14 @@ class CurateResult:
     error: str = ""
 
 
+@dataclass
+class RescanSummary:
+    """一轮观察卡复查的外部可观测结果。"""
+
+    rescanned: int = 0  # 实际复查张数（含证据仍薄与结论失败的）
+    upgraded: int = 0  # 证据变硬升级为建议卡的张数
+
+
 class TopicCurator:
     """策展编排器：材料窗口采集 → flow 研判 → 逐项取证 → flow 结论 → 落库。"""
 
@@ -137,13 +155,25 @@ class TopicCurator:
         return flow_id
 
     async def _call_flow(self, key: str, payload: dict[str, Any]) -> Any:
-        """跑一个选题 flow 并宽容解析 JSON 输出；失败抛错由调用方按语义降级。"""
+        """跑一个选题 flow 并宽容解析 JSON 输出。
+
+        解析失败（LLM 输出坏 JSON，非确定性）原样重试一次再抛；flow 调用
+        本身失败（配置/引擎问题，确定性）不重试直接抛。实测曾有 40% 的
+        入围线索因单次坏输出被整条丢弃。
+        """
         assert self.flow_runner is not None
-        text = await self.flow_runner(self._flow_id(key), json.dumps(payload, ensure_ascii=False))
-        if text.startswith("（"):
-            # skills.run_flow_blocking 的错误以全角括号包裹；正常 LLM 输出不会
-            raise RuntimeError(f"选题 {key} flow 调用失败: {text[:200]}")
-        return extract_json(text)
+        last_error: ValueError | None = None
+        for attempt in (1, 2):
+            text = await self.flow_runner(self._flow_id(key), json.dumps(payload, ensure_ascii=False))
+            if text.startswith("（"):
+                # skills.run_flow_blocking 的错误以全角括号包裹；正常 LLM 输出不会
+                raise RuntimeError(f"选题 {key} flow 调用失败: {text[:200]}")
+            try:
+                return extract_json(text)
+            except ValueError as exc:
+                last_error = exc
+                logger.warning("选题 %s flow 输出解析失败（第 %d 次）: %s", key, attempt, str(exc)[:200])
+        raise RuntimeError(f"选题 {key} flow 输出两次解析失败: {last_error}")
 
     # --- 采集 ----------------------------------------------------------------
 
@@ -348,6 +378,116 @@ class TopicCurator:
             return None
         return parse_verdict(card_raw, pick.members[0]["title"], research_log)
 
+    # --- 观察卡复查：冲着立项缺口去查，证据变硬就升级 -------------------------
+
+    async def rescan_observations(self, limit: int = RESCAN_BATCH_SIZE) -> RescanSummary:
+        """轮转复查最久未扫的观察卡（每轮刷新尾部顺带跑，与主策展同锁内串行）。"""
+        summary = RescanSummary()
+        if self.search is None:
+            return summary  # 未配置检索就没有"盯"的能力，不空转 LLM
+        if not os.environ.get(FLOW_IDS["rescan_plan"], "").strip():
+            logger.warning("未配置 %s，本轮跳过观察卡复查", FLOW_IDS["rescan_plan"])
+            return summary
+        for topic in store.list_rescan_candidates(limit, cooldown_hours=RESCAN_COOLDOWN_HOURS):
+            try:
+                outcome = await self.rescan_one(topic)
+            except Exception as exc:  # noqa: BLE001 - 单张失败不拖累整批
+                logger.warning(
+                    "选题池观察卡复查失败 title=%s: %s", str(topic.get("title", ""))[:50], str(exc)[:200]
+                )
+                try:
+                    store.mark_rescanned(str(topic["id"]))
+                except Exception:  # noqa: BLE001
+                    logger.exception("选题池复查标记失败 topic=%s", topic.get("id"))
+                outcome = "failed"
+            summary.rescanned += 1
+            if outcome == "upgraded":
+                summary.upgraded += 1
+        return summary
+
+    async def rescan_one(self, topic: dict[str, Any]) -> str:
+        """单张观察卡的缺口导向复查；返回 upgraded / thin / failed（failed 也记扫描）。"""
+        topic_id = str(topic["id"])
+        if topic_id in _rescan_inflight:
+            return "busy"
+        _rescan_inflight.add(topic_id)
+        try:
+            return await self._rescan_one(topic)
+        finally:
+            _rescan_inflight.discard(topic_id)
+
+    async def _rescan_one(self, topic: dict[str, Any]) -> str:
+        topic_id = str(topic["id"])
+        research = topic.get("research") or {}
+        title = str(topic["title"])
+        event = str(research.get("event") or "").strip()
+        gaps = [str(g).strip() for g in research.get("gaps") or [] if str(g).strip()]
+        observation = str(research.get("observation") or "").strip()
+        if not gaps:
+            gaps = ["事件事实与材料入口复核"]  # 旧卡缺口缺失时的兜底复查方向
+
+        plan = await self._plan_queries(
+            "rescan_plan",
+            {"title": title, "event": event or "（无）", "gaps": gaps, "observation": observation or "（无）"},
+            RESCAN_PLAN_MAX_QUERIES,
+        )
+        log = await execute_queries(self.search, plan) if plan else []
+        if log:
+            followup = await self._plan_queries(
+                "followup",
+                {"title": title, "log": _format_research_log(log)},
+                RESCAN_FOLLOWUP_MAX_QUERIES,
+            )
+            if followup:
+                log.extend(await execute_queries(self.search, followup))
+
+        card = await self._rescan_verdict(title, gaps, observation, log)
+        if card is not None and card["worth_it"]:
+            store.upgrade_card(
+                topic_id,
+                title=card["title"],
+                summary=card["summary"],
+                angles=card["angles"],
+                research=card["research"],
+            )
+            logger.info("选题池观察卡复查升级 title=%s", title[:50])
+            return "upgraded"
+        if card is None:
+            store.mark_rescanned(topic_id)  # 结论失败也记扫描：坏卡不卡住轮转队列
+            return "failed"
+        store.record_rescan(topic_id, log)  # 仍薄：信源底账追加，观察内容原地保留
+        return "thin"
+
+    async def _rescan_verdict(
+        self,
+        title: str,
+        gaps: list[str],
+        observation: str,
+        log: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """复查结论复用初扫的 verdict 纪律；多给一段"先前观察"上下文，失败返回 None。"""
+        prior_context = (
+            "先前观察（本次为复查）：\n"
+            f"- 观察结论：{observation or '（无）'}\n"
+            f"- 立项缺口：{'；'.join(gaps)}\n"
+            "本次复查重点：上面的缺口是否已被补上；新证据优先，旧结论里查无实据的部分维持不写。"
+        )
+        try:
+            card_raw = await self._call_flow(
+                "verdict",
+                {
+                    "theme": title,
+                    "reason": "观察卡复查：先前的立项缺口是否已被补上",
+                    "title": title,
+                    "priorContext": prior_context,
+                    "evidencePack": _format_research_log(log, with_empty_hint=True),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 结论失败按仍不足处理
+            logger.warning("选题池复查结论生成失败 title=%s: %s", title[:50], str(exc)[:200])
+            return None
+        return parse_verdict(card_raw, title, log)
+
 
 async def execute_queries(search: SearchFn, queries: list[dict[str, str]]) -> list[dict[str, Any]]:
     """并行执行一批查询；单条失败记空结果，不拖累整批。"""
@@ -397,6 +537,9 @@ def parse_verdict(
     viewing_question = str(card_raw.get("viewing_question") or "").strip()
     scale = str(card_raw.get("scale") or "").strip().lower()
     series_thread = str(card_raw.get("series_thread") or "").strip()
+    # 爆款两把尺子（flow 输出新维度）：跟拍谁 + 观众为什么在意
+    person_anchor = str(card_raw.get("person_anchor") or "").strip()
+    emotion = str(card_raw.get("emotion") or "").strip()
     if scale not in SCALES:
         scale = "single"
     if scale == "series" and not series_thread:
@@ -418,6 +561,10 @@ def parse_verdict(
         "gaps": gaps,
         "source_map": research_log,
     }
+    if emotion:
+        research["emotion"] = emotion
+    if person_anchor:
+        research["person_anchor"] = person_anchor
     if worth_it:
         research["unit_kind"] = unit_kind
         research["viewing_question"] = viewing_question
@@ -548,12 +695,20 @@ class TopicRefreshService:
     async def _run(self) -> CurateResult:
         async with self._lock:
             result = await self.curator.run()
+            # 刷新尾部顺带轮转复查观察卡（锁内串行，防与手动深挖同卡双跑）
+            try:
+                rescan = await self.curator.rescan_observations()
+            except Exception:  # noqa: BLE001 - 复查失败不拖累主刷新的结果记录
+                logger.exception("选题池观察卡轮转复查失败")
+                rescan = RescanSummary()
         store.archive_stale(90)
         store.set_setting(
             "topic_pool_last_run",
             json.dumps(
                 {
                     "finishedAt": datetime.now(timezone.utc).isoformat(),
+                    "rescanned": rescan.rescanned,
+                    "rescanUpgraded": rescan.upgraded,
                     **result.__dict__,
                 },
                 ensure_ascii=False,
@@ -563,3 +718,124 @@ class TopicRefreshService:
 
 
 SERVICE = TopicRefreshService()
+
+# 手动深挖/自动轮转共用：正在复查的观察卡 id（防同卡双跑，跨两条路径互斥）
+_rescan_inflight: set[str] = set()
+
+
+# ---------- 手动深挖：单卡复查异步任务（jobId 轮询，先例 imgresearch.REF_JOBS） ----------
+
+RESCAN_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def start_rescan_job(topic: dict[str, Any]) -> str | None:
+    """启动单卡深挖任务；该卡已有复查在跑时返回 None。"""
+    topic_id = str(topic["id"])
+    if topic_id in _rescan_inflight:
+        return None
+    job_id = uuid.uuid4().hex[:12]
+    RESCAN_JOBS[job_id] = {
+        "jobId": job_id,
+        "topicId": topic_id,
+        "status": "running",
+        "outcome": "",
+        "error": "",
+    }
+    task = asyncio.create_task(_run_rescan_job(job_id, topic))
+    _prune_rescan_jobs(task)
+    return job_id
+
+
+async def _run_rescan_job(job_id: str, topic: dict[str, Any]) -> None:
+    job = RESCAN_JOBS.get(job_id)
+    if job is None:
+        return
+    try:
+        job["outcome"] = await SERVICE.curator.rescan_one(topic)
+        job["status"] = "done"
+    except Exception as exc:  # noqa: BLE001 - 任务结果如实上报
+        job["status"] = "error"
+        job["error"] = str(exc)[:300]
+        logger.exception("选题池手动深挖失败 topic=%s", str(topic.get("title", ""))[:50])
+
+
+def _prune_rescan_jobs(task: asyncio.Task) -> None:
+    def _cleanup(t: asyncio.Task) -> None:
+        done = [k for k, v in RESCAN_JOBS.items() if v["status"] in ("done", "error")]
+        if len(done) > 50:
+            for key in done[:-50]:
+                RESCAN_JOBS.pop(key, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def get_rescan_job(job_id: str) -> dict[str, Any] | None:
+    return RESCAN_JOBS.get(job_id)
+
+
+# ---------- 每日定时刷新（进程内调度，开关/时刻走 app_settings） ----------
+
+AUTO_REFRESH_KEY = "topic_pool_auto_refresh"  # JSON {"enabled": bool, "time": "HH:MM"}
+AUTO_REFRESH_LAST_DATE_KEY = "topic_pool_last_auto_run"  # "YYYY-MM-DD"，防重启后当天重复触发
+
+
+def get_auto_refresh() -> dict[str, Any]:
+    cfg: dict[str, Any] = {"enabled": False, "time": "08:00"}
+    raw = store.get_setting(AUTO_REFRESH_KEY)
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return cfg
+        if isinstance(parsed, dict):
+            cfg["enabled"] = bool(parsed.get("enabled"))
+            cfg["time"] = str(parsed.get("time") or cfg["time"])
+    return cfg
+
+
+def set_auto_refresh(*, enabled: bool, time: str) -> dict[str, Any]:
+    if not _valid_hhmm(time):
+        raise ValueError("time 必须是 HH:MM（24 小时制）")
+    cfg = {"enabled": bool(enabled), "time": time}
+    store.set_setting(AUTO_REFRESH_KEY, json.dumps(cfg, ensure_ascii=False))
+    return cfg
+
+
+def _valid_hhmm(value: str) -> bool:
+    if len(value) != 5 or value[2] != ":":
+        return False
+    hh, mm = value[:2], value[3:]
+    return hh.isdigit() and mm.isdigit() and int(hh) <= 23 and int(mm) <= 59
+
+
+def auto_refresh_tick(service: TopicRefreshService | None = None) -> str:
+    """单次调度判定：开关开、当天未跑、已到点 → 触发一轮策展。
+
+    返回 'fired' / 'skipped' / 'idle'。错过点（agent 重启晚于设定时刻）当天
+    仍会补跑一次；与手动刷新撞车时下一分钟重试，当天仍会补上。
+    """
+    service = service or SERVICE
+    cfg = get_auto_refresh()
+    if not cfg["enabled"]:
+        return "idle"
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    if store.get_setting(AUTO_REFRESH_LAST_DATE_KEY) == today:
+        return "skipped"
+    if now.strftime("%H:%M") < cfg["time"]:
+        return "skipped"
+    if not service.start():
+        return "skipped"  # 已有刷新在跑：日期不落账，下一分钟重试
+    store.set_setting(AUTO_REFRESH_LAST_DATE_KEY, today)
+    logger.info("选题池每日定时刷新已触发")
+    return "fired"
+
+
+async def auto_refresh_loop(interval_seconds: float = 60.0) -> None:
+    """常驻调度循环：每分钟判定一次，自身异常只记日志不禁用。"""
+    while True:
+        try:
+            auto_refresh_tick()
+        except Exception:  # noqa: BLE001
+            logger.exception("选题池定时刷新调度异常")
+        await asyncio.sleep(interval_seconds)

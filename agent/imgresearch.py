@@ -38,8 +38,6 @@ MAX_CANDIDATES_PER_JOB = 100
 # 具体模型的真实上限在出图时按 models.max_references 校验明报）
 MAX_ADOPT_PER_NODE = 10
 _DOWNLOAD_TIMEOUT = httpx.Timeout(30.0)
-# wikimedia 对同域并发敏感（juben 同域并发 2 的口径），整体并发 3
-_DOWNLOAD_CONCURRENCY = 3
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 # wikimedia 批量下载常撞 429/5xx 限流，带退避重试（juben fetch 同口径）
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
@@ -178,38 +176,57 @@ _VOLC_ERR_QUOTA = {10406, 10412}
 _VOLC_ERR_RATE = {700429}
 
 
+class _VolcRateLimited(ValueError):
+    """豆包限流（HTTP 429 / 业务码 700429）：可退避重试，与其他错误区分。"""
+
+
 async def search_volc_images(query: str, limit: int = VOLC_MAX_PER_QUERY) -> list[dict[str, Any]]:
     api_key = os.environ.get("VOLC_SEARCH_API_KEY", "").strip()
     if not api_key:
         raise ValueError("豆包搜图未配置：请在根目录 .env.local 填 VOLC_SEARCH_API_KEY")
     payload = {"Query": query, "SearchType": "image", "Count": max(1, min(limit, VOLC_MAX_PER_QUERY))}
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _UA}
-    async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
-        resp = await client.post(_VOLC_ENDPOINT, headers=headers, json=payload)
-    try:
-        data = resp.json()
-    except ValueError as exc:
-        raise ValueError(f"豆包搜图返回非 JSON（HTTP {resp.status_code}）") from exc
-    if not isinstance(data, dict):
-        raise ValueError("豆包搜图返回格式异常")
-    meta = data.get("ResponseMetadata")
-    if isinstance(meta, dict) and isinstance(meta.get("Error"), dict):
-        err = meta["Error"]
-        code_raw = err.get("CodeN")
+    # 并发调研下 700429/429 会变常见，退避重试（2s/4s）再放弃明报
+    last_error: Exception | None = None
+    for attempt in range(_MAX_ATTEMPTS):
         try:
-            code = int(code_raw) if code_raw is not None else None
-        except (TypeError, ValueError):
-            code = None
-        msg = str(err.get("Message") or "")
-        if code in _VOLC_ERR_AUTH:
-            raise ValueError(f"豆包搜图鉴权失败（{code}）：{msg}")
-        if code in _VOLC_ERR_QUOTA:
-            raise ValueError(f"豆包搜图额度不足（{code}）：{msg}")
-        if code in _VOLC_ERR_RATE:
-            raise ValueError(f"豆包搜图请求受限（{code}）：{msg}")
-        if code in _VOLC_ERR_UNCONFIGURED:
-            raise ValueError(f"豆包搜图服务未开通（{code}）：{msg}")
-        raise ValueError(f"豆包搜图失败（{code}）：{msg}")
+            async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
+                resp = await client.post(_VOLC_ENDPOINT, headers=headers, json=payload)
+            if resp.status_code == 429:
+                raise _VolcRateLimited(f"豆包搜图请求受限（HTTP 429）")
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                raise ValueError(f"豆包搜图返回非 JSON（HTTP {resp.status_code}）") from exc
+            if not isinstance(data, dict):
+                raise ValueError("豆包搜图返回格式异常")
+            meta = data.get("ResponseMetadata")
+            if isinstance(meta, dict) and isinstance(meta.get("Error"), dict):
+                err = meta["Error"]
+                code_raw = err.get("CodeN")
+                try:
+                    code = int(code_raw) if code_raw is not None else None
+                except (TypeError, ValueError):
+                    code = None
+                msg = str(err.get("Message") or "")
+                if code in _VOLC_ERR_AUTH:
+                    raise ValueError(f"豆包搜图鉴权失败（{code}）：{msg}")
+                if code in _VOLC_ERR_QUOTA:
+                    raise ValueError(f"豆包搜图额度不足（{code}）：{msg}")
+                if code in _VOLC_ERR_RATE:
+                    raise _VolcRateLimited(f"豆包搜图请求受限（{code}）：{msg}")
+                if code in _VOLC_ERR_UNCONFIGURED:
+                    raise ValueError(f"豆包搜图服务未开通（{code}）：{msg}")
+                raise ValueError(f"豆包搜图失败（{code}）：{msg}")
+            break
+        except _VolcRateLimited as exc:
+            last_error = exc
+            if attempt < _MAX_ATTEMPTS - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+                continue
+            raise
+    if last_error is not None:
+        raise last_error
     result = data.get("Result")
     images = result.get("ImageResults") if isinstance(result, dict) else None
     out: list[dict[str, Any]] = []
@@ -409,11 +426,15 @@ def start_research_job(
     return job_id
 
 
-# ---------- 批量调研（拆解链后对多个资产串行调研；防打爆搜索配额） ----------
+# ---------- 批量调研（拆解链后对多个资产并发调研） ----------
 
 BATCH_JOBS: dict[str, dict[str, Any]] = {}
-# 队列并发 = 1：豆包免费配额按次计，批量调研串行跑，失败不影响后续资产
-BATCH_CONCURRENCY = 1
+# 10 路并发：每资产单跑约 60-120s，83 资产从 1.5-2.5 小时压到 15-25 分钟。
+# 渠道侧由各自的重试与全局下载信号量兜住（wikimedia 429 退避 / 豆包 700429 退避）
+BATCH_CONCURRENCY = 10
+# 跨任务全局下载并发：10 路调研各自的下载经同一信号量（否则 10×3=30 路
+# 叠加打爆 wikimedia，实测 429 会被打穿）
+_GLOBAL_DOWNLOAD_SEM = asyncio.Semaphore(8)
 
 
 def start_batch_research(
@@ -421,8 +442,8 @@ def start_batch_research(
 ) -> str:
     """assets: [{nodeId, name, type, description}]；返回 batchId。
 
-    逐资产串行跑单资产调研（AI 出词→双渠道搜→终选），每项结果记入
-    items；某资产失败只记该条 error，不中断整批。"""
+    逐资产并发跑单资产调研（AI 出词→双渠道搜→终选，10 路），每项结果
+    记入 items；某资产失败只记该条 error，不中断整批。"""
     batch_id = uuid.uuid4().hex[:12]
     BATCH_JOBS[batch_id] = {
         "batchId": batch_id,
@@ -469,7 +490,7 @@ async def _run_batch(
                         "description": str(a.get("description") or ""),
                     },
                 )
-                # 串行等本资产调研结束（轮询 REF_JOBS 终态）
+                # 等本资产调研结束（轮询 REF_JOBS 终态；并发下各自独立轮询）
                 while True:
                     job = REF_JOBS.get(job_id)
                     if job is None or job["status"] != "running":
@@ -552,13 +573,13 @@ async def _run_research(
             job["error"] = "两个渠道都没有搜到候选图，请换个关键词"
             return
         merged = merged[:MAX_CANDIDATES_PER_JOB]
-        # 并发下载（信号量限速）；单张失败不拖垮整批，失败者不入库。
-        # 整体 110s 死线：超时取消在途下载，保留已完成部分（前端轮询 120s 截止）
-        sem = asyncio.Semaphore(_DOWNLOAD_CONCURRENCY)
+        # 并发下载走全局信号量（10 路调研共享 8 并发，防叠加打爆源站）；
+        # 单张失败不拖垮整批，失败者不入库。
+        # 整体 110s 死线：超时取消在途下载，保留已完成部分（前端轮询 300s 截止）
         dl_errors: list[str] = []
 
         async def _fetch(item: dict[str, Any]) -> None:
-            async with sem:
+            async with _GLOBAL_DOWNLOAD_SEM:
                 try:
                     item["assetUrl"] = await download_image(item["sourceUrl"], item.get("pageUrl") or "")
                 except Exception as exc:  # noqa: BLE001 单张下载失败留痕不入库

@@ -9,7 +9,9 @@
 """
 
 import json
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -40,6 +42,7 @@ import style_presets  # noqa: E402
 import style_routes  # noqa: E402
 import thumbs  # noqa: E402
 import topic_routes  # noqa: E402
+import topic_pool  # noqa: E402  (选题池编排：调度循环从这里取)
 import topics  # noqa: E402
 
 projects.init_db()
@@ -51,7 +54,17 @@ auth.init_auth_db()
 auth.ensure_auth_password()
 
 
-app = FastAPI(title="wingsight-agent")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # 选题池每日定时刷新（进程内 asyncio 轮询；关停随事件循环取消）
+    scheduler = asyncio.create_task(topic_pool.auto_refresh_loop())
+    try:
+        yield
+    finally:
+        scheduler.cancel()
+
+
+app = FastAPI(title="wingsight-agent", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

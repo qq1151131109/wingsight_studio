@@ -190,9 +190,10 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
         )
     batch_id = imgresearch.start_batch_research(pid, parsed)
     names = "、".join(a["name"] for a in parsed)[:120]
+    est_min = max(1, -(-len(parsed) // 10) * 2)
     return (
-        f"已发起 {len(parsed)} 个资产（{names}）的参考图调研，后台串行执行"
-        f"约 {len(parsed) * 1.5:.0f} 分钟。batch_id={batch_id}。"
+        f"已发起 {len(parsed)} 个资产（{names}）的参考图调研，后台 10 路并发执行"
+        f"预计约 {est_min} 分钟。batch_id={batch_id}。"
         "用 get_reference_research_status 查询进度；完成后提醒用户在资产卡上"
         "打开「找参考图」面板勾选采纳，采纳后可用「补资产图」批量出图。"
     )

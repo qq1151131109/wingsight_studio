@@ -97,6 +97,7 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "lastProgressAt": row["last_progress_at"],
+        "lastRescanAt": row["last_rescan_at"],
     }
 
 
@@ -275,3 +276,68 @@ def archive_stale(days: int = 90) -> int:
             (_now(), cutoff),
         )
         return cur.rowcount
+
+
+# ---------- 观察卡复查（重扫） ----------
+
+
+def _is_thin(row: sqlite3.Row) -> bool:
+    """薄卡判定看 evidence_level（verdict 的薄卡也可能带讲法角度，不能看 angles）。"""
+    try:
+        return json.loads(row["research_json"]).get("evidence_level") != "strong"
+    except (json.JSONDecodeError, AttributeError):
+        return True
+
+
+def list_rescan_candidates(limit: int = 3, cooldown_hours: float = 24.0) -> list[dict[str, Any]]:
+    """待复查观察卡：candidate 薄卡，建卡/上次复查过了冷却，最久未扫优先（轮转覆盖）。
+
+    从未扫过的排最前（新观察卡尽快兑现"继续盯"的承诺），其余按上次扫描时间正序。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)).isoformat()
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM topics WHERE status = 'candidate' ORDER BY created_at DESC LIMIT 500"
+        ).fetchall()
+    candidates = [r for r in rows if _is_thin(r)]
+    candidates = [
+        r
+        for r in candidates
+        if r["created_at"] < cutoff and (r["last_rescan_at"] is None or r["last_rescan_at"] < cutoff)
+    ]
+    candidates.sort(
+        key=lambda r: (r["last_rescan_at"] is not None, r["last_rescan_at"] or "", r["created_at"])
+    )
+    return [_serialize(r) for r in candidates[:limit]]
+
+
+def mark_rescanned(topic_id: str) -> None:
+    """记一次复查（异常路径也记，坏卡不卡住轮转队列），并刷新沉底计时。"""
+    now = _now()
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE topics SET last_rescan_at = ?, last_progress_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, now, topic_id),
+        )
+
+
+def record_rescan(topic_id: str, log: list[dict[str, Any]]) -> None:
+    """复查仍薄时的收尾：信源底账追加本次取证（信息只增不减），并记扫描时间。
+
+    观察内容（event/gaps/observation）不覆写——旧缺口仍是缺口，缺口之外的
+    新事实只能以取证留痕的方式进入底账。
+    """
+    row = get_topic_row(topic_id)
+    if row is None:
+        return
+    research = json.loads(row["research_json"])
+    research["source_map"] = list(research.get("source_map") or []) + list(log)
+    now = _now()
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE topics SET research_json = ?, last_rescan_at = ?, last_progress_at = ?,"
+            " updated_at = ? WHERE id = ?",
+            (json.dumps(research, ensure_ascii=False), now, now, now, topic_id),
+        )

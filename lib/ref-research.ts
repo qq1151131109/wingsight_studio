@@ -188,14 +188,14 @@ export async function getBatchRefResearchJob(
   return (await r.json()) as BatchRefJob;
 }
 
-/** 发起 + 轮询到终态（2s 间隔；串行调研每资产约 30-60s，N 资产分钟级）。 */
+/** 发起 + 轮询到终态（2s 间隔；10 路并发，150 资产约 30 分钟，留足余量）。 */
 export async function runBatchRefResearch(
   projectId: string,
   assets: BatchAssetInput[],
   onProgress?: (job: BatchRefJob) => void,
 ): Promise<BatchRefJob> {
   const batchId = await startBatchRefResearch(projectId, assets);
-  const deadline = Date.now() + 30 * 60_000;
+  const deadline = Date.now() + 60 * 60_000;
   for (;;) {
     const job = await getBatchRefResearchJob(projectId, batchId);
     onProgress?.(job);

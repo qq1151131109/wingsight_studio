@@ -16,14 +16,26 @@ from fastapi import APIRouter, Response
 import auth
 import projects
 import topics as store
-from topic_pool import FLOW_IDS, SERVICE
+from topic_pool import (
+    AUTO_REFRESH_LAST_DATE_KEY,
+    FLOW_IDS,
+    SERVICE,
+    get_auto_refresh,
+    get_rescan_job,
+    set_auto_refresh,
+    start_rescan_job,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
+# 主策展管线依赖的四个 flow（复查规划 flow 缺配只影响深挖，不拦主刷新）
+_CORE_FLOW_KEYS = ("triage", "plan", "followup", "verdict")
+_RESCAN_FLOW_KEYS = ("rescan_plan", "followup", "verdict")
 
-def _require_flow_ids() -> str | None:
-    missing = [env for env in FLOW_IDS.values() if not os.environ.get(env, "").strip()]
+
+def _require_flow_ids(keys: tuple[str, ...] = _CORE_FLOW_KEYS) -> str | None:
+    missing = [FLOW_IDS[key] for key in keys if not os.environ.get(FLOW_IDS[key], "").strip()]
     return "、".join(missing) if missing else None
 
 
@@ -54,6 +66,57 @@ def list_topics(
         "refreshing": SERVICE.refreshing,
         "lastRun": SERVICE.last_run(),
     }
+
+
+@router.get("/topics/schedule")
+def get_schedule(user: auth.CurrentUser):
+    """每日自动刷新的开关与时刻（进程内调度，存 app_settings）。"""
+    _ = user
+    return {
+        "schedule": get_auto_refresh(),
+        "lastAutoRunDate": store.get_setting(AUTO_REFRESH_LAST_DATE_KEY) or "",
+    }
+
+
+@router.put("/topics/schedule")
+def put_schedule(payload: dict[str, Any], user: auth.CurrentUser):
+    _ = user
+    try:
+        cfg = set_auto_refresh(enabled=bool(payload.get("enabled")), time=str(payload.get("time") or ""))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    return {"schedule": cfg}
+
+
+@router.post("/topics/{topic_id}/rescan")
+async def rescan_topic(topic_id: str, user: auth.CurrentUser):
+    """手动深挖一张观察卡：缺口导向小预算复查，异步任务 + 轮询（代理 30s 限制）。"""
+    _ = user
+    missing = _require_flow_ids(_RESCAN_FLOW_KEYS)
+    if missing:
+        return Response(status_code=503, content=f"未配置选题 flow id：{missing}", media_type="text/plain")
+    if SERVICE.refreshing:
+        return Response(status_code=409, content="策展刷新进行中，完成后可再试", media_type="text/plain")
+    topic = store.get_topic(topic_id)
+    if topic is None:
+        return Response(status_code=404, content="选题不存在", media_type="text/plain")
+    if topic["status"] != "candidate":
+        return Response(status_code=409, content="仅候选状态可深挖", media_type="text/plain")
+    if (topic.get("research") or {}).get("evidence_level") == "strong":
+        return Response(status_code=400, content="建议卡证据已充分，无需深挖", media_type="text/plain")
+    job_id = start_rescan_job(topic)
+    if job_id is None:
+        return Response(status_code=409, content="该卡已有复查在跑", media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@router.get("/topics/rescan/{job_id}")
+def get_rescan(job_id: str, user: auth.CurrentUser):
+    _ = user
+    job = get_rescan_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="复查任务不存在（可能已完成较久被清理）", media_type="text/plain")
+    return {"job": job}
 
 
 @router.get("/topics/{topic_id}")
@@ -89,6 +152,10 @@ def _topic_card_body(topic: dict[str, Any]) -> str:
             lines.extend(f"- {a}" for a in topic["angles"])
         if research.get("material_base"):
             lines.append(f"【材料底数】{research['material_base']}")
+        if research.get("person_anchor"):
+            lines.append(f"【人物锚点】{research['person_anchor']}")
+        if research.get("emotion"):
+            lines.append(f"【情绪钩子】{research['emotion']}")
         if research.get("competition_gap"):
             lines.append(f"【对家与差异】{research['competition_gap']}")
         if research.get("viewing_question"):

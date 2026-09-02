@@ -19,8 +19,13 @@ import AuthGate from "@/components/shell/AuthGate";
 import {
   adoptTopic,
   dismissTopic,
+  getRescanJob,
+  getSchedule,
   listTopics,
   refreshTopics,
+  setSchedule,
+  startRescan,
+  type AutoRefreshSchedule,
   type Topic,
   type TopicRefreshRun,
   type TopicVertical,
@@ -69,6 +74,7 @@ function lastRunSummary(run: TopicRefreshRun): string {
   if (typeof run.shortlisted === "number") parts.push(`入围 ${run.shortlisted}`);
   const produced = (run.created ?? 0) + (run.observed ?? 0);
   if (produced || run.upgraded) parts.push(`建议 +${run.created ?? 0} · 观察 +${run.observed ?? 0}${run.upgraded ? ` · 升级 ${run.upgraded}` : ""}`);
+  if (run.rescanned) parts.push(`复查 ${run.rescanned}${run.rescanUpgraded ? `（升级 ${run.rescanUpgraded}）` : ""}`);
   const prefix = run.error ? `上次刷新中断（${run.error}）` : `上次刷新：${parts.join(" · ") || "无产出"}`;
   return `${prefix} · ${formatTime(run.finishedAt)}`;
 }
@@ -84,7 +90,15 @@ function TopicPoolInner() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
+  const [noticeTone, setNoticeTone] = useState<"danger" | "good">("danger");
+  const [schedule, setScheduleState] = useState<AutoRefreshSchedule | null>(null);
+  const [rescanJob, setRescanJob] = useState<{ jobId: string; topicId: string } | null>(null);
   const pollRef = useRef<number | null>(null);
+
+  const notify = (msg: string, tone: "danger" | "good" = "danger") => {
+    setNotice(msg);
+    setNoticeTone(tone);
+  };
 
   const load = useCallback(
     async (opts?: { keepSelection?: boolean }) => {
@@ -103,7 +117,7 @@ function TopicPoolInner() {
             : (data.topics[0]?.id ?? null),
         );
       } catch {
-        setNotice("选题池加载失败（服务未连接？）");
+        notify("选题池加载失败（服务未连接？）");
         setTopics([]);
       }
     },
@@ -126,7 +140,7 @@ function TopicPoolInner() {
         setSelectedId(data.topics[0]?.id ?? null);
       } catch {
         if (alive) {
-          setNotice("选题池加载失败（服务未连接？）");
+          notify("选题池加载失败（服务未连接？）");
           setTopics([]);
         }
       }
@@ -145,15 +159,76 @@ function TopicPoolInner() {
     };
   }, [refreshing, load]);
 
-  const startRefresh = async () => {
+  // 每日自动刷新设置（读不到不影响主功能，顶栏控件不渲染）
+  useEffect(() => {
+    let alive = true;
+    getSchedule()
+      .then((d) => {
+        if (alive) setScheduleState(d.schedule);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const updateSchedule = async (patch: Partial<AutoRefreshSchedule>) => {
+    if (!schedule) return;
+    const next = { ...schedule, ...patch };
+    setScheduleState(next); // 乐观更新，失败回读
+    try {
+      setScheduleState(await setSchedule(next));
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "自动刷新设置保存失败");
+      getSchedule()
+        .then((d) => setScheduleState(d.schedule))
+        .catch(() => {});
+    }
+  };
+
+  // 深挖任务轮询（2.5s），完成/失败即停并刷新该卡
+  useEffect(() => {
+    if (!rescanJob) return;
+    let alive = true;
+    const timer = window.setInterval(async () => {
+      try {
+        const job = await getRescanJob(rescanJob.jobId);
+        if (!alive || job.status === "running") return;
+        setRescanJob(null);
+        void load({ keepSelection: true });
+        if (job.status === "error") notify(`深挖失败：${job.error || "未知错误"}`);
+        else if (job.outcome === "upgraded") notify("复查完成：证据变硬，已升级为建议卡", "good");
+        else if (job.outcome === "thin") notify("复查完成：证据仍薄，新取证已记入信源底账");
+        else notify("复查完成：本轮未得出新结论，已记一次复查");
+      } catch {
+        // 轮询单次失败下一跳再试
+      }
+    }, 2500);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [rescanJob, load]);
+
+  const doRescan = async (t: Topic) => {
     setNotice("");
+    try {
+      const jobId = await startRescan(t.id);
+      setRescanJob({ jobId, topicId: t.id });
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "启动深挖失败");
+    }
+  };
+
+  const startRefresh = async () => {
+    notify("");
     const r = await refreshTopics();
     if (r === "conflict") {
-      setNotice("已有刷新在跑");
+      notify("已有刷新在跑");
       return;
     }
     if (r === "unconfigured") {
-      setNotice("选题 flow 未配置（LANGFLOW_TOPIC_*_FLOW_ID）");
+      notify("选题 flow 未配置（LANGFLOW_TOPIC_*_FLOW_ID）");
       return;
     }
     setRefreshing(true);
@@ -163,17 +238,17 @@ function TopicPoolInner() {
     if (!window.confirm(`忽略「${t.title}」？忽略后本轮策展不再打扰。`)) return;
     setBusyId(t.id);
     if (await dismissTopic(t.id)) void load({ keepSelection: true });
-    else setNotice("忽略失败");
+    else notify("忽略失败");
     setBusyId(null);
   };
 
   const doAdopt = async (t: Topic) => {
     setBusyId(t.id);
-    setNotice("");
+    notify("");
     const r = await adoptTopic(t.id);
     setBusyId(null);
     if (!r) {
-      setNotice("认领失败（可能已被认领）");
+      notify("认领失败（可能已被认领）");
       return;
     }
     router.push(`/project/${r.pid}`);
@@ -210,6 +285,25 @@ function TopicPoolInner() {
             <RefreshCw className={`h-3.5 w-3.5 ${refreshing ? "motion-safe:animate-spin" : ""}`} />
             刷新选题
           </button>
+          {schedule ? (
+            <label className="flex items-center gap-2 rounded-md border border-hairline bg-surface-1 px-2.5 py-1.5 text-xs text-text-2">
+              <input
+                type="checkbox"
+                checked={schedule.enabled}
+                onChange={(e) => void updateSchedule({ enabled: e.target.checked })}
+                style={{ accentColor: "var(--color-accent)" }}
+                className="h-3.5 w-3.5 cursor-pointer"
+              />
+              每日自动
+              <input
+                type="time"
+                value={schedule.time}
+                disabled={!schedule.enabled}
+                onChange={(e) => void updateSchedule({ time: e.target.value })}
+                className={`rounded border border-hairline-soft bg-surface-2/60 px-1 py-0.5 text-[11px] text-text outline-none ${schedule.enabled ? "" : "opacity-50"}`}
+              />
+            </label>
+          ) : null}
         </div>
         <div className="mx-auto w-full max-w-6xl px-6 pb-2">
           <p className="text-[11px] text-text-4">
@@ -262,7 +356,13 @@ function TopicPoolInner() {
       </div>
 
       {notice ? (
-        <p className="mx-auto mt-3 w-full max-w-6xl rounded-md bg-danger/10 px-3 py-2 text-xs text-danger">{notice}</p>
+        <p
+          className={`mx-auto mt-3 w-full max-w-6xl rounded-md px-3 py-2 text-xs ${
+            noticeTone === "good" ? "bg-good/10 text-good" : "bg-danger/10 text-danger"
+          }`}
+        >
+          {notice}
+        </p>
       ) : null}
 
       {/* 主体：左列表 + 右详情 */}
@@ -324,7 +424,16 @@ function TopicPoolInner() {
         </section>
 
         <section className="min-h-0 overflow-y-auto pb-4">
-          {selected ? <TopicDetail topic={selected} busy={busyId === selected.id} onAdopt={() => void doAdopt(selected)} onDismiss={() => void doDismiss(selected)} /> : null}
+          {selected ? (
+            <TopicDetail
+              topic={selected}
+              busy={busyId === selected.id}
+              rescanBusy={rescanJob?.topicId === selected.id}
+              onAdopt={() => void doAdopt(selected)}
+              onDismiss={() => void doDismiss(selected)}
+              onRescan={() => void doRescan(selected)}
+            />
+          ) : null}
         </section>
       </main>
     </div>
@@ -402,22 +511,34 @@ const SCALE_LABEL: Record<string, string> = {
 function TopicDetail({
   topic,
   busy,
+  rescanBusy,
   onAdopt,
   onDismiss,
+  onRescan,
 }: {
   topic: Topic;
   busy: boolean;
+  rescanBusy: boolean;
   onAdopt: () => void;
   onDismiss: () => void;
+  onRescan: () => void;
 }) {
   const r = topic.research;
   const strong = isStrong(topic);
+  const rescanNote =
+    topic.status === "candidate" && !strong
+      ? topic.lastRescanAt
+        ? `上次复查 ${formatTime(topic.lastRescanAt)}`
+        : "尚未复查"
+      : "";
   return (
     <div className="ws-card p-5">
       <div className="flex items-center gap-1.5">
         <span className="h-2 w-2 rounded-full" style={{ background: VERTICAL_DOT[topic.vertical] }} />
         <span className="text-[11px] text-text-4">
-          {VERTICAL_LABEL[topic.vertical]} · {SOURCE_LABEL[topic.source] ?? topic.source} · 收录于 {formatTime(topic.createdAt)}
+          {VERTICAL_LABEL[topic.vertical]} · {SOURCE_LABEL[topic.source] ?? topic.source} · 收录于{" "}
+          {formatTime(topic.createdAt)}
+          {rescanNote ? ` · ${rescanNote}` : ""}
         </span>
       </div>
       <h2 className="font-editorial mt-1 text-lg font-semibold leading-snug text-text">
@@ -426,10 +547,17 @@ function TopicDetail({
       {topic.summary ? <p className="mt-2 text-xs leading-relaxed text-text-2">{topic.summary}</p> : null}
 
       <div className="mt-4 space-y-3.5">
+        {r.emotion ? (
+          <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
+            <h4 className="text-[11px] font-medium text-text-4">情绪钩子</h4>
+            <p className="font-editorial mt-0.5 text-sm text-text">{r.emotion}</p>
+          </div>
+        ) : null}
         {strong ? (
           <>
             {r.event ? <Field label="已核实事件">{r.event}</Field> : null}
             {r.why_now ? <Field label="为何是现在">{r.why_now}</Field> : null}
+            {r.person_anchor ? <Field label="人物锚点（跟拍谁）">{r.person_anchor}</Field> : null}
             {topic.angles.length > 0 ? (
               <Field label="讲法角度">
                 <ul className="list-inside list-disc space-y-0.5">
@@ -546,6 +674,17 @@ function TopicDetail({
             {busy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Check className="h-3.5 w-3.5" />}
             认领立项
           </button>
+          {!strong ? (
+            <button
+              type="button"
+              onClick={onRescan}
+              disabled={busy || rescanBusy}
+              className="flex items-center gap-1.5 rounded-md border border-hairline px-3.5 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+            >
+              {rescanBusy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+              深挖一下
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={onDismiss}
