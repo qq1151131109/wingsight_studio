@@ -31,6 +31,10 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `topic-verdict.json` | 选题两级结论 | 研判线索+调研证据(+angleOptions 候选角度) → 建议卡或观察卡（证据驱动+角度择优+entities 实体抽取；第 4 步） | `LANGFLOW_TOPIC_VERDICT_FLOW_ID` | 无（同上） |
 | `topic-rescan-plan.json` | 选题复查规划 | 观察卡缺口+已核实事实 → ≤3 条冲着缺口去的复查查询（观察卡复查第 1 步；复查的追查/结论复用 followup/verdict） | `LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID` | 无（同上） |
 | `topic-angle-gen.json` | 选题角度生成 | 研判线索+调研证据 → 2-3 个爆款角度模板×具体切口的候选方案（verdict 带 angleOptions 择优成卡，缺配时 verdict 自选角度） | `LANGFLOW_TOPIC_ANGLE_FLOW_ID` | 无（同上） |
+| `research-plan.json` | 调研开题 | 主题+侧重 → 观看问题+2-5 个取证方向（各带检索词）+风险预判（深度调研第 1 步，编排 `agent/research.py`） | `LANGFLOW_RESEARCH_PLAN_FLOW_ID` | 无（同上）；运行时注 glm-5.3-flash 快模型 |
+| `research-extract.json` | 调研提纯 | 页面正文/摘要 → 相关性+来源分类（一手史料/学术/可靠媒体/自媒体/百科辞书/其他）+≤8 条带引句事实；严禁补写 content 外内容 | `LANGFLOW_RESEARCH_EXTRACT_FLOW_ID` | 无（同上）；快模型 |
+| `research-evaluate.json` | 调研完整性评估 | 已提纯证据 → 是否可开写+缺口+换角度补搜词（轮间步，Skywork CompletenessEvaluation 范式） | `LANGFLOW_RESEARCH_EVAL_FLOW_ID` | 无（同上）；快模型 |
+| `research-dossier.json` | 调研卷宗撰写 | 来源底账+提纯事实 → 五段卷宗（叙事脊/已证实事实/真实争议双版本/风险/材料簇），全 S 编号引用；agent 侧逐条校验引用剔幻觉 | `LANGFLOW_RESEARCH_DOSSIER_FLOW_ID` | 无（同上）——出厂模型保质量 |
 
 注：三个分类型拆解 flow 由 agent 三路并发调用（`/assets/decompose`），各自
 输出小、按类型定制提示词、单类失败不拖累其他；未配置三类变量时回落到
@@ -48,6 +52,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `POST /storyboard/images` + `GET /storyboard/images/{jobId}` | 单资产出图 | 分镜行批量出图：起任务立即返回 jobId，前端轮询（每张完成即写回任务状态）。**必须异步**——Next 同源代理约 30s 掐断长请求，阻塞等完必 500 |
 | `POST /styles/reverse` + `GET /styles/reverse/{jobId}` | 画风反推 | 我的画风「从参考图反推」：起任务返回 jobId，前端轮询。路由 `agent/style_routes.py`（CRUD 同文件），任务机制同 prompt-optimize |
 | `POST /projects/{pid}/refs/research` + `GET .../refs/research/{jobId}` | 参考图调研规划+终选 | 资产参考图调研全链路：AI 出词（手填可覆盖）→ 豆包搜图+Wikimedia 双渠道 → 候选下载落盘 → gpt-5.6-luna 看图终选（recommended 落库）。**异步任务**：前端轮询。候选增删/采纳走 `/projects/{pid}/refs/candidates*`（采纳建参考卡连线进参考序列）。编排 `agent/imgresearch.py`，路由 `agent/ref_routes.py` |
+| `POST /projects/{pid}/research` + `GET .../research/{jobId}`（另有 `.../confirm`、`.../cancel`、`.../gap`、`.../sources`） | 调研四 flow 全链 | 深度调研：发起即开题（观看问题+方向）→ 聊天里确认 → 多轮（Serper Google 网页搜索→原文抓取→提纯→完整性评估→补搜）→ 五段卷宗（叙事脊/事实边界/争议/风险/材料簇，S 编号引用）。**异步任务**：job 落 SQLite，重启标 interrupted、证据保留可 gap 补研续跑。聊天工具 `start_deep_research`/`confirm_research_plan`/`get_research_result`（graph.py）；前端调研卡（nodeType:"research"，凭 researchId 轮询）+ ResearchReader 阅读器。编排 `agent/research.py`，路由 `agent/research_routes.py`；单测 `agent/test_research.py` |
 
 出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?}`
 （项目级出图设置，目录与校验见 `agent/models.py`，`GET /models/image` 下发），

@@ -209,9 +209,16 @@
 6. 会话重命名换成对话框；多行输入、发送后气泡渲染成 chip 样式。
 
 ### P2 —— 结构化 feed（单独立项，对标 open-storyboard-canvas）
-1. 消息流分型：tool/approval/plan/status 卡片体系，工具卡折叠看详情（可自建 feed 或评估 CopilotKit v2）。
+> **进度 2026-09-02：第 1、3 项已落地第一层**——`components/copilot/toolCards.tsx`：6 个后端工具
+> 注册 render-only action（`available:"disabled"`，框架按工具名拦截 stock 渲染）分型成卡；
+> read_node 从静默变卡片；canvas_ops 破坏性操作审批从原生 confirm 换成聊天流内联审批卡
+> （zustand store 驱动，聊天消息列表不需重渲染也能出现/点击）。E2E：`scripts/chat-tool-cards-test.mjs`。
+> 落地中发现并修复：聊天输入打字不触发 onChange（MentionInput 提取时丢了 onInput→emitChange
+> 链路，发送按钮/Enter 全体失灵，画布面板 PromptBar 同病）——onInput 非 IME 组合时补 emitChange。
+
+1. 消息流分型：tool/approval/plan/status 卡片体系，工具卡折叠看详情（✅ 后端工具+审批已做；plan/status 未做）
 2. 计划先行：拆解/批量出图类任务先出计划卡确认再执行，逐项打勾。
-3. 审批卡内联化 + 影响摘要（节点/边数、预估张数与时长）。
+3. 审批卡内联化 + 影响摘要（✅ 已内联；影响摘要有人话描述，成本/时长预估未做）
 4. 任务面板：长任务独立面板、并行展示、可取消、断点恢复入口。
 5. 思考透传：V4 思考模式 + AG-UI ReasoningMessage 事件族已在协议层，缺 UI（novanova ThinkingBlock 范式或 v2 折叠组件）。
 6. 画布节点拖进聊天、工具卡「定位输入/定位结果」双按钮。

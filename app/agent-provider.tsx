@@ -5,6 +5,7 @@ import { CopilotKit } from "@copilotkit/react-core";
 import { HttpAgent } from "@ag-ui/client";
 import { getToken } from "@/lib/auth";
 import { startThemeSync } from "@/lib/theme";
+import { useChatSession } from "@/lib/chat/session";
 
 /**
  * LangGraph 主 agent（agent/ 目录，FastAPI + ag-ui-langgraph，8123 端口）。
@@ -25,8 +26,13 @@ const langgraphAgent = new HttpAgent({
 export function AgentProvider({ children }: { children: React.ReactNode }) {
   // 全站主题同步（juben 时间规则：边界自动切换 / 多标签同步），只挂一次
   useEffect(() => startThemeSync(), []);
+  // UI 会话 id 直通 CopilotKit（内部 ThreadsProvider）：agent 侧 langgraph
+  // checkpoint 按 thread_id 存取——不接通的话「新会话」只清界面，模型仍带旧
+  // 会话记忆串台；接通后新会话/切会话/删会话的记忆边界与 UI 一致
+  const agentThreadId = useChatSession((s) => s.agentThreadId);
   return (
     <CopilotKit
+      threadId={agentThreadId}
       selfManagedAgents={{ default: langgraphAgent }}
       // dev 构建默认挂载 web inspector（右上角黑球，shadow DOM Web Component）；
       // 旧 prop showDevConsole 已废弃不管这事，正确开关是 enableInspector

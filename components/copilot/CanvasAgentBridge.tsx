@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import {
   useCoAgent,
   useCopilotAction,
@@ -9,15 +9,23 @@ import {
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
-import { CheckCircle2, CircleAlert, Wrench } from "lucide-react";
-import { summarizeCanvas, useCanvasStore } from "@/lib/canvas/store";
+import { CheckCircle2, CircleAlert, FileText, Wrench } from "lucide-react";
+import { summarizeCanvas, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
+import { buildRefSequence } from "@/lib/canvas/refSequence";
 import {
   applyOps,
   normalizeOps,
   type CanvasOp,
   type OpResult,
 } from "@/lib/canvas/ops";
-import ConfirmDialog from "@/components/shell/ConfirmDialog";
+import BackendToolCards, {
+  ApprovalCard,
+  requestToolApproval,
+  RunningRow,
+  ToolCard,
+  useToolApproval,
+} from "./toolCards";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import {
   CANCEL_GENERATION_EVENT,
@@ -43,10 +51,16 @@ import {
 } from "@/lib/shotlist";
 import { findModelOption, loadImageModels, resolveAutoAspect, saneGen } from "@/lib/imagegen";
 
+/** 改图模式提示词模板：整体替换 flow 默认模板（无四格/空镜/剧照版式措辞），
+ *  只保留 描述 + 视觉风格 + 逐张参考职责（本卡原图 image 职责=保留构图
+ *  只改要改的）+ 文字守卫。变量表见 asset-imagegen flow 的 render_asset_prompt */
+const EDIT_PROMPT_TEMPLATE =
+  "{description}\n\n全局视觉风格（整张图的媒介、质感与调色以此为准，务必遵循）：\n{visual_notes}\n\n{_reference_note}\n{_text_guard}";
+
 /** 面板出图直连管线：跳过聊天 LLM，直连 imagegen flow（与拆解出图链/
  *  分镜批量出图同一条）。确定性任务不走 agent，快、省 token、不刷聊天屏。
  *  prompt 空=按卡上标题与正文；参考图取 @引用+上游连线卡的设定图；
- *  上游有角色卡时按角色四格契约出图（Look 卡重生成保持版式） */
+ *  契约推断见函数内 assetType 注释 */
 async function directImagegen(
   nodeId: string,
   opts: { prompt: string; refIds: string[]; count?: number },
@@ -93,14 +107,18 @@ async function directImagegen(
     .filter((n) => n.data.imageUrl);
   const selfImageUrl = node.data.imageUrl as string | undefined;
   const selfMentioned = validRefIds.includes(nodeId);
-  const seenUrl = new Set<string>();
-  const referenceImages = [
-    ...mentionedImgs.map((n) => n.data.imageUrl as string),
-    // 本卡原图自动并入（图生图锚点，孝庄太后项目踩坑）；正文里已 @ 自己
-    // 则尊重显式编号位次，不重复收
-    ...(!selfMentioned && selfImageUrl ? [selfImageUrl] : []),
-    ...connectedNodes.map((n) => n.data.imageUrl as string),
-  ].filter((u) => (seenUrl.has(u) ? false : (seenUrl.add(u), true)));
+  // 参考序列单一事实源（lib/canvas/refSequence）：@ 引用 → 本卡原图（未 @
+  // 自己时作图生图锚点，孝庄太后项目踩坑）→ 上游连线卡，带图才收、按图
+  // URL 去重。图N 编号在此定序，PromptBar 计数/chips 同源
+  const { entries: refEntries, urls: referenceImages } = buildRefSequence({
+    mentionIds: validRefIds,
+    nodes: st.nodes,
+    selfId: nodeId,
+    selfImageUrl,
+    connectedIds: st.edges
+      .filter((e) => e.target === nodeId)
+      .map((e) => e.source),
+  });
   // 明式引用（@ 或连线）却一张可用图都没收到 = 曾经「静默降级文生图」的
   // 根源，明报拦下让用户决策；空卡无引用的直接文生图不受影响
   const expectsRefs =
@@ -114,28 +132,26 @@ async function directImagegen(
     return;
   }
   // 编号契约（novanova buildImageReferencePromptText 范式）：把「图N」和
-  // 卡名/数组位次钉死，指代有事实源
-  const numberingNote = mentionedImgs.length
-    ? `参考图编号：${mentionedImgs
-        .map((n, i) => `图${i + 1}=《${n.data.title || "无题"}》`)
+  // 卡名/数组位次钉死，指代有事实源。覆盖全部参考（含本卡原图与连线卡）——
+  // 旧版只编号 @ 引用，连线参考进序列却无编号，正文无法指代
+  const numberingNote = refEntries.length
+    ? `参考图编号：${refEntries
+        .map((e, i) => `图${i + 1}=《${e.node.data.title || "无题"}》`)
         .join("、")}（图N 即第 N 张参考图）。`
     : "";
   const visualNotes = [
-    ...mentionedNodes.map((n) => {
-      const body = ((n.data.body as string) ?? "").slice(0, 150);
-      const idx = mentionedImgs.indexOf(n);
-      return idx >= 0
-        ? `图${idx + 1}=《${n.data.title || "无题"}》${body ? `：${body}` : ""}`
-        : `${n.data.title}：${body}`;
+    ...mentionedNodes
+      .filter((n) => !n.data.imageUrl)
+      .map(
+        (n) =>
+          `${n.data.title}：${((n.data.body as string) ?? "").slice(0, 150)}`,
+      ),
+    ...refEntries.map((e) => {
+      const body = ((e.node.data.body as string) ?? "").slice(0, 150);
+      return `${e.label}=《${e.node.data.title || "无题"}》${body ? `：${body}` : ""}`;
     }),
-    ...connectedNodes.map(
-      (n) => `${n.data.title}：${((n.data.body as string) ?? "").slice(0, 150)}`,
-    ),
     `全局视觉风格：${projectStyle}`,
   ].join("；");
-  const isCharacterLook =
-    mentionedNodes.some((n) => n.data.nodeType === "character") ||
-    connectedNodes.some((n) => n.data.nodeType === "character");
   // 资产卡按自身类型出设定图（角色=四格定妆契约、服饰按道具契约、场景/道具
   // 同名）——此前只看引用卡里有没有角色卡，角色资产卡不带角色引用时被误标
   // 成 scene，提示词渲染成「无人空镜」出空场景
@@ -155,23 +171,61 @@ async function directImagegen(
       e.target === nodeId &&
       st.nodes.find((m) => m.id === e.source)?.data.nodeType === "shotlist",
   );
-  const assetType =
-    targetAssetType ??
-    (fromShotlist ? "shot" : isCharacterLook ? "character" : "scene");
+  // 资产卡入边 = Look/概念图卡（角色→定妆、场景→概念图、服饰道具→细节图），
+  // 按父资产类型走设定图契约。用 isLookCard 判定（要求有标题）：空名图卡
+  // 连着角色卡 ≠ Look 卡——那是引用角色设定的剧照卡，该走 shot（罪案实录
+  // 复测时「张波剧照」被误出成四格定妆的修正）
+  const assetParentEdge = st.edges.find((e) => {
+    if (e.target !== nodeId) return false;
+    const t = String(st.nodes.find((m) => m.id === e.source)?.data.nodeType ?? "");
+    return (ASSET_TYPES as string[]).includes(t);
+  });
+  const assetParentType = String(
+    st.nodes.find((m) => m.id === assetParentEdge?.source)?.data.nodeType ?? "",
+  );
+  const isLook = isLookCard(node as WingNode, st.nodes, st.edges);
+  // 契约推断 v2（罪案实录事故修正）：普通图片卡此前无参考落 scene 无人空镜、
+  // 带角色参考落四格定妆——「手动图片卡 + 图片设定图连线 + 有人物剧情的
+  // 提示词」这个最常用组合被渲染成无人空镜，参考职责也被弱化。现按语义分流：
+  //  改图（本卡有图且 @自己/无其他参考）→ 最小提示词模板（无版式措辞，
+  //    本卡原图 image 职责=保留构图只改要改的）
+  //  其余有参考/分镜派生/角色参考 → shot 剧照（人物严格锁定参考图）
+  //  纯文生且标题/提示词明确是场景设计 → scene 空镜；否则 shot（本工具
+  //  默认产出即电影剧照）——scene 不再是无参考默认值，冲突结构性消失
+  const editMode =
+    !targetAssetType &&
+    !fromShotlist &&
+    !isLook &&
+    Boolean(selfImageUrl) &&
+    (selfMentioned || (mentionedImgs.length === 0 && connectedNodes.length === 0));
+  const sceneKeyword = /(场景|空镜|环境)/.test(
+    `${node.data.title ?? ""} ${opts.prompt}`,
+  );
+  const assetType: "character" | "scene" | "prop" | "shot" = targetAssetType
+    ? targetAssetType
+    : fromShotlist
+      ? "shot"
+      : isLook
+        ? assetParentType === "character"
+          ? "character"
+          : assetParentType === "scene"
+            ? "scene"
+            : "prop"
+        : editMode
+          ? "shot"
+          : !referenceImages.length && sceneKeyword
+            ? "scene"
+            : "shot";
   // 逐张参考图职责标签（与 referenceImages 一一对应）：flow 渲染
   // 「参考图N（名）：只锁定什么/不继承什么」——juben build_reference_usage 范式。
   // 考据参考图（调研采纳落卡）按 reference 职责（锁形制材质），不是改图语义
-  const refLabelOf = (n: (typeof mentionedImgs)[number]) => ({
+  const refLabelOf = (n: WingNode) => ({
     type: n.data.refSource === "research" ? "reference" : String(n.data.nodeType),
     name: String(n.data.title || "无题"),
   });
-  const referenceLabels = [
-    ...mentionedImgs.map(refLabelOf),
-    ...(!selfMentioned && selfImageUrl
-      ? [{ type: "image", name: "本卡原图" }]
-      : []),
-    ...connectedNodes.map(refLabelOf),
-  ];
+  const referenceLabels = refEntries.map((e) =>
+    e.kind === "self" ? { type: "image", name: "本卡原图" } : refLabelOf(e.node),
+  );
   // 手动 @ 引用落成连线（viedeo-workflow「mention=边」范式）：生成后面板
   // chips 持续可见，不随本会话的输入框状态消失（已删卡的引用不落边）
   for (const rid of new Set(validRefIds)) {
@@ -220,6 +274,7 @@ async function directImagegen(
         referenceImages,
         referenceLabels,
         aspect: aspect || undefined,
+        ...(editMode ? { promptTemplate: EDIT_PROMPT_TEMPLATE } : {}),
       })),
       // 卡片级模型/档位/画幅覆盖（面板 chips 写入 data.gen），缺省跟随项目
       cardGen ?? undefined,
@@ -235,6 +290,7 @@ async function directImagegen(
         referenceImages,
         referenceLabels,
         aspect: aspect || undefined,
+        promptTemplate: editMode ? EDIT_PROMPT_TEMPLATE : undefined,
       },
       failedCandidates: undefined,
     });
@@ -301,6 +357,7 @@ async function supplementCandidates(nodeId: string, count: number) {
         referenceImages: shot.referenceImages,
         referenceLabels: shot.referenceLabels,
         aspect: shot.aspect,
+        promptTemplate: shot.promptTemplate,
       })),
       saneGen(node.data.gen) ?? undefined,
     );
@@ -365,12 +422,6 @@ type OpResultEx = OpResult & {
   elapsedMs?: number;
 };
 
-/** 破坏性操作审批的挂起请求（handler 阻塞等用户点确认） */
-interface Approval {
-  summary: string;
-  resolve: (ok: boolean) => void;
-}
-
 /**
  * 画布 ↔ Agent 桥：
  *   读通道：画布摘要写入共享状态（useCoAgent state）+ 上下文（useCopilotReadable）
@@ -379,8 +430,6 @@ interface Approval {
 export default function CanvasAgentBridge() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
-  // 破坏性操作（删除/分组）审批弹窗；handler await 用户选择
-  const [approval, setApproval] = useState<Approval | null>(null);
 
   const { setState } = useCoAgent<WingsightAgentState>({
     name: "default",
@@ -426,6 +475,26 @@ export default function CanvasAgentBridge() {
       return `【${NODE_TYPE_LABEL[d.nodeType] ?? d.nodeType}】${d.title ?? ""}\n\n${body}${
         (d.body ?? "").length > 6000 ? "\n…（已截断）" : ""
       }`;
+    },
+    render: ({ status, args, result }) => {
+      const id = String((args as { id?: unknown })?.id ?? "");
+      const title =
+        useCanvasStore.getState().nodes.find((n) => n.id === id)?.data.title || id;
+      if (status !== "complete") {
+        return <RunningRow icon={<FileText />} title={`正在读取「${title}」`} />;
+      }
+      return (
+        <ToolCard
+          icon={<FileText />}
+          title={
+            typeof result === "string" && result.startsWith("节点 ")
+              ? result
+              : `已读取「${title}」`
+          }
+          ok={!(typeof result === "string" && result.startsWith("节点 "))}
+          detail={typeof result === "string" ? result : undefined}
+        />
+      );
     },
   });
 
@@ -784,15 +853,12 @@ export default function CanvasAgentBridge() {
               : [];
       const list = normalizeOps(raw);
 
-      // 人在环：删除/分组先请用户确认（整批等待，通过后一起执行）
+      // 人在环：删除/分组先请用户在聊天流里的审批卡上确认（整批等待）
       const destructive = list.filter(
         (o) => o.op === "delete_nodes" || o.op === "group_nodes",
       );
       if (destructive.length > 0) {
-        const ok = await new Promise<boolean>((resolve) => {
-          setApproval({ summary: describeDestructive(destructive), resolve });
-        });
-        setApproval(null);
+        const ok = await requestToolApproval(describeDestructive(destructive));
         if (!ok) {
           const rejected: OpResultEx = {
             applied: 0,
@@ -842,11 +908,7 @@ export default function CanvasAgentBridge() {
     },
     render: ({ status, result }) => {
       if (status !== "complete" || !result) {
-        return (
-          <div className="flex items-center gap-1.5 py-1 text-xs text-text-3">
-            <Wrench className="h-3.5 w-3.5" /> 正在操作画布…
-          </div>
-        );
+        return <CanvasOpsRunning />;
       }
       const r = result as unknown as OpResultEx;
       if (r.rejected) {
@@ -933,16 +995,19 @@ export default function CanvasAgentBridge() {
     },
   });
 
-  return approval ? (
-    <ConfirmDialog
-      title="允许助手修改画布？"
-      message={approval.summary}
-      confirmText="允许执行"
-      danger
-      onConfirm={() => approval.resolve(true)}
-      onCancel={() => approval.resolve(false)}
-    />
-  ) : null;
+  // 聊天流里的工具卡（后端 6 工具）挂载在桥上——同处 CopilotKit 上下文，零额外装配
+  return <BackendToolCards />;
+}
+
+/** canvas_ops 执行中的卡片：有挂起审批时内联展示审批卡（其余时候是执行行） */
+function CanvasOpsRunning() {
+  const pending = useToolApproval((s) => s.pending);
+  if (pending) return <ApprovalCard />;
+  return (
+    <div className="flex items-center gap-1.5 py-1 text-xs text-text-3">
+      <Wrench className="h-3.5 w-3.5" /> 正在操作画布…
+    </div>
+  );
 }
 
 /** 把破坏性操作批描述成人话（审批弹窗正文） */

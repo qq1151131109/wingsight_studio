@@ -63,3 +63,4 @@ logs/
 
 # E2E 截图产物
 scripts/verhist-*.png
+scripts/refpipe-*.png

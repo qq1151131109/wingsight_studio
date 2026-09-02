@@ -12,6 +12,7 @@ import {
   Music,
   Package,
   ScrollText,
+  Search,
   Shirt,
   StickyNote,
   Table,
@@ -32,5 +33,6 @@ export const TYPE_ICONS: Record<WingNodeType, LucideIcon> = {
   compose: Combine,
   storyboard: Clapperboard,
   shotlist: Table,
+  research: Search,
   group: Layers,
 };

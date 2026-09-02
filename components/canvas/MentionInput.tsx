@@ -199,6 +199,9 @@ function readEditor(ed: HTMLDivElement): MentionRead {
 type Props = {
   /** 当前节点（画布面板场景）：带图时本卡进候选并钉顶；聊天侧无当前节点可省 */
   nodeId?: string;
+  /** 当前节点的上游连线卡 id（画布面板场景传）：候选里「已连线」置顶组——
+   *  连线即参考，@ 候选必须让用户找得到已连线的卡（罪案实录事故） */
+  connectedIds?: string[];
   placeholder?: string;
   initialText?: string;
   minHeight: number;
@@ -219,6 +222,7 @@ type Props = {
 const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput(
   {
     nodeId,
+    connectedIds,
     placeholder,
     initialText,
     minHeight,
@@ -334,16 +338,30 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         : nodes.find(
             (n) => n.id === nodeId && Boolean(n.data.imageUrl) && match(n),
           ) ?? null;
+    // 已连线置顶组（ai-moive 上游分组范式）：连线即参考，永远可 @ 到
+    const connected = (connectedIds ?? [])
+      .map((id) => nodes.find((n) => n.id === id))
+      .filter(
+        (n): n is WingNode =>
+          Boolean(n) &&
+          n!.id !== nodeId &&
+          !stats.tokenIds.includes(n!.id) &&
+          Boolean(n!.data?.nodeType) &&
+          match(n!),
+      );
     const rest = nodes.filter((n) => {
       if (n.id === nodeId) return false;
       if (!n.data?.nodeType || n.data.nodeType === "group") return false;
       if (stats.tokenIds.includes(n.id)) return false;
+      if (connectedIds?.includes(n.id)) return false;
       return match(n);
     });
 
     // 按类型分桶轮转取候选：角色优先，但场景/道具/服饰等不再被角色
-    // 挤出列表（旧版全局排序 + 截 6 条，拆解出的 6 张角色卡会把其它
-    // 类型和本卡自己全部挤出——「只能 @ 角色」的根因）。桶内带图优先
+    // 挤出列表。桶内带图优先。
+    // 截断放宽（每类 3→8、总数 10→24）：「同类型卡 >3 张时后建的卡永远
+    // 进不了候选」是罪案实录事故根因之一——11 张图片卡时刚连线的两张
+    // （最新建）恰好排在队尾被截掉
     const byType = new Map<string, WingNode[]>();
     for (const n of rest) {
       const t = String(n.data.nodeType);
@@ -355,19 +373,19 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         (a, b) =>
           Number(Boolean(b.data.imageUrl)) - Number(Boolean(a.data.imageUrl)),
       );
-    const picked: WingNode[] = self ? [self] : [];
-    const PER_TYPE = 3;
-    for (let round = 0; picked.length < 10 && round < PER_TYPE; round++) {
+    const rotated: WingNode[] = [];
+    const PER_TYPE = 8;
+    for (let round = 0; rotated.length < 24 && round < PER_TYPE; round++) {
       for (const t of TYPE_ORDER_KEYS) {
         const next = byType.get(t)?.[round];
         if (next) {
-          picked.push(next);
-          if (picked.length >= 10) break;
+          rotated.push(next);
+          if (rotated.length >= 24) break;
         }
       }
     }
-    return picked;
-  }, [nodes, trigger, stats.tokenIds, nodeId]);
+    return [...(self ? [self] : []), ...connected, ...rotated];
+  }, [nodes, trigger, stats.tokenIds, nodeId, connectedIds]);
 
   const pick = useCallback(
     (n: WingNode) => {
@@ -510,7 +528,12 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
           minHeight >= 80 ? "px-1 py-1 text-sm" : "px-1 py-0.5 text-xs"
         } ${className ?? ""}`}
         style={{ minHeight, maxHeight }}
-        onInput={syncTrigger}
+        onInput={() => {
+          syncTrigger();
+          // 打字必须回吐 onChange（宿主的发送键/提交都读 MentionRead）；
+          // IME 组合中不动——compositionEnd 统一回吐，避免打断组词
+          if (!composingRef.current) emitChange();
+        }}
         onClick={(e) => {
           // 点 chip = 定位并选中画布卡片（ai-moive/viedeo-workflow 范式）
           const el = (e.target as HTMLElement).closest?.(".ws-mention");
@@ -590,7 +613,9 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
       />
       {trigger && candidates.length > 0 ? (
         <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-64 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-          {candidates.map((c, i) => (
+          {candidates.map((c, i) => {
+            const isConnected = connectedIds?.includes(c.id) ?? false;
+            return (
             <button
               key={c.id}
               type="button"
@@ -607,7 +632,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
               <span className="min-w-0 flex-1">
                 <span className="block truncate">
                   {c.id === nodeId ? "本卡原图 · " : ""}
-                  {c.data.title || "（无标题）"}
+                  {c.data.title || NODE_META[c.data.nodeType]?.label || "（无标题）"}
                 </span>
                 {(c.data.body ?? "").trim() ? (
                   <span className="block truncate text-[9px] leading-tight text-text-4">
@@ -615,11 +640,24 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
                   </span>
                 ) : null}
               </span>
-              <span className="ml-auto shrink-0 text-[10px] text-text-4">
-                {NODE_META[c.data.nodeType]?.label}
-              </span>
+              {isConnected ? (
+                <span className="ml-auto shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] text-accent">
+                  已连线
+                </span>
+              ) : (
+                <span className="ml-auto shrink-0 text-[10px] text-text-4">
+                  {NODE_META[c.data.nodeType]?.label}
+                </span>
+              )}
             </button>
-          ))}
+            );
+          })}
+        </div>
+      ) : trigger ? (
+        <div className="absolute bottom-full left-0 z-20 mb-1 w-64 rounded-lg border border-hairline bg-surface-1 p-2 text-[10px] leading-relaxed text-text-4 shadow-lg">
+          {trigger.q
+            ? `没有匹配「${trigger.q}」的卡——删掉关键词可看全部可引用卡`
+            : "画布上还没有可引用的卡"}
         </div>
       ) : null}
     </div>

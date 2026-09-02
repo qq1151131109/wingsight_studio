@@ -77,7 +77,7 @@ await api(`/projects/${pid}/canvas`, {
         id: "ref_shotlist", type: "shotlist", position: { x: 900, y: 0 },
         data: {
           nodeType: "shotlist",
-          title: "整场戏的镜头清单",
+          title: "雨夜追逐·分镜",
           rows: [
             // 全名兜底档：无 @，正文含完整资产标题
             { rid: "r1", shotSize: "特写", action: "侲子领首者猛然仰头奋力呐喊" },
@@ -135,14 +135,14 @@ await page.route("**/agent-service/storyboard/images/e2e_ref_job", (route) =>
 );
 
 await page.goto(`${BASE}/project/${pid}`);
-await page.locator("text=整场戏的镜头清单").first().waitFor({ timeout: 15000 });
+await page.locator("text=雨夜追逐·分镜").first().waitFor({ timeout: 15000 });
 // 画风闸前置：全局画风直接写 store
 await page.evaluate(() => window.__wsCanvasStore?.setState({ projectStyle: "测试画风" }));
 
 // 选中分镜表卡（点头部防误触行内编辑；顶部悬浮工具条会拦指针，若超时改走 store 选中）
 const shotNode = page
   .locator(".react-flow__node")
-  .filter({ hasText: "整场戏的镜头清单" })
+  .filter({ hasText: "雨夜追逐·分镜" })
   .first();
 await shotNode.click({ position: { x: 200, y: 60 }, timeout: 5000 }).catch(() => {});
 await page.waitForTimeout(300);

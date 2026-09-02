@@ -9,6 +9,7 @@
 """
 
 import base64
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -23,12 +24,12 @@ from langgraph.graph import END, StateGraph
 from langgraph.types import Command
 from copilotkit import CopilotKitState
 from langgraph.prebuilt import ToolNode
-from copilotkit import CopilotKitState
 
 import camera
 import imgresearch
 import models
 import projects
+import research
 import skills
 
 # ---------- 状态 ----------
@@ -61,6 +62,9 @@ async def decompose_script(script: str, config: RunnableConfig) -> str:
         script: 剧本原文（尽量完整传入，不要自行摘要）。
     """
     await skills._emit_progress(config, "正在拆解剧本，提取角色 / 场景 / 道具清单…")
+    task = asyncio.current_task()
+    if task is not None:
+        skills.register_chat_run_task(skills._thread_id_of_config(config), task)
     return await skills.decompose_script(script)
 
 
@@ -85,6 +89,9 @@ async def run_langflow_skill(
                 return "params_json 必须是 JSON 对象字符串"
         except json.JSONDecodeError as e:
             return f"params_json 不是合法 JSON：{e}"
+    task = asyncio.current_task()
+    if task is not None:
+        skills.register_chat_run_task(skills._thread_id_of_config(config), task)
     return await skills.run_skill(skill, input_text, params)
 
 
@@ -100,7 +107,11 @@ async def generate_asset_images(
     有人物有剧情的单幅画面，分镜/镜头类出图用 shot 而不是 scene）。
     aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：用户对画幅有要求
     （竖版/横版/方图/宽幕）或重出带「画幅 N」标注的卡时传；不传按类型
-    默认幅面。返回每个资产的成败与 image_url。
+    默认幅面。reference_images 可选（字符串数组）：一致性参考图的
+    /agent-service/assets/ URL（从画布摘要里取带图卡的 imageUrl），配合
+    reference_labels（[{type,name}]，type=character 时锁身份不继承白底
+    排版）——用户要求「按某角色的设定图出」「保持形象一致」时必须带上。
+    返回每个资产的成败与 image_url。
     用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
     与各模型支持档位：
     {"gpt-image-2-03": ["1K","2K","4K"], "doubao-seedream-4-0-250828": ["1K","2K","4K"], "doubao-seedream-4-5-251128": ["2K","4K"], "doubao-seedream-5-0-pro-260628": ["1K","2K"]}
@@ -237,11 +248,145 @@ async def get_reference_research_status(batch_id: str, config: RunnableConfig) -
     return "\n".join(lines)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill, research_asset_references, get_reference_research_status]
+@tool
+async def start_deep_research(
+    topic: str, brief: str, depth: str, config: RunnableConfig
+) -> str:
+    """就一个题材/问题发起深度调研（多轮 Google 搜索取证 → 结构化调研卷宗）。
+
+    用户要选题论证、背景资料、史实核实、人物/事件深挖时调用（「帮我调研X」
+    「查查X的资料」「X到底是怎么回事」）；闲聊、画布内已有答案、找参考图
+    （那是 research_asset_references）时不要调用。
+
+    本工具只做开题：返回观看问题与查证方向。请把开题讲给用户听（这个题材最值
+    得讲什么、什么有据、什么是传闻），请其确认或修改方向；用户确认后立即调用
+    confirm_research_plan 开始执行。用户明确说「直接开始/别问了」时无需再问，
+    直接 confirm。
+
+    Args:
+        topic: 调研主题（一句话，具体到人名/事件/时间段越好）。
+        brief: 导演的补充侧重（关注什么、给谁看、避开什么），可空。
+        depth: quick=快查(1轮) / standard=标准(2轮) / deep=深挖(4轮)，缺省 standard。
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return "无法定位当前项目：会话上下文缺少 thread_id"
+    pid = projects.project_id_of_thread(thread_id)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    depth = (depth or "standard").strip() or "standard"
+    try:
+        view = research.start_research(pid, topic, brief, depth)
+    except ValueError as e:
+        return str(e)
+    job_id = view["jobId"]
+    # 开题 flow 通常 10-30s：在这里等到出结果，把计划直接交还给模型讲给用户
+    for _ in range(60):
+        if view["plan"] is not None or view["status"] == "error":
+            break
+        await asyncio.sleep(2)
+        view = research.get_job_view(job_id) or view
+    if view["status"] == "error":
+        return f"调研开题失败：{view['error']}"
+    plan = view["plan"]
+    if plan is None:
+        return f"调研开题仍在生成（jobId={job_id}），请稍后用 get_research_result 查看"
+    lines = [
+        f"开题完成（jobId={job_id}）。观看问题：{plan['viewingQuestion']}",
+        "查证方向：",
+    ]
+    for i, d in enumerate(plan["directions"], 1):
+        lines.append(f"{i}. {d['title']}——{d['goal']}")
+    if plan.get("risks"):
+        lines.append("风险预判：" + "；".join(plan["risks"]))
+    lines.append(
+        "请把开题讲给用户并请其确认或修改；确认后调用 confirm_research_plan(job_id, plan_json)，"
+        "plan_json 传用户修改后的完整计划 JSON（原样确认就传空串）。执行开始后再用 canvas_ops "
+        '建调研卡（nodeType:"research"，title=调研主题，researchId=jobId）。'
+    )
+    return "\n".join(lines)
+
+
+@tool
+async def confirm_research_plan(job_id: str, plan_json: str, config: RunnableConfig) -> str:
+    """用户确认/修改开题后调用，启动调研执行循环。
+
+    Args:
+        job_id: start_deep_research 返回的任务 id。
+        plan_json: 用户修改后的完整计划 JSON（结构 {"viewingQuestion":"…",
+            "directions":[{"title":"…","goal":"…","queries":["…"]}]}）；原样确认传空串。
+    """
+    plan = None
+    if plan_json.strip():
+        try:
+            plan = json.loads(plan_json)
+        except json.JSONDecodeError as e:
+            return f"plan_json 不是合法 JSON：{e}"
+    try:
+        view = research.confirm_plan(job_id.strip(), plan)
+    except ValueError as e:
+        return str(e)
+    minutes = {"quick": "1-2", "standard": "2-4", "deep": "5-10"}.get(view["depth"], "2-4")
+    return (
+        f"调研已开跑（jobId={view['jobId']}），预计 {minutes} 分钟。"
+        "请现在用 canvas_ops 建调研卡（nodeType:\"research\"，title=调研主题，"
+        f"researchId=\"{view['jobId']}\"），卡上会实时显示进度；"
+        "完成后用户问起时用 get_research_result 取卷宗汇报。"
+    )
+
+
+@tool
+async def get_research_result(job_id: str, config: RunnableConfig) -> str:
+    """查询深度调研的进度或取最终卷宗。
+
+    用户问「调研怎么样了/查完没」时调用；完成后返回完整卷宗 JSON
+    （叙事脊/已证实事实/真实争议/风险/材料簇，含 S 编号来源引用），可直接
+    作为写剧本/写文稿的事实依据。补研任务（gap）查询时传补研 jobId。
+
+    Args:
+        job_id: 调研任务 id。
+    """
+    view = research.get_job_view(job_id.strip())
+    if view is None:
+        return "调研任务不存在（agent 可能已重启；已集证据保留，可重新发起补研）"
+    if view["status"] in ("planning", "running"):
+        stage_note = {
+            "search": "正在搜索", "fetch": "正在抓取原文", "extract": "正在提纯",
+            "evaluate": "正在评估完整性", "dossier": "正在撰写卷宗", "": "",
+        }.get(view["stage"], view["stage"])
+        return (
+            f"调研「{view['topic']}」进行中：第 {view['roundsDone']}/{view['roundsTotal']} 轮，"
+            f"{stage_note or view['status']}，已集来源 {view['sourcesCount']} 条、"
+            f"事实 {view['findingsCount']} 条。请稍后再问。"
+        )
+    if view["status"] in ("error", "stopped", "interrupted"):
+        status_word = {"error": "失败", "stopped": "已取消", "interrupted": "被中断"}[view["status"]]
+        msg = f"调研「{view['topic']}」{status_word}"
+        if view["error"]:
+            msg += f"：{view['error']}"
+        msg += (
+            f"。已集来源 {view['sourcesCount']} 条、事实 {view['findingsCount']} 条"
+            f"保留在卷宗（researchId={view['jobId']}），可对它发起补研继续。"
+        )
+        return msg
+    dossier = view.get("dossier") or {}
+    parts = [f"调研「{view['topic']}」已完成（{view['summary']}）", "卷宗 JSON："]
+    parts.append(json.dumps(dossier, ensure_ascii=False))
+    parts.append(
+        "以上卷宗可作为写作的事实依据：引用时保留 S 编号与来源，口径分歧按双版本呈现，"
+        "不要把 controversies 里的任何一个版本当成定论。"
+    )
+    return "\n".join(parts)
+
+
+backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill, research_asset_references, get_reference_research_status, start_deep_research, confirm_research_plan, get_research_result]
 backend_tool_names = {t.name for t in backend_tools}
 
-# 允许模型调用的前端工具白名单（防止客户端注入无关工具）
-FRONTEND_TOOL_ALLOWLIST = {"canvas_ops"}
+# 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
+# read_node：系统提示两处指示模型用它在摘要截断时取卡片全文，必须在册
+FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "read_node"}
 
 
 # ---------- 多模态附件（图片/视频随消息上传） ----------
@@ -434,6 +579,9 @@ cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s�
 ## 生成管线（Langflow 技能）
 涉及批量生成（宣发文案等）时，先用 list_langflow_skills 查可用技能，再用 run_langflow_skill 调用。
 
+## 深度调研（纪录片/罪案的故事取证）
+用户要选题论证、背景资料、史实核实、人物/事件深挖时：用 start_deep_research 发起 → 把开题（观看问题+查证方向）讲给用户听并请确认/修改 → confirm_research_plan 开跑 → 用 canvas_ops 建调研卡（nodeType:"research"，researchId=任务id）并 connect_nodes 连到相关卡。进度/结果用 get_research_result 查；完成后的卷宗（含 S 编号来源引用）是写剧本/文稿的事实权威——引用保留 S 编号，争议按双版本呈现不定论。
+
 ## 卡片输入条的直接生成请求（@引用）
 用户会在图片/视频卡的输入条上直接发起生成，消息会指明目标节点 id，并可能附「严格参考以下画布卡片」清单（@节点id + 内容摘要）。处理方式：
 1. 前端已把目标卡置为 loading，你负责生成与回填，不要重复置 loading。
@@ -606,14 +754,11 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         ),
     )
 
-    # 截断历史，末尾再放一次最新 ground truth，抑制状态漂移；
-    # 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400
+    # 截断历史 + 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400。
+    # 画布摘要只随 system prompt 注入一次（每轮重建，值恒为最新，无需末尾再放）
     trimmed = _sanitize_messages_for_model(messages[-14:])
-    latest = SystemMessage(
-        content=f"[最新画布状态]\n{canvas_summary}",
-    )
     response = await model_with_tools.ainvoke(
-        [system_message, *trimmed, latest], config
+        [system_message, *trimmed], config
     )
 
     tool_calls = getattr(response, "tool_calls", None) or []
@@ -650,7 +795,6 @@ workflow.set_entry_point("chat_node")
 # 它的构造需要运行中的事件循环，而 graph 在模块级编译——用惰性代理：
 # 首次在请求事件循环内使用时才真正创建并建表。
 import aiosqlite
-import threading
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -699,7 +843,5 @@ class _LazyAsyncSaver(BaseCheckpointSaver):
 
 CHECKPOINT_DB = str(Path(__file__).resolve().parent / "data" / "checkpoints.db")
 Path(CHECKPOINT_DB).parent.mkdir(parents=True, exist_ok=True)
-# 触发 DB 文件占位，避免首次并发请求竞争创建
-threading.Event()
 checkpointer = _LazyAsyncSaver(CHECKPOINT_DB)
 graph = workflow.compile(checkpointer=checkpointer)

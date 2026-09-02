@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -840,6 +841,44 @@ def _project_style_from_config(config: Any = None) -> str:
         return ""
 
 
+# ---------- 聊天运行任务取消（「停止」按钮 / 切会话透传后端，B3） ----------
+
+# langgraph thread_id -> 在途后端工具的 asyncio.Task 集合
+CHAT_RUN_TASKS: Dict[str, "set[asyncio.Task]"] = {}
+
+
+def _thread_id_of_config(config: Any) -> str:
+    try:
+        return str(
+            ((config or {}).get("configurable") or {}).get("thread_id") or ""
+        )
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def register_chat_run_task(thread_id: str, task: "asyncio.Task") -> None:
+    """把在途工具任务挂到会话名下；结束自动摘除。"""
+    if not thread_id:
+        return
+    CHAT_RUN_TASKS.setdefault(thread_id, set()).add(task)
+    task.add_done_callback(
+        lambda _t: CHAT_RUN_TASKS.get(thread_id, set()).discard(task)
+    )
+
+
+def cancel_chat_runs(thread_id: str) -> int:
+    """取消该会话在途的后端任务（在途 http 请求中止，不再计费）。返回取消数。"""
+    tasks = CHAT_RUN_TASKS.get(thread_id)
+    if not tasks:
+        return 0
+    n = 0
+    for t in list(tasks):
+        if not t.done():
+            t.cancel()
+            n += 1
+    return n
+
+
 async def generate_asset_images(
     assets: List[Dict[str, Any]], config: Any = None, params: Optional[Dict[str, str]] = None
 ) -> str:
@@ -879,6 +918,8 @@ async def generate_asset_images(
     sem = asyncio.Semaphore(30)
     done = [0]
     total = len(assets)
+    recent: List[str] = []
+    last_emit = [0.0]
     if config is not None:
         await _emit_progress(
             config, f"开始为 {total} 项资产生成设定图（并发 30，每张完成会播报）…"
@@ -906,14 +947,33 @@ async def generate_asset_images(
             line = f"✓ {name}｜image_url={result['imageUrl']}"
         else:
             line = f"✗ {name}｜出图失败：{str(result.get('error') or '未知')[:100]}"
-        if config is not None:
+        # 节流播报：只在静默 ≥3s 或全部完成时推一条累计行（并发 30 张时逐张
+        # 播报会把聊天刷成 30 条进度；AG-UI 桥的 message_id 单次认领，
+        # 同 id 原地更新不可行，只能源头降频）
+        recent.append(line)
+        del recent[:-6]
+        if config is not None and (
+            done[0] == total or time.monotonic() - last_emit[0] >= 3.0
+        ):
+            last_emit[0] = time.monotonic()
             try:
-                await _emit_progress(config, f"出图 {done[0]}/{total}：{line}")
+                await _emit_progress(
+                    config, f"出图进度 {done[0]}/{total}：\n" + "\n".join(recent)
+                )
             except Exception as e:  # noqa: BLE001
                 print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
         return line
 
-    lines = await asyncio.gather(*[one(a) for a in assets])
+    tasks = [asyncio.create_task(one(a)) for a in assets]
+    for t in tasks:
+        register_chat_run_task(_thread_id_of_config(config), t)
+    # return_exceptions：被 cancel_chat_runs 取消的任务以 CancelledError 收场，
+    # 不炸整批——完成的照常返回，取消的单独立数说明
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    lines = [r for r in results if isinstance(r, str)]
+    n_cancelled = sum(1 for r in results if not isinstance(r, str))
+    if n_cancelled:
+        lines.append(f"（已取消 {n_cancelled} 张，未计入结果）")
     return "\n".join(lines)
 
 
@@ -1032,12 +1092,18 @@ async def _generate_single_image(
     if shot.get("aspect"):
         payload["aspect"] = flat(shot["aspect"])
     # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
-    # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）
+    # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）。
+    # 两种键名都收：前端批量出图传 camelCase referenceImages，聊天工具的
+    # 资产 JSON 按工具 docstring 用 snake_case reference_images
     ref_images = [
         ASSET_BASE_URL + "/assets/" + u.rsplit("/", 1)[-1]
         if u.startswith(("/agent-service/assets/", "/assets/"))
         else str(u)
-        for u in (shot.get("referenceImages") or [])
+        for u in (
+            shot.get("referenceImages")
+            or shot.get("reference_images")
+            or []
+        )
         if str(u).strip()
     ]
     if ref_images:
@@ -1062,6 +1128,12 @@ async def _generate_single_image(
                 **(params or {}),
             }
         }
+        # 改图模式（前端契约推断）：最小提示词模板整体替换 flow 默认模板——
+        # 无四格/空镜/剧照版式措辞，参考职责段（image=保留构图只改要改的）
+        # 与文字守卫保留。截断防呆：模板变量引用完整才会被 flow format
+        template = str(shot.get("promptTemplate") or "").strip()
+        if template:
+            tweaks["BatchAssetSheet-img02"]["prompt_template"] = template[:2000]
         if ref_images:
             # 按实际张数注入参考图上限——组件默认 3 会静默截断第 4 张起
             # 的参考图（组件侧 int() 容忍字符串）

@@ -68,7 +68,7 @@ console.log(`测试项目: ${pid}`);
 const asset = (id, title, y) => ({
   id,
   type: "character",
-  position: { x: -700, y },
+  position: { x: -550, y },
   data: {
     nodeType: "character",
     title,
@@ -117,14 +117,14 @@ let pollCount = 0;
 await page.route("**/agent-service/projects/*/refs/batch-research/e2e_ref_batch", (route) => {
   pollCount++;
   if (!firstPollAt) firstPollAt = Date.now();
-  const running = Date.now() - firstPollAt < 4000;
-  const item = (nodeId, name) => ({ nodeId, name, status: "done", error: "" });
+  const running = Date.now() - firstPollAt < 7000;
+  const item = (nodeId, name, status = "done") => ({ nodeId, name, status, error: "" });
   return route.fulfill({
     status: 200,
     contentType: "application/json",
     body: JSON.stringify(
       running
-        ? { batchId: "e2e_ref_batch", status: "running", total: 2, done: 1, current: "玉璋", items: [item("n_e2e_a1", "青铜爵")] }
+        ? { batchId: "e2e_ref_batch", status: "running", total: 2, done: 1, current: "玉璋", items: [item("n_e2e_a1", "青铜爵", "running")] }
         : {
             batchId: "e2e_ref_batch",
             status: "done",
@@ -136,6 +136,16 @@ await page.route("**/agent-service/projects/*/refs/batch-research/e2e_ref_batch"
     ),
   });
 });
+await page.route("**/agent-service/projects/*/refs/candidate-summary", (route) =>
+  route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify([
+      { nodeId: "n_e2e_a1", total: 5, adopted: 0, recommended: 2 },
+      { nodeId: "n_e2e_a2", total: 3, adopted: 0, recommended: 1 },
+    ]),
+  }),
+);
 await page.route("**/agent-service/projects/*/refs/candidates**", (route) =>
   route.fulfill({
     status: 200,
@@ -171,6 +181,14 @@ const slNode = () =>
   page.locator(".react-flow__node").filter({ hasText: "分镜表" });
 const researchBtn = () =>
   slNode().getByRole("button", { name: "批量调研参考图" });
+const waitNodeText = (nodeText, text, timeout = 8000) =>
+  page
+    .locator(".react-flow__node")
+    .filter({ hasText: nodeText })
+    .getByText(text)
+    .waitFor({ state: "visible", timeout })
+    .then(() => true)
+    .catch(() => false);
 
 await setVp({ x: 600, y: 350, zoom: 1 });
 await sleep(600);
@@ -192,6 +210,10 @@ await page.waitForFunction(() => {
   return btn && /调研中/.test(btn.textContent ?? "");
 }, { timeout: 8000 });
 check("2 按钮显示调研中进度", true, "（首查即出 running）");
+
+// 1.5) 资产卡同步亮「调研中」（running 集合来自批量轮询 items）
+const a1Running = await waitNodeText("青铜爵", "参考图调研中…", 8000);
+check("2.5 资产卡亮调研中状态", a1Running);
 
 // 2) 平移把分镜表卡甩出视口 → RF 卸载该卡
 await setVp({ x: -3200, y: 350, zoom: 1 });
@@ -230,6 +252,16 @@ const anchorGone = await page.waitForFunction(
   .then(() => true)
   .catch(() => false);
 check("6 收尾后锚已清（重开不复活）", anchorGone);
+
+// 5.5) 终态后汇总刷新：资产卡亮「N 张参考候选待选」徽标（点开即找参考图面板）
+const badge = await waitNodeText("青铜爵", "5 张参考候选待选", 10000);
+check("7 资产卡亮候选待选徽标", badge);
+const runningGone = await page
+  .getByText("参考图调研中…")
+  .waitFor({ state: "hidden", timeout: 5000 })
+  .then(() => true)
+  .catch(() => false);
+check("8 调研中状态随终态熄灭", runningGone);
 
 await browser.close();
 

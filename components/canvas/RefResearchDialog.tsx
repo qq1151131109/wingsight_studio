@@ -20,6 +20,7 @@ import {
   runRefResearch,
   type RefCandidate,
 } from "@/lib/ref-research";
+import { useRefStatusStore } from "@/lib/refStatus";
 
 export default function RefResearchDialog({
   nodeId,
@@ -84,6 +85,8 @@ export default function RefResearchDialog({
       );
       setChannelErrors(job.errors ?? {});
       if (job.status === "error" || job.error) setErr(job.error);
+      // 候选落库：刷新资产卡「N 张待选」徽标
+      void useRefStatusStore.getState().refresh(pid, { force: true });
     } catch (exc) {
       setErr(exc instanceof Error ? exc.message : "调研失败");
     } finally {
@@ -141,6 +144,8 @@ export default function RefResearchDialog({
         prev.map((c) => (adoptedIdSet.has(c.id) ? { ...c, adopted: true } : c)),
       );
       setSelected(new Set());
+      // 已采纳计数变了：刷新资产卡「N 张待选」徽标
+      void useRefStatusStore.getState().refresh(pid, { force: true });
     } catch (exc) {
       setErr(exc instanceof Error ? exc.message : "采纳失败");
     } finally {
@@ -158,6 +163,7 @@ export default function RefResearchDialog({
         next.delete(c.id);
         return next;
       });
+      void useRefStatusStore.getState().refresh(pid, { force: true });
     } catch (exc) {
       setErr(exc instanceof Error ? exc.message : "删除失败");
     }

@@ -9,10 +9,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useChatContext } from "@copilotkit/react-ui";
+import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
 import { History, MessageSquarePlus, Pencil, Download, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { useChatSession } from "@/lib/chat/session";
+import { contentToMarkdown, decodeContent } from "@/lib/chat/content";
 import {
+  cancelChatRun,
   deleteChatThread,
   listChatThreads,
   loadChatMessages,
@@ -35,6 +38,7 @@ function formatTime(iso: string): string {
 
 export default function ChatSidebarHeader() {
   const { labels, icons, setOpen } = useChatContext();
+  const { isLoading, stopGeneration } = useCopilotChatHeadless_c();
   const projectId = useCanvasStore((s) => s.projectId);
   const threadId = useChatSession((s) => s.threadId);
   const setThreadId = useChatSession((s) => s.setThreadId);
@@ -44,6 +48,13 @@ export default function ChatSidebarHeader() {
   const [threadQuery, setThreadQuery] = useState("");
   const [deleting, setDeleting] = useState<ChatThreadMeta | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
+
+  /** 离开当前会话前收尾：运行中先停客户端 run + 透传后端取消（在途出图不再烧钱） */
+  const abandonActiveRun = useCallback(() => {
+    if (!isLoading) return;
+    void cancelChatRun(useChatSession.getState().threadId);
+    stopGeneration();
+  }, [isLoading, stopGeneration]);
 
   const shownThreads = (threads ?? []).filter((t) => {
     const q = threadQuery.trim().toLowerCase();
@@ -63,7 +74,8 @@ export default function ChatSidebarHeader() {
       if (!msgs || msgs.length === 0) return;
       const lines = [`# ${meta}`, ""];
       for (const m of msgs) {
-        lines.push(`**${m.role === "user" ? "🧑 用户" : "🎬 助手"}**`, "", m.content, "", "---", "");
+        const text = contentToMarkdown(decodeContent(m.content));
+        lines.push(`**${m.role === "user" ? "🧑 用户" : "🎬 助手"}**`, "", text, "", "---", "");
       }
       const blob = new Blob([lines.join("\n")], {
         type: "text/markdown;charset=utf-8",
@@ -105,6 +117,7 @@ export default function ChatSidebarHeader() {
   }, [panelOpen]);
 
   const startNew = () => {
+    abandonActiveRun();
     setThreadId(null);
     setPanelOpen(false);
   };
@@ -121,8 +134,12 @@ export default function ChatSidebarHeader() {
     if (await deleteChatThread(projectId, deleting.id)) {
       const rest = (threads ?? []).filter((x) => x.id !== deleting.id);
       setThreads(rest);
-      // 删的是当前会话 → 落到最新一条（或空新会话）
-      if (deleting.id === threadId) setThreadId(rest[0]?.id ?? null);
+      // 删的是当前会话 → 停掉在途任务（后端 checkpoint 随删除端点一并清），
+      // 落到最新一条（或空新会话）
+      if (deleting.id === threadId) {
+        abandonActiveRun();
+        setThreadId(rest[0]?.id ?? null);
+      }
     }
     setDeleting(null);
   };
@@ -209,6 +226,7 @@ export default function ChatSidebarHeader() {
                     type="button"
                     className="min-w-0 flex-1 text-left"
                     onClick={() => {
+                      if (t.id !== threadId) abandonActiveRun();
                       setThreadId(t.id);
                       setPanelOpen(false);
                     }}

@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Sparkles, Star } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import { buildRefSequence } from "@/lib/canvas/refSequence";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import MentionInput, {
   type MentionInputHandle,
@@ -193,9 +194,33 @@ export default function PromptBar({
     .filter((r) => Boolean(r.data.imageUrl))
     .map((r) => ({ src: r.data.imageUrl as string, title: r.data.title ?? "" }));
 
+  // 参考序列单一事实源（与 CanvasAgentBridge.directImagegen 同一构建器）：
+  // 计数「参考 N/4」与 chips 上的 图N 位次都从这里读——口径漂移曾让用户
+  // 以为参考没带上（罪案实录事故）
+  const refSeq = useMemo(
+    () =>
+      kind === "image"
+        ? buildRefSequence({
+            mentionIds: lastRead?.mentionIds ?? [],
+            nodes,
+            selfId: nodeId,
+            selfImageUrl: (self?.data.imageUrl as string | undefined) ?? undefined,
+            connectedIds: connectedRefs.map((r) => r.id),
+          })
+        : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- self 的变化由 nodes 依赖承载
+    [kind, lastRead, nodes, nodeId, connectedRefs],
+  );
+  const refSeqLabelOf = (id: string) =>
+    refSeq?.entries.find((e) => e.node.id === id)?.label;
+
+  // 死引用检测：@ImageN 式字面文本（外部工具的引用惯例）不会被解析成
+  // 引用 token，软提示不拦截——真引用是打 @ 选 chip，提交时自动编号 图N
+  const [deadRefHint, setDeadRefHint] = useState(false);
   const onEditorChange = useCallback((r: MentionRead) => {
     setLastRead(r);
     setDraft(r.display);
+    setDeadRefHint(/@[A-Za-z]{0,10}\s*\d/.test(r.display));
   }, []);
 
   // AI 提示词辅助（✦ 双态：优化扩写 / 看图反推；产物回填草稿可再改）。
@@ -382,6 +407,9 @@ export default function PromptBar({
             >
               <RefThumb node={self as WingNode} />
               <span className="pr-0.5 text-accent">本卡原图</span>
+              {refSeqLabelOf(nodeId) ? (
+                <span className="tabular-nums text-text-4">{refSeqLabelOf(nodeId)}</span>
+              ) : null}
             </span>
           ) : null}
           {connectedRefs.map((r, i) => {
@@ -431,7 +459,13 @@ export default function PromptBar({
                     );
                   }}
                 >
-                  @{r.data.title?.slice(0, 10) || "无题"}
+                  {refSeqLabelOf(r.id) ? (
+                    <span className="mr-0.5 tabular-nums text-accent">{refSeqLabelOf(r.id)}</span>
+                  ) : null}
+                  @{r.data.title?.slice(0, 10) ||
+                    (r.data.body as string)?.trim().slice(0, 10) ||
+                    NODE_META[r.data.nodeType]?.label ||
+                    "无题"}
                 </button>
               </span>
             );
@@ -483,6 +517,7 @@ export default function PromptBar({
         <MentionInput
           ref={edRef}
           nodeId={nodeId}
+          connectedIds={connectedRefs.map((r) => r.id)}
           placeholder={placeholder ?? KIND_PLACEHOLDER[kind]}
           initialText={draft || undefined}
           minHeight={floating ? 96 : 44}
@@ -491,6 +526,11 @@ export default function PromptBar({
           onSubmit={submit}
         />
       </div>
+      {kind === "image" && deadRefHint ? (
+        <p className="mb-1 px-0.5 text-[10px] leading-relaxed text-warn">
+          「@ImageN」只是普通文本，不会当作参考引用——删掉后打 @ 从候选选卡，提交时自动编号为 图1/图2…
+        </p>
+      ) : null}
       {/* 底栏：左侧 = 生成参数（出图候选/模型、文本模型），右侧 = 辅助/收藏/发送
           （对标竞品 composer：模型左下、发送右下圆钮） */}
       <div className="mt-1 flex items-center gap-1">
@@ -516,20 +556,23 @@ export default function PromptBar({
                 </button>
               ))}
               {/* 参考图容量计数（open-ai-canvas 按模型预算范式）：按本卡生效
-                  模型的 max_references 实时显示 @ 引用占用，超限红色预警 */}
+                  模型的 max_references 实时显示。口径 = buildRefSequence 的
+                  实际发送序列（@ 引用带图卡 + 本卡原图 + 连线带图卡，按图
+                  URL 去重），与 directImagegen 同源——口径不一致曾让用户
+                  以为参考没带上（罪案实录事故） */}
               {(() => {
                 const cap =
                   findModelOption(
                     cardGen?.model ?? projectImagegen.model,
                     imageModels,
                   )?.max_references ?? 4;
-                const used = lastRead?.imageRefIds.length ?? 0;
+                const used = refSeq?.entries.length ?? 0;
                 return (
                   <span
                     className={`shrink-0 whitespace-nowrap text-[10px] tabular-nums ${
                       used > cap ? "text-danger" : "text-text-4"
                     }`}
-                    title={`当前模型最多 ${cap} 张参考图（@ 引用的带图卡 + 本卡原图 + 连线卡）`}
+                    title={`本次生成将携带 ${used} 张参考图（@ 引用 + 本卡原图 + 连线卡）；当前模型最多 ${cap} 张`}
                   >
                     参考 {used}/{cap}
                   </span>

@@ -129,14 +129,31 @@ export async function listChatThreads(pid: string): Promise<ChatThreadMeta[]> {
 export async function createChatThread(
   pid: string,
   title = "",
+  /** 客户端指定 id：与 agent 侧 langgraph thread 同 id（会话记忆 ↔ UI 会话对齐） */
+  id?: string,
 ): Promise<ChatThreadMeta> {
   const r = await apiFetch(`${BASE}/${pid}/threads`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, ...(id ? { id } : {}) }),
   });
   if (!r.ok) throw new Error(`新建会话失败：${r.status}`);
   return r.json();
+}
+
+/** 取消会话在途的后端工具（出图/拆解/技能调用）——「停止」「切会话」透传。
+ *  尽力而为：失败静默（后端可能已结束/服务离线）。 */
+export async function cancelChatRun(threadId: string | null | undefined): Promise<void> {
+  if (!threadId) return;
+  try {
+    await apiFetch(`/agent-service/chat/cancel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId }),
+    });
+  } catch {
+    /* 静默 */
+  }
 }
 
 export async function renameChatThread(

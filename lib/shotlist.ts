@@ -172,6 +172,9 @@ export type ShotImageRequest = {
   referenceImages?: string[];
   referenceLabels?: { type: string; name: string }[];
   aspect?: string;
+  /** 改图模式：最小提示词模板（flow 的 prompt_template 组件入参整体替换
+   *  默认模板，去掉四格/空镜/剧照版式措辞），agent 原样注入 tweak */
+  promptTemplate?: string;
   params?: ImagegenParams;
 };
 

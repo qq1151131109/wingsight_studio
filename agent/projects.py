@@ -12,6 +12,7 @@ projects + canvases + chat_messages 三张表：画布整体 JSON 存取，
 """
 
 import json
+import re
 import sqlite3
 import uuid
 
@@ -411,6 +412,8 @@ def _write_collaborators(pid: str, collab: List[str]) -> None:
 MAX_MESSAGES = 400
 MAX_MESSAGE_CHARS = 20_000
 AUTO_TITLE_CHARS = 18  # 自动标题长度（前端历史列表同款规则）
+# 客户端指定的会话 id 形制（与历史服务端生成规则一致：12~32 位十六进制）
+_THREAD_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
 
 
 def _get_thread(
@@ -444,16 +447,30 @@ def list_threads(pid: str, viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def create_thread(pid: str, title: str = "", viewer: Any = ANON_VIEWER) -> Dict[str, Any]:
+def create_thread(
+    pid: str, title: str = "", viewer: Any = ANON_VIEWER, tid: str = ""
+) -> Dict[str, Any]:
+    """建会话。tid 可由客户端指定（与 agent 侧 langgraph thread 同 id 的前提），
+    非法或撞 id 时回退服务端生成。"""
     assert_access(viewer, pid)
-    tid = uuid.uuid4().hex[:12]
+    tid = (tid or "").strip()
+    if not _THREAD_ID_RE.fullmatch(tid):
+        tid = uuid.uuid4().hex[:12]
     now = _now()
     with _conn() as conn:
-        conn.execute(
-            "INSERT INTO chat_threads (id, project_id, title, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?)",
-            (tid, pid, title.strip()[:40], now, now),
-        )
+        try:
+            conn.execute(
+                "INSERT INTO chat_threads (id, project_id, title, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (tid, pid, title.strip()[:40], now, now),
+            )
+        except sqlite3.IntegrityError:
+            tid = uuid.uuid4().hex[:12]
+            conn.execute(
+                "INSERT INTO chat_threads (id, project_id, title, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (tid, pid, title.strip()[:40], now, now),
+            )
     return {"id": tid, "title": title.strip()[:40], "updated_at": now, "message_count": 0}
 
 

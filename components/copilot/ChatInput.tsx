@@ -26,11 +26,12 @@ import {
   X,
 } from "lucide-react";
 import { useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import { useChatSession } from "@/lib/chat/session";
 import MentionInput, {
   type MentionInputHandle,
   type MentionRead,
 } from "@/components/canvas/MentionInput";
-import { uploadAsset } from "@/lib/projects";
+import { uploadAsset, cancelChatRun } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
@@ -418,7 +419,12 @@ export default function ChatInput({
               type="button"
               className="copilotKitInputControlButton"
               data-tip="停止生成" aria-label="停止生成"
-              onClick={() => onStop?.()}
+              onClick={() => {
+                // 停止要真停：客户端 abort 之外，把在途后端工具（出图/拆解/技能）
+                // 一并取消，否则烧钱循环继续跑完（分镜批量出图取消同范式）
+                void cancelChatRun(useChatSession.getState().threadId);
+                onStop?.();
+              }}
             >
               <Square className="h-3 w-3 fill-current motion-safe:animate-pulse" />
             </button>

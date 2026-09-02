@@ -107,6 +107,12 @@ def api_list_ref_candidates(pid: str, nodeId: str = "", user: auth.CurrentUser =
     return imgresearch.list_candidates(pid, nodeId)
 
 
+@router.get("/projects/{pid}/refs/candidate-summary")
+def api_ref_candidate_summary(pid: str, user: auth.CurrentUser):
+    projects.assert_access(user, pid)
+    return imgresearch.candidate_summary(pid)
+
+
 @router.post("/projects/{pid}/refs/adopt")
 def api_adopt_ref_candidates(pid: str, req: dict, user: auth.CurrentUser):
     projects.assert_access(user, pid)

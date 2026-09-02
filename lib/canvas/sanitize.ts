@@ -23,7 +23,33 @@ export interface SanitizeResult {
   migratedLooks: number;
   /** 存量镜头图补参考：补写 refIds 的图卡数（参考连线另计） */
   fixedShotRefs: number;
+  /** 存量占位标题剥成空名的卡数（hint 默认标题/hex 文件名） */
+  strippedTitles: number;
 }
+
+/** 旧版建卡/agent 兜底把 NODE_META.hint 占位文案存成真标题（罪案实录 9 张卡
+ *  同名「设定图 / 参考图占位」——污染 @ 候选、参考职责标签、编号契约），
+ *  上传卡以随机 hex 文件名做标题。一律剥成空名：新代码空名建卡，UI 以类型
+ *  名兜底显示。精确匹配防误伤用户真标题 */
+const PLACEHOLDER_TITLES = new Set([
+  "自由文本",
+  "故事大纲或分场剧本",
+  "角色设定卡",
+  "场景概念图 / 空间参考",
+  "道具设定 / 单件参考",
+  "服饰设定 / Look 素材",
+  "设定图 / 参考图占位",
+  "镜头视频 / 动态预览",
+  "配音 / 音效 / BGM",
+  "按序拼接上游视频成片",
+  "镜头画面描述",
+  "整场戏的镜头清单",
+  "粘贴的文本",
+  "粘贴的图片",
+]);
+/** agent 归档文件名是 uuid hex[:12]（12-32 位 hex + 扩展名） */
+const HEX_FILENAME_TITLE =
+  /^[0-9a-f]{12,32}\.(png|jpe?g|webp|gif|mp4|webm|mov|mp3|wav)$/i;
 
 export function sanitizeCanvas(
   nodes: WingNode[],
@@ -300,6 +326,20 @@ export function sanitizeCanvas(
     cleanNodes.unshift(groupNode);
   }
 
+  // 存量占位标题清洗：hint 默认标题/hex 文件名 → 空名（幂等，二次装载为 0）
+  let strippedTitles = 0;
+  for (const n of cleanNodes) {
+    // title 缺失/非字符串 → 规范成空名（空名约定；下游 summarizeCanvas 等
+    // 直接 .slice 的地方不当边界）
+    if (typeof n.data.title !== "string") n.data.title = "";
+    const t = n.data.title.trim();
+    if (!t) continue;
+    if (PLACEHOLDER_TITLES.has(t) || HEX_FILENAME_TITLE.test(t)) {
+      n.data.title = "";
+      strippedTitles += 1;
+    }
+  }
+
   return {
     nodes: [...cleanNodes, ...extraNodes],
     edges: [...cleanEdges, ...extraEdges],
@@ -308,5 +348,6 @@ export function sanitizeCanvas(
     fixedParents,
     migratedLooks,
     fixedShotRefs,
+    strippedTitles,
   };
 }

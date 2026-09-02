@@ -1,0 +1,307 @@
+/**
+ * E2E 回归：参考图管线批1（罪案实录事故修复）。
+ *  - sanitize 存量清洗：hint 占位标题（「设定图 / 参考图占位」）/hex 文件名
+ *    标题剥成空名，用户真标题保留
+ *  - @ 候选：已连线卡置顶组（带「已连线」标记）、同类型卡不再被截 3 条
+ *  - 「参考 N/4」口径 = 实际发送序列（本卡原图 + 连线带图卡），非只数 token
+ *  - 契约推断 v2：图片卡+带图参考 → shot（旧 scene 无人空镜）；@自己/无其他
+ *    参考 → 改图最小模板 promptTemplate；无参考+场景关键词 → scene；
+ *    角色卡参考 → shot 剧照（旧 character 四格）
+ * 出图任务 route mock，不消耗真实额度。前置：前端(8008)+agent(8123) 在跑。
+ */
+import { readFileSync } from "node:fs";
+import { chromium } from "playwright";
+
+const BASE = "http://127.0.0.1:8008";
+const API = `${BASE}/agent-service`;
+
+function envLocal(key) {
+  for (const line of readFileSync(new URL("../.env.local", import.meta.url), "utf8").split("\n")) {
+    if (line.startsWith(`${key}=`)) return line.slice(key.length + 1).trim();
+  }
+  return "";
+}
+let TOKEN = "";
+{
+  const r = await fetch(`${BASE}/api/v1/auth/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      username: envLocal("AUTH_USERNAME") || "admin",
+      password: envLocal("AUTH_PASSWORD"),
+    }),
+  });
+  if (r.ok) TOKEN = (await r.json()).access_token ?? "";
+}
+async function api(path, init) {
+  const r = await fetch(`${API}${path}`, {
+    ...init,
+    headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), ...(init?.headers ?? {}) },
+  });
+  const text = await r.text();
+  let body = null;
+  try { body = JSON.parse(text); } catch { body = text; }
+  return { status: r.status, body };
+}
+
+const results = [];
+const check = (name, ok, detail = "") => {
+  results.push({ name, ok });
+  console.log(`${ok ? "✓" : "✗"} ${name}${detail ? `  — ${detail}` : ""}`);
+};
+
+const svg = (label, bg) =>
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280"><rect width="720" height="1280" fill="${bg}"/><text x="360" y="640" font-size="160" fill="white" text-anchor="middle" font-family="sans-serif">${label}</text></svg>`,
+  );
+
+let gridI = 0;
+const pos = () => ({ x: (gridI % 4) * 300, y: Math.floor(gridI++ / 4) * 380 });
+const img = (id, extra = {}) => ({
+  id,
+  type: "image",
+  position: pos(),
+  data: { nodeType: "image", status: "ready", ...extra },
+});
+
+const nodes = [
+  // 存量占位标题卡（sanitize 应剥成空名）
+  ...["旧卡一", "旧卡二", "旧卡三", "旧卡四", "旧卡五", "旧卡六"].map((t, i) =>
+    img(`old${i}`, { title: "设定图 / 参考图占位", body: `旧卡${i}`, imageUrl: svg(`O${i}`, "#777777") }),
+  ),
+  img("hexcard", { title: "6a8d0d5be4b0878a6c9b50f8.jpg", imageUrl: svg("H", "#555555") }),
+  // 连线参考两张（新约定空名 + 可辨认的正文）
+  img("refF", { body: "女主设定图", imageUrl: svg("F", "#8a4a4a") }),
+  img("refM", { body: "男主设定图", imageUrl: svg("M", "#4a5a8a") }),
+  // 咖啡馆事故复刻：带图 + 两条连线 + 人物剧情提示词
+  img("shot", { imageUrl: svg("C", "#3f5a3f") }),
+  // 改图卡：带图、无连线
+  img("editCard", { imageUrl: svg("E", "#6a5a3f") }),
+  // 场景关键词卡：无图无线
+  { id: "sceneCard", type: "image", position: pos(), data: { nodeType: "image", title: "山城夜景场景" } },
+  // 角色卡参考的剧照卡
+  { id: "charA", type: "character", position: pos(), data: { nodeType: "character", title: "张波", imageUrl: svg("Z", "#4a6a4a") } },
+  img("charShot", {}),
+];
+const edges = [
+  { id: "e1", source: "refF", target: "shot" },
+  { id: "e2", source: "refM", target: "shot" },
+  { id: "e3", source: "charA", target: "charShot" },
+];
+
+// ---------- 测试项目 + 画布 ----------
+const { status: pst, body: proj } = await api("/projects", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: `e2e-refpipe-${Date.now()}` }),
+});
+if (pst !== 200 && pst !== 201) throw new Error(`建项目失败 ${pst}`);
+const pid = proj.id ?? proj.project?.id;
+const put = await api(`/projects/${pid}/canvas`, {
+  method: "PUT",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ nodes, edges, viewport: { x: 10, y: 10, zoom: 0.5 } }),
+});
+if (put.status !== 200) throw new Error(`PUT canvas 失败 ${put.status}: ${JSON.stringify(put.body).slice(0, 200)}`);
+// 视口整体缩小：onlyRenderVisibleElements 会卸载视口外卡，缩放保证全部可点
+
+// ---------- 浏览器 ----------
+const browser = await chromium.launch();
+const context = await browser.newContext({ viewport: { width: 1500, height: 940 } });
+if (TOKEN)
+  await context.addInitScript(
+    ([key, value]) => window.localStorage.setItem(key, value),
+    ["wingsight_studio_token", TOKEN],
+  );
+const page = await context.newPage();
+page.on("pageerror", (e) => console.log("[pageerror]", String(e).slice(0, 400)));
+page.on("console", (m) => {
+  if (m.type() === "error") console.log("[console.error]", m.text().slice(0, 250));
+});
+
+let lastPayload = null;
+let lastRids = [];
+await page.route("**/agent-service/storyboard/images", (route) => {
+  if (route.request().method() === "POST") {
+    lastPayload = route.request().postDataJSON();
+    lastRids = (lastPayload?.shots ?? []).map((s) => s.rid);
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ jobId: "e2e_pipe_job" }) });
+  }
+  return route.continue();
+});
+// 按 POST 的 rid 回成功图：卡落 ready 态，不留「生成失败·重试」按钮干扰后续选择器
+await page.route("**/agent-service/storyboard/images/e2e_pipe_job", (route) =>
+  route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({
+      status: "done",
+      images: lastRids.map((rid) => ({ rid, ok: true, imageUrl: svg("OK", "#3a6a3a") })),
+    }),
+  }),
+);
+
+const select = async (id) => {
+  // 点卡片头部（避开媒体区防开灯箱）；fitView 动画期点击会被吞，先等稳定，
+  // xyflow 初始化竞态也可能吞一次选择，重试兜底
+  for (let i = 0; i < 3; i++) {
+    await page.waitForTimeout(i === 0 ? 1200 : 800);
+    await page
+      .locator(`.react-flow__node[data-id="${id}"]`)
+      .click({ position: { x: 5, y: 4 }, force: i > 0 });
+    try {
+      await page
+        .getByRole("button", { name: /^生成/ }).first()
+        .waitFor({ state: "visible", timeout: 4000 });
+      return;
+    } catch {
+      await page.evaluate((nid) => window.__wsCanvasStore.getState().selectNodes([nid]), id);
+      await page.waitForTimeout(800);
+    }
+  }
+  await page
+    .getByRole("button", { name: /^生成/ }).first()
+    .waitFor({ state: "visible", timeout: 4000 })
+    .catch(async () => {
+      console.error("[select 诊断]", await page.evaluate((nid) => JSON.stringify({
+        selected: window.__wsCanvasStore.getState().nodes.filter((n) => n.selected).map((n) => n.id),
+        panels: document.querySelectorAll(".ws-detail").length,
+        btns: [...document.querySelectorAll("button")].map((b) => b.textContent?.trim()).filter(Boolean).slice(0, 30),
+        shotPos: (() => { const el = document.querySelector(`.react-flow__node[data-id="${nid}"]`); if (!el) return "gone"; const r = el.getBoundingClientRect(); return `${r.x},${r.y} ${r.width}x${r.height}`; })(),
+      }), id));
+      await page.screenshot({ path: new URL("./refpipe-fail.png", import.meta.url).pathname });
+      throw new Error(`select(${id}) 后面板未出现`);
+    });
+};
+const typePrompt = async (text) => {
+  const ed = page.locator('[contenteditable="true"]').first();
+  await ed.click();
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type(text);
+};
+const submit = async () => {
+  lastPayload = null;
+  await page.getByRole("button", { name: /^生成/ }).first().click();
+  // directImagegen 先拉模型目录/探画幅才发 POST，轮到 payload 出现为止
+  for (let i = 0; i < 40 && !lastPayload; i++) await page.waitForTimeout(250);
+};
+
+try {
+  await page.goto(`${BASE}/project/${pid}`);
+  await page.locator(".react-flow__node").first().waitFor({ state: "visible", timeout: 15000 });
+  await page.waitForTimeout(2500);
+  // 画风闸：不设画风提交会弹「项目画风」选择器拦路
+  await page.evaluate(() => window.__wsCanvasStore.setState({ projectStyle: "电影感胶片质感" }));
+
+  // 1. sanitize：占位标题/hex 文件名剥成空名，真标题保留
+  const titles = await page.evaluate(() => {
+    const st = window.__wsCanvasStore.getState();
+    return Object.fromEntries(st.nodes.map((n) => [n.id, n.data.title ?? ""]));
+  });
+  check(
+    "sanitize 剥占位标题、保留真标题",
+    ["old0", "old1", "old2", "old3", "old4", "old5", "hexcard"].every((k) => titles[k] === "") &&
+      titles.charA === "张波" && titles.sceneCard === "山城夜景场景",
+    JSON.stringify(titles).slice(0, 120),
+  );
+
+  // 2. 咖啡馆事故复刻：计数口径 = 本卡原图 + 两条连线 = 3/4（旧口径 0/4）
+  await select("shot");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  const counter = await page.getByText(/参考 \d\/\d/).textContent();
+  check("计数口径=真实序列（3/4）", counter?.trim() === "参考 3/4", counter?.trim() ?? "none");
+
+  // 3. @ 候选：已连线两张置顶（已连线标记），且旧卡不再挤出它们
+  await page.locator('[contenteditable="true"]').first().click();
+  await page.keyboard.type("@");
+  await page.waitForTimeout(300);
+  const badgeCount = await page.locator("text=已连线").count();
+  check("候选已连线标记 ×2", badgeCount === 2, `count=${badgeCount}`);
+  const rows = await page
+    .locator('button:has-text("已连线")')
+    .allTextContents();
+  check(
+    "已连线组=女主/男主设定图",
+    rows.some((t) => t.includes("女主设定图")) && rows.some((t) => t.includes("男主设定图")),
+    rows.join(" | ").slice(0, 80),
+  );
+  const allRows = await page
+    .locator("div.absolute button", { hasText: "图片" })
+    .allTextContents();
+  const fi = allRows.findIndex((t) => t.includes("女主设定图"));
+  const oi = allRows.findIndex((t) => t.includes("旧卡0"));
+  check("已连线卡排在旧建卡之前", fi !== -1 && (oi === -1 || fi < oi), `F=${fi} old=${oi}`);
+  await page.keyboard.press("Escape");
+
+  // 4. 契约推断：图片卡 + 带图参考 + 人物剧情 → shot（旧 scene），无改图模板
+  await typePrompt("午后暖光，两人隔桌而坐");
+  await submit();
+  check(
+    "带图参考→shot 契约",
+    lastPayload?.shots?.[0]?.assetType === "shot" && !lastPayload?.shots?.[0]?.promptTemplate,
+    `assetType=${lastPayload?.shots?.[0]?.assetType}`,
+  );
+  check(
+    "参考序列=本卡原图+2连线",
+    (lastPayload?.shots?.[0]?.referenceImages ?? []).length === 3,
+    `refs=${lastPayload?.shots?.[0]?.referenceImages?.length}`,
+  );
+
+  // 5. 改图模式：带图无连线 → promptTemplate 最小模板 + 仅本卡原图
+  await select("editCard");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  await typePrompt("换成雨夜氛围");
+  await submit();
+  const s5 = lastPayload?.shots?.[0];
+  check(
+    "改图→最小模板",
+    typeof s5?.promptTemplate === "string" &&
+      s5.promptTemplate.includes("{description}") &&
+      s5.promptTemplate.includes("{_reference_note}") &&
+      !s5.promptTemplate.includes("{layout}"),
+    `assetType=${s5?.assetType} tpl=${Boolean(s5?.promptTemplate)}`,
+  );
+  check("改图参考=仅本卡原图", (s5?.referenceImages ?? []).length === 1, `refs=${s5?.referenceImages?.length}`);
+
+  // 6. 场景关键词：无参考 + 标题含「场景」 → scene 空镜
+  await select("sceneCard");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  await typePrompt("黄昏光线，暖色调");
+  await submit();
+  check(
+    "场景关键词→scene 空镜",
+    lastPayload?.shots?.[0]?.assetType === "scene" && (lastPayload?.shots?.[0]?.referenceImages ?? []).length === 0,
+    `assetType=${lastPayload?.shots?.[0]?.assetType}`,
+  );
+
+  // 7. 角色卡参考 → shot 剧照（旧 character 四格定妆）
+  await select("charShot");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  await typePrompt("张波走进咖啡馆");
+  await submit();
+  const s7 = lastPayload?.shots?.[0];
+  check(
+    "角色参考→shot 剧照（非四格）",
+    s7?.assetType === "shot" && s7?.referenceLabels?.[0]?.type === "character",
+    `assetType=${s7?.assetType} label0=${s7?.referenceLabels?.[0]?.type}`,
+  );
+
+  // 8. @ 候选空态指引
+  await select("shot");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  await page.locator('[contenteditable="true"]').first().click();
+  await page.keyboard.type("@zzz");
+  await page.waitForTimeout(300);
+  const emptyHint = await page.getByText(/没有匹配/).count();
+  check("空态指引", emptyHint >= 1);
+} catch (e) {
+  console.error("执行中断：", e.message);
+} finally {
+  await browser.close();
+  await api(`/projects/${pid}`, { method: "DELETE" }).catch(() => {});
+}
+
+const failed = results.filter((r) => !r.ok);
+console.log(`\n${results.length - failed.length}/${results.length} 通过`);
+process.exit(failed.length ? 1 : 0);

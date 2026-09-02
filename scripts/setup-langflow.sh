@@ -180,6 +180,10 @@ FLOWS = {
     "topic-rescan-plan.json": "LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID",
     "topic-angle-gen.json": "LANGFLOW_TOPIC_ANGLE_FLOW_ID",
     "promo-copy.json": None,
+    "research-plan.json": "LANGFLOW_RESEARCH_PLAN_FLOW_ID",
+    "research-extract.json": "LANGFLOW_RESEARCH_EXTRACT_FLOW_ID",
+    "research-evaluate.json": "LANGFLOW_RESEARCH_EVAL_FLOW_ID",
+    "research-dossier.json": "LANGFLOW_RESEARCH_DOSSIER_FLOW_ID",
 }
 skills_idx = next((i for i, l in enumerate(lines) if l.startswith("LANGFLOW_SKILLS_JSON=")), None)
 skills = json.loads(env["LANGFLOW_SKILLS_JSON"]) if env.get("LANGFLOW_SKILLS_JSON") else {}

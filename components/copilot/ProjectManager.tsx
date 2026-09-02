@@ -191,7 +191,8 @@ async function activateProject(p: ProjectMeta) {
         clean.removedNodes ||
         clean.removedEdges ||
         clean.fixedParents ||
-        clean.fixedShotRefs
+        clean.fixedShotRefs ||
+        clean.strippedTitles
       ) {
         console.warn(
           `[canvas] 装载消毒：剥离 ${clean.removedNodes} 个坏节点 / ${clean.removedEdges} 条坏连线 / ${clean.fixedParents} 个孤儿分组引用` +
@@ -200,6 +201,9 @@ async function activateProject(p: ProjectMeta) {
               : "") +
             (clean.fixedShotRefs
               ? `；为 ${clean.fixedShotRefs} 张存量镜头图补写参考`
+              : "") +
+            (clean.strippedTitles
+              ? `；剥掉 ${clean.strippedTitles} 张存量卡的占位标题`
               : ""),
         );
       }

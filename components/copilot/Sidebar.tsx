@@ -20,15 +20,51 @@ import {
 import ChatInput from "./ChatInput";
 import ChatSidebarHeader from "./ThreadsBar";
 
-/** 失败卡：错误说明 + 重试本轮（stock 只显示错误文案，用户得整句重打） */
+/** 原始报错 → 人话（原文折叠保留，排查仍可看全） */
+function friendlyError(message: string): string {
+  const m = message.toLowerCase();
+  if (
+    m.includes("failed to fetch") ||
+    m.includes("networkerror") ||
+    m.includes("load failed")
+  )
+    return "连不上助手服务（网络中断或服务未启动），检查后重试";
+  if (m.includes("401") || m.includes("unauthorized") || m.includes("credential"))
+    return "登录已过期，请重新登录后再试";
+  if (m.includes("429") || m.includes("rate limit") || m.includes("too many"))
+    return "请求太频繁或额度限流，稍等几秒再试";
+  if (
+    m.includes("timeout") ||
+    m.includes("timed out") ||
+    m.includes("abort") ||
+    m.includes("cancelled")
+  )
+    return "请求超时或已中止";
+  if (m.includes("insufficient") || m.includes("balance") || m.includes("quota"))
+    return "模型额度/余额不足";
+  if (
+    m.includes("server error") ||
+    m.includes("internal error") ||
+    /\b50[0234]\b/.test(m)
+  )
+    return "服务暂时不可用，稍后重试";
+  return "本次响应出错";
+}
+
+/** 失败卡：人话错误说明（细节折叠）+ 重试本轮（stock 只显示原始错误文案） */
 function ErrorWithRetry({ error, onRegenerate }: ErrorMessageProps) {
+  const raw = error?.message?.slice(0, 300) || "";
   return (
     <div className="my-1 flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-text-2">
       <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-danger" />
       <div className="min-w-0 flex-1">
-        <p className="leading-relaxed">
-          本次响应出错：{error?.message?.slice(0, 160) || "未知错误"}
-        </p>
+        <p className="leading-relaxed">{friendlyError(raw)}</p>
+        {raw ? (
+          <details className="mt-1 text-[11px] text-text-4">
+            <summary className="cursor-pointer select-none">错误详情</summary>
+            <p className="mt-0.5 break-all leading-relaxed">{raw}</p>
+          </details>
+        ) : null}
         {onRegenerate ? (
           <button
             type="button"

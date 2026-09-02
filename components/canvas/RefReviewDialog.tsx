@@ -21,6 +21,7 @@ import {
   type RefAsset,
   type RefCandidate,
 } from "@/lib/ref-research";
+import { useRefStatusStore } from "@/lib/refStatus";
 
 export default function RefReviewDialog({
   projectId,
@@ -115,6 +116,8 @@ export default function RefReviewDialog({
           loading: false,
         }),
       );
+      // 候选落库：刷新资产卡「N 张待选」徽标
+      void useRefStatusStore.getState().refresh(projectId, { force: true });
     } catch (exc) {
       setRows((prev) =>
         new Map(prev).set(nodeId, {
@@ -143,6 +146,11 @@ export default function RefReviewDialog({
         `已为 ${assetCount} 个资产建参考卡连线。点「补资产图」批量生图时将带上这些参考图。`,
       );
       setRows(new Map());
+      // 已采纳计数变了：刷新资产卡「N 张待选」徽标
+      void useRefStatusStore.getState().refresh(
+        useCanvasStore.getState().projectId ?? "",
+        { force: true },
+      );
       setTimeout(onClose, 1600);
     } catch (exc) {
       setErr(exc instanceof Error ? exc.message : "采纳失败");

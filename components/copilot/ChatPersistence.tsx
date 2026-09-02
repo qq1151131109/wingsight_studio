@@ -15,8 +15,10 @@
 import { useEffect, useRef } from "react";
 import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
 import { useCanvasStore } from "@/lib/canvas/store";
-import { useChatSession } from "@/lib/chat/session";
+import { pendingAgentThreadId, useChatSession } from "@/lib/chat/session";
+import { decodeContent, encodeContent } from "@/lib/chat/content";
 import {
+  cancelChatRun,
   createChatThread,
   loadChatMessages,
   listChatThreads,
@@ -32,33 +34,6 @@ const keyOf = (pid: string, tid: string | null | undefined) =>
 
 /** AG-UI 消息的最小结构（headless hook 返回的 Message 太宽，这里只取要存的字段） */
 type ChatMsg = { id?: string; role?: string; content?: unknown };
-
-/** 数组 content（多模态 parts）的落库编解码：标记前缀 + JSON，读回时还原 */
-const PARTS_PREFIX = "WS_PARTS::";
-
-function encodeContent(content: unknown): string | null {
-  if (typeof content === "string") {
-    const t = content.trim();
-    return t ? content : null;
-  }
-  if (Array.isArray(content)) {
-    const json = JSON.stringify(content);
-    return json && json !== "[]" ? PARTS_PREFIX + json : null;
-  }
-  return null;
-}
-
-function decodeContent(raw: string): string | unknown[] {
-  if (raw.startsWith(PARTS_PREFIX)) {
-    try {
-      const parts = JSON.parse(raw.slice(PARTS_PREFIX.length));
-      if (Array.isArray(parts)) return parts;
-    } catch {
-      /* 损坏的 envelope 当纯文本存 */
-    }
-  }
-  return raw;
-}
 
 function toRecords(messages: ChatMsg[]): ChatMessageRecord[] {
   const out: ChatMessageRecord[] = [];
@@ -106,12 +81,14 @@ export default function ChatPersistence() {
   // ---------- 水合：进项目 / 切会话 / 新建会话 ----------
   useEffect(() => {
     if (!projectId) return;
-    // 切项目：上一项目的会话选择不作数，重置为未选择走下方"进项目选最新会话"
+    // 切项目：上一项目的会话选择不作数，重置为未选择走下方"进项目选最新会话"；
+    // 若上一会话有任务在途，透传后端取消（切走即无人看管，不再烧钱）
     const switchedProject =
       threadProjectRef.current !== null && threadProjectRef.current !== projectId;
     threadProjectRef.current = projectId;
     if (switchedProject && threadId !== undefined) {
       hydratedKeyRef.current = null;
+      void cancelChatRun(threadId);
       setThreadId(undefined);
       return;
     }
@@ -199,8 +176,9 @@ export default function ChatPersistence() {
         try {
           let tid = dirty.tid;
           if (!tid) {
-            // 新会话首存：落库建会话，并跳过 setThreadId 触发的回填
-            const t = await createChatThread(dirty.pid);
+            // 新会话首存：用 agent 正在用的 thread id 建服务端会话（两边同源，
+            // 模型记忆与 UI 会话对齐），并跳过 setThreadId 触发的回填
+            const t = await createChatThread(dirty.pid, "", pendingAgentThreadId());
             tid = t.id;
             skipHydrateKeyRef.current = keyOf(dirty.pid, tid);
             setThreadId(tid);
@@ -224,7 +202,7 @@ export default function ChatPersistence() {
           try {
             let tid = dirty.tid;
             if (!tid) {
-              const t = await createChatThread(dirty.pid);
+              const t = await createChatThread(dirty.pid, "", pendingAgentThreadId());
               tid = t.id;
             }
             await saveChatMessages(dirty.pid, tid, dirty.records);

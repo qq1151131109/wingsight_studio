@@ -132,6 +132,28 @@ def list_candidates(project_id: str, node_id: str) -> list[dict[str, Any]]:
     return [_to_dict(r) for r in rows]
 
 
+def candidate_summary(project_id: str) -> list[dict[str, Any]]:
+    """按资产汇总候选计数：资产卡「N 张参考候选待选」徽标的数据源（一次
+    请求拿全项目，避免每卡各拉一遍候选列表）。"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT node_id, COUNT(*) AS total,"
+            " COALESCE(SUM(adopted), 0) AS adopted,"
+            " COALESCE(SUM(recommended), 0) AS recommended"
+            " FROM ref_candidates WHERE project_id = ? GROUP BY node_id",
+            (project_id,),
+        ).fetchall()
+    return [
+        {
+            "nodeId": r["node_id"],
+            "total": r["total"],
+            "adopted": r["adopted"],
+            "recommended": r["recommended"],
+        }
+        for r in rows
+    ]
+
+
 def mark_adopted(
     project_id: str, node_id: str, ids: list[str]
 ) -> list[dict[str, Any]]:
@@ -323,6 +345,72 @@ async def search_serper_images(query: str, limit: int = SERPER_MAX_PER_QUERY) ->
                 }
             )
             if len(out) >= limit:
+                break
+        return out
+    raise last_error  # type: ignore[misc]
+
+
+_SERPER_SEARCH_ENDPOINT = "https://google.serper.dev/search"
+
+
+async def search_serper_web(query: str, num: int = 6) -> list[dict[str, Any]]:
+    """Google 网页搜索经 Serper 号池（深度调研的统一搜索通道）。
+
+    返回 organic 结果 [{title, url, snippet, position}]，中文语境
+    （hl=zh-cn / gl=cn）。号池语义与图片搜索一致：401/403 作废换 key、
+    429 限速换 key，号池为空明报。
+    """
+    global _SERPER_RR
+    body = {"q": query, "num": max(1, min(num, 10)), "hl": "zh-cn", "gl": "cn"}
+    actives = _active_serper_keys()
+    if not actives:
+        raise ValueError("Serper 号池为空：请在管理后台「Serper 号池」添加 API key（serper.dev，注册送 2500 次）")
+    last_error: Exception | None = None
+    for _ in range(len(actives)):
+        _SERPER_RR = (_SERPER_RR + 1) % len(actives)
+        entry = actives[_SERPER_RR]
+        headers = {"X-API-KEY": entry["api_key"], "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
+            resp = await client.post(_SERPER_SEARCH_ENDPOINT, headers=headers, json=body)
+        if resp.status_code in (401, 403):
+            _mark_serper_exhausted(entry["id"])
+            last_error = ValueError(
+                f"Serper key {entry['api_key'][:6]}… 已作废（HTTP {resp.status_code}：无效或额度耗尽）"
+            )
+            actives = _active_serper_keys()
+            if not actives:
+                break
+            _SERPER_RR %= len(actives)
+            continue
+        if resp.status_code == 429:
+            last_error = ValueError("Serper 请求受限（HTTP 429）")
+            continue
+        if resp.status_code >= 400:
+            raise ValueError(f"Serper 网页搜索失败（HTTP {resp.status_code}）：{resp.text[:120]}")
+        _bump_serper_used(entry["id"])
+        data = resp.json()
+        organic = data.get("organic") if isinstance(data, dict) else None
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in organic or []:
+            if not isinstance(item, dict):
+                continue
+            url = str(item.get("link") or "").strip()
+            if not url:
+                continue
+            key = _dedupe_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(
+                {
+                    "title": str(item.get("title") or "").strip() or url,
+                    "url": url,
+                    "snippet": str(item.get("snippet") or "").strip(),
+                    "position": _int_or_zero(item.get("position")),
+                }
+            )
+            if len(out) >= num:
                 break
         return out
     raise last_error  # type: ignore[misc]

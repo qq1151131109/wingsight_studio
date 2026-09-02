@@ -40,6 +40,8 @@ import models  # noqa: E402
 import projects  # noqa: E402
 import prompt_presets  # noqa: E402
 import ref_routes  # noqa: E402
+import research  # noqa: E402
+import research_routes  # noqa: E402
 import serper_routes  # noqa: E402
 import skills  # noqa: E402
 import style_presets  # noqa: E402
@@ -56,6 +58,7 @@ style_presets.init_style_presets_db()
 prompt_presets.init_prompt_presets_db()
 imgresearch.init_ref_research_db()
 imgresearch.init_serper_pool_db()
+research.init_research_db()
 auth.init_auth_db()
 auth.ensure_auth_password()
 
@@ -64,6 +67,8 @@ auth.ensure_auth_password()
 async def _lifespan(_app: FastAPI):
     # 上轮刷新若被服务重启杀掉，把中断如实落进 last_run（前端"上次刷新中断"）
     topic_pool.SERVICE.report_interrupted_run()
+    # 深度调研同理：running/planning 孤儿标记 interrupted，证据保留可补研续跑
+    research.report_interrupted_jobs()
     # 选题池每日定时刷新（进程内 asyncio 轮询；关停随事件循环取消）
     scheduler = asyncio.create_task(topic_pool.auto_refresh_loop())
     try:
@@ -97,6 +102,8 @@ app.include_router(prompt_presets.router, prefix="/api/v1")
 app.include_router(serper_routes.router, prefix="/api/v1")
 # 资产参考图调研（项目域资源挂根路径）
 app.include_router(ref_routes.router)
+# 深度调研（项目域资源挂根路径）
+app.include_router(research_routes.router)
 # DMX 余额（顶栏实时显示，admin）
 app.include_router(dmx_routes.router, prefix="/api/v1")
 
@@ -318,8 +325,11 @@ def api_list_threads(pid: str, user: auth.CurrentUser):
 async def api_create_thread(
     pid: str, req: dict | None = None, user: auth.CurrentUser = None  # type: ignore[assignment]
 ):
-    # body 可省（curl 空 POST 也要能建会话）
-    return projects.create_thread(pid, str((req or {}).get("title", "")), user)
+    # body 可省（curl 空 POST 也要能建会话）；id 由客户端指定时与 agent 侧
+    # langgraph thread 同 id（UI 会话 ↔ 模型记忆一一对应的前提）
+    return projects.create_thread(
+        pid, str((req or {}).get("title", "")), user, str((req or {}).get("id", ""))
+    )
 
 
 @app.patch("/projects/{pid}/threads/{tid}")
@@ -329,8 +339,22 @@ async def api_rename_thread(pid: str, tid: str, req: dict, user: auth.CurrentUse
 
 
 @app.delete("/projects/{pid}/threads/{tid}")
-def api_delete_thread(pid: str, tid: str, user: auth.CurrentUser):
-    return {"ok": projects.delete_thread(pid, tid, user)}
+async def api_delete_thread(pid: str, tid: str, user: auth.CurrentUser):
+    ok = projects.delete_thread(pid, tid, user)
+    if ok:
+        # 会话删了，agent 侧 checkpoint 一并清（历史遗留值清除而非静默叠加）
+        try:
+            await graph.checkpointer.adelete_thread(tid)
+        except Exception as e:  # noqa: BLE001
+            print(f"[checkpoint 清理失败] tid={tid} {type(e).__name__}: {e}", flush=True)
+    return {"ok": ok}
+
+
+@app.post("/chat/cancel")
+async def api_chat_cancel(req: dict, user: auth.CurrentUser):
+    """取消会话在途的后端工具（出图/拆解/技能调用）——「停止」「切会话」透传。"""
+    n = skills.cancel_chat_runs(str(req.get("threadId") or ""))
+    return {"ok": True, "cancelled": n}
 
 
 @app.get("/projects/{pid}/threads/{tid}/messages")

@@ -14,7 +14,7 @@ import {
 } from "@xyflow/react";
 import { IMAGEGEN_DEFAULT, type ImagegenParams } from "@/lib/imagegen";
 
-/** 画布节点类型：文本 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 分组框 */
+/** 画布节点类型：文本 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 调研 / 分组框 */
 export type WingNodeType =
   | "note"
   | "script"
@@ -28,6 +28,7 @@ export type WingNodeType =
   | "compose"
   | "storyboard"
   | "shotlist"
+  | "research"
   | "group";
 
 /** 分镜表的一行（一个镜头） */
@@ -110,6 +111,8 @@ export interface WingNodeData {
     referenceLabels?: { type: string; name: string }[];
     /** 提交时解析定的画幅（自动已吸附参考图比例），补出原样重跑 */
     aspect?: string;
+    /** 改图模式的最小提示词模板（无版式措辞）；非改图不带 */
+    promptTemplate?: string;
   };
   /** 出图参数卡片级覆盖（模型/档位/画幅，目录见 agent/models.py）：缺省
    *  跟随项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
@@ -148,6 +151,9 @@ export interface WingNodeData {
   /** 剧本卡/分镜表卡：进行中的批量调研参考图任务（卡片被 onlyRenderVisibleElements
    *  卸载或刷新后凭它续轮询、终态照弹审阅面板，完事即清） */
   refBatchJobId?: string;
+  /** 调研卡：深度调研任务 id（卡面是任务实况的视图：进度/卷宗摘要；
+   *  正文真相在 agent research_jobs 表，卡片凭它轮询，不在画布数据里存档） */
+  researchId?: string;
   /** 遗留字段（一卡一图重构前）：角色卡 Look 变体。UI 已不读写，仅装载时
    *  经 sanitizeCanvas 迁移拆成独立图片卡并连线（角色→Look卡） */
   looks?: { label: string; imageUrl: string; costumeId?: string }[];
@@ -339,6 +345,7 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   compose: { w: 320, h: 280 },
   storyboard: { w: 320, h: 220 },
   shotlist: { w: 560, h: 420 },
+  research: { w: 320, h: 220 },
   group: { w: 480, h: 360 },
 };
 
@@ -1309,6 +1316,7 @@ export const NODE_META: Record<
   compose: { label: "合成", dot: "var(--color-text-3)", hint: "按序拼接上游视频成片" },
   storyboard: { label: "分镜", dot: "var(--color-accent-2)", hint: "镜头画面描述" },
   shotlist: { label: "分镜表", dot: "var(--color-warn)", hint: "整场戏的镜头清单" },
+  research: { label: "调研", dot: "var(--color-accent)", hint: "深度调研卷宗（证据/争议/材料簇）" },
   group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
 };
 
@@ -1324,7 +1332,7 @@ export function summarizeCanvas(
   lines.push(`节点 ${nodes.length} 个，连线 ${edges.length} 条：`);
   for (const n of nodes) {
     const meta = NODE_META[n.data.nodeType];
-    const title = n.data.title.slice(0, 30) || "（无标题）";
+    const title = (n.data.title ?? "").slice(0, 30) || "（无标题）";
     const shotFields =
       n.data.nodeType === "storyboard"
         ? [

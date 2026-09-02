@@ -74,7 +74,7 @@ await api(`/projects/${pid}/canvas`, {
         id: "e2e_edit_script",
         type: "script",
         position: { x: 0, y: 0 },
-        data: { nodeType: "script", title: "故事大纲或分场剧本", body: BODY },
+        data: { nodeType: "script", title: "雨夜传说·剧本", body: BODY },
       },
     ],
     edges: [],

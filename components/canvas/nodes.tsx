@@ -16,6 +16,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import {
+  BookOpen,
   Brush,
   Check,
   ChevronDown,
@@ -72,6 +73,15 @@ import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import { rewriteText } from "@/lib/textwrite";
 import {
+  RESEARCH_DEPTH_LABEL,
+  RESEARCH_STAGE_LABEL,
+  RESEARCH_STATUS_LABEL,
+  type ResearchJob,
+  getResearch,
+  startResearch,
+} from "@/lib/research";
+import ResearchReader from "./ResearchReader";
+import {
   ASSET_TYPES,
   isLookCard,
   preferLookRefs,
@@ -79,6 +89,7 @@ import {
 } from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
 import { downloadMedia } from "@/lib/download";
+import { reportError } from "@/lib/error-dialog";
 import {
   dispatchFocusEdit,
   FOCUS_EDIT_EVENT,
@@ -115,6 +126,7 @@ import {
   getBatchRefResearchJob,
   type BatchRefJob,
 } from "@/lib/ref-research";
+import { useRefStatusStore } from "@/lib/refStatus";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
@@ -371,13 +383,26 @@ function useBatchRefJob(nodeId: string) {
           const j = await getBatchRefResearchJob(projectId, batchId);
           if (!alive) return;
           setState({ batchId, job: j, error: "" });
-          if (j.status !== "running") return;
+          // 同步到资产卡状态总线：进行中的资产亮「调研中」
+          useRefStatusStore
+            .getState()
+            .setRunning(
+              batchId,
+              j.items.filter((it) => it.status === "running").map((it) => it.nodeId),
+            );
+          if (j.status !== "running") {
+            useRefStatusStore.getState().clearRunning(batchId);
+            // 候选落库了：强制刷新汇总，资产卡亮「N 张候选待选」
+            void useRefStatusStore.getState().refresh(projectId, { force: true });
+            return;
+          }
           misses = 0;
         } catch (exc) {
           misses += 1;
           if (!alive) return;
           const msg = exc instanceof Error ? exc.message : "批量调研查询失败";
           if (msg.includes("不存在") || misses >= 5) {
+            useRefStatusStore.getState().clearRunning(batchId);
             setState({ batchId, job: null, error: msg });
             return;
           }
@@ -1037,6 +1062,7 @@ function TextCard({
 }) {
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
   const [forceEdit, setForceEdit] = useState(false);
+  const [researching, setResearching] = useState(false);
   const lod = useLod();
   useEffect(() => {
     const onFocusEdit = (e: Event) => {
@@ -1087,6 +1113,54 @@ function TextCard({
       </button>
     );
   };
+  /** 深度调研：正文作 brief 发起调研，右侧建调研卡连线（卡面轮询任务实况） */
+  const researchBtn = () => {
+    const st = useCanvasStore.getState();
+    const pid = st.projectId;
+    if (!pid || researching) return null;
+    return (
+      <button
+        type="button"
+        disabled={researching}
+        className="nodrag nowheel flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-50"
+        data-tip="以本文为背景发起深度调研，右侧新建调研卡" aria-label="深度调研"
+        onClick={async (e) => {
+          e.stopPropagation();
+          if (researching) return;
+          const src = useCanvasStore.getState().nodes.find((n) => n.id === id);
+          const text = (src?.data.body ?? "").trim();
+          if (!text) return;
+          setResearching(true);
+          try {
+            const topic =
+              (src?.data.title ?? "").trim() || text.replaceAll("\n", " ").slice(0, 30);
+            const job = await startResearch(pid, topic, text.slice(0, 600), "standard");
+            const nid = createConnectedNode(id, "research");
+            if (nid) {
+              useCanvasStore.getState().updateNodeData(nid, {
+                title: topic,
+                researchId: job.jobId,
+              });
+            }
+          } catch (exc) {
+            reportError(
+              "深度调研发起失败",
+              exc instanceof Error ? exc.message : String(exc),
+            );
+          } finally {
+            setResearching(false);
+          }
+        }}
+      >
+        {researching ? (
+          <Loader2 className="h-3 w-3 animate-spin" />
+        ) : (
+          <Search className="h-3 w-3" />
+        )}
+        调研
+      </button>
+    );
+  };
   return (
     <CardShell id={id} data={data} selected={selected}>
       {lod === "full" ? (
@@ -1121,6 +1195,7 @@ function TextCard({
               <span className="flex-1" />
               {genBtn("image", "生图")}
               {genBtn("video", "生视频")}
+              {researchBtn()}
             </div>
           ) : null}
           {footer}
@@ -1358,6 +1433,11 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               {decomposeMsg}
             </p>
           ) : null}
+          {refJob.running && refJob.job?.current ? (
+            <p className="ws-detail mt-1 text-[10px] text-text-3">
+              正在调研：{refJob.job.current}
+            </p>
+          ) : null}
           {researchMsg ? (
             <p className="ws-detail mt-1 text-[10px] text-text-3">
               {researchMsg}
@@ -1437,6 +1517,20 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [writeMsg, setWriteMsg] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const lod = useLod();
+  // 参考图调研状态（状态总线）：批量调研进行中亮「调研中」，有已调研未采纳
+  // 的候选亮「N 张待选」徽标（点击进找参考图面板）
+  const refRunning = useRefStatusStore((s) =>
+    Object.values(s.runningByBatch).some((ids) => ids.includes(id)),
+  );
+  const refPending = useRefStatusStore((s) => {
+    const x = s.byNode[id];
+    return x ? x.total - x.adopted : 0;
+  });
+  useEffect(() => {
+    void useRefStatusStore
+      .getState()
+      .refresh(useCanvasStore.getState().projectId ?? "");
+  }, [id]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const versionCount = d.versions?.length ?? 0;
@@ -1676,6 +1770,26 @@ function AssetCard({ data, id, selected }: NodeProps) {
         >
           <Sparkles className="h-3 w-3" />
           {imgJob ? "生成中…" : "AI 出图（按设定正文）"}
+        </button>
+      ) : null}
+      {lod === "full" && refRunning ? (
+        <p className="ws-detail mt-1.5 flex items-center gap-1 text-[10px] text-accent">
+          <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
+          参考图调研中…
+        </p>
+      ) : null}
+      {lod === "full" && !refRunning && refPending > 0 ? (
+        <button
+          type="button"
+          data-tip={`有 ${refPending} 张已调研未采纳的参考候选，点击挑选（AI 推荐★已预选）`} aria-label="参考候选待选"
+          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-accent-soft bg-accent-dim/60 px-2 py-1 text-[10px] font-medium text-text transition-colors hover:bg-accent-soft"
+          onClick={(e) => {
+            e.stopPropagation();
+            setResearchOpen(true);
+          }}
+        >
+          <Search className="h-3 w-3" />
+          {refPending} 张参考候选待选
         </button>
       ) : null}
       {lod === "full" ? (
@@ -4863,6 +4977,11 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       {decomposeMsg ? (
         <p className="ws-detail mt-1 text-[10px] text-text-3">{decomposeMsg}</p>
       ) : null}
+      {refJob.running && refJob.job?.current ? (
+        <p className="ws-detail mt-1 text-[10px] text-text-3">
+          正在调研：{refJob.job.current}
+        </p>
+      ) : null}
       {researchMsg ? (
         <p className="ws-detail mt-1 text-[10px] text-text-3">{researchMsg}</p>
       ) : null}
@@ -4883,6 +5002,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin text-accent" />
           ) : null}
           {rows.length} 镜
+          {refJob.running && refJob.job
+            ? ` · 调研中 ${refJob.job.done}/${refJob.job.total}`
+            : ""}
           {imgAgg.ready + imgAgg.loading + imgAgg.error > 0
             ? ` · 已出图 ${imgAgg.ready}${
                 imgAgg.loading > 0 ? ` · 出图中 ${imgAgg.loading}` : ""
@@ -5068,6 +5190,127 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   );
 }
 
+/** 调研卡：深度调研任务的画布锚点。卡面是任务实况的只读视图（进度/卷宗摘要/
+ * 计数），真相在 agent research_jobs 表，凭 researchId 轮询；读卷宗进
+ * ResearchReader（「看图干活进大图」同哲学——卡是句柄，长文进灯箱） */
+function ResearchCard({ data, id, selected }: NodeProps) {
+  const d = data as WingNodeData;
+  const projectId = useCanvasStore((s) => s.projectId);
+  const [job, setJob] = useState<ResearchJob | null>(null);
+  const [readerOpen, setReaderOpen] = useState(false);
+  const researchId = d.researchId ?? "";
+  const lod = useLod();
+
+  // 轮询：运行中 4s，终态后停（首次终态多取一次即止）
+  useEffect(() => {
+    if (!projectId || !researchId) return;
+    let dead = false;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const j = await getResearch(projectId, researchId);
+        if (dead) return;
+        setJob(j);
+        if (j.status === "running" || j.status === "planning") {
+          timer = window.setTimeout(() => void tick(), 4000);
+        }
+      } catch {
+        if (!dead) timer = window.setTimeout(() => void tick(), 8000);
+      }
+    };
+    void tick();
+    return () => {
+      dead = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [projectId, researchId]);
+
+  if (!d || typeof d.nodeType !== "string") return null;
+  const status = job?.status;
+  return (
+    <CardShell id={id} data={d} selected={selected}>
+      {lod === "full" ? (
+        <>
+          {/* 状态行 */}
+          <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+            {status ? (
+              <>
+                <span
+                  className={`inline-flex h-1.5 w-1.5 rounded-full ${
+                    status === "running" ? "animate-pulse" : ""
+                  }`}
+                  style={{
+                    background:
+                      status === "done"
+                        ? "var(--color-good)"
+                        : status === "error"
+                          ? "var(--color-danger)"
+                          : status === "running"
+                            ? "var(--color-accent)"
+                            : "var(--color-warn)",
+                  }}
+                />
+                <span className="text-text-3">
+                  {RESEARCH_STATUS_LABEL[status]}
+                  {status === "running" && job?.stage
+                    ? ` · ${RESEARCH_STAGE_LABEL[job.stage] || job.stage}（第 ${job.roundsDone}/${job.roundsTotal} 轮）`
+                    : ""}
+                  {job?.depth ? ` · ${RESEARCH_DEPTH_LABEL[job.depth]}` : ""}
+                </span>
+                {job ? (
+                  <span className="ml-auto tabular-nums text-text-4">
+                    源 {job.sourcesCount} · 事实 {job.findingsCount}
+                  </span>
+                ) : null}
+              </>
+            ) : (
+              <span className="text-text-4">…</span>
+            )}
+          </div>
+          {/* 卷宗摘要 / 开题方向 / 错误 */}
+          {job?.dossier ? (
+            <p className="ws-detail mt-1.5 line-clamp-4 text-[10px] leading-relaxed text-text-3">
+              <span className="font-medium text-text">{job.dossier.headline}</span>
+              {"　"}
+              {job.dossier.summary}
+            </p>
+          ) : status === "error" || status === "interrupted" ? (
+            <p className="ws-detail mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-danger">
+              {job?.error || "已中断（可补研续跑）"}
+            </p>
+          ) : status === "planning" && job?.plan ? (
+            <p className="ws-detail mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-text-3">
+              开题：{job.plan.viewingQuestion}（{job.plan.directions.length} 个方向待确认）
+            </p>
+          ) : null}
+          {/* 动作 */}
+          <div className="mt-1.5 flex items-center gap-1">
+            <button
+              type="button"
+              className="nodrag flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:bg-surface-2"
+              data-tip="打开调研卷宗" aria-label="打开调研卷宗"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (projectId && researchId) setReaderOpen(true);
+              }}
+            >
+              <BookOpen className="h-3 w-3" />
+              卷宗
+            </button>
+          </div>
+          {readerOpen && projectId && researchId ? (
+            <ResearchReader
+              projectId={projectId}
+              researchId={researchId}
+              onClose={() => setReaderOpen(false)}
+            />
+          ) : null}
+        </>
+      ) : null}
+    </CardShell>
+  );
+}
+
 export const nodeTypes = {
   note: memo(NoteCard),
   script: memo(ScriptCard),
@@ -5081,5 +5324,6 @@ export const nodeTypes = {
   compose: memo(ComposeCard),
   storyboard: memo(StoryboardCard),
   shotlist: memo(ShotListCard),
+  research: memo(ResearchCard),
   group: memo(GroupCard),
 };
