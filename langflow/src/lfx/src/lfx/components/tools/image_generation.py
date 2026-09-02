@@ -29,7 +29,10 @@ from lfx.utils.ssrf_httpx import ssrf_protected_openai_clients_for_url
 _RESOLUTION_SHORT_EDGE = {"1K": 1024, "2K": 1440, "4K": 2160}
 _ROUND_TO = 16
 _RATIO_SPLIT_RE = re.compile(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})\s*$")
-_TIMEOUT_SECONDS = 180.0
+# 单次尝试上限（DMX 4K 档图生图实测可超 180s；与 responses/gemini 通道的
+# httpx timeout=300 对齐。openai SDK 默认 max_retries=2，最坏 3×本值，调用方
+# agent 的 run_flow_blocking 只等 300s——首尝试必须在此窗口内返回才有意义）
+_TIMEOUT_SECONDS = 300.0
 
 # 质量档位一律 high（gpt-image 系 images 接口质量参数，DMX 实测
 # generate/edit 通道均接受；high=最细渲染档，output_tokens 随之最高）
