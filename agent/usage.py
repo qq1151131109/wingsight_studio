@@ -53,6 +53,28 @@ def record_image(model: str, user: str | None = None) -> None:
         )
 
 
+def image_daily(days: int = 14) -> dict[str, Any]:
+    """最近 N 天（含今天，北京日界）的逐日出图张数，按用户分列；
+    窗口内无记录的日子补零，柱状图对比不缺位。"""
+    days = max(1, min(int(days), 90))
+    d0 = datetime.now(_TZ_BJ).date() - timedelta(days=days - 1)
+    keys = [(d0 + timedelta(days=i)).isoformat() for i in range(days)]
+    per = {k: {"day": k, "total": 0, "users": {}} for k in keys}
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT day, user, COUNT(*) AS n FROM image_usage WHERE day >= ? GROUP BY day, user",
+            (keys[0],),
+        ).fetchall()
+    for r in rows:
+        slot = per.get(r["day"])
+        if slot is None:
+            continue
+        n = int(r["n"])
+        slot["total"] += n
+        slot["users"][r["user"]] = slot["users"].get(r["user"], 0) + n
+    return {"days": [per[k] for k in keys]}
+
+
 def image_stats() -> dict[str, Any]:
     """按用户聚合：今日（北京）/ 累计张数 + 模型分布（今日、累计各一组）。"""
     with _conn() as conn:

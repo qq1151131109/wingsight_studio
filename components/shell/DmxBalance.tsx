@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Wallet } from "lucide-react";
 import { apiFetch } from "@/lib/auth";
+import { avatarColor } from "@/components/shell/AccountMenu";
 
 /**
  * DMX 余额 + 出图用量 chip（仅管理员，AccountMenu 挂载 → 首页/画布顶栏同时生效）。
@@ -37,6 +38,14 @@ interface ImageUsage {
   users: ImageUsageUser[];
 }
 
+interface DailyDay {
+  day: string;
+  total: number;
+  users: Record<string, number>;
+}
+
+const CHART_DAYS = 14;
+
 const fmt = (n: number) =>
   n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -54,10 +63,18 @@ async function fetchImageUsage(): Promise<ImageUsage> {
   return body as ImageUsage;
 }
 
+async function fetchDaily(): Promise<DailyDay[]> {
+  const r = await apiFetch(`/agent-service/api/v1/usage/images/daily?days=${CHART_DAYS}`);
+  const body = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(body?.detail ?? `HTTP ${r.status}`);
+  return (body as { days: DailyDay[] }).days;
+}
+
 export default function DmxBalance() {
   const [bal, setBal] = useState<DmxBalanceData | null>(null);
   const [err, setErr] = useState("");
   const [usageData, setUsageData] = useState<ImageUsage | null>(null);
+  const [daily, setDaily] = useState<DailyDay[] | null>(null);
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -111,6 +128,9 @@ export default function DmxBalance() {
     void fetchImageUsage()
       .then(setUsageData)
       .catch(() => setUsageData(null));
+    void fetchDaily()
+      .then(setDaily)
+      .catch(() => setDaily(null));
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
     const onDown = (e: PointerEvent) => {
       if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
@@ -195,9 +215,91 @@ export default function DmxBalance() {
               ))}
             </div>
           )}
+
+          <div className="my-2 h-px bg-hairline" />
+          <p className="text-[11px] font-medium text-text">近 {CHART_DAYS} 天出图</p>
+          {daily ? (
+            <DailyChart days={daily} />
+          ) : (
+            <p className="mt-1 text-[11px] text-text-4">加载中…</p>
+          )}
           <p className="mt-2 text-[10px] leading-relaxed text-text-4">
             张数为成功出图数（含聊天/资产/分镜全通道）；每 30 秒自动更新。
           </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 近 N 天堆叠柱状图（纯 div，不引图表库）：按用户分色（头像色轮换同款），
+ *  无记录日补零灰点，悬停看当日明细。 */
+function DailyChart({ days }: { days: DailyDay[] }) {
+  const max = Math.max(1, ...days.map((d) => d.total));
+  const totals = new Map<string, number>();
+  for (const d of days) {
+    for (const [u, n] of Object.entries(d.users)) {
+      totals.set(u, (totals.get(u) ?? 0) + n);
+    }
+  }
+  const users = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([u]) => u);
+  return (
+    <div className="mt-1.5">
+      <div className="flex h-12 items-end gap-1">
+        {days.map((d) => (
+          <div
+            key={d.day}
+            className="relative flex h-full min-w-0 flex-1 cursor-default items-end justify-center"
+            title={`${d.day} · ${d.total} 张${
+              Object.keys(d.users).length
+                ? `（${Object.entries(d.users)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([u, n]) => `${u} ${n}`)
+                    .join(" · ")}）`
+                : ""
+            }`}
+          >
+            {d.total > 0 ? (
+              <div
+                className="flex w-full max-w-5 flex-col justify-end overflow-hidden rounded-sm"
+                style={{ height: `${Math.max(6, (d.total / max) * 100)}%` }}
+              >
+                {users.map((u) =>
+                  d.users[u] ? (
+                    <div
+                      key={u}
+                      className="w-full"
+                      style={{ background: avatarColor(u), height: `${(d.users[u] / d.total) * 100}%` }}
+                    />
+                  ) : null,
+                )}
+              </div>
+            ) : (
+              <div className="h-0.5 w-full max-w-5 bg-hairline" />
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-0.5 flex gap-1">
+        {days.map((d, i) => (
+          <span
+            key={d.day}
+            className={`min-w-0 flex-1 text-center text-[8px] tabular-nums text-text-4 ${
+              i % 2 === 1 ? "invisible" : ""
+            }`}
+          >
+            {Number(d.day.slice(8))}
+          </span>
+        ))}
+      </div>
+      {users.length > 0 ? (
+        <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+          {users.slice(0, 6).map((u) => (
+            <span key={u} className="flex items-center gap-1 text-[9px] text-text-3">
+              <span className="h-2 w-2 rounded-sm" style={{ background: avatarColor(u) }} />
+              {u}
+            </span>
+          ))}
         </div>
       ) : null}
     </div>

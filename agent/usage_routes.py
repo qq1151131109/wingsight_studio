@@ -13,3 +13,8 @@ router = APIRouter()
 @router.get("/usage/images")
 def image_usage(admin: auth.RequireAdmin):
     return usage.image_stats()
+
+
+@router.get("/usage/images/daily")
+def image_usage_daily(admin: auth.RequireAdmin, days: int = 14):
+    return usage.image_daily(days)
