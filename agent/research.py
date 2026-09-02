@@ -51,7 +51,7 @@ _MAX_LOG_ENTRIES = 200
 
 _FLOW_KEYS = {"plan": "LANGFLOW_RESEARCH_PLAN_FLOW_ID", "extract": "LANGFLOW_RESEARCH_EXTRACT_FLOW_ID",
               "eval": "LANGFLOW_RESEARCH_EVAL_FLOW_ID", "dossier": "LANGFLOW_RESEARCH_DOSSIER_FLOW_ID"}
-_FLOW_TIMEOUTS = {"plan": 180, "extract": 150, "eval": 180, "dossier": 600}
+_FLOW_TIMEOUTS = {"plan": 300, "extract": 240, "eval": 240, "dossier": 600}
 # 高频轻量环节（开题/提纯/评估，单次调用几十次）用快模型压延迟；
 # 卷宗撰写保留 flow 出厂模型（质量优先）。models.text_model_tweaks 同时注
 # model_name+provider（通道路由，组件名注入不烧节点 id）。
@@ -69,6 +69,16 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
 # 取消旗标（进程内）：cancel_research 置位，循环在轮间与阶段间检查
 _CANCELLED: set[str] = set()
+# 任务强引用集：事件循环只持弱引用，create_task 不留引用可能在挂起等待时
+# 被 GC（表现=任务无声消失、状态永远停在 planning，Python 文档明写的坑）
+_RESEARCH_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn(coro) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _RESEARCH_TASKS.add(task)
+    task.add_done_callback(_RESEARCH_TASKS.discard)
+    return task
 
 
 # ---------- 存储 ----------
@@ -410,7 +420,7 @@ def start_research(project_id: str, topic: str, brief: str = "", depth: str = "s
             (job_id, project_id, topic, brief.strip(), depth, now, now),
         )
     _append_log(job_id, "info", f"发起调研「{topic}」（{depth}）")
-    asyncio.create_task(_plan_task(job_id))
+    _spawn(_plan_task(job_id))
     view = get_job_view(job_id)
     assert view is not None
     return view
@@ -421,11 +431,21 @@ async def _plan_task(job_id: str) -> None:
     if row is None:
         return
     try:
-        raw = await _call_flow("plan", {
-            "topic": row["topic"],
-            "brief": row["brief"],
-            "depth": row["depth"],
-        })
+        raw = None
+        # 网关慢时开题 flow 偶发超时（确定性超时但属瞬时故障）：多给一次重试
+        for plan_attempt in (1, 2):
+            try:
+                raw = await _call_flow("plan", {
+                    "topic": row["topic"],
+                    "brief": row["brief"],
+                    "depth": row["depth"],
+                })
+                break
+            except RuntimeError as exc:
+                if plan_attempt == 2 or "超时" not in str(exc):
+                    raise
+                logger.warning("调研 %s 开题超时，5s 后重试一次", job_id)
+                await asyncio.sleep(5)
         plan = _normalize_plan(raw)
         _update_row(job_id, plan_json=json.dumps(plan, ensure_ascii=False))
         _append_log(job_id, "plan",
@@ -463,7 +483,7 @@ def confirm_plan(job_id: str, plan: dict[str, Any] | None = None) -> dict[str, A
         if cur.rowcount == 0:
             raise ValueError("任务已被确认或状态已变化")
     _append_log(job_id, "info", "开题确认，开始执行")
-    asyncio.create_task(_run_task(job_id, plan))
+    _spawn(_run_task(job_id, plan))
     view = get_job_view(job_id)
     assert view is not None
     return view
@@ -872,7 +892,7 @@ def start_gap(project_id: str, parent_job_id: str, questions: list[str]) -> dict
         )
     _append_log(job_id, "info", f"补研「{parent['topic']}」：" + "；".join(questions))
     _append_log(parent_job_id, "info", "发起补研：" + "；".join(questions))
-    asyncio.create_task(_gap_task(job_id, parent_job_id, questions[:5]))
+    _spawn(_gap_task(job_id, parent_job_id, questions[:5]))
     view = get_job_view(job_id)
     assert view is not None
     return view

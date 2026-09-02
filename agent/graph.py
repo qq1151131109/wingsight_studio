@@ -298,7 +298,11 @@ async def start_deep_research(
         return f"调研开题失败：{view['error']}"
     plan = view["plan"]
     if plan is None:
-        return f"调研开题仍在生成（jobId={job_id}），请稍后用 get_research_result 查看"
+        return (
+            f"开题仍在生成（jobId={job_id}，上游服务慢时需 2-4 分钟）。告诉用户开题生成中、"
+            "稍后确认即可；不要连续轮询状态。用户下次说「确认/开始」时调 confirm_research_plan"
+            "（它会等开题就绪后自动开跑）。"
+        )
     lines = [
         f"开题完成（jobId={job_id}）。观看问题：{plan['viewingQuestion']}",
         "查证方向：",
@@ -330,10 +334,21 @@ async def confirm_research_plan(job_id: str, plan_json: str, config: RunnableCon
             plan = json.loads(plan_json)
         except json.JSONDecodeError as e:
             return f"plan_json 不是合法 JSON：{e}"
-    try:
-        view = research.confirm_plan(job_id.strip(), plan)
-    except ValueError as e:
-        return str(e)
+    # 开题 flow 在网关慢时要 1-4 分钟：确认前就地等它就绪（用户已表态，
+    # 不该让模型再跑一轮"还没生成"的空转）
+    for _ in range(90):
+        try:
+            view = research.confirm_plan(job_id.strip(), plan)
+            break
+        except ValueError as e:
+            if "开题尚未生成" not in str(e):
+                return str(e)
+            await asyncio.sleep(2)
+    else:
+        return (
+            f"开题 flow 已等待 3 分钟仍未就绪（jobId={job_id}，上游生成服务慢）。"
+            "请告诉用户稍等后再说一句「确认调研」，或用 get_research_result 查看任务状态。"
+        )
     minutes = {"quick": "1-2", "standard": "2-4", "deep": "5-10"}.get(view["depth"], "2-4")
     return (
         f"调研已开跑（jobId={view['jobId']}），预计 {minutes} 分钟。"
