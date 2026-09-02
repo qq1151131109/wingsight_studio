@@ -64,7 +64,15 @@ const EDIT_PROMPT_TEMPLATE =
  *  契约推断见函数内 assetType 注释 */
 async function directImagegen(
   nodeId: string,
-  opts: { prompt: string; refIds: string[]; count?: number },
+  opts: {
+    prompt: string;
+    refIds: string[];
+    count?: number;
+    /** 本卡原图不并入参考（输入条 chip × 的当次语义） */
+    selfRefOff?: boolean;
+    /** 按设定重新生成：忽略全部参考，用 卡上标题+设定文本 纯文生图 */
+    noRefs?: boolean;
+  },
 ) {
   const st = useCanvasStore.getState();
   const node = st.nodes.find((n) => n.id === nodeId);
@@ -82,7 +90,10 @@ async function directImagegen(
   // + 上游连线卡，带图才收。refIds 先过一遍存在性：已删卡的残留引用不再
   // 参与/不再持久化。模型收到的正文含「图N」指代，数组头部顺序与之一一对应，
   // 头部再注入编号契约（图N=《卡名》），指代不再靠模型猜
-  const validRefIds = opts.refIds.filter((rid) => st.nodes.some((n) => n.id === rid));
+  // noRefs（按设定重掷）= 忽略全部参考；selfRefOff = 仅去掉本卡原图锚定
+  const validRefIds = opts.noRefs
+    ? []
+    : opts.refIds.filter((rid) => st.nodes.some((n) => n.id === rid));
   const mentionedNodes = validRefIds
     .map((rid) => st.nodes.find((n) => n.id === rid))
     .filter((n): n is NonNullable<typeof n> => Boolean(n));
@@ -101,12 +112,17 @@ async function directImagegen(
     });
     return;
   }
-  const connectedNodes = st.edges
-    .filter((e) => e.target === nodeId && !validRefIds.includes(e.source))
-    .map((e) => st.nodes.find((n) => n.id === e.source))
-    .filter((n): n is NonNullable<typeof n> => Boolean(n))
-    .filter((n) => n.data.imageUrl);
-  const selfImageUrl = node.data.imageUrl as string | undefined;
+  const connectedNodes = opts.noRefs
+    ? []
+    : st.edges
+        .filter((e) => e.target === nodeId && !validRefIds.includes(e.source))
+        .map((e) => st.nodes.find((n) => n.id === e.source))
+        .filter((n): n is NonNullable<typeof n> => Boolean(n))
+        .filter((n) => n.data.imageUrl);
+  const selfImageUrl =
+    opts.noRefs || opts.selfRefOff
+      ? undefined
+      : (node.data.imageUrl as string | undefined);
   const selfMentioned = validRefIds.includes(nodeId);
   // 参考序列单一事实源（lib/canvas/refSequence）：@ 引用 → 本卡原图（未 @
   // 自己时作图生图锚点，孝庄太后项目踩坑）→ 上游连线卡，带图才收、按图
@@ -116,14 +132,14 @@ async function directImagegen(
     nodes: st.nodes,
     selfId: nodeId,
     selfImageUrl,
-    connectedIds: st.edges
-      .filter((e) => e.target === nodeId)
-      .map((e) => e.source),
+    connectedIds: opts.noRefs
+      ? []
+      : st.edges.filter((e) => e.target === nodeId).map((e) => e.source),
   });
   // 明式引用（@ 或连线）却一张可用图都没收到 = 曾经「静默降级文生图」的
   // 根源，明报拦下让用户决策；空卡无引用的直接文生图不受影响
   const expectsRefs =
-    validRefIds.length > 0 || st.edges.some((e) => e.target === nodeId);
+    !opts.noRefs && (validRefIds.length > 0 || st.edges.some((e) => e.target === nodeId));
   if (expectsRefs && referenceImages.length === 0) {
     st.updateNodeData(nodeId, {
       status: "error",
@@ -145,10 +161,10 @@ async function directImagegen(
       .filter((n) => !n.data.imageUrl)
       .map(
         (n) =>
-          `${n.data.title}：${((n.data.body as string) ?? "").slice(0, 150)}`,
+          `${n.data.title}：${((n.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
       ),
     ...refEntries.map((e) => {
-      const body = ((e.node.data.body as string) ?? "").slice(0, 150);
+      const body = ((e.node.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT);
       return `${e.label}=《${e.node.data.title || "无题"}》${body ? `：${body}` : ""}`;
     }),
     `全局视觉风格：${projectStyle}`,
@@ -265,6 +281,12 @@ async function directImagegen(
       : {}),
   });
   try {
+    // 智能编排（novanova KEEP/OPTIMIZE 范式）：默认开（composeOpt 显式 false
+    // 关）。开=出图前经「指令合成」flow 把 短指令+设定文本 扩写成完整提示词
+    // （描述完整/改图指令自动 keep 原样）；空指令无编排对象，走原描述
+    const composeOn = node.data.composeOpt !== false;
+    const instruction = opts.prompt.trim();
+    const useCompose = composeOn && !!instruction;
     const jobId = await startShotImageJob(
       Array.from({ length: count }, (_, i) => ({
         rid: `${nodeId}#${i}`,
@@ -276,6 +298,13 @@ async function directImagegen(
         referenceLabels,
         aspect: aspect || undefined,
         ...(editMode ? { promptTemplate: EDIT_PROMPT_TEMPLATE } : {}),
+        ...(useCompose
+          ? {
+              compose: true,
+              instruction,
+              setting: String(node.data.body ?? ""),
+            }
+          : {}),
       })),
       // 卡片级模型/档位/画幅覆盖（面板 chips 写入 data.gen），缺省跟随项目
       cardGen ?? undefined,
@@ -297,9 +326,12 @@ async function directImagegen(
     });
     const urls: string[] = [];
     let lastError = "";
+    let composed: { prompt: string; action?: string } | null = null;
     const outcome = await pollShotImageJob(jobId, (item) => {
       if (item.ok && item.imageUrl) urls.push(item.imageUrl);
       else if (item.error) lastError = item.error;
+      if (item.composedPrompt)
+        composed = { prompt: item.composedPrompt, action: item.composeAction };
     });
     if (outcome === "cancelled") {
       // 用户已取消：卡回原态（有图 ready，无图占位），轮询尾包幂等
@@ -319,6 +351,9 @@ async function directImagegen(
         // 单张结果直接取代上一轮的候选条（重试/单张重生成时旧变体已过时）
         imageUrls: urls.length > 1 ? urls : undefined,
         failedCandidates: failed > 0 ? failed : undefined,
+        // 智能编排合成结果回显（无编排/keep 时存 keep 原文，可追溯）
+        composedPrompt:
+          (composed as { prompt: string } | null)?.prompt ?? undefined,
       });
     } else {
       useCanvasStore.getState().updateNodeData(nodeId, {
@@ -577,14 +612,14 @@ export default function CanvasAgentBridge() {
   // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
   useEffect(() => {
     const onGenerate = (e: Event) => {
-      const { nodeId, kind, prompt, refIds, count } = (e as CustomEvent<GenerateDetail>)
+      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs } = (e as CustomEvent<GenerateDetail>)
         .detail;
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       // 出图=确定性任务，直连 imagegen flow（不经聊天 LLM，不刷聊天屏）
       if (kind === "image") {
-        void directImagegen(nodeId, { prompt, refIds, count });
+        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs });
         return;
       }
       // 连线即数据流：目标卡的入边上游自动进生成上下文（@ 手动引用过的不重复）
@@ -594,7 +629,7 @@ export default function CanvasAgentBridge() {
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .map(
           (n) =>
-            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 300)}`,
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
         )
         .join("\n");
       if (node.data.nodeType === "shotlist") {
@@ -665,7 +700,7 @@ export default function CanvasAgentBridge() {
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .map(
           (n) =>
-            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 200)}`,
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
         )
         .join("\n");
       const field = kind === "video" ? "videoUrl" : "imageUrl";
@@ -768,7 +803,7 @@ export default function CanvasAgentBridge() {
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .map(
           (n) =>
-            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, 200)}`,
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
         )
         .join("\n");
       const content = [

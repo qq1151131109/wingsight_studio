@@ -175,6 +175,13 @@ export type ShotImageRequest = {
   /** 改图模式：最小提示词模板（flow 的 prompt_template 组件入参整体替换
    *  默认模板，去掉四格/空镜/剧照版式措辞），agent 原样注入 tweak */
   promptTemplate?: string;
+  /** 智能编排：出图前先经「指令合成」flow 把 instruction+setting 扩写成
+   *  完整提示词（novanova KEEP/OPTIMIZE），合成结果随任务项回传 */
+  compose?: boolean;
+  /** 智能编排的原始指令（compose=true 时必填） */
+  instruction?: string;
+  /** 智能编排的卡片设定文本（compose=true 时供扩写上下文） */
+  setting?: string;
   params?: ImagegenParams;
 };
 
@@ -183,6 +190,9 @@ export type ShotImageResult = {
   ok: boolean;
   imageUrl?: string;
   error?: string;
+  /** 智能编排合成后的最终提示词（compose=true 的任务项回传，回显用） */
+  composedPrompt?: string;
+  composeAction?: "keep" | "optimize";
 };
 
 /** 任务表在 agent 内存里：agent 重启后旧 jobId 查无此任务（区别于网络

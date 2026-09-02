@@ -19,6 +19,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `ref-research-plan.json` | 参考图调研规划 | 资产参考图调研：资产上下文+已完成轮次 → 考据向搜索词（3-5 个）+ enough 判定（多轮补搜规划器，gpt-5.6-luna 经 DMX）。纯原生链，参数走 input_value JSON | `LANGFLOW_REF_PLAN_FLOW_ID` | 无（载荷走 input_value JSON） |
 | `ref-research-select.json` | 参考图终选 | 资产参考图调研：候选缩略图 → LLM 看图终选适合做生图（i2i）参考的几张 + 取舍说明。单用途自定义组件 `RefSelectComponent`（gpt-5.6-luna 视觉经 DMX；**上游单请求限 50 张图**，agent 侧分批；候选下载已并发化） | `LANGFLOW_REF_SELECT_FLOW_ID` | `RefSelect-main`（payload JSON + api_key） |
 | `text-write.json` | 文本撰写 | 画布文本卡/剧本卡「撰写」直连管线：指令+正文+参考上下文 → 处理后全文（续写保留原文、改写保原意、空正文直接创作）。卡片级 `data.textModel` 在此生效 | `LANGFLOW_TEXTWRITE_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
+| `instruction-compose.json` | 出图指令合成 | 智能编排（novanova KEEP/OPTIMIZE 范式，提示词搬运自其 agent-image.md/optimization-image.md）：短指令结合卡片设定文本扩写成完整提示词；完整描述/改图指令 keep 原样。input_value 四段：生成指令/卡片设定文本/参考图职责/全局画风，输出 JSON {action,prompt} | `LANGFLOW_COMPOSE_FLOW_ID` | `LanguageModelComponent`（组件名注入文本模型） |
 
 注：两态由前端按按钮态显式路由（请求体 `mode: optimize\|reversal`，agent
 端点校验各态必填项），不再混装单 flow——旧双态组件 `PromptOptimizerComponent`

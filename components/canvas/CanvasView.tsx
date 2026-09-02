@@ -45,6 +45,7 @@ import {
 import {
   selectionBoxes,
   NODE_META,
+  summarizeCanvas,
   useCanvasStore,
   type WingEdge,
   type WingNode,
@@ -941,6 +942,7 @@ function BottomDock({
         data-tip="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布" aria-label="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenAssets}
+        data-track="dock.assets"
       >
         <Library className="h-4 w-4" />
         素材库
@@ -950,6 +952,7 @@ function BottomDock({
         data-tip="提示词常用语：选中卡片后点选，自动追加进生成输入框" aria-label="提示词常用语：选中卡片后点选，自动追加进生成输入框"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenPrompts}
+        data-track="dock.prompts"
       >
         <WandSparkles className="h-4 w-4" />
         提示词
@@ -959,6 +962,7 @@ function BottomDock({
         data-tip="画布导航（按类型列出全部卡片，点击运镜定位）" aria-label="画布导航（按类型列出全部卡片，点击运镜定位）"
         className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenOutline}
+        data-track="dock.outline"
       >
         <ListTree className="h-4 w-4" />
         导航
@@ -974,6 +978,7 @@ function BottomDock({
             projectStyle ? "text-accent" : "text-text-2 hover:text-text"
           } ${stylePanel ? "bg-surface-2 text-text" : ""}`}
           onClick={() => setStylePanel((v) => !v)}
+          data-track="dock.style"
         >
           <Palette className="h-4 w-4" />
           画风
@@ -991,6 +996,7 @@ function BottomDock({
           imagegenPanel ? "bg-surface-2 text-text" : ""
         }`}
         onClick={() => setImagegenPanel((v) => !v)}
+        data-track="dock.imagegen"
       >
         <ImageIcon className="h-4 w-4 shrink-0" />
         <span className="max-w-56 truncate">
@@ -1000,14 +1006,14 @@ function BottomDock({
         </span>
       </button>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
-      <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()}>
+      <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()} data-track="dock.undo">
         <Undo2 className="h-4 w-4" />
       </DockBtn>
-      <DockBtn disabled={!canRedo} title="重做（⇧⌘Z）" onClick={() => useCanvasStore.getState().redo()}>
+      <DockBtn disabled={!canRedo} title="重做（⇧⌘Z）" onClick={() => useCanvasStore.getState().redo()} data-track="dock.redo">
         <Redo2 className="h-4 w-4" />
       </DockBtn>
       <span className="mx-0.5 h-5 w-px bg-hairline" />
-      <DockBtn title="缩小（⌘-）" onClick={() => void zoomOut({ duration: 150 })}>
+      <DockBtn title="缩小（⌘-）" onClick={() => void zoomOut({ duration: 150 })} data-track="dock.zoom-out">
         <ZoomOut className="h-4 w-4" />
       </DockBtn>
       <button
@@ -1015,18 +1021,20 @@ function BottomDock({
         data-tip="点击复位 100%（⇧⌘0）" aria-label="点击复位 100%（⇧⌘0）"
         className="min-w-11 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={() => void zoomTo(1, { duration: 250 })}
+        data-track="dock.zoom-reset"
       >
         {Math.round(zoom * 100)}%
       </button>
-      <DockBtn title="放大（⌘=）" onClick={() => void zoomIn({ duration: 150 })}>
+      <DockBtn title="放大（⌘=）" onClick={() => void zoomIn({ duration: 150 })} data-track="dock.zoom-in">
         <ZoomInIcon className="h-4 w-4" />
       </DockBtn>
-      <DockBtn title="适应视图（⌘0）" onClick={() => void fitView({ duration: 300, padding: 0.15 })}>
+      <DockBtn title="适应视图（⌘0）" onClick={() => void fitView({ duration: 300, padding: 0.15 })} data-track="dock.fit">
         <Maximize className="h-4 w-4" />
       </DockBtn>
       <DockBtn
         title="快捷键速查（?）"
         onClick={() => window.dispatchEvent(new CustomEvent(OPEN_SHORTCUTS_EVENT))}
+        data-track="dock.shortcuts"
       >
         <Keyboard className="h-4 w-4" />
       </DockBtn>
@@ -1147,15 +1155,17 @@ function DockBtn({
   disabled,
   onClick,
   children,
+  ...rest
 }: {
   title: string;
   disabled?: boolean;
   onClick: () => void;
   children: React.ReactNode;
-}) {
+} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
     <button
       type="button"
+      {...rest}
       data-tip={title} aria-label={title}
       disabled={disabled}
       className="flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
@@ -1535,6 +1545,12 @@ export default function CanvasView() {
         setRfViewport;
       (window as unknown as { __wsCanvasStore?: unknown }).__wsCanvasStore =
         useCanvasStore;
+      (window as unknown as { __summarizeCanvas?: unknown }).__summarizeCanvas = (
+        selected: string[] = [],
+      ) => {
+        const st = useCanvasStore.getState();
+        return summarizeCanvas(st.nodes, st.edges, selected);
+      };
     }
   }, [setRfViewport]);
   const lastSyncedVp = useRef<Viewport>(viewport);

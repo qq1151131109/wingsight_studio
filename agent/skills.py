@@ -1104,6 +1104,47 @@ def get_storyboard_image_job(job_id: str) -> Optional[Dict[str, Any]]:
     return STORYBOARD_IMAGE_JOBS.get(job_id)
 
 
+COMPOSE_FLOW_ID = os.environ.get("LANGFLOW_COMPOSE_FLOW_ID", "")
+
+
+async def compose_instruction(
+    instruction: str, setting: str, ref_duties: str, style: str, model: str = ""
+) -> Dict[str, str]:
+    """出图指令合成（智能编排，novanova KEEP/OPTIMIZE 范式）：短指令结合
+    卡片设定文本扩写成完整提示词；完整描述/改图指令 keep 原样逐字返回。
+    失败抛错由调用方明报（铁律：不静默降级直传）。flow 见
+    agent/flows/instruction-compose.json（提示词搬运自 novanova
+    agent-image.md/optimization-image.md 融合适配）。"""
+    if not COMPOSE_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_COMPOSE_FLOW_ID（flow 见 agent/flows/instruction-compose.json）"
+        )
+    instruction = instruction.strip()[:2000]
+    if not instruction:
+        raise RuntimeError("指令合成为空指令")
+    input_value = (
+        f"【生成指令】{instruction}\n"
+        f"【卡片设定文本】\n{setting.strip()[:6000] or '（空）'}\n"
+        f"【参考图职责】\n{ref_duties.strip() or '（无）'}\n"
+        f"【全局画风】{style.strip() or '（未设定）'}"
+    )
+    tweaks = (
+        {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
+    )
+    raw = await run_flow_blocking(
+        COMPOSE_FLOW_ID, input_value=input_value, tweaks=tweaks
+    )
+    obj_text = _extract_json_object(raw) or _extract_json_objects_loose(raw)
+    if not obj_text:
+        raise RuntimeError(f"编排结果不是合法 JSON：{raw[:120]}")
+    parsed = json.loads(obj_text)
+    action = str(parsed.get("action") or "").strip().lower()
+    prompt = str(parsed.get("prompt") or "").strip()
+    if action not in ("keep", "optimize") or not prompt:
+        raise RuntimeError(f"编排结果字段缺失：{raw[:120]}")
+    return {"action": action, "prompt": prompt}
+
+
 async def _generate_single_image(
     shot: Dict[str, Any], params: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
@@ -1125,6 +1166,29 @@ async def _generate_single_image(
     visual_flat = flat(shot.get("visual_notes") or shot.get("visualNotes"))
     description = flat(shot.get("description"))
     shot_type = flat(shot.get("assetType") or "scene")
+    # 指令合成（智能编排）：短指令结合【设定文本】扩写成完整提示词；完整
+    # 描述/改图指令 keep 原样逐字直传。失败明报不静默降级（铁律）；合成
+    # 结果随任务项回传前端回显（composedPrompt）
+    composed: Optional[Dict[str, str]] = None
+    if str(shot.get("compose") or "").lower() in ("1", "true"):
+        duties = "；".join(
+            f"图{i + 1}=《{str(l.get('name') or '').strip()}》"
+            for i, l in enumerate(
+                shot.get("referenceLabels") or shot.get("reference_labels") or []
+            )
+            if isinstance(l, dict) and str(l.get("name") or "").strip()
+        )
+        style_line = ""
+        m = re.search(r"全局视觉风格：(.+)$", visual_flat)
+        if m:
+            style_line = m.group(1)
+        composed = await compose_instruction(
+            flat(shot.get("instruction") or ""),
+            str(shot.get("setting") or ""),
+            duties,
+            style_line,
+        )
+        description = composed["prompt"]
     if visual_flat and any(
         kw in visual_flat for kw in ("实拍", "真人", "真实演员", "photoreal")
     ):
@@ -1202,7 +1266,11 @@ async def _generate_single_image(
     if url:
         # 用量计量（按用户）：模型取解析后的目录 id；发起者来自请求上下文
         usage.record_image(str((params or {}).get("model_name") or ""))
-        return {"ok": True, "imageUrl": url}
+        out: Dict[str, Any] = {"ok": True, "imageUrl": url}
+        if composed:
+            out["composedPrompt"] = composed["prompt"][:2000]
+            out["composeAction"] = composed["action"]
+        return out
     return {"ok": False, "error": raw[:200]}
 
 

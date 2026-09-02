@@ -53,6 +53,13 @@ def init_topics_db() -> None:
             );
             """
         )
+        # 生料/已深挖两态：存量卡都是深核管线的产物，默认 verified
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(topics)").fetchall()}
+        if "stage" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN stage TEXT NOT NULL DEFAULT 'verified'")
+        if "tags_json" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage)")
 
 
 def _now() -> str:
@@ -94,6 +101,8 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         "research": json.loads(row["research_json"]),
         "status": row["status"],
         "adoptedPid": row["adopted_pid"],
+        "stage": row["stage"],
+        "tags": json.loads(row["tags_json"]),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "lastProgressAt": row["last_progress_at"],
@@ -111,14 +120,17 @@ def create_topic(
     heat_evidence: list[dict] | None = None,
     research: dict[str, Any] | None = None,
     source: str = "material",
+    stage: str = "verified",
+    tags: list[str] | None = None,
 ) -> dict[str, Any]:
     tid = uuid.uuid4().hex[:12]
     now = _now()
     with _conn() as conn:
         conn.execute(
             "INSERT INTO topics (id, vertical, source, title, title_fingerprint, summary,"
-            " angles_json, heat_evidence_json, research_json, status, last_progress_at,"
-            " created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?)",
+            " angles_json, heat_evidence_json, research_json, status, stage, tags_json,"
+            " last_progress_at, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?)",
             (
                 tid,
                 vertical,
@@ -129,6 +141,8 @@ def create_topic(
                 json.dumps(angles or [], ensure_ascii=False),
                 json.dumps(heat_evidence or [], ensure_ascii=False),
                 json.dumps(research or {}, ensure_ascii=False),
+                stage,
+                json.dumps(tags or [], ensure_ascii=False),
                 now,
                 now,
                 now,
@@ -154,10 +168,11 @@ def list_topics(
     status: str | None = "candidate",
     vertical: str | None = None,
     source: str | None = None,
+    stage: str | None = None,
     q: str | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
-    """status='all' 返回全部状态（前端按 status tab 自己分流）。"""
+    """status='all' 返回全部状态（前端按 status tab 自己分流）；stage 过滤生料/已深挖。"""
     sql = "SELECT * FROM topics WHERE 1=1"
     params: list[Any] = []
     if status and status != "all":
@@ -169,6 +184,9 @@ def list_topics(
     if source:
         sql += " AND source = ?"
         params.append(source)
+    if stage:
+        sql += " AND stage = ?"
+        params.append(stage)
     if q:
         sql += " AND (title LIKE ? OR summary LIKE ?)"
         params.extend([f"%{q}%", f"%{q}%"])
@@ -177,6 +195,21 @@ def list_topics(
     with _conn() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_serialize(r) for r in rows]
+
+
+def count_topics(status: str | None = None, stage: str | None = None) -> int:
+    """池内计数（生料区"共 M 条"展示用；全表 COUNT，无分页）。"""
+    sql = "SELECT COUNT(*) AS n FROM topics WHERE 1=1"
+    params: list[Any] = []
+    if status:
+        sql += " AND status = ?"
+        params.append(status)
+    if stage:
+        sql += " AND stage = ?"
+        params.append(stage)
+    with _conn() as conn:
+        row = conn.execute(sql, params).fetchone()
+    return int(row["n"]) if row else 0
 
 
 def exists_by_any_fingerprint(fingerprints: list[str]) -> bool:
@@ -192,26 +225,6 @@ def exists_by_any_fingerprint(fingerprints: list[str]) -> bool:
     return row is not None
 
 
-def find_upgradable_by_any_fingerprint(fingerprints: list[str]) -> str | None:
-    """返回"观察态 candidate"（无讲法角度）的选题 id：证据变硬时可升级。
-
-    已是建议卡/已认领/已忽略都不算——由调用方走 create，唯一约束兜底幂等。
-    """
-    if not fingerprints:
-        return None
-    marks = ",".join("?" * len(fingerprints))
-    with _conn() as conn:
-        rows = conn.execute(
-            f"SELECT id, angles_json FROM topics"
-            f" WHERE title_fingerprint IN ({marks}) AND status = 'candidate' LIMIT 50",
-            fingerprints,
-        ).fetchall()
-    for row in rows:
-        if not json.loads(row["angles_json"]):
-            return row["id"]
-    return None
-
-
 def upgrade_card(
     topic_id: str,
     *,
@@ -220,12 +233,12 @@ def upgrade_card(
     angles: list[str],
     research: dict[str, Any],
 ) -> None:
-    """观察卡升级为建议卡：补题目、概要与讲法角度，替换取证包。"""
+    """深挖升级为建议卡：补题目、概要与讲法角度，替换取证包；生料→已深挖。"""
     now = _now()
     with _conn() as conn:
         conn.execute(
             "UPDATE topics SET title = ?, summary = ?, angles_json = ?, research_json = ?,"
-            " last_progress_at = ?, updated_at = ? WHERE id = ?",
+            " stage = 'verified', last_progress_at = ?, updated_at = ? WHERE id = ?",
             (
                 title,
                 summary,
@@ -290,7 +303,8 @@ def _is_thin(row: sqlite3.Row) -> bool:
 
 
 def list_rescan_candidates(limit: int = 3, cooldown_hours: float = 24.0) -> list[dict[str, Any]]:
-    """待复查观察卡：candidate 薄卡，建卡/上次复查过了冷却，最久未扫优先（轮转覆盖）。
+    """待复查观察卡：candidate 薄卡（仅已深挖 stage；生料卡深挖是导演点名的
+    动作，不进自动轮转），建卡/上次复查过了冷却，最久未扫优先（轮转覆盖）。
 
     从未扫过的排最前（新观察卡尽快兑现"继续盯"的承诺），其余按上次扫描时间正序。
     """
@@ -299,7 +313,8 @@ def list_rescan_candidates(limit: int = 3, cooldown_hours: float = 24.0) -> list
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=cooldown_hours)).isoformat()
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT * FROM topics WHERE status = 'candidate' ORDER BY created_at DESC LIMIT 500"
+            "SELECT * FROM topics WHERE status = 'candidate' AND stage = 'verified'"
+            " ORDER BY created_at DESC LIMIT 500"
         ).fetchall()
     candidates = [r for r in rows if _is_thin(r)]
     candidates = [

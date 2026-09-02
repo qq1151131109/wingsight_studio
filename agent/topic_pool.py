@@ -1,22 +1,19 @@
-"""选题池策展管线（移植自 juben lib/topic_pool/curator，按铁律改造）。
+"""选题池双层管线：生料批量生成（常规刷新）+ 按需深挖（导演点名）。
 
-采集 → LLM 全量研判 → LLM 规划迭代取证 → 证据驱动两级结论 → 幂等落库。
+**生料层（量大、便宜、创意优先）**：六源语料（材料种子/周年/已验证内容/
+对标片单/知乎高赞/维基类别语料）洗牌混垂类 → 分批喂批量生成 flow →
+产片名式选题（标题/情绪钩子/原型出处/垂类/索引标签）以 stage=raw 落库。
+每批一次 LLM 调用、零检索成本，单轮上限 IDEATE_BATCHES_CAP 批。
 
-与 juben 的差异：四个 LLM 调用点（研判/调研规划/追查/verdict）全部走
-Langflow flow（v1 阻塞 API，参数经 input_value 文本载荷注入），本模块只做
-编排、检索执行与 JSON 解析——prompt 即任务知识，收敛在 agent/flows/ 的
-flow 版本化源里，不在这里出现。
+**已深挖层（贵、按需、证据驱动）**：导演对某条感兴趣点"深挖"→
+deep_dive_one 跑完整取证管线（规划查询 → 并行检索 → 追查 → 市场实查 →
+角度生成 → verdict 两级结论）→ 证据足升级为建议卡（stage=verified），
+证据薄记入信源底账、卡仍是生料。观察卡复查（rescan）沿用原机制在刷新
+尾部小预算轮转，只扫已深挖的薄卡。
 
-管线形态（与 juben 一致）：原始信号全量喂一次研判调用，由 LLM 聚类相关
-信号（跨渠道共振是价值信号）、判垂类、输出带优先级的短名单；随后每条
-线索进入 LLM 规划的迭代调研（规划查询 → 并行检索 → 看结果决定追查，
-步数帽硬编码），verdict 按证据与信源纪律给出两级结论：
-
-- 建议卡（evidence_level=strong）：事实可核、材料有入口——完整立项建议
-- 观察卡（evidence_level=thin）：只有已核实事实、立项缺口与信源底账，
-  不编片名不编讲法；下轮刷新证据变硬时自动升级为建议卡
-
-指纹幂等保持在落库前：簇内任一成员指纹已在池中（含已认领/已忽略）即跳过。
+与 juben 的差异：LLM 调用点全部走 Langflow flow（v1 阻塞 API，参数经
+input_value 文本载荷注入），本模块只做编排、检索执行与 JSON 解析。
+指纹幂等保持在落库前：同题（含已认领/已忽略）不重复入库。
 外部依赖（flow 调用 / 搜索 / 仓储）全部经构造参数注入，测试注 fake。
 """
 
@@ -27,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -91,12 +89,22 @@ def verticals_payload() -> list[dict[str, str]]:
     """垂类清单（进研判载荷与前端下发，prompt 不写死垂类）。"""
     return [{"id": v.id, "label": v.label, "scope": v.scope, "color": v.color} for v in VERTICAL_SPECS.values()]
 
-# 单次刷新产出的选题卡上限（控制 LLM 与检索成本，宁少勿滥）
-MAX_CARDS_PER_REFRESH = 8
-# 研判调用喂入的原始条目上限（超出截断）；四源信号量约 170-250，留头部余量
-TRIAGE_ITEMS_CAP = 300
-# 研判整批失败时对半拆开各研判一次（损失跨半聚类，保住本轮产出）
-_TRIAGE_SPLIT = 2
+# --- 生料选题层（批量创意生成）：池子的常规刷新只跑这一层，量大、便宜 ---
+# 单批喂给生成 flow 的语料条数（约 1 次长上下文调用产 8-12 个选题；批越大
+# 模型输出越长，实测 70 条语料产 30 题会超 agent 侧 300s 超时——别调回去）
+IDEATE_BATCH_SIZE = 40
+# 单轮刷新最多跑的批数（成本硬上界：≤12 次 LLM 调用，零检索成本）
+IDEATE_BATCHES_CAP = 12
+# 每条语料在单批内允许产出的选题上限（防单条刷屏；跨批同语料由指纹去重兜底）
+IDEATE_ENTRIES_PER_BATCH = 14
+
+# 已深挖层（导演点名才跑）：取证/verdict/市场实查的全流程，见 deep_dive_one。
+# 观察卡复查：每轮刷新尾部顺带取最久未扫的几张薄卡做缺口导向小预算复查。
+RESCAN_BATCH_SIZE = 3
+RESCAN_PLAN_MAX_QUERIES = 3
+RESCAN_FOLLOWUP_MAX_QUERIES = 2
+# 同一张卡两次复查的最小间隔（含建卡到首次复查的冷却）；手动深挖不受限
+RESCAN_COOLDOWN_HOURS = 24.0
 # 每条查询的检索结果条数上限
 RESEARCH_RESULTS_CAP = 5
 # 迭代调研的步数帽：首批 ≤4 查 + 追查 ≤3 查，成本有硬上界
@@ -129,19 +137,10 @@ BENCHMARK_SEED_QUERIES: tuple[str, ...] = (
 # 周年窗口天数（提前量给调研与立项留时间；juben 同款 45-60 天取下沿）
 ANNIVERSARY_WINDOW_DAYS = 45
 
-# 观察卡复查（兑现"证据变硬时自动升级"的承诺）：每轮刷新尾部顺带取最久
-# 未扫的几张薄卡做缺口导向小预算复查；也支持单卡手动深挖（异步任务）。
-RESCAN_BATCH_SIZE = 3
-RESCAN_PLAN_MAX_QUERIES = 3
-RESCAN_FOLLOWUP_MAX_QUERIES = 2
-# 同一张卡两次复查的最小间隔（含建卡到首次复查的冷却）；手动深挖不受限
-RESCAN_COOLDOWN_HOURS = 24.0
-
-# 同题市场实查（TikHub）：B站=纪录片存量+播放数、抖音=短视频消费侧（点赞为
-# 热度）、西瓜=长片完整版存量、知乎=同题文章与赞同数（受众兴趣实证）。
-# 每簇取证只查一次四平台并发各 5 条（按请求计费，单轮刷新 ≤8 簇 = ≤32 请求）。
-# 未配 TIKHUB_API_KEY 时探针为 None，管线照旧（复查管线不实查，保持小预算）。
-# 微信搜一搜（维护中）与小红书（需 Token 勾权限）待开通后加入。
+# 同题市场实查（TikHub）：只属于已深挖层（导演点名后的取证流程），常规刷新
+# 不再触碰。B站=纪录片存量+播放数、抖音=短视频消费侧（点赞为热度）、西瓜=
+# 长片完整版存量、知乎=同题文章与赞同数（受众兴趣实证）。每簇取证只查一次
+# 四平台并发各 5 条（按请求计费）。未配 TIKHUB_API_KEY 时探针为 None 照旧。
 MARKET_PROBE_PLATFORMS: tuple[str, ...] = ("bilibili", "douyin", "xigua", "zhihu")
 MARKET_PROBE_COUNT = 5
 MARKET_PROBE_LABELS: dict[str, str] = {"bilibili": "B站", "douyin": "抖音", "xigua": "西瓜", "zhihu": "知乎"}
@@ -160,6 +159,7 @@ ZHIHU_DISCUSSION_SEEDS: dict[str, tuple[str, ...]] = {
 ZHIHU_MIN_VOTES = 100
 
 FLOW_IDS = {
+    "ideate": "LANGFLOW_TOPIC_IDEATE_FLOW_ID",
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
     "followup": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",
@@ -273,14 +273,13 @@ class TriagePick:
 
 
 @dataclass
-class CurateResult:
-    """单次策展运行的外部可观测结果。"""
+class IdeateResult:
+    """单轮生料刷新的外部可观测结果（落 lastRun 给前端展示）。"""
 
-    collected: int = 0
-    shortlisted: int = 0
-    observed: int = 0
-    created: int = 0
-    upgraded: int = 0
+    collected: int = 0  # 本轮语料条数（五源信号 + 维基语料）
+    batches: int = 0  # 实际跑的生成批数
+    created: int = 0  # 新落库的生料选题张数
+    duplicates: int = 0  # 指纹去重跳过的条数
     error: str = ""
 
 
@@ -512,118 +511,118 @@ class TopicCurator:
                     )
         return signals
 
+    async def collect_wiki_corpus(self) -> list[dict[str, Any]]:
+        """维基类别页语料信号（结构性存量，检索免费；按天缓存不重拉）。"""
+        import topics as settings_store
+        import wikicategory
+
+        cached = wikicategory.load_day_cache(settings_store.get_setting(wikicategory.CACHE_KEY))
+        if cached is not None:
+            return cached
+        try:
+            signals = await wikicategory.collect_corpus()
+        except Exception as exc:  # noqa: BLE001 - 语料源失败不拖累其他信号
+            logger.warning("维基语料采集失败: %s", str(exc)[:200])
+            signals = []
+        settings_store.set_setting(wikicategory.CACHE_KEY, wikicategory.build_day_cache(signals))
+        return signals
+
     async def collect_signals(self) -> list[dict[str, Any]]:
-        """聚合五源信号（材料/周年/已验证内容/对标/知乎高赞讨论）；全部失败才返回空。"""
-        material, anniversary, validated, benchmark, zhihu = await asyncio.gather(
+        """聚合六源语料（材料/周年/已验证内容/对标/知乎高赞讨论/维基语料）；全部失败才返回空。"""
+        material, anniversary, validated, benchmark, zhihu, wiki = await asyncio.gather(
             self.collect_material_window(),
             self.collect_anniversaries(),
             self.collect_validated_content(),
             self.collect_benchmarks(),
             self.collect_zhihu_discussions(),
+            self.collect_wiki_corpus(),
         )
-        return material + anniversary + validated + benchmark + zhihu
+        return material + anniversary + validated + benchmark + zhihu + wiki
 
-    # --- 主流程 ---------------------------------------------------------------
+    # --- 主流程：批量创意生成（生料层） ----------------------------------------
 
-    async def run(self) -> CurateResult:
-        result = CurateResult()
+    async def run(self) -> IdeateResult:
+        result = IdeateResult()
         items = await self.collect_signals()
         result.collected = len(items)
         if not items:
-            result.error = "信号采集为零条（搜索通道全部失败或无结果）"
+            result.error = "语料采集为零条（全部通道失败或无结果）"
             return result
-
-        picks = (await self._triage(items))[:MAX_CARDS_PER_REFRESH]
-        result.shortlisted = len(picks)
-        if not picks:
-            result.error = "研判未入围任何线索"
-            return result
-
-        for pick in picks:
-            research_log = await self._research_candidate(pick)
-            angle_options = await self._plan_angles(pick, research_log)
-            card = await self._generate_card(pick, research_log, angle_options)
-            if card is None:
-                continue
-            try:
-                upgradable_id = store.find_upgradable_by_any_fingerprint(pick.member_fingerprints)
-                if upgradable_id is not None:
-                    # 已在池中：观察卡遇到证据变硬的建议卡时升级，其余保持
-                    if card["worth_it"]:
-                        store.upgrade_card(
-                            upgradable_id,
-                            title=card["title"],
-                            summary=card["summary"],
-                            angles=card["angles"],
-                            research=card["research"],
-                        )
-                        _register_entities(upgradable_id, card.get("entities") or [], pick.members)
-                        result.upgraded += 1
-                        logger.info("选题池观察卡升级 theme=%s", pick.theme[:50])
-                    continue
-                if store.exists_by_any_fingerprint(pick.member_fingerprints):
-                    continue
-                topic_row = store.create_topic(
-                    vertical=pick.vertical,
-                    title=card["title"],
-                    title_fingerprint=pick.primary_fingerprint,
-                    summary=card["summary"],
-                    angles=card["angles"],
-                    heat_evidence=[_evidence_of(item) for item in pick.members],
-                    research=card["research"],
-                    source=str(pick.members[0].get("signal_type") or "material"),
-                )
-                _register_entities(topic_row["id"], card.get("entities") or [], pick.members)
-                if card["worth_it"]:
-                    result.created += 1
-                else:
-                    result.observed += 1
-            except Exception as exc:  # noqa: BLE001 - 唯一约束冲突/单卡落库失败不拖累其余
-                logger.info("选题池落库跳过 fingerprint=%s: %s", pick.primary_fingerprint[:12], str(exc)[:120])
+        # 洗牌混垂类：语料按来源聚集，不洗牌会让单批垂类单一
+        random.shuffle(items)
+        await self.ideate(items, result)
         return result
 
-    # --- 研判：全量条目 → 聚类 + 垂类 + 价值排序的短名单 ---------------------
+    async def ideate(self, items: list[dict[str, Any]], result: IdeateResult) -> None:
+        """语料分批喂生成 flow，产出的创意选题以生料卡落库（指纹幂等）。"""
+        batches = [
+            items[i : i + IDEATE_BATCH_SIZE]
+            for i in range(0, len(items), IDEATE_BATCH_SIZE)
+        ][:IDEATE_BATCHES_CAP]
+        result.batches = len(batches)
+        for batch in batches:
+            listing = [
+                {
+                    "index": idx,
+                    "title": item["title"],
+                    "source": item["source"],
+                    "snippet": item.get("snippet") or "",
+                }
+                for idx, item in enumerate(batch)
+            ]
+            try:
+                entries = await self._call_flow("ideate", {"corpus": listing, "verticals": verticals_payload()})
+            except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，继续下一批
+                logger.warning("选题批量生成本批失败: %s", str(exc)[:200])
+                continue
+            if not isinstance(entries, list):
+                continue
+            for entry in entries[:IDEATE_ENTRIES_PER_BATCH * 2]:
+                self._create_raw_card(entry, batch, result)
 
-    async def _triage(self, items: list[dict[str, Any]]) -> list[TriagePick]:
-        """LLM 全量研判；整批调用失败时对半拆开重试一轮，保住本轮产出。"""
-        capped = items[:TRIAGE_ITEMS_CAP]
-        picks = await self._triage_call(capped)
-        if picks is None:
-            logger.warning("选题池研判整批失败，降级为对半分批研判")
-            picks = []
-            midpoint = len(capped) // _TRIAGE_SPLIT
-            for chunk in (capped[:midpoint], capped[midpoint:]):
-                chunk_picks = await self._triage_call(chunk)
-                if chunk_picks is not None:
-                    picks.extend(chunk_picks)
-        return picks
-
-    async def _triage_call(self, items: list[dict[str, Any]]) -> list[TriagePick] | None:
-        """一次研判调用；失败返回 None 由调用方决定降级。"""
-        listing = [
-            {
-                "index": idx,
-                "title": item["title"],
-                "platform": item["platform"],
-                "source": item["source"],
-                "signal_type": item.get("signal_type") or "material",
-                "snippet": item.get("snippet") or "",
-            }
-            for idx, item in enumerate(items)
-        ]
+    def _create_raw_card(
+        self, entry: Any, corpus: list[dict[str, Any]], result: IdeateResult
+    ) -> None:
+        """校验并落一张生料卡；不合法/重复静默跳过（生料层宁缺毋滥在 flow 纪律）。"""
+        if not isinstance(entry, dict):
+            return
+        title = str(entry.get("title") or "").strip()
+        hook = str(entry.get("hook") or "").strip()
+        vertical = str(entry.get("vertical") or "").strip().lower()
+        if not title or not hook or vertical not in VERTICALS:
+            return
+        fingerprint = fingerprint_of(title)
+        if store.exists_by_any_fingerprint([fingerprint]):
+            result.duplicates += 1
+            return
+        source_index = entry.get("sourceIndex")
+        proto = corpus[source_index] if isinstance(source_index, int) and 0 <= source_index < len(corpus) else None
+        if proto is None:
+            return  # 锚不到真实原型的选题不落库（不编造）
+        tags = [str(t).strip() for t in (entry.get("tags") or []) if str(t).strip()][:4]
         try:
-            raw_picks = await self._call_flow("triage", {"listing": listing, "verticals": verticals_payload()})
-        except Exception as exc:  # noqa: BLE001 - 研判失败降级分批
-            logger.warning("选题池研判调用失败: %s", str(exc)[:200])
-            return None
-        picks: list[TriagePick] = []
-        if not isinstance(raw_picks, list):
-            return picks
-        for raw in raw_picks:
-            pick = _pick_of(raw, items)
-            if pick is not None:
-                picks.append(pick)
-        return picks
+            store.create_topic(
+                vertical=vertical,
+                title=title,
+                title_fingerprint=fingerprint,
+                summary=hook,
+                heat_evidence=[
+                    {
+                        "title": proto["title"],
+                        "url": proto.get("url") or "",
+                        "snippet": proto.get("snippet") or "",
+                        "source": proto.get("source") or "",
+                    }
+                ],
+                research={},
+                source=str(proto.get("signal_type") or "corpus"),
+                stage="raw",
+                tags=tags,
+            )
+            result.created += 1
+        except Exception as exc:  # noqa: BLE001 - 唯一约束冲突/单卡失败不拖累整批
+            logger.info("生料卡落库跳过 fingerprint=%s: %s", fingerprint[:12], str(exc)[:120])
+            result.duplicates += 1
 
     # --- 调研：LLM 规划的迭代取证 + 证据驱动的两级结论 -----------------------------
 
@@ -852,6 +851,51 @@ class TopicCurator:
             return None
         return parse_verdict(card_raw, title, log)
 
+    # --- 已深挖层：导演点名深挖生料卡（取证 → 角度 → verdict 全流程） ---------
+
+    async def deep_dive_one(self, topic: dict[str, Any]) -> str:
+        """深挖一张生料卡，证据足则升级为已深挖建议卡；薄则底账留痕仍是生料。
+
+        返回 upgraded / thin / failed / busy。与观察卡复查共用同卡互斥。
+        """
+        topic_id = str(topic["id"])
+        if topic_id in _rescan_inflight:
+            return "busy"
+        _rescan_inflight.add(topic_id)
+        try:
+            title = str(topic["title"])
+            members = list(topic.get("heatEvidence") or []) or [
+                {"title": title, "url": "", "snippet": "", "source": ""}
+            ]
+            pick = TriagePick(
+                members=members,
+                member_fingerprints=[str(topic.get("titleFingerprint") or "") or fingerprint_of(title)],
+                vertical=str(topic.get("vertical") or "history"),
+                theme=title,
+                reason="导演点名深挖：对生料选题做完整取证与结论",
+            )
+            research_log = await self._research_candidate(pick)
+            angle_options = await self._plan_angles(pick, research_log)
+            card = await self._generate_card(pick, research_log, angle_options)
+            if card is None:
+                store.mark_rescanned(topic_id)
+                return "failed"
+            if card["worth_it"]:
+                store.upgrade_card(
+                    topic_id,
+                    title=card["title"],
+                    summary=card["summary"],
+                    angles=card["angles"],
+                    research=card["research"],
+                )
+                _register_entities(topic_id, card.get("entities") or [], pick.members)
+                logger.info("生料卡深挖升级 title=%s", str(card["title"])[:50])
+                return "upgraded"
+            store.record_rescan(topic_id, research_log)
+            return "thin"
+        finally:
+            _rescan_inflight.discard(topic_id)
+
 
 async def execute_queries(search: SearchFn, queries: list[dict[str, str]]) -> list[dict[str, Any]]:
     """并行执行一批查询；单条失败记空结果，不拖累整批。"""
@@ -967,39 +1011,6 @@ def parse_verdict(
     }
 
 
-def _pick_of(raw: Any, items: list[dict[str, Any]]) -> TriagePick | None:
-    """解析研判输出的一项：成员序号合法、垂类合法才成簇。"""
-    if not isinstance(raw, dict):
-        return None
-    vertical = str(raw.get("vertical", "")).strip().lower()
-    theme = str(raw.get("theme") or "").strip()
-    if vertical not in VERTICALS or not theme:
-        return None
-    raw_members = raw.get("members")
-    if not isinstance(raw_members, list):
-        return None
-    members: list[dict[str, Any]] = []
-    fingerprints: list[str] = []
-    for index in raw_members:
-        if not isinstance(index, int) or not 0 <= index < len(items):
-            continue
-        item = items[index]
-        fingerprint = fingerprint_of(item["title"])
-        if fingerprint in fingerprints:
-            continue
-        members.append(item)
-        fingerprints.append(fingerprint)
-    if not members:
-        return None
-    return TriagePick(
-        members=members,
-        member_fingerprints=fingerprints,
-        vertical=vertical,
-        theme=theme,
-        reason=str(raw.get("reason") or "").strip(),
-    )
-
-
 def _format_research_log(log: list[dict[str, Any]], *, with_empty_hint: bool = False) -> str:
     """把调研记录（标签/查询/结果）格式化为 prompt 段落或快照文本。"""
     if not log:
@@ -1018,19 +1029,6 @@ def _format_research_log(log: list[dict[str, Any]], *, with_empty_hint: bool = F
             for item in results
         )
     return "\n".join(lines)
-
-
-def _evidence_of(item: dict[str, Any]) -> dict[str, Any]:
-    """热度依据：保留信号原文标题、来源渠道与原始链接，供核对与展示。"""
-    return {
-        "title": item["title"],
-        "platform": item["platform"],
-        "source": item["source"],
-        "signal_type": item.get("signal_type") or "material",
-        "url": item.get("url") or "",
-        "provider": item.get("provider") or "",
-        "fetched_at": item.get("fetched_at"),
-    }
 
 
 def _register_entities(topic_id: str, ents: list[dict[str, Any]], heat_items: list[dict[str, Any]]) -> int:
@@ -1082,7 +1080,7 @@ class TopicRefreshService:
     def __init__(self, curator: TopicCurator | None = None) -> None:
         self.curator = curator or TopicCurator()
         self._lock = asyncio.Lock()
-        self._task: asyncio.Task[CurateResult] | None = None
+        self._task: asyncio.Task[IdeateResult] | None = None
 
     @property
     def refreshing(self) -> bool:
@@ -1106,7 +1104,7 @@ class TopicRefreshService:
         self._task = asyncio.create_task(self._run())
         return True
 
-    async def _run(self) -> CurateResult:
+    async def _run(self) -> IdeateResult:
         try:
             async with self._lock:
                 result = await self.curator.run()
@@ -1212,6 +1210,56 @@ def _prune_rescan_jobs(task: asyncio.Task) -> None:
 
 def get_rescan_job(job_id: str) -> dict[str, Any] | None:
     return RESCAN_JOBS.get(job_id)
+
+
+# ---------- 生料卡点名深挖：全流程取证任务（jobId 轮询；与复查共用互斥集） ----------
+
+DEEP_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def start_deep_dive_job(topic: dict[str, Any]) -> str | None:
+    """启动一张生料卡的深挖任务；该卡已在深挖/复查时返回 None。"""
+    topic_id = str(topic["id"])
+    if topic_id in _rescan_inflight:
+        return None
+    job_id = uuid.uuid4().hex[:12]
+    DEEP_JOBS[job_id] = {
+        "jobId": job_id,
+        "topicId": topic_id,
+        "status": "running",
+        "outcome": "",
+        "error": "",
+    }
+    task = asyncio.create_task(_run_deep_dive_job(job_id, topic))
+    _prune_deep_jobs(task)
+    return job_id
+
+
+async def _run_deep_dive_job(job_id: str, topic: dict[str, Any]) -> None:
+    job = DEEP_JOBS.get(job_id)
+    if job is None:
+        return
+    try:
+        job["outcome"] = await SERVICE.curator.deep_dive_one(topic)
+        job["status"] = "done"
+    except Exception as exc:  # noqa: BLE001 - 任务结果如实上报
+        job["status"] = "error"
+        job["error"] = str(exc)[:300]
+        logger.exception("生料卡深挖失败 topic=%s", str(topic.get("title", ""))[:50])
+
+
+def _prune_deep_jobs(task: asyncio.Task) -> None:
+    def _cleanup(t: asyncio.Task) -> None:
+        done = [k for k, v in DEEP_JOBS.items() if v["status"] in ("done", "error")]
+        if len(done) > 50:
+            for key in done[:-50]:
+                DEEP_JOBS.pop(key, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def get_deep_dive_job(job_id: str) -> dict[str, Any] | None:
+    return DEEP_JOBS.get(job_id)
 
 
 # ---------- 每日定时刷新（进程内调度，开关/时刻走 app_settings） ----------

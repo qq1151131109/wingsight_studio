@@ -100,6 +100,13 @@ export interface WingNodeData {
   failedCandidates?: number;
   /** image 卡：补出进行中的张数（行图卡补出按钮转圈） */
   supplementing?: number;
+  /** image 卡：智能编排关闭标记（缺省=开）。开=出图前先经「指令合成」
+   *  flow 把 短指令+设定文本 扩写成完整提示词（novanova KEEP/OPTIMIZE
+   *  范式：完整描述/改图指令 keep 原样） */
+  composeOpt?: boolean;
+  /** image 卡：最近一次智能编排合成后的最终提示词（回显可追溯，可载入
+   *  输入框修改后重发） */
+  composedPrompt?: string;
   /** image 卡：面板直连出图的入参快照（prompt=编号替换后的正文；
    *  genShot=发给 flow 的载荷），补出/重试按此原样重跑，不再回退卡上正文 */
   genPrompt?: string;
@@ -1331,34 +1338,63 @@ export function summarizeCanvas(
   budget = 2000,
 ): string {
   if (nodes.length === 0) return "（画布为空）";
-  const lines: string[] = [];
-  lines.push(`节点 ${nodes.length} 个，连线 ${edges.length} 条：`);
-  for (const n of nodes) {
-    const meta = NODE_META[n.data.nodeType];
-    const title = (n.data.title ?? "").slice(0, 30) || "（无标题）";
-    const shotFields =
-      n.data.nodeType === "storyboard"
-        ? [
-            n.data.shotNumber ? `#${n.data.shotNumber}` : "",
-            n.data.shotSize ?? "",
-            n.data.cameraMove ?? "",
-            n.data.duration ?? "",
-          ].filter(Boolean)
-        : [];
-    const shot = shotFields.length > 0 ? `（${shotFields.join("·")}）` : "";
-    const kids =
-      n.data.nodeType === "group"
-        ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
-        : "";
-    const body = n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
-    const sel = selectedIds.includes(n.id) ? " [选中]" : "";
-    // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
-    // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
-    const genNote = n.data.gen?.aspect ? `（画幅 ${n.data.gen.aspect}）` : "";
-    lines.push(`- ${n.id} [${meta.label}] ${title}${genNote}${shot}${kids}${body}${sel}`);
-  }
-  for (const e of edges) {
-    lines.push(`- 连线 ${e.source} → ${e.target}`);
+  // 行构造（withBody=false 用于超预算降级：先全省正文再保留行）
+  const build = (withBody: boolean): string[] => {
+    const lines: string[] = [];
+    lines.push(`节点 ${nodes.length} 个，连线 ${edges.length} 条：`);
+    for (const n of nodes) {
+      const meta = NODE_META[n.data.nodeType];
+      const title = (n.data.title ?? "").slice(0, 30) || "（无标题）";
+      const shotFields =
+        n.data.nodeType === "storyboard"
+          ? [
+              n.data.shotNumber ? `#${n.data.shotNumber}` : "",
+              n.data.shotSize ?? "",
+              n.data.cameraMove ?? "",
+              n.data.duration ?? "",
+            ].filter(Boolean)
+          : [];
+      const shot = shotFields.length > 0 ? `（${shotFields.join("·")}）` : "";
+      const kids =
+        n.data.nodeType === "group"
+          ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
+          : "";
+      const body =
+        withBody && n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
+      const sel = selectedIds.includes(n.id) ? " [选中]" : "";
+      // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
+      // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
+      const genNote = n.data.gen?.aspect ? `（画幅 ${n.data.gen.aspect}）` : "";
+      // 媒体标记 + URL：聊天出图工具的 reference_images 依赖从这里取
+      // 带图卡的 URL（缺失曾让该通道无输入可拿）；视频/音频同理标注
+      const media: string[] = [];
+      if (n.data.imageUrl) media.push(`图:${n.data.imageUrl}`);
+      if (n.data.videoUrl) media.push(`视频:${n.data.videoUrl}`);
+      if (n.data.audioUrl) media.push(`音频:${n.data.audioUrl}`);
+      const mediaTag = media.length > 0 ? ` ⟨${media.join(" ")}⟩` : "";
+      // 调研卡正文在 agent research_jobs 表（画布不存档），标记 id 供 LLM 用调研工具读
+      const researchNote =
+        n.data.nodeType === "research" && n.data.researchId
+          ? `（调研卷宗 ${n.data.researchId}）`
+          : "";
+      lines.push(
+        `- ${n.id} [${meta.label}] ${title}${genNote}${mediaTag}${researchNote}${shot}${kids}${body}${sel}`,
+      );
+    }
+    for (const e of edges) {
+      lines.push(`- 连线 ${e.source} → ${e.target}`);
+    }
+    return lines;
+  };
+  // 超预算降级：先全省正文（标题/媒体/连线保留），仍超才从尾部丢非选中
+  // 节点行（连线永远保留）——旧版硬切会把行切半、画布尾部对 LLM 失明
+  let lines = build(true);
+  if (lines.join("\n").length > budget) lines = build(false);
+  while (lines.join("\n").length > budget) {
+    const lastNodeIdx = lines.map((l) => l.startsWith("- ")).lastIndexOf(true);
+    const isEdge = lines[lastNodeIdx]?.startsWith("- 连线 ");
+    if (lastNodeIdx <= 0 || isEdge) break;
+    lines.splice(lastNodeIdx, 1);
   }
   let text = lines.join("\n");
   if (text.length > budget) text = text.slice(0, budget) + "\n…（已截断）";

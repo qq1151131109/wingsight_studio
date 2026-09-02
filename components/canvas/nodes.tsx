@@ -3,6 +3,7 @@
 import {
   Fragment,
   memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -101,7 +102,12 @@ import {
   type FocusEditDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
-import { GENERATE_EVENT, type GenerateDetail } from "./PromptBar";
+import {
+  GENERATE_EVENT,
+  SUPPLEMENT_CANDIDATES_EVENT,
+  type GenerateDetail,
+} from "./PromptBar";
+import { CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import { Lightbox } from "./Lightbox";
 import { createPortal } from "react-dom";
 import OverlayModal from "./OverlayModal";
@@ -140,7 +146,7 @@ export const CANCEL_GENERATION_EVENT = "wingsight:cancel-generation";
 
 /** 候选补出事件：候选有失败张数时行图卡「补出 N 张」发出，桥接层沿用
  *  原入参快照（genShot）补跑失败张数，成功结果追加进候选 */
-export const SUPPLEMENT_CANDIDATES_EVENT = "wingsight:supplement-candidates";
+
 
 /** 从一张卡右侧建下游卡并自动连线（AIGCCanvasFlow 的 hover "+" 模式）。
  *  锚点 = 源卡实际宽度 + 80、顶对齐（竞品用实际尺寸，默认表会在拉大卡上
@@ -1204,6 +1210,7 @@ function TextCard({
         disabled={researching}
         className="nodrag nowheel flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-50"
         data-tip="以本文为背景发起深度调研，右侧新建调研卡" aria-label="深度调研"
+        data-track="script.deep-research"
         onClick={async (e) => {
           e.stopPropagation();
           if (researching) return;
@@ -1477,7 +1484,8 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               disabled={empty}
               data-tip="把剧本正文导出为 .md 文件" aria-label="把剧本正文导出为 .md 文件"
               className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={(e) => {
+              data-track="script.export-md"
+  onClick={(e) => {
                 e.stopPropagation();
                 exportMd();
               }}
@@ -1490,7 +1498,8 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               disabled={empty || decomposing}
               data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）"
               className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={(e) => {
+              data-track="script.decompose"
+  onClick={(e) => {
                 e.stopPropagation();
                 decompose();
               }}
@@ -1503,7 +1512,8 @@ function ScriptCard({ data, id, selected }: NodeProps) {
                 disabled={empty || researching || !!refJob.batchId}
                 data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={(e) => {
+                data-track="card.batch-research"
+  onClick={(e) => {
                   e.stopPropagation();
                   void researchRefs();
                 }}
@@ -1521,7 +1531,8 @@ function ScriptCard({ data, id, selected }: NodeProps) {
                 disabled={empty || fillingAssets}
                 data-tip="为本卡拆解出的缺设定图资产卡批量出图（自动带上已采纳的参考卡，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={(e) => {
+                data-track="asset.fill-images"
+  onClick={(e) => {
                   e.stopPropagation();
                   void fillAssets();
                 }}
@@ -1841,7 +1852,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
                   type="button"
                   data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
                   className="nodrag flex items-center gap-0.5 rounded-md bg-black/40 p-1 text-[10px] text-white hover:bg-black/60"
-                  onClick={(e) => {
+                  data-track="card.version-history"
+  onClick={(e) => {
                     e.stopPropagation();
                     setHistoryOpen(true);
                   }}
@@ -1935,7 +1947,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
           type="button"
           data-tip="搜网络参考图（Google 经 Serper 号池），采纳后自动建参考卡连线，出图时进参考序列" aria-label="找参考图"
           className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-hairline px-2 py-1 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
-          onClick={(e) => {
+          data-track="asset.find-refs"
+  onClick={(e) => {
             e.stopPropagation();
             setResearchOpen(true);
           }}
@@ -1958,7 +1971,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
                 type="button"
                 data-tip="用 AI 生成的设定覆盖当前正文（旧正文进撤销栈可恢复）" aria-label="采用覆盖"
                 className="nodrag rounded border border-accent bg-accent-dim px-1.5 py-0.5 text-[10px] font-medium text-text hover:bg-accent-soft"
-                onClick={(e) => {
+                data-track="textwrite.apply"
+  onClick={(e) => {
                   e.stopPropagation();
                   update({ body: writePreview });
                   setWritePreview(null);
@@ -2359,7 +2373,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 type="button"
                 data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
                 className="nodrag flex items-center gap-0.5 rounded-md bg-black/40 p-1 text-[10px] text-white hover:bg-black/60"
-                onClick={(e) => {
+                data-track="card.version-history"
+  onClick={(e) => {
                   e.stopPropagation();
                   setHistoryOpen(true);
                 }}
@@ -2371,7 +2386,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
                   type="button"
                   data-tip="复制提示词" aria-label="复制提示词"
                   className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  onClick={(e) => {
+                  data-track="card.copy-prompt"
+  onClick={(e) => {
                     e.stopPropagation();
                     void navigator.clipboard
                       ?.writeText(d.body ?? "")
@@ -2385,7 +2401,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 type="button"
                 data-tip="重新生成" aria-label="重新生成"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => {
+                data-track="card.regenerate"
+  onClick={(e) => {
                   e.stopPropagation();
                   window.dispatchEvent(
                     new CustomEvent(RETRY_GENERATION_EVENT, {
@@ -2427,7 +2444,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
               className={`shrink-0 overflow-hidden rounded border transition-colors ${
                 u === d.imageUrl ? "border-accent" : "border-hairline-soft hover:border-accent-soft"
               }`}
-              onClick={(e) => {
+              data-track="shot.set-primary"
+  onClick={(e) => {
                 e.stopPropagation();
                 update({ primaryIndex: i, imageUrl: u });
               }}
@@ -2495,7 +2513,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
                     data-tip="设为主图" aria-label="设为主图"
                     className={btn}
                     disabled={item.src === d.imageUrl}
-                    onClick={(e) => {
+                    data-track="shot.set-primary"
+  onClick={(e) => {
                       e.stopPropagation();
                       update({
                         primaryIndex: meta.idx ?? 0,
@@ -2511,7 +2530,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
                     type="button"
                     data-tip="恢复此版本（当前版自动存档）" aria-label="恢复此版本（当前版自动存档）"
                     className={btn}
-                    onClick={(e) => {
+                    data-track="lightbox.restore-version"
+  onClick={(e) => {
                       e.stopPropagation();
                       restoreVersion({
                         url: item.src,
@@ -2528,7 +2548,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
                   type="button"
                   data-tip="标注重绘：涂出想改的区域让 AI 重绘" aria-label="标注重绘：涂出想改的区域让 AI 重绘"
                   className={btn}
-                  onClick={(e) => {
+                  data-track="card.mask-redraw"
+  onClick={(e) => {
                     e.stopPropagation();
                     api.close();
                     setMaskOpen(true);
@@ -2863,7 +2884,8 @@ function VideoCard({ data, id, selected }: NodeProps) {
                   type="button"
                   data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
                   className="flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white hover:bg-black/60"
-                  onClick={(e) => {
+                  data-track="card.version-history"
+  onClick={(e) => {
                     e.stopPropagation();
                     setHistoryOpen(true);
                   }}
@@ -3816,7 +3838,8 @@ function ShotGenSettings({ nodeId }: { nodeId: string }) {
         className={`nodrag whitespace-nowrap rounded border bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text ${
           cardGen ? "border-accent" : "border-hairline"
         }`}
-        onClick={(e) => {
+        data-track="card.gen-settings"
+  onClick={(e) => {
           e.stopPropagation();
           setOpen((v) => !v);
         }}
@@ -4388,7 +4411,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   /** 行引用资产 → 一致性参考描述（资产卡标题+设定节选） */
   const refNotesFor = (r: ShotRow) =>
     rowRefNodes(r)
-      .map((n) => `【${n.data.title}】${(n.data.body ?? "").slice(0, 160)}`)
+      .map((n) => `【${n.data.title}】${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`)
       .join("；");
 
   /** 选中 @候选：补全名称、写入结构化 refIds（改名不失联） */
@@ -5186,7 +5209,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             disabled={decomposing || !scriptSource}
             data-tip="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）"
             className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={(e) => {
+            data-track="script.decompose"
+  onClick={(e) => {
               e.stopPropagation();
               void decompose();
             }}
@@ -5199,7 +5223,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 disabled={!scriptSource || researching || !!refJob.batchId}
                 data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={(e) => {
+                data-track="card.batch-research"
+  onClick={(e) => {
                   e.stopPropagation();
                   void researchRefs();
                 }}
@@ -5231,7 +5256,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             disabled={imgGenerating || selectedGenRows.length === 0}
             data-tip="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认" aria-label="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
             className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-1.5 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
-            onClick={(e) => {
+            data-track="shotlist.batch-images"
+  onClick={(e) => {
               e.stopPropagation();
               void genShotImages(selectedGenRows.map((row) => ({ row, seq: rows.indexOf(row) })));
             }}
@@ -5257,7 +5283,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             disabled={videoSources.length < 2}
             data-tip="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）" aria-label="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
             className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-            onClick={(e) => {
+            data-track="compose.one-click"
+  onClick={(e) => {
               e.stopPropagation();
               void composeShots();
             }}

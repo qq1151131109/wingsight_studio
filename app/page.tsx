@@ -16,6 +16,7 @@ import {
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import AccountMenu from "@/components/shell/AccountMenu";
+import TelemetryListener from "@/components/telemetry/TelemetryListener";
 import {
   WorkspaceErrorState,
   WorkspaceLoadingState,
@@ -351,6 +352,7 @@ function HomeInner() {
 export default function Home() {
   return (
     <AuthGate>
+      <TelemetryListener />
       <HomeInner />
     </AuthGate>
   );

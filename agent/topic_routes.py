@@ -21,8 +21,10 @@ from topic_pool import (
     FLOW_IDS,
     SERVICE,
     get_auto_refresh,
+    get_deep_dive_job,
     get_rescan_job,
     set_auto_refresh,
+    start_deep_dive_job,
     start_rescan_job,
     verticals_payload,
 )
@@ -30,12 +32,14 @@ from topic_pool import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# 主策展管线依赖的四个 flow（复查规划 flow 缺配只影响深挖，不拦主刷新）
-_CORE_FLOW_KEYS = ("triage", "plan", "followup", "verdict")
+# 常规刷新只跑生料生成层，仅依赖 ideate flow
+_IDEATE_FLOW_KEYS = ("ideate",)
+# 深挖层（取证→verdict）依赖的 flow；angle 缺配时 verdict 自选角度，不拦
+_DEEP_FLOW_KEYS = ("plan", "followup", "verdict")
 _RESCAN_FLOW_KEYS = ("rescan_plan", "followup", "verdict")
 
 
-def _require_flow_ids(keys: tuple[str, ...] = _CORE_FLOW_KEYS) -> str | None:
+def _require_flow_ids(keys: tuple[str, ...] = _IDEATE_FLOW_KEYS) -> str | None:
     missing = [FLOW_IDS[key] for key in keys if not os.environ.get(FLOW_IDS[key], "").strip()]
     return "、".join(missing) if missing else None
 
@@ -58,15 +62,22 @@ def list_topics(
     status: str = "candidate",
     vertical: str | None = None,
     source: str | None = None,
+    stage: str | None = None,
     q: str | None = None,
     limit: int = 200,
 ):
     _ = user
     return {
-        "topics": store.list_topics(status=status, vertical=vertical, source=source, q=q, limit=min(limit, 500)),
+        "topics": store.list_topics(
+            status=status, vertical=vertical, source=source, stage=stage, q=q, limit=min(limit, 500)
+        ),
         "refreshing": SERVICE.refreshing,
         "lastRun": SERVICE.last_run(),
         "verticals": verticals_payload(),
+        "counts": {
+            "raw": store.count_topics(status="candidate", stage="raw"),
+            "verified": store.count_topics(status="candidate", stage="verified"),
+        },
     }
 
 
@@ -118,6 +129,35 @@ def get_rescan(job_id: str, user: auth.CurrentUser):
     job = get_rescan_job(job_id)
     if job is None:
         return Response(status_code=404, content="复查任务不存在（可能已完成较久被清理）", media_type="text/plain")
+    return {"job": job}
+
+
+@router.post("/topics/{topic_id}/deep-dive")
+async def deep_dive_topic(topic_id: str, user: auth.CurrentUser):
+    """导演点名深挖一张生料卡：全流程取证（含市场实查），异步任务 + 轮询。"""
+    _ = user
+    missing = _require_flow_ids(_DEEP_FLOW_KEYS)
+    if missing:
+        return Response(status_code=503, content=f"未配置选题 flow id：{missing}", media_type="text/plain")
+    if SERVICE.refreshing:
+        return Response(status_code=409, content="刷新进行中，完成后可再试", media_type="text/plain")
+    topic = store.get_topic(topic_id)
+    if topic is None:
+        return Response(status_code=404, content="选题不存在", media_type="text/plain")
+    if topic["status"] != "candidate":
+        return Response(status_code=409, content="仅候选状态可深挖", media_type="text/plain")
+    job_id = start_deep_dive_job(topic)
+    if job_id is None:
+        return Response(status_code=409, content="该卡已在深挖中", media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@router.get("/topics/deep-dive/{job_id}")
+def get_deep_dive(job_id: str, user: auth.CurrentUser):
+    _ = user
+    job = get_deep_dive_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="深挖任务不存在（可能已完成较久被清理）", media_type="text/plain")
     return {"job": job}
 
 

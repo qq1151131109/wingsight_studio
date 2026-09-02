@@ -19,11 +19,13 @@ import AuthGate from "@/components/shell/AuthGate";
 import {
   adoptTopic,
   dismissTopic,
+  getDeepDiveJob,
   getRescanJob,
   getSchedule,
   listTopics,
   refreshTopics,
   setSchedule,
+  startDeepDive,
   startRescan,
   type AutoRefreshSchedule,
   type Topic,
@@ -32,9 +34,11 @@ import {
 } from "@/lib/topics";
 
 /**
- * 选题池 · 生产前漏斗（跨项目全局，信息架构照搬 juben TopicPoolPage）。
- * 刷新 = 后台策展管线（材料窗口采集 → LLM 研判 → 迭代取证 → 两级结论），
- * 前端轮询 refreshing 字段；认领 = 建项目 + 选题落画布剧本卡。
+ * 选题池 · 双层漏斗（跨项目全局）。
+ * 生料层：刷新 = 语料采集 → 批量创意生成（每批一次 LLM 调用，零检索），
+ *   产片名式选题（标题/钩子/原型出处/标签），stage=raw，量大管饱。
+ * 已深挖层：导演点名「深挖」→ 全流程取证（含市场实查）→ 证据足升级为
+ *   可立项建议卡（stage=verified）。认领 = 建项目 + 选题落画布剧本卡。
  */
 
 type StatusTab = "candidate" | "adopted" | "dismissed";
@@ -46,6 +50,7 @@ const SOURCE_LABEL: Record<string, string> = {
   anniversary: "周年节点",
   validated: "已验证内容",
   benchmark: "对标片单",
+  corpus: "文献语料",
 };
 
 function isStrong(t: Topic): boolean {
@@ -67,10 +72,10 @@ function formatTime(iso?: string): string {
 function lastRunSummary(run: TopicRefreshRun): string {
   if (!run?.finishedAt) return "";
   const parts: string[] = [];
-  if (typeof run.collected === "number") parts.push(`采集 ${run.collected}`);
-  if (typeof run.shortlisted === "number") parts.push(`入围 ${run.shortlisted}`);
-  const produced = (run.created ?? 0) + (run.observed ?? 0);
-  if (produced || run.upgraded) parts.push(`建议 +${run.created ?? 0} · 观察 +${run.observed ?? 0}${run.upgraded ? ` · 升级 ${run.upgraded}` : ""}`);
+  if (typeof run.collected === "number") parts.push(`语料 ${run.collected}`);
+  if (typeof run.batches === "number") parts.push(`${run.batches} 批`);
+  if (typeof run.created === "number") parts.push(`生料 +${run.created}`);
+  if (typeof run.duplicates === "number" && run.duplicates > 0) parts.push(`去重 ${run.duplicates}`);
   if (run.rescanned) parts.push(`复查 ${run.rescanned}${run.rescanUpgraded ? `（升级 ${run.rescanUpgraded}）` : ""}`);
   const prefix = run.error ? `上次刷新中断（${run.error}）` : `上次刷新：${parts.join(" · ") || "无产出"}`;
   return `${prefix} · ${formatTime(run.finishedAt)}`;
@@ -91,6 +96,8 @@ function TopicPoolInner() {
   const [noticeTone, setNoticeTone] = useState<"danger" | "good">("danger");
   const [schedule, setScheduleState] = useState<AutoRefreshSchedule | null>(null);
   const [rescanJob, setRescanJob] = useState<{ jobId: string; topicId: string } | null>(null);
+  const [deepJob, setDeepJob] = useState<{ jobId: string; topicId: string } | null>(null);
+  const [counts, setCounts] = useState<{ raw: number; verified: number } | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const notify = (msg: string, tone: "danger" | "good" = "danger") => {
@@ -110,6 +117,7 @@ function TopicPoolInner() {
         setRefreshing(data.refreshing);
         setLastRun(data.lastRun);
         if (data.verticals?.length) setVerticals(data.verticals);
+        if (data.counts) setCounts(data.counts);
         setSelectedId((prev) =>
           opts?.keepSelection === true && prev && data.topics.some((t) => t.id === prev)
             ? prev
@@ -137,6 +145,7 @@ function TopicPoolInner() {
         setRefreshing(data.refreshing);
         setLastRun(data.lastRun);
         if (data.verticals?.length) setVerticals(data.verticals);
+        if (data.counts) setCounts(data.counts);
         setSelectedId(data.topics[0]?.id ?? null);
       } catch {
         if (alive) {
@@ -220,6 +229,40 @@ function TopicPoolInner() {
     }
   };
 
+  // 生料卡点名深挖轮询（2.5s），完成/失败即停并刷新该卡
+  useEffect(() => {
+    if (!deepJob) return;
+    let alive = true;
+    const timer = window.setInterval(async () => {
+      try {
+        const job = await getDeepDiveJob(deepJob.jobId);
+        if (!alive || job.status === "running") return;
+        setDeepJob(null);
+        void load({ keepSelection: true });
+        if (job.status === "error") notify(`深挖失败：${job.error || "未知错误"}`);
+        else if (job.outcome === "upgraded") notify("深挖完成：证据充分，已升级为可立项建议卡", "good");
+        else if (job.outcome === "thin") notify("深挖完成：证据仍薄，新取证已记入信源底账");
+        else notify("深挖完成：本轮未得出新结论");
+      } catch {
+        // 轮询单次失败下一跳再试
+      }
+    }, 2500);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [deepJob, load]);
+
+  const doDeepDive = async (t: Topic) => {
+    setNotice("");
+    try {
+      const jobId = await startDeepDive(t.id);
+      setDeepJob({ jobId, topicId: t.id });
+    } catch (e) {
+      notify(e instanceof Error ? e.message : "启动深挖失败");
+    }
+  };
+
   const startRefresh = async () => {
     notify("");
     const r = await refreshTopics();
@@ -255,8 +298,10 @@ function TopicPoolInner() {
   };
 
   const selected = topics?.find((t) => t.id === selectedId) ?? null;
-  const strong = (topics ?? []).filter(isStrong);
-  const thin = (topics ?? []).filter((t) => !isStrong(t));
+  // 双层分组：生料（批量创意，未取证）与已深挖（建议/观察）分区展示
+  const rawCards = (topics ?? []).filter((t) => t.stage === "raw");
+  const strong = (topics ?? []).filter((t) => t.stage === "verified" && isStrong(t));
+  const thin = (topics ?? []).filter((t) => t.stage === "verified" && !isStrong(t));
 
   return (
     <div className="flex h-dvh flex-col bg-bg">
@@ -313,7 +358,9 @@ function TopicPoolInner() {
         </div>
         <div className="mx-auto w-full max-w-6xl px-6 pb-2">
           <p className="text-[11px] text-text-4">
-            {refreshing ? "正在跑完整管线（多次检索与研判，需几分钟）…" : lastRunSummary(lastRun)}
+            {refreshing
+              ? "批量选题生成中：语料采集 → 创意批量产出（每批一次模型调用，几分钟内完成）…"
+              : lastRunSummary(lastRun)}
           </p>
         </div>
       </header>
@@ -397,6 +444,24 @@ function TopicPoolInner() {
             </div>
           ) : (
             <>
+              {statusTab === "candidate" && rawCards.length > 0 ? (
+                <TopicSection
+                  title={`生料选题（${counts ? counts.raw : rawCards.length}）`}
+                  hint={counts && counts.raw > rawCards.length ? `显示最新 ${rawCards.length} 条` : undefined}
+                >
+                  {rawCards.map((t) => (
+                    <TopicCard
+                      key={t.id}
+                      topic={t}
+                      selected={t.id === selectedId}
+                      busy={busyId === t.id}
+                      deepBusy={deepJob?.topicId === t.id}
+                      verticals={verticals}
+                      onSelect={() => setSelectedId(t.id)}
+                    />
+                  ))}
+                </TopicSection>
+              ) : null}
               {statusTab === "candidate" && strong.length > 0 ? (
                 <TopicSection title={`可立项建议（${strong.length}）`}>
                   {strong.map((t) => (
@@ -447,10 +512,12 @@ function TopicPoolInner() {
               topic={selected}
               busy={busyId === selected.id}
               rescanBusy={rescanJob?.topicId === selected.id}
+              deepBusy={deepJob?.topicId === selected.id}
               verticals={verticals}
               onAdopt={() => void doAdopt(selected)}
               onDismiss={() => void doDismiss(selected)}
               onRescan={() => void doRescan(selected)}
+              onDeepDive={() => void doDeepDive(selected)}
             />
           ) : null}
         </section>
@@ -459,10 +526,21 @@ function TopicPoolInner() {
   );
 }
 
-function TopicSection({ title, children }: { title: string; children: React.ReactNode }) {
+function TopicSection({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
   return (
     <div>
-      <h2 className="mb-1.5 px-1 text-[11px] font-medium uppercase tracking-wide text-text-4">{title}</h2>
+      <h2 className="mb-1.5 flex items-baseline gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-text-4">
+        {title}
+        {hint ? <span className="font-normal normal-case text-text-4/70">{hint}</span> : null}
+      </h2>
       <div className="space-y-2">{children}</div>
     </div>
   );
@@ -472,16 +550,20 @@ function TopicCard({
   topic,
   selected,
   busy,
+  deepBusy,
   verticals,
   onSelect,
 }: {
   topic: Topic;
   selected: boolean;
   busy: boolean;
+  /** 生料卡深挖进行中（卡上小转圈） */
+  deepBusy?: boolean;
   verticals: VerticalInfo[];
   onSelect: () => void;
 }) {
   const v = verticals.find((x) => x.id === topic.vertical);
+  const raw = topic.stage === "raw";
   return (
     <button
       type="button"
@@ -494,16 +576,34 @@ function TopicCard({
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: v?.color ?? FALLBACK_COLOR }} />
         <span className="text-[10px] text-text-4">{v?.label ?? topic.vertical}</span>
         <span className="text-[10px] text-text-4">· {SOURCE_LABEL[topic.source] ?? topic.source}</span>
-        {busy ? <Loader2 className="ml-auto h-3 w-3 text-text-4 motion-safe:animate-spin" /> : null}
+        {raw ? (
+          <span className="rounded bg-surface-2 px-1 py-px text-[9px] text-text-4">生料</span>
+        ) : null}
+        {deepBusy ? (
+          <Loader2 className="ml-auto h-3 w-3 text-accent motion-safe:animate-spin" />
+        ) : busy ? (
+          <Loader2 className="ml-auto h-3 w-3 text-text-4 motion-safe:animate-spin" />
+        ) : null}
       </div>
       <h3 className="font-editorial mt-1 line-clamp-2 text-sm font-semibold text-text">
-        {isStrong(topic) ? topic.title : topic.research.event || topic.title}
+        {topic.stage === "verified" && !isStrong(topic)
+          ? topic.research.event || topic.title
+          : topic.title}
       </h3>
       <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-text-3">
         {topic.summary || topic.research.observation}
       </p>
       {isStrong(topic) && topic.angles.length > 0 ? (
         <p className="mt-1.5 line-clamp-1 text-[11px] text-text-4">角度：{topic.angles.join(" / ")}</p>
+      ) : null}
+      {raw && topic.tags.length > 0 ? (
+        <p className="mt-1.5 flex flex-wrap gap-1">
+          {topic.tags.map((tag) => (
+            <span key={tag} className="rounded-full bg-surface-2 px-1.5 py-px text-[10px] text-text-4">
+              {tag}
+            </span>
+          ))}
+        </p>
       ) : null}
     </button>
   );
@@ -534,24 +634,29 @@ function TopicDetail({
   topic,
   busy,
   rescanBusy,
+  deepBusy,
   verticals,
   onAdopt,
   onDismiss,
   onRescan,
+  onDeepDive,
 }: {
   topic: Topic;
   busy: boolean;
   rescanBusy: boolean;
+  deepBusy: boolean;
   verticals: VerticalInfo[];
   onAdopt: () => void;
   onDismiss: () => void;
   onRescan: () => void;
+  onDeepDive: () => void;
 }) {
   const r = topic.research;
   const strong = isStrong(topic);
+  const raw = topic.stage === "raw";
   const v = verticals.find((x) => x.id === topic.vertical);
   const rescanNote =
-    topic.status === "candidate" && !strong
+    topic.status === "candidate" && topic.stage === "verified" && !strong
       ? topic.lastRescanAt
         ? `上次复查 ${formatTime(topic.lastRescanAt)}`
         : "尚未复查"
@@ -565,13 +670,49 @@ function TopicDetail({
           {formatTime(topic.createdAt)}
           {rescanNote ? ` · ${rescanNote}` : ""}
         </span>
+        {raw ? (
+          <span className="rounded bg-surface-2 px-1.5 py-px text-[10px] text-text-4">生料 · 未取证</span>
+        ) : null}
       </div>
       <h2 className="font-editorial mt-1 text-lg font-semibold leading-snug text-text">
-        {strong ? topic.title : "观察：" + (r.event || topic.title)}
+        {topic.stage === "verified" && !strong ? "观察：" + (r.event || topic.title) : topic.title}
       </h2>
       {topic.summary ? <p className="mt-2 text-xs leading-relaxed text-text-2">{topic.summary}</p> : null}
 
       <div className="mt-4 space-y-3.5">
+        {raw && topic.summary ? (
+          <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
+            <h4 className="text-[11px] font-medium text-text-4">情绪钩子</h4>
+            <p className="font-editorial mt-0.5 text-sm text-text">{topic.summary}</p>
+          </div>
+        ) : null}
+        {raw && topic.tags.length > 0 ? (
+          <div className="flex flex-wrap gap-1.5">
+            {topic.tags.map((tag) => (
+              <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-[11px] text-text-3">
+                {tag}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {raw && topic.heatEvidence.length > 0 ? (
+          <Field label="原型出处（语料原文）">
+            <ul className="space-y-1">
+              {topic.heatEvidence.map((h, i) => (
+                <li key={i} className="text-xs leading-relaxed text-text-2">
+                  {h.url ? (
+                    <a href={h.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">
+                      {h.title} <ExternalLink className="inline h-3 w-3" />
+                    </a>
+                  ) : (
+                    h.title
+                  )}
+                  {h.source ? <span className="text-text-4"> — {h.source}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </Field>
+        ) : null}
         {r.emotion ? (
           <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
             <h4 className="text-[11px] font-medium text-text-4">情绪钩子</h4>
@@ -690,39 +831,78 @@ function TopicDetail({
 
       {topic.status === "candidate" ? (
         <div className="mt-5 flex items-center gap-2 border-t border-hairline-soft pt-4">
-          <button
-            type="button"
-            onClick={onAdopt}
-            disabled={busy}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3.5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {busy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Check className="h-3.5 w-3.5" />}
-            认领立项
-          </button>
-          {!strong ? (
-            <button
-              type="button"
-              onClick={onRescan}
-              disabled={busy || rescanBusy}
-              className="flex items-center gap-1.5 rounded-md border border-hairline px-3.5 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
-            >
-              {rescanBusy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
-              深挖一下
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={onDismiss}
-            disabled={busy}
-            className="flex items-center gap-1.5 rounded-md border border-hairline px-3.5 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
-          >
-            <X className="h-3.5 w-3.5" />
-            忽略
-          </button>
-          <span className="ml-auto flex items-center gap-1 text-[11px] text-text-4">
-            {strong ? <BookOpen className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
-            {strong ? "证据充分 · 可立项" : "证据不足 · 继续观察"}
-          </span>
+          {raw ? (
+            <>
+              <button
+                type="button"
+                onClick={onDeepDive}
+                disabled={busy || deepBusy}
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3.5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {deepBusy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                {deepBusy ? "深挖取证中…" : "深挖取证"}
+              </button>
+              <button
+                type="button"
+                onClick={onAdopt}
+                disabled={busy}
+                data-tip="不取证直接立项：画布剧本卡只带选题钩子与原型出处"
+                className="flex items-center gap-1.5 rounded-md border border-hairline px-3 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                直接认领
+              </button>
+              <button
+                type="button"
+                onClick={onDismiss}
+                disabled={busy}
+                className="flex items-center gap-1.5 rounded-md border border-hairline px-3 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+              >
+                <X className="h-3.5 w-3.5" />
+                忽略
+              </button>
+              <span className="ml-auto flex items-center gap-1 text-[11px] text-text-4">
+                <Eye className="h-3 w-3" />
+                生料 · 深挖后出完整立项建议
+              </span>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={onAdopt}
+                disabled={busy}
+                className="flex items-center gap-1.5 rounded-md bg-accent px-3.5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                认领立项
+              </button>
+              {!strong ? (
+                <button
+                  type="button"
+                  onClick={onRescan}
+                  disabled={busy || rescanBusy}
+                  className="flex items-center gap-1.5 rounded-md border border-hairline px-3.5 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+                >
+                  {rescanBusy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
+                  深挖一下
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={onDismiss}
+                disabled={busy}
+                className="flex items-center gap-1.5 rounded-md border border-hairline px-3.5 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
+              >
+                <X className="h-3.5 w-3.5" />
+                忽略
+              </button>
+              <span className="ml-auto flex items-center gap-1 text-[11px] text-text-4">
+                {strong ? <BookOpen className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                {strong ? "证据充分 · 可立项" : "证据不足 · 继续观察"}
+              </span>
+            </>
+          )}
         </div>
       ) : null}
       {topic.status === "adopted" ? (

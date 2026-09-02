@@ -75,7 +75,7 @@ const nodes = [
   img("refF", { body: "女主设定图", imageUrl: svg("F", "#8a4a4a") }),
   img("refM", { body: "男主设定图", imageUrl: svg("M", "#4a5a8a") }),
   // 咖啡馆事故复刻：带图 + 两条连线 + 人物剧情提示词
-  img("shot", { imageUrl: svg("C", "#3f5a3f") }),
+  img("shot", { imageUrl: svg("C", "#3f5a3f"), body: "现代都市年轻女性，独立清醒，冷白灯光与霓虹夜景。" }),
   // 改图卡：带图、无连线
   img("editCard", { imageUrl: svg("E", "#6a5a3f") }),
   // 场景关键词卡：无图无线
@@ -287,7 +287,52 @@ try {
     `assetType=${s7?.assetType} label0=${s7?.referenceLabels?.[0]?.type}`,
   );
 
-  // 8. @ 候选空态指引
+  // 8. 本卡原图 chip ×：计数 3/4 → 2/4；载荷不含本卡图；载回恢复
+  await select("shot");
+  await typePrompt("两人隔桌而坐");
+  await submit();
+  const withSelf = lastPayload?.shots?.[0]?.referenceImages?.length ?? 0;
+  const offBtn = page.locator('button[data-tip^="移除：本次不锚定本卡原图"]');
+  await offBtn.click();
+  await page.waitForTimeout(400);
+  const counter2 = await page.getByText(/参考 \d\/\d/).textContent();
+  check("chip × 后计数 2/4", counter2?.trim() === "参考 2/4", counter2?.trim() ?? "none");
+  // 快照 chip：genShot（上一轮含本卡图）里实时序列之外的参考以「快照」回显
+  const snapChip = await page.getByText("快照", { exact: true }).count();
+  check("历史快照 chip 回显（genShot 中的本卡图）", snapChip === 1, `count=${snapChip}`);
+  await submit();
+  const noSelf = lastPayload?.shots?.[0]?.referenceImages ?? [];
+  check("移除后载荷不含本卡图", noSelf.length === 2, `refs=${noSelf.length}`);
+  await page.locator('button[data-tip^="载回：本卡原图重新并入参考"]').click();
+  await page.waitForTimeout(400);
+  const counter3 = await page.getByText(/参考 \d\/\d/).textContent();
+  check("载回恢复 3/4", counter3?.trim() === "参考 3/4", counter3?.trim() ?? "none");
+
+  // 9. 模式标签：带本卡图 = 编辑模式
+  const mode = await page.locator('span[data-tip^="编辑模式：本卡原图参与参考"]').count();
+  check("模式标签=编辑模式", mode === 1);
+
+  // 10. 按设定重掷：无参考 + description=标题+设定正文
+  await page.locator('button[aria-label="按设定重新生成（纯文生图新图）"]').click();
+  await page.waitForTimeout(200);
+  for (let i = 0; i < 40 && !lastPayload; i++) await page.waitForTimeout(250);
+  const s10 = lastPayload?.shots?.[0];
+  check(
+    "按设定重掷=纯文生图（无参考+设定正文）",
+    (s10?.referenceImages ?? []).length === 0 &&
+      String(s10?.description ?? "").includes("霓虹夜景"),
+    `refs=${s10?.referenceImages?.length} desc=${String(s10?.description ?? "").slice(0, 40)}`,
+  );
+
+  // 11. 字面「重新生成」= 原快照补出重跑（rid 带 #s 前缀）
+  await select("shot");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  await typePrompt("重新生成");
+  await submit();
+  const rid = lastPayload?.shots?.[0]?.rid ?? "";
+  check("字面重试=原快照补出重跑", rid.includes("#s"), `rid=${rid}`);
+
+  // 12. @ 候选空态指引
   await select("shot");
   await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
   await page.locator('[contenteditable="true"]').first().click();

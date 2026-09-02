@@ -68,6 +68,10 @@ export interface Topic {
   research: TopicResearch;
   status: TopicStatus;
   adoptedPid: string | null;
+  /** raw=生料（批量创意生成，未取证）/ verified=已深挖（证据驱动结论） */
+  stage: "raw" | "verified";
+  /** 索引标签：时代/地域/题材（生成层打） */
+  tags: string[];
   createdAt: string;
   updatedAt: string;
   lastProgressAt: string;
@@ -77,10 +81,9 @@ export interface Topic {
 export interface TopicRefreshRun {
   finishedAt?: string;
   collected?: number;
-  shortlisted?: number;
+  batches?: number;
   created?: number;
-  observed?: number;
-  upgraded?: number;
+  duplicates?: number;
   /** 刷新尾部顺带轮转复查观察卡的产出 */
   rescanned?: number;
   rescanUpgraded?: number;
@@ -110,6 +113,8 @@ export interface TopicListResult {
   refreshing: boolean;
   lastRun: TopicRefreshRun;
   verticals?: VerticalInfo[];
+  /** 池内计数（列表受 limit 截断时，区头仍能显示全量） */
+  counts?: { raw: number; verified: number };
 }
 
 export async function listTopics(params?: {
@@ -161,6 +166,24 @@ export async function startRescan(id: string): Promise<string> {
 export async function getRescanJob(jobId: string): Promise<TopicRescanJob> {
   const r = await apiFetch(`${BASE}/rescan/${jobId}`);
   if (!r.ok) throw new Error(`读取复查任务失败：${r.status}`);
+  const data = await r.json();
+  return data.job as TopicRescanJob;
+}
+
+/** 点名深挖一张生料卡（全流程取证 → 证据足升级建议卡）；返回 jobId 轮询用 */
+export async function startDeepDive(id: string): Promise<string> {
+  const r = await apiFetch(`${BASE}/${id}/deep-dive`, { method: "POST" });
+  if (!r.ok) {
+    const text = await r.text().catch(() => "");
+    throw new Error(text || `启动深挖失败：${r.status}`);
+  }
+  const data = await r.json();
+  return data.jobId as string;
+}
+
+export async function getDeepDiveJob(jobId: string): Promise<TopicRescanJob> {
+  const r = await apiFetch(`${BASE}/deep-dive/${jobId}`);
+  if (!r.ok) throw new Error(`读取深挖任务失败：${r.status}`);
   const data = await r.json();
   return data.job as TopicRescanJob;
 }

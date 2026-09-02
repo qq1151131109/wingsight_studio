@@ -13,7 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Sparkles, Star } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
-import { buildRefSequence } from "@/lib/canvas/refSequence";
+import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import MentionInput, {
   type MentionInputHandle,
@@ -44,8 +44,21 @@ import {
 import { useDismissOnOutside } from "@/lib/useDismiss";
 import { Lightbox } from "./Lightbox";
 
+/** 字面重试短语（novanova RETRY_MESSAGES 范式）：只有这些词原样出现时
+ *  才复用上一轮参考重跑；改了任何文字 = 新创作 */
+const RETRY_PHRASES = new Set([
+  "重新生成",
+  "重试",
+  "再试一次",
+  "再生成一次",
+  "重画",
+  "重画一次",
+]);
+
 /** 卡片输入条上的"直接生成"事件 */
 export const GENERATE_EVENT = "wingsight:generate";
+/** 候选补出（原 genShot 入参快照原样重跑）：字面「重新生成/重试」复用它 */
+export const SUPPLEMENT_CANDIDATES_EVENT = "wingsight:supplement-candidates";
 
 /** 文本撰写预填：右键「AI 润色正文」等入口把指令灌进面板（选中节点后弹出）。
  *  面板可能尚未挂载（先 selectNodes 再灌），故走模块级待取 + 事件双通道 */
@@ -83,6 +96,12 @@ export type GenerateDetail = {
   refIds: string[];
   /** image 生成时的候选张数（1/2/4，缺省 1） */
   count?: number;
+  /** 本卡原图不并入参考（输入条「本卡原图」chip 被 × 掉后的当次语义，
+   *  novanova「上一张图显式动作才进参考」范式） */
+  selfRefOff?: boolean;
+  /** 按设定重新生成：忽略全部参考（含本卡原图/连线），用 卡上标题+设定文本
+   *  纯文生图全新渲染（novanova 分镜资产重生成范式，做减法立即可见） */
+  noRefs?: boolean;
 };
 
 const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
@@ -174,6 +193,9 @@ export default function PromptBar({
   // 连线即引用（open-ai-canvas「已连接素材」/ novanova「mention 来自连线」）：
   // 上游连进来的卡本来就参与生成（桥接层 upstreamLines 注入），这里如实亮出
   // 来。连线引用不可删（移除=画布断线）；手动 @ 引用已内联进正文，不再挂 chip
+  // 本卡原图当次移除（novanova「上一张图显式动作才进参考」范式）：× 掉后
+  // 本次纯文生图/仅外部参考，面板重开（切卡）自动恢复默认带上
+  const [selfRefOff, setSelfRefOff] = useState(false);
   const connectedRefs = useMemo(() => {
     const out: WingNode[] = [];
     for (const e of edges) {
@@ -204,12 +226,15 @@ export default function PromptBar({
             mentionIds: lastRead?.mentionIds ?? [],
             nodes,
             selfId: nodeId,
-            selfImageUrl: (self?.data.imageUrl as string | undefined) ?? undefined,
+            selfImageUrl:
+              selfRefOff
+                ? undefined
+                : ((self?.data.imageUrl as string | undefined) ?? undefined),
             connectedIds: connectedRefs.map((r) => r.id),
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- self 的变化由 nodes 依赖承载
-    [kind, lastRead, nodes, nodeId, connectedRefs],
+    [kind, lastRead, nodes, nodeId, connectedRefs, selfRefOff],
   );
   const refSeqLabelOf = (id: string) =>
     refSeq?.entries.find((e) => e.node.id === id)?.label;
@@ -240,9 +265,9 @@ export default function PromptBar({
     ...(lastRead?.mentionIds ?? [])
       .map((id) => nodes.find((n) => n.id === id))
       .filter((n): n is WingNode => Boolean(n))
-      .map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150)),
+      .map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, CONTEXT_BODY_LIMIT)),
     ...connectedRefs.map(
-      (n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, 150),
+      (n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, CONTEXT_BODY_LIMIT),
     ),
     projectStyle.trim() ? `全局视觉风格：${projectStyle.trim()}` : "",
   ]
@@ -325,6 +350,20 @@ export default function PromptBar({
     setPanelError("");
     // 出图/生视频允许空提示词（=按卡上标题与正文重生成）；下指令类必须有问题
     if (r.empty && (kind === "text" || kind === "shotlist")) return;
+    // 字面「重新生成/重试」= 原参数原参考按入参快照重跑一次（novanova
+    // RETRY_MESSAGES 范式：改了 prompt 文字才是新创作，不回喂旧参考）；
+    // 没有快照（从未生成过）则落回普通生成
+    if (kind === "image" && RETRY_PHRASES.has(r.display.trim())) {
+      if (self?.data.genShot) {
+        window.dispatchEvent(
+          new CustomEvent<{ nodeId: string; count?: number }>(
+            SUPPLEMENT_CANDIDATES_EVENT,
+            { detail: { nodeId, count: 1 } },
+          ),
+        );
+        return;
+      }
+    }
     if (kind === "text") {
       void runTextRewrite(r.prompt);
       return;
@@ -337,6 +376,7 @@ export default function PromptBar({
           prompt: r.prompt,
           refIds: r.mentionIds,
           ...(kind === "image" && count > 1 ? { count } : {}),
+          ...(kind === "image" && selfRefOff ? { selfRefOff: true } : {}),
     },
       }),
     );
@@ -365,7 +405,7 @@ export default function PromptBar({
         )
         .map((n) => {
           const label = NODE_META[n.data.nodeType]?.label ?? n.data.nodeType;
-          return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim().slice(0, 800)}`;
+          return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim().slice(0, CONTEXT_BODY_LIMIT)}`;
         })
         .join("\n");
       const result = await rewriteText({
@@ -392,6 +432,8 @@ export default function PromptBar({
   // 图生图锚点提示：本卡已有图时自动并入参考（未在正文 @ 时排最前，
   // 桥接层 directImagegen）；正文里 @ 本卡可显式指定它的编号位置
   const selfImageChip = kind === "image" && Boolean(self?.data.imageUrl);
+  // 智能编排（缺省开）：出图前经「指令合成」flow 扩写短指令（详见 lib 说明）
+  const composeOn = kind === "image" && self?.data.composeOpt !== false;
   return (
     <div
       className={`ws-detail nodrag nowheel rounded-md border border-hairline bg-surface-2/60 ${
@@ -410,6 +452,17 @@ export default function PromptBar({
               {refSeqLabelOf(nodeId) ? (
                 <span className="tabular-nums text-text-4">{refSeqLabelOf(nodeId)}</span>
               ) : null}
+              <button
+                type="button"
+                data-tip={selfRefOff ? "载回：本卡原图重新并入参考" : "移除：本次不锚定本卡原图（纯文生图/仅外部参考）"} aria-label={selfRefOff ? "载回本卡原图" : "移除本卡原图参考"}
+                className="px-0.5 text-text-4 transition-colors hover:text-text"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelfRefOff(!selfRefOff);
+                }}
+              >
+                {selfRefOff ? "载回" : "×"}
+              </button>
             </span>
           ) : null}
           {connectedRefs.map((r, i) => {
@@ -470,6 +523,39 @@ export default function PromptBar({
               </span>
             );
           })}
+          {/* 上次生成的参考快照（genShot）：实时序列之外的快照参考以
+              「快照」chip 回显——novanova 持久化参考范式，重开面板也能
+              看到上次用了哪些参考（字面「重新生成」会按快照原样重跑） */}
+          {(self?.data.genShot?.referenceImages ?? [])
+            .filter((u) => u && !(refSeq?.urls ?? []).includes(u))
+            .map((u) => (
+              <span
+                key={u}
+                className="inline-flex items-center gap-1 rounded border border-dotted border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-4"
+                title="上次生成使用的参考快照（本次实时序列不含它；字面「重新生成」会按快照原样重跑）"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={assetThumbUrl(u)} alt="" className="h-4 w-4 rounded-sm object-cover" />
+                <span>快照</span>
+              </span>
+            ))}
+          {kind === "image" && (self?.data.body as string)?.trim() ? (
+            <button
+              type="button"
+              data-tip="忽略全部参考，用卡上标题+设定文本纯文生图全新渲染（修改设定文本后点这里，做减法的调整立即可见）" aria-label="按设定重新生成（纯文生图新图）"
+              className="ml-auto inline-flex shrink-0 items-center gap-0.5 self-center rounded border border-dashed border-hairline bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text"
+              onClick={(e) => {
+                e.stopPropagation();
+                window.dispatchEvent(
+                  new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
+                    detail: { nodeId, kind, prompt: "", refIds: [], selfRefOff: true, noRefs: true },
+                  }),
+                );
+              }}
+            >
+              ⟳ 按设定重掷
+            </button>
+          ) : null}
         </div>
       ) : null}
       {/* 文本撰写结果预览：采用才覆盖正文（误覆盖敏感，竞品全无的确认流） */}
@@ -531,6 +617,28 @@ export default function PromptBar({
           「@ImageN」只是普通文本，不会当作参考引用——删掉后打 @ 从候选选卡，提交时自动编号为 图1/图2…
         </p>
       ) : null}
+      {/* 智能编排合成结果回显：可追溯（真实发给出图模型的提示词），可载入
+          输入框修改后重发——LLM 编排模式的黑箱必须开着盖 */}
+      {kind === "image" && self?.data.composedPrompt ? (
+        <details className="mb-1 rounded-md border border-hairline-soft bg-surface-1 px-1.5 py-1">
+          <summary className="cursor-pointer select-none text-[10px] text-text-3">
+            本次合成提示词（智能编排 · 点开查看）
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
+            {self.data.composedPrompt}
+          </p>
+          <button
+            type="button"
+            className="mt-1 text-[10px] text-accent hover:underline"
+            onClick={(e) => {
+              e.stopPropagation();
+              edRef.current?.setValue(self.data.composedPrompt!);
+            }}
+          >
+            载入输入框修改
+          </button>
+        </details>
+      ) : null}
       {/* 底栏：左侧 = 生成参数（出图候选/模型、文本模型），右侧 = 辅助/收藏/发送
           （对标竞品 composer：模型左下、发送右下圆钮） */}
       <div className="mt-1 flex items-center gap-1">
@@ -551,10 +659,30 @@ export default function PromptBar({
                       : "text-text-3 hover:bg-surface-2 hover:text-text"
                   }`}
                   onClick={() => setCount(n)}
+                  data-track="promptbar.count"
+                  data-track-props={JSON.stringify({ count: n, kind })}
                 >
                   {n} 张
                 </button>
               ))}
+              {/* 模式标签（Storyboard-Copilot modeLabel 范式）：提交前就
+                  知道这次会不会被参考图锚定 */}
+              <span
+                className="shrink-0 whitespace-nowrap rounded px-1 py-1 text-[11px] text-text-4"
+                data-tip={
+                  refSeq && refSeq.entries.some((e) => e.kind === "self")
+                    ? "编辑模式：本卡原图参与参考，输出将保留其构图与已确认内容"
+                    : refSeq && refSeq.entries.length > 0
+                      ? "参考生成：以 @/连线的卡为一致性参考"
+                      : "文生图：无参考图，按提示词全新生成"
+                }
+              >
+                {refSeq && refSeq.entries.length > 0
+                  ? refSeq.entries.some((e) => e.kind === "self")
+                    ? "编辑模式"
+                    : "参考生成"
+                  : "文生图"}
+              </span>
               {/* 参考图容量计数（open-ai-canvas 按模型预算范式）：按本卡生效
                   模型的 max_references 实时显示。口径 = buildRefSequence 的
                   实际发送序列（@ 引用带图卡 + 本卡原图 + 连线带图卡，按图
@@ -578,6 +706,32 @@ export default function PromptBar({
                   </span>
                 );
               })()}
+              {/* 智能编排开关（novanova KEEP/OPTIMIZE 范式）：开=出图前经
+                  「指令合成」flow 把 短指令+设定文本 扩写成完整提示词；
+                  完整描述/改图指令自动判定 keep 原样直传。默认开 */}
+              <button
+                type="button"
+                data-tip={
+                  composeOn
+                    ? "智能编排已开启：短指令将结合卡片设定自动扩写成完整提示词，改图指令/完整描述原样直传（点击关闭）"
+                    : "智能编排已关闭：输入框文本原样直传生图模型（点击开启）"
+                } aria-label={
+                  composeOn
+                    ? "智能编排已开启：短指令将结合卡片设定自动扩写成完整提示词，改图指令/完整描述原样直传（点击关闭）"
+                    : "智能编排已关闭：输入框文本原样直传生图模型（点击开启）"
+                }
+                className={`shrink-0 whitespace-nowrap rounded px-1.5 py-1 text-[11px] transition-colors ${
+                  composeOn ? "text-accent" : "text-text-4 hover:bg-surface-2 hover:text-text-2"
+                }`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useCanvasStore
+                    .getState()
+                    .updateNodeData(nodeId, { composeOpt: composeOn ? false : undefined });
+                }}
+              >
+                编排{composeOn ? "开" : "关"}
+              </button>
             </>
           ) : null}
           {nodeType === "script" || nodeType === "shotlist" || nodeType === "note" ? (
@@ -608,6 +762,8 @@ export default function PromptBar({
               e.stopPropagation();
               void runAssist();
             }}
+            data-track="promptbar.assist"
+            data-track-props={JSON.stringify({ mode: aiLabel, kind })}
           >
             {aiBusy ? (
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -635,6 +791,7 @@ export default function PromptBar({
                 setPanelError(e instanceof Error ? e.message : "存入提示词库失败"),
               );
           }}
+          data-track="promptbar.save-preset"
         >
           <Star className={`h-3.5 w-3.5 ${favSaved ? "fill-current" : ""}`} />
           {favSaved ? "已收藏" : "存入提示词库"}
@@ -659,6 +816,8 @@ export default function PromptBar({
             floating ? "h-8 rounded-full px-4 text-xs" : "h-7 rounded-md px-2 text-[11px]"
           }`}
           onClick={submit}
+          data-track="promptbar.generate"
+          data-track-props={JSON.stringify({ kind })}
         >
           {rwBusy ? (
             <Loader2 className={`motion-safe:animate-spin ${floating ? "h-3.5 w-3.5" : "h-3 w-3"}`} />

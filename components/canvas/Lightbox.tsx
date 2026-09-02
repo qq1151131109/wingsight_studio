@@ -337,6 +337,7 @@ export function Lightbox({
             data-tip="下载" aria-label="下载"
             disabled={busy === "dl"}
             className={actionBtn}
+            data-track="lightbox.download"
             onClick={(e) => {
               e.stopPropagation();
               runAction("dl", "已下载", () =>
@@ -355,6 +356,7 @@ export function Lightbox({
             data-tip="复制图片" aria-label="复制图片"
             disabled={busy === "cp"}
             className={actionBtn}
+            data-track="lightbox.copy-image"
             onClick={(e) => {
               e.stopPropagation();
               runAction("cp", "图片已复制", () => copyImageToClipboard(cur.src));
@@ -371,6 +373,7 @@ export function Lightbox({
             data-tip="复制链接" aria-label="复制链接"
             disabled={busy === "lk"}
             className={actionBtn}
+            data-track="lightbox.copy-url"
             onClick={(e) => {
               e.stopPropagation();
               runAction("lk", "链接已复制", () => copyImageUrl(cur.src));
@@ -382,6 +385,7 @@ export function Lightbox({
             type="button"
             data-tip="新标签打开" aria-label="新标签打开"
             className={actionBtn}
+            data-track="lightbox.open-tab"
             onClick={(e) => {
               e.stopPropagation();
               window.open(cur.src, "_blank", "noopener");

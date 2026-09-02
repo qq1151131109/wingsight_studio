@@ -1,8 +1,8 @@
-"""选题池单测：store 语义 + 管线编排（fake flow/搜索注入）+ verdict 规则。
+"""选题池单测：store 语义 + 生料生成管线（fake flow/搜索注入）+ 深挖/复查 + verdict 规则。
 
 运行：cd agent && uv run python test_topic_pool.py
 不需要 langflow / 网络 / agent 服务在跑——flow 与检索全部注 fake，
-存储用临时库（monkeypatch topics.DB_PATH）。
+存储用临时库（monkeypatch topics.DB_PATH），维基语料按天缓存预置为空。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ import entities as entity_store
 import tikhub
 import topic_pool
 import wikiday
+import wikicategory
 import podcastfeed
 from topic_pool import TopicCurator, TopicRefreshService, auto_refresh_tick, get_auto_refresh, parse_verdict, set_auto_refresh
 
@@ -28,12 +29,15 @@ store.DB_PATH = _tmp / "test.db"
 store.init_topics_db()
 entity_store.DB_PATH = _tmp / "test.db"
 entity_store.init_entities_db()
+os.environ["LANGFLOW_TOPIC_IDEATE_FLOW_ID"] = "f-ideate"
 os.environ["LANGFLOW_TOPIC_TRIAGE_FLOW_ID"] = "f-triage"
 os.environ["LANGFLOW_TOPIC_PLAN_FLOW_ID"] = "f-plan"
 os.environ["LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID"] = "f-followup"
 os.environ["LANGFLOW_TOPIC_VERDICT_FLOW_ID"] = "f-verdict"
 os.environ["LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID"] = "f-rescan-plan"
 os.environ["LANGFLOW_TOPIC_ANGLE_FLOW_ID"] = "f-angle"
+# 语料采集离线化：按天缓存预置为空列表（collect_wiki_corpus 短路，不打网络）
+store.set_setting(wikicategory.CACHE_KEY, wikicategory.build_day_cache([]))
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -58,18 +62,27 @@ t1 = store.create_topic(
 expect(t1["status"] == "candidate" and t1["source"] == "material", "新卡应为 material 候选")
 expect(store.exists_by_any_fingerprint([fp_b]), "同簇不同写法指纹应命中去重")
 
-# 观察卡 + 升级路径
+# 观察卡 + 生料卡 + 升级路径
 t2 = store.create_topic(
     vertical="crime",
     title="某悬案重启侦查",
     title_fingerprint=__import__("topic_pool").fingerprint_of("某悬案重启侦查"),
     research={"evidence_level": "thin", "event": "警方重启侦查"},
 )
-upgradable = store.find_upgradable_by_any_fingerprint([fp_a, __import__("topic_pool").fingerprint_of("某悬案重启侦查")])
-expect(upgradable == t2["id"], "无角度的观察卡应可升级")
-store.upgrade_card(upgradable, title="新题", summary="新摘", angles=["角度"], research={"evidence_level": "strong"})
-expect(store.get_topic(t2["id"])["angles"] == ["角度"], "升级后应有角度")
-expect(store.find_upgradable_by_any_fingerprint([fp_a]) is None, "有角度后不再可升级")
+expect(t2["stage"] == "verified" and t2["tags"] == [], "store 直建卡默认已深挖层、无标签")
+raw = store.create_topic(
+    vertical="crime",
+    title="生料卡样例",
+    title_fingerprint=__import__("topic_pool").fingerprint_of("生料卡样例"),
+    summary="一句钩子",
+    heat_evidence=[{"title": "原型条目", "url": "https://zh.wikipedia.org/wiki/x", "snippet": "", "source": "维基语料"}],
+    stage="raw",
+    tags=["民国", "悬案"],
+)
+expect(raw["stage"] == "raw" and raw["tags"] == ["民国", "悬案"], "生料卡应带 stage/tags 落库")
+store.upgrade_card(raw["id"], title="新题", summary="新摘", angles=["角度"], research={"evidence_level": "strong"})
+expect(store.get_topic(raw["id"])["stage"] == "verified", "深挖升级后应转已深挖")
+expect(store.get_topic(t2["id"])["angles"] == [], "观察卡不受他卡升级影响")
 
 # dismiss 语义
 expect(store.dismiss_topic(t1["id"]) == "ok", "candidate 可忽略")
@@ -239,13 +252,8 @@ print("TikHub 解析与市场实查 ✓")
 
 # ---------- 管线：fake flow + fake 搜索 ----------
 
-TRIAGE_OUT = [
-    # 采集序：history 4 种子（考古发布会/甲骨/简牍/档案）= index 0-3，crime 4-7，
-    # science 8-9（垂类注册表新种子）；甲骨在 index 1，悬案自述在 crime 第 2 条（index 5）
-    {"members": [1], "vertical": "history", "theme": "商周甲骨新发现", "reason": "新材料罕见"},
-    {"members": [5], "vertical": "crime", "theme": "悬案经办人自述", "reason": "一手信源进场"},
-    {"members": [8], "vertical": "science", "theme": "重大科学发现", "reason": "机构发布"},
-]
+# 批量生成 flow 的输出在 fake_flow_runner 里按语料动态构造（选题标题锚定语料
+# 原文，sourceIndex 指回批次内序号），此处只放 verdict/角度的静态桩。
 
 VERDICT_STRONG = {
     "evidence_level": "strong",
@@ -287,10 +295,24 @@ RESCAN_VERDICT = {
 
 async def fake_flow_runner(flow_id: str, input_value: str) -> str:
     payload = json.loads(input_value)
-    if flow_id == "f-triage":
-        assert "listing" in payload and "verticals" in payload, "研判载荷应含 listing 与垂类清单"
-        assert {v["id"] for v in payload["verticals"]} >= {"history", "crime", "humanity", "science"}, "垂类清单应含注册表全部垂类"
-        return json.dumps(TRIAGE_OUT, ensure_ascii=False)
+    if flow_id == "f-ideate":
+        assert "corpus" in payload and "verticals" in payload, "生成载荷应含语料与垂类清单"
+        corpus = payload["corpus"]
+        out = []
+        for item in corpus:
+            # 标题只锚定语料标题（跨轮稳定，指纹去重可命中）；垂类按序号交替
+            vertical = "history" if item["index"] % 2 == 0 else "crime"
+            out.append({
+                "title": f"选题：{item['title']}",
+                "hook": f"钩子{item['index']}",
+                "prototype": "原型概括",
+                "vertical": vertical,
+                "tags": ["测试标签"],
+                "sourceIndex": item["index"],
+            })
+        out.append({"title": "无源卡", "hook": "h", "vertical": "history", "tags": []})  # 缺 sourceIndex → 跳过
+        out.append({"title": "垂类卡", "hook": "h", "vertical": "sports", "sourceIndex": 0})  # 非法垂类 → 跳过
+        return json.dumps(out, ensure_ascii=False)
     if flow_id == "f-plan":
         assert set(payload) == {"title", "theme", "reason"}, "规划载荷字段"
         return json.dumps([{"label": "事件核实", "query": f"{payload['title']} 经过"}], ensure_ascii=False)
@@ -426,62 +448,63 @@ async def run_signal_matrix() -> None:
 asyncio.run(run_signal_matrix())
 
 
-async def run_pipeline() -> None:
+async def run_ideate() -> None:
     store.set_setting(wikiday.CACHE_KEY, "")  # 清掉多源专测留下的周年缓存
 
-    async def fake_probe(keyword: str) -> list[dict]:
-        return [
-            {"label": "同题实查:B站", "query": keyword,
-             "results": [{"title": "同题考古纪录片", "url": "https://b23.tv/x", "snippet": "播放 12.3万 · 考古君"}]},
-            {"label": "同题实查:西瓜", "query": keyword,
-             "results": [{"title": "考古纪录片全集", "url": "https://ixigua.com/y", "snippet": "播放 326.3万"}]},
-        ]
-
-    curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search, market_probe=fake_probe)
+    curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
     result = await curator.run()
     expect(result.collected == 10, f"10 条材料种子（含 science2）× 每查 1 结果应采到 10 条，实际 {result.collected}")
-    expect(result.shortlisted == 3, f"研判应入围 3 条，实际 {result.shortlisted}")
-    expect(result.created == 1, f"应产出 1 张建议卡，实际 {result.created}")
-    expect(result.observed == 2, f"应产出 2 张观察卡，实际 {result.observed}")
+    expect(result.batches == 1, f"10 条语料应只跑 1 批：{result.batches}")
+    expect(result.created == 10, f"应产出 10 张生料卡（含 2 条非法项跳过），实际 {result.created}")
+    expect(result.duplicates == 0, f"首轮无重复：{result.duplicates}")
 
-    cards = store.list_topics(status="candidate")
-    strong = [c for c in cards if c["research"].get("evidence_level") == "strong"]
-    thin = [c for c in cards if c["research"].get("evidence_level") != "strong"]
-    expect(len(strong) == 1 and len(thin) == 2, f"池内应一强两弱：{len(strong)}/{len(thin)}")
-    expect(any(c["vertical"] == "science" for c in thin), "science 垂类应贯通落库")
+    cards = store.list_topics(status="candidate", stage="raw")
+    expect(len(cards) == 10, f"池内生料卡应 10 张：{len(cards)}")
+    expect(all(c["stage"] == "raw" and c["tags"] == ["测试标签"] for c in cards), "生料卡应带 stage/tags")
+    expect(all(len(c["heatEvidence"]) == 1 and c["heatEvidence"][0]["url"] for c in cards), "生料卡应锚定真实原型出处")
+    anchor = next(c for c in cards if "甲骨" in c["title"])
+    expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指语料条目")
+    expect(anchor["summary"].startswith("钩子"), "生料卡摘要应为钩子")
 
-    # 角度生成器 + 实体登记贯通
-    expect(strong[0]["research"].get("chosen_template") == "一件物", "择优角度应入 research")
-    expect(strong[0]["research"].get("angle_options"), "候选角度应留痕供回看")
-    ents = entity_store.list_entities()
-    by_name = {e["name"]: e for e in ents}
-    expect(set(by_name) == {"刻辞甲骨", "徐廷", "某悬案"}, f"实体应归一入库（非法 kind 丢弃）：{sorted(by_name)}")
-    expect(by_name["某悬案"]["topicCount"] == 2, "两张薄卡的同名实体应归一计数")
-    strong_ents = entity_store.entities_for_topic(strong[0]["id"])
-    expect({e["name"] for e in strong_ents} == {"刻辞甲骨", "徐廷"}, "建议卡应关联其抽取实体")
-    expect(len(entity_store.topics_for_entity(by_name["某悬案"]["id"])) == 2, "实体页应回链关联选题")
-    strong_map = strong[0]["research"]["source_map"]
-    probe_entries = [e for e in strong_map if str(e.get("label", "")).startswith("同题实查:")]
-    expect(len(probe_entries) == 2, f"市场实查条目应进证据包：{len(probe_entries)}")
-    expect(any("12.3万" in r.get("snippet", "") for e in probe_entries for r in e["results"]), "实查条目应带格式化计数")
-    expect(strong[0]["research"]["scale"] == "series" and strong[0]["research"]["series_thread"], "系列卡应带串珠问题")
-    expect(strong[0]["research"]["source_map"], "信源底账应留痕")
-
-    # 幂等：原样重跑不得产生重复卡
+    # 幂等：原样重跑全被指纹去重，不产生重复卡
     again = await curator.run()
-    expect(again.created == 0 and again.observed == 0, f"重跑不应新增卡：{again}")
+    expect(again.created == 0 and again.duplicates == 10, f"重跑应全去重：{again}")
 
-    # 升级：观察卡遇到证据变硬的建议卡 → 升级而非新建
-    global VERDICT_THIN
-    VERDICT_THIN = dict(VERDICT_STRONG, title="悬案自述", angles=["自述"])
-    curator2 = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
-    third = await curator2.run()
-    expect(third.upgraded == 2 and third.created == 0, f"两张观察卡都应升级：{third}")
-
-    print("管线编排 ✓")
+    print("生料生成管线 ✓")
 
 
-asyncio.run(run_pipeline())
+asyncio.run(run_ideate())
+
+
+async def run_deep_dive() -> None:
+    """点名深挖：证据足升级已深挖建议卡；证据薄底账留痕、卡仍是生料。"""
+    cards = store.list_topics(status="candidate", stage="raw")
+    jiagu = next(c for c in cards if "甲骨" in c["title"])
+    other = next(c for c in cards if "甲骨" not in c["title"])
+
+    curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
+    outcome = await curator.deep_dive_one(store.get_topic(jiagu["id"]))
+    expect(outcome == "upgraded", f"甲骨卡深挖应升级：{outcome}")
+    got = store.get_topic(jiagu["id"])
+    expect(got["stage"] == "verified" and got["angles"], "升级后应转已深挖并带角度")
+    expect(got["research"]["evidence_level"] == "strong", "升级卡应为强证据")
+    expect(got["research"]["chosen_template"] == "一件物", "深挖也应贯通角度择优")
+
+    outcome2 = await curator.deep_dive_one(store.get_topic(other["id"]))
+    expect(outcome2 == "thin", f"非甲骨卡深挖应仍薄：{outcome2}")
+    got2 = store.get_topic(other["id"])
+    expect(got2["stage"] == "raw", "证据仍薄应保持生料态")
+    expect(got2["research"]["source_map"], "仍薄应把取证记入信源底账")
+
+    # 同卡互斥：在跑的卡拒绝重复启动深挖任务
+    topic_pool._rescan_inflight.add(other["id"])
+    expect(topic_pool.start_deep_dive_job(store.get_topic(other["id"])) is None, "同卡在跑应拒绝重复启动")
+    topic_pool._rescan_inflight.discard(other["id"])
+
+    print("点名深挖 ✓")
+
+
+asyncio.run(run_deep_dive())
 
 
 # ---------- verdict 规则 ----------
@@ -586,6 +609,15 @@ with store._conn() as conn:
     conn.execute("UPDATE topics SET created_at = '2020-01-01T00:00:00+00:00' WHERE id = ?", (t_res["id"],))
 cands = store.list_rescan_candidates(3)
 expect(len(cands) == 1 and cands[0]["id"] == t_res["id"], "拨回建卡时间后应成为复查候选")
+raw_res = store.create_topic(
+    vertical="history",
+    title="生料卡不进自动复查",
+    title_fingerprint=topic_pool.fingerprint_of("生料卡不进自动复查"),
+    stage="raw",
+)
+with store._conn() as conn:
+    conn.execute("UPDATE topics SET created_at = '2020-01-01T00:00:00+00:00' WHERE id = ?", (raw_res["id"],))
+expect(all(c["id"] != raw_res["id"] for c in store.list_rescan_candidates(3)), "生料卡不进自动复查轮转")
 store.mark_rescanned(t_res["id"])
 expect(store.list_rescan_candidates(3) == [], "复查后应再次被冷却挡住")
 

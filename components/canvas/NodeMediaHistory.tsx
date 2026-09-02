@@ -288,6 +288,7 @@ export default function VersionHistoryModal({
                       : "border-hairline text-text-2 hover:border-accent hover:text-text"
                   }`}
                   onClick={() => setCompare(!compare)}
+                  data-track="version.compare"
                 >
                   <Columns2 className="h-3.5 w-3.5" />
                   {compare ? "退出对比" : "与当前版本对比"}
@@ -298,6 +299,7 @@ export default function VersionHistoryModal({
                   type="button"
                   className="flex items-center justify-center rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-surface-1 transition-opacity hover:opacity-90"
                   onClick={() => restore(detail)}
+                  data-track="version.restore"
                 >
                   设为当前版本
                 </button>

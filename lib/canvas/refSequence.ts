@@ -11,6 +11,10 @@
 
 import type { WingNode } from "./store";
 
+/** 上下文注入的正文截断统一口径（visualNotes/行出图/聊天指令/文本撰写
+ *  共用）：此前 40~800 各自为政，长设定在多数消费方被切到面目全非 */
+export const CONTEXT_BODY_LIMIT = 500;
+
 export type RefSeqEntry = {
   node: WingNode;
   url: string;
