@@ -111,7 +111,8 @@ import MaskEditDialog from "./MaskEditDialog";
 import RefResearchDialog from "./RefResearchDialog";
 import RefReviewDialog from "./RefReviewDialog";
 import {
-  runBatchRefResearch,
+  startBatchRefResearch,
+  getBatchRefResearchJob,
   type BatchRefJob,
 } from "@/lib/ref-research";
 
@@ -340,6 +341,59 @@ function useLod(): Lod {
         ? "micro"
         : "full",
   );
+}
+
+/**
+ * 批量调研任务续链：refBatchJobId 锚在卡数据上——分镜表/剧本卡被
+ * onlyRenderVisibleElements 卸载（平移/缩放移出视口即卸）或刷新页面后重挂载，
+ * 凭它续轮询、终态照样弹审阅面板（完事即清锚）。卸载即停轮询，重挂载自动续上
+ * （任务本体在 agent 内存里继续跑）；agent 重启丢任务表（404）→ 明报并清锚不悬挂。
+ */
+function useBatchRefJob(nodeId: string) {
+  const batchId = useCanvasStore(
+    (s) => s.nodes.find((n) => n.id === nodeId)?.data.refBatchJobId,
+  );
+  const [state, setState] = useState<{
+    batchId: string;
+    job: BatchRefJob | null;
+    error: string;
+  }>({ batchId: "", job: null, error: "" });
+  useEffect(() => {
+    if (!batchId) return;
+    let alive = true;
+    void (async () => {
+      const projectId = useCanvasStore.getState().projectId;
+      if (!projectId) return;
+      // 连续查询失败容忍 5 次（网络抖动不丢锚）；404（任务不存在，agent 已重启）立即终态
+      let misses = 0;
+      for (;;) {
+        try {
+          const j = await getBatchRefResearchJob(projectId, batchId);
+          if (!alive) return;
+          setState({ batchId, job: j, error: "" });
+          if (j.status !== "running") return;
+          misses = 0;
+        } catch (exc) {
+          misses += 1;
+          if (!alive) return;
+          const msg = exc instanceof Error ? exc.message : "批量调研查询失败";
+          if (msg.includes("不存在") || misses >= 5) {
+            setState({ batchId, job: null, error: msg });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 2000));
+        if (!alive) return;
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [batchId, nodeId]);
+  // 锚已清/换批后旧结果不外露（防旧终态重复触发面板）
+  return state.batchId === batchId && batchId
+    ? { batchId, job: state.job, error: state.error, running: state.job?.status === "running" }
+    : { batchId: undefined, job: null, error: "", running: false };
 }
 
 /** nano 档媒体兜底：类型色着色块（构图/规模可辨，图片解码缓存随卡释放） */
@@ -1098,6 +1152,27 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   const [researching, setResearching] = useState(false);
   const [researchMsg, setResearchMsg] = useState("");
   const [reviewBatch, setReviewBatch] = useState<BatchRefJob | null>(null);
+  // 批量调研续链：锚在卡数据上，移出视口卸载/刷新后恢复进度与终态面板
+  const refJob = useBatchRefJob(id);
+  // 调研收尾（含跨卸载恢复到的终态）：清锚 + 弹审阅面板
+  useEffect(() => {
+    const j = refJob.job;
+    if (!j || j.status === "running") return;
+    useCanvasStore.getState().updateNodeData(id, { refBatchJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setReviewBatch(j);
+    })();
+  }, [refJob.job, id]);
+  // 续链查询失败（任务不存在等）：清锚 + 明报
+  useEffect(() => {
+    if (!refJob.error) return;
+    useCanvasStore.getState().updateNodeData(id, { refBatchJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setResearchMsg(refJob.error);
+    })();
+  }, [refJob.error, id]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const body = d.body ?? "";
@@ -1115,14 +1190,14 @@ function ScriptCard({ data, id, selected }: NodeProps) {
 
   const missingAssetCount = countAssetsMissingImage(nodes, id);
   const researchCount = researchTargetsOf(nodes, edges, id).length;
-  /** 批量调研：本卡拆出的缺参考资产串行调研，完成弹出审阅面板 */
+  /** 批量调研：圈定本卡资产开跑，任务锚进卡数据（进度/收尾由 refJob 续链） */
   const researchRefs = async () => {
-    if (researching) return;
+    if (researching || refJob.batchId) return;
     setResearching(true);
     setResearchMsg("");
     try {
-      const job = await runBatchResearchForCard(id, setResearchMsg);
-      if (job) setReviewBatch(job);
+      const batchId = await startBatchResearchForCard(id);
+      if (!batchId) setResearchMsg("没有需要调研的资产（缺参考的资产为 0）");
     } catch (exc) {
       setResearchMsg(exc instanceof Error ? exc.message : "批量调研失败");
     } finally {
@@ -1235,7 +1310,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             {researchCount > 0 ? (
               <button
                 type="button"
-                disabled={empty || researching}
+                disabled={empty || researching || !!refJob.batchId}
                 data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
@@ -1243,7 +1318,11 @@ function ScriptCard({ data, id, selected }: NodeProps) {
                   void researchRefs();
                 }}
               >
-                {researching ? "调研中…" : `调研参考图·${researchCount}`}
+                {researching || refJob.batchId
+                  ? refJob.running && refJob.job
+                    ? `调研中 ${refJob.job.done}/${refJob.job.total}`
+                    : "调研中…"
+                  : `调研参考图·${researchCount}`}
               </button>
             ) : null}
             {missingAssetCount > 0 ? (
@@ -3788,24 +3867,17 @@ function researchTargetsOf(
  * 串行调研（AI 出词→双渠道→终选）。返回终态 job（供审阅面板打开）；
  * 用户取消/无目标/无 projectId 返回 null。
  */
-async function runBatchResearchForCard(
-  sourceId: string,
-  onProgress: (msg: string) => void,
-): Promise<BatchRefJob | null> {
+/** 圈定本卡资产并发起批量调研：任务 id 锚进卡数据（refBatchJobId），进度与
+ *  收尾（审阅面板）由 useBatchRefJob 续链——卡片移出视口被卸载/页面刷新都不丢。
+ *  返回 null = 没有需要调研的资产（调用方提示）。失败 throw（调用方明报）。 */
+async function startBatchResearchForCard(sourceId: string): Promise<string | null> {
   const st = useCanvasStore.getState();
   const projectId = st.projectId;
-  if (!projectId) {
-    onProgress("项目未保存：先等画布保存完成再调研");
-    return null;
-  }
+  if (!projectId) throw new Error("项目未保存：先等画布保存完成再调研");
   const targets = researchTargetsOf(st.nodes, st.edges, sourceId);
-  if (targets.length === 0) {
-    onProgress("没有需要调研的资产（缺参考的缺图资产为 0）");
-    return null;
-  }
+  if (targets.length === 0) return null;
   // 直接开跑（调研可中途放弃、号池按量计费，无需确认弹窗打断）
-  onProgress(`批量调研中 0/${targets.length}…`);
-  return runBatchRefResearch(
+  const batchId = await startBatchRefResearch(
     projectId,
     targets.map((n) => ({
       nodeId: n.id,
@@ -3813,8 +3885,9 @@ async function runBatchResearchForCard(
       type: String(n.data.nodeType),
       description: `${n.data.title}。${String(n.data.body ?? "")}`.slice(0, 600),
     })),
-    (j) => onProgress(`批量调研中 ${j.done}/${j.total}（${j.current || "…"}）…`),
   );
+  st.updateNodeData(sourceId, { refBatchJobId: batchId });
+  return batchId;
 }
 
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
@@ -3847,6 +3920,27 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const [researching, setResearching] = useState(false);
   const [researchMsg, setResearchMsg] = useState("");
   const [reviewBatch, setReviewBatch] = useState<BatchRefJob | null>(null);
+  // 批量调研续链：锚在卡数据上，移出视口卸载/刷新后恢复进度与终态面板
+  const refJob = useBatchRefJob(id);
+  // 调研收尾（含跨卸载恢复到的终态）：清锚 + 弹审阅面板
+  useEffect(() => {
+    const j = refJob.job;
+    if (!j || j.status === "running") return;
+    useCanvasStore.getState().updateNodeData(id, { refBatchJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setReviewBatch(j);
+    })();
+  }, [refJob.job, id]);
+  // 续链查询失败（任务不存在等）：清锚 + 明报
+  useEffect(() => {
+    if (!refJob.error) return;
+    useCanvasStore.getState().updateNodeData(id, { refBatchJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setResearchMsg(refJob.error);
+    })();
+  }, [refJob.error, id]);
   // 行内 @引用候选：rid=正在输入的行，draft=@ 后的过滤词，
   // rect=输入框视口坐标（候选面板 portal 到 body，fixed 定位防滚动容器裁剪）
   const [mention, setMention] = useState<{
@@ -4109,14 +4203,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     setDecomposing(false);
   };
 
-  /** 批量调研：本卡拆出的缺参考资产串行调研，完成弹出审阅面板 */
+  /** 批量调研：圈定本卡资产开跑，任务锚进卡数据（进度/收尾由 refJob 续链） */
   const researchRefs = async () => {
-    if (researching) return;
+    if (researching || refJob.batchId) return;
     setResearching(true);
     setResearchMsg("");
     try {
-      const job = await runBatchResearchForCard(id, setResearchMsg);
-      if (job) setReviewBatch(job);
+      const batchId = await startBatchResearchForCard(id);
+      if (!batchId) setResearchMsg("没有需要调研的资产（缺参考的资产为 0）");
     } catch (exc) {
       setResearchMsg(exc instanceof Error ? exc.message : "批量调研失败");
     } finally {
@@ -4842,7 +4936,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             {researchCount > 0 ? (
               <button
                 type="button"
-                disabled={!scriptSource || researching}
+                disabled={!scriptSource || researching || !!refJob.batchId}
                 data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
@@ -4850,7 +4944,11 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                   void researchRefs();
                 }}
               >
-                {researching ? "调研中…" : `调研参考图·${researchCount}`}
+                {researching || refJob.batchId
+                  ? refJob.running && refJob.job
+                    ? `调研中 ${refJob.job.done}/${refJob.job.total}`
+                    : "调研中…"
+                  : `调研参考图·${researchCount}`}
               </button>
             ) : null}
             {missingAssetCount > 0 ? (

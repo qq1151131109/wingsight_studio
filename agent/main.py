@@ -31,6 +31,7 @@ import auth  # noqa: E402  (在 dotenv 之后导入，读取最终环境变量)
 import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
+import dmx_routes  # noqa: E402
 import entities  # noqa: E402
 import entity_routes  # noqa: E402
 import graph  # noqa: E402
@@ -96,6 +97,8 @@ app.include_router(prompt_presets.router, prefix="/api/v1")
 app.include_router(serper_routes.router, prefix="/api/v1")
 # 资产参考图调研（项目域资源挂根路径）
 app.include_router(ref_routes.router)
+# DMX 余额（顶栏实时显示，admin）
+app.include_router(dmx_routes.router, prefix="/api/v1")
 
 
 agent = LangGraphAgent(

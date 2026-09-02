@@ -65,7 +65,8 @@ export default function RefReviewDialog({
               candidates.filter((c) => c.recommended).map((c) => c.id),
             ),
             loading: false,
-            error: "",
+            // 批量条目软失败（如终选失败：候选在但无推荐预选）照显警示
+            error: item.error || "",
           });
         } catch (exc) {
           next.set(item.nodeId, {

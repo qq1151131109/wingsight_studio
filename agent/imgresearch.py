@@ -475,7 +475,12 @@ async def _run_batch(
                         status="error", error=str(job.get("error") or "")[:160]
                     )
                 else:
-                    batch["items"][i].update(status="done", error="")
+                    # 软失败（如终选失败：候选可用但无推荐预选）也要在批量条目
+                    # 明报——只报 done 会把系统性故障藏成"看起来都成功"
+                    soft = "；".join(
+                        f"{k}：{v}" for k, v in (job.get("errors") or {}).items()
+                    )
+                    batch["items"][i].update(status="done", error=soft[:160])
             except Exception as exc:  # noqa: BLE001 单资产失败不中断整批
                 batch["items"][i].update(status="error", error=str(exc)[:160])
         batch["done"] += 1

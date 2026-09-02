@@ -1521,7 +1521,19 @@ async def run_ref_select_flow(
     notes: List[str] = []
     batch_errors: List[str] = []
     for bi, batch in enumerate(batches, 1):
-        payload = {"asset": asset, "candidates": batch}
+        # 字段拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，组件里
+        # json.loads 报 Invalid control character（imagegen/画风反推同款防坑；
+        # 批量资产的 description 是多行正文，不拍平终选必炸）
+        flat_asset = {
+            **asset,
+            "name": " ".join(str(asset.get("name") or "").split()),
+            "description": " ".join(str(asset.get("description") or "").split()),
+        }
+        flat_batch = [
+            {**c, "title": " ".join(str(c.get("title") or "").split())}
+            for c in batch
+        ]
+        payload = {"asset": flat_asset, "candidates": flat_batch}
         tweaks = {
             "RefSelect-main": {
                 "payload": json.dumps(payload, ensure_ascii=False),

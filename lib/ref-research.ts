@@ -176,6 +176,8 @@ export async function startBatchRefResearch(
   return body.batchId;
 }
 
+/** 查询批量调研任务状态（轮询循环在节点卡组件的 useBatchRefJob：任务锚在
+ *  节点数据 refBatchJobId 上，卡片卸载/刷新后凭锚续轮询、终态照弹面板）。 */
 export async function getBatchRefResearchJob(
   projectId: string,
   batchId: string,
@@ -186,21 +188,4 @@ export async function getBatchRefResearchJob(
   if (r.status === 404) throw new Error("批量调研任务不存在（agent 可能已重启）");
   if (!r.ok) throw new Error(`批量调研查询失败（${r.status}）`);
   return (await r.json()) as BatchRefJob;
-}
-
-/** 发起 + 轮询到终态（2s 间隔；10 路并发，150 资产约 30 分钟，留足余量）。 */
-export async function runBatchRefResearch(
-  projectId: string,
-  assets: BatchAssetInput[],
-  onProgress?: (job: BatchRefJob) => void,
-): Promise<BatchRefJob> {
-  const batchId = await startBatchRefResearch(projectId, assets);
-  const deadline = Date.now() + 60 * 60_000;
-  for (;;) {
-    const job = await getBatchRefResearchJob(projectId, batchId);
-    onProgress?.(job);
-    if (job.status !== "running") return job;
-    if (Date.now() > deadline) throw new Error("批量调研超时，稍后可在各资产卡查看结果");
-    await new Promise((res) => setTimeout(res, 2000));
-  }
 }

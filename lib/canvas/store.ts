@@ -145,6 +145,9 @@ export interface WingNodeData {
   textModel?: string;
   /** 分镜表：进行中的批量出图任务（出图中刷新页面后挂载续轮询收尾，完事即清） */
   imageJobId?: string;
+  /** 剧本卡/分镜表卡：进行中的批量调研参考图任务（卡片被 onlyRenderVisibleElements
+   *  卸载或刷新后凭它续轮询、终态照弹审阅面板，完事即清） */
+  refBatchJobId?: string;
   /** 遗留字段（一卡一图重构前）：角色卡 Look 变体。UI 已不读写，仅装载时
    *  经 sanitizeCanvas 迁移拆成独立图片卡并连线（角色→Look卡） */
   looks?: { label: string; imageUrl: string; costumeId?: string }[];

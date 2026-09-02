@@ -10,6 +10,7 @@ import {
   type AuthSession,
 } from "@/lib/auth-session";
 import PasswordDialog from "./PasswordDialog";
+import DmxBalance from "./DmxBalance";
 
 /** 用户名 → 稳定头像色（oklch 色相环 8 色轮换；协作者头像同款方案） */
 const AVATAR_HUES = [30, 80, 140, 180, 220, 270, 320, 5];
@@ -68,7 +69,9 @@ export default function AccountMenu() {
   };
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative flex items-center gap-2">
+      {/* DMX 余额（仅管理员）：顶栏右侧实时显示，与头像同组 */}
+      {isAdmin ? <DmxBalance /> : null}
       <button
         type="button"
         data-tip={isAdmin ? `管理员 ${name}（账户菜单）` : `账户菜单（${name}）`} aria-label={isAdmin ? `管理员 ${name}（账户菜单）` : `账户菜单（${name}）`}
