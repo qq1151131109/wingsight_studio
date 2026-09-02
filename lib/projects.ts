@@ -162,11 +162,14 @@ export async function deleteChatThread(
   return r.ok;
 }
 
+/** 读会话消息。404（会话不存在于该项目：跨项目残留选择/已被删）返回 null，
+ *  由调用方自愈重新选会话；其他失败照常 throw。 */
 export async function loadChatMessages(
   pid: string,
   tid: string,
-): Promise<ChatMessageRecord[]> {
+): Promise<ChatMessageRecord[] | null> {
   const r = await apiFetch(`${BASE}/${pid}/threads/${tid}/messages`);
+  if (r.status === 404) return null;
   if (!r.ok) throw new Error(`读取会话消息失败：${r.status}`);
   return r.json();
 }

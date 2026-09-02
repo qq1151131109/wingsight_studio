@@ -3,7 +3,9 @@
 /**
  * 聊天持久化桥（多会话版，对标"服务端为唯一事实源"）：
  *  - 进项目：拉会话列表 → 选中最新会话 → 回填消息（空项目清空）
+ *  - 切项目：重置会话选择（残留 tid 在新项目下不存在，必 404 且聊天串台）
  *  - 切会话 / 新建会话（threadId=null）：回填对应消息（新建即清空）
+ *  - 选中的会话在服务端消失（404）：自愈回"选最新"，不打错误风暴
  *  - 消息变化：debounce 1.2s → PUT 整表覆盖到当前会话；
  *    threadId=null 且有内容时先建会话（跳过随之而来的回填，防清屏竞态）
  *  - 只存 user/assistant 文本；多模态 parts 用 WS_PARTS:: envelope 序列化
@@ -95,12 +97,24 @@ export default function ChatPersistence() {
   useEffect(() => {
     messagesRef.current = messages;
   }, [messages]);
+  // threadId 所属项目：全局会话 store 不随项目切换清空，跨项目残留的 tid
+  // 拿到新项目下查询必 404（还会把旧项目聊天串到新项目界面）
+  const threadProjectRef = useRef<string | null>(null);
   // ensure thread 后跳过一次回填（新建会触发 threadId 变化，回填会把空历史盖到界面上）
   const skipHydrateKeyRef = useRef<string | null>(null);
 
   // ---------- 水合：进项目 / 切会话 / 新建会话 ----------
   useEffect(() => {
     if (!projectId) return;
+    // 切项目：上一项目的会话选择不作数，重置为未选择走下方"进项目选最新会话"
+    const switchedProject =
+      threadProjectRef.current !== null && threadProjectRef.current !== projectId;
+    threadProjectRef.current = projectId;
+    if (switchedProject && threadId !== undefined) {
+      hydratedKeyRef.current = null;
+      setThreadId(undefined);
+      return;
+    }
     const key = keyOf(projectId, threadId);
     if (hydratedKeyRef.current === key) return;
     let cancelled = false;
@@ -133,6 +147,13 @@ export default function ChatPersistence() {
         const history = await loadChatMessages(projectId, threadId);
         if (cancelled || useCanvasStore.getState().projectId !== projectId)
           return;
+        if (history === null) {
+          // 会话在服务端不存在（其他端删除/残留选择）：重新选本项目最新会话。
+          // undefined 分支选完落为有效 tid 或 null，一轮收敛，不会循环打 404
+          hydratedKeyRef.current = null;
+          setThreadId(undefined);
+          return;
+        }
         if (skipHydrateKeyRef.current === key) {
           // ensure 刚建出的会话：只标记水合，不覆盖界面
           skipHydrateKeyRef.current = null;

@@ -60,7 +60,7 @@ export default function ChatSidebarHeader() {
           (threads ?? []).find((t) => t.id === threadId)?.title || "会话",
         ),
       ]);
-      if (msgs.length === 0) return;
+      if (!msgs || msgs.length === 0) return;
       const lines = [`# ${meta}`, ""];
       for (const m of msgs) {
         lines.push(`**${m.role === "user" ? "🧑 用户" : "🎬 助手"}**`, "", m.content, "", "---", "");

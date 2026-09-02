@@ -12,7 +12,8 @@ import { create } from "zustand";
 
 interface ChatSessionState {
   threadId: string | null | undefined;
-  setThreadId: (tid: string | null) => void;
+  /** undefined 也是合法目标：撤销选择（切项目/会话失效自愈时回"未选择"） */
+  setThreadId: (threadId: string | null | undefined) => void;
 }
 
 export const useChatSession = create<ChatSessionState>()((set) => ({
