@@ -26,7 +26,9 @@ from langgraph.prebuilt import ToolNode
 from copilotkit import CopilotKitState
 
 import camera
+import imgresearch
 import models
+import projects
 import skills
 
 # ---------- 状态 ----------
@@ -127,7 +129,114 @@ async def generate_asset_images(
     return await skills.generate_asset_images(assets, config=config, params=params)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill]
+@tool
+async def research_asset_references(assets_json: str, config: RunnableConfig) -> str:
+    """为画布资产批量调研网络参考图（AI 出词 → 豆包搜图 + Wikimedia → 模型看图终选）。
+
+    用户想给角色/场景/道具/服饰找考据参考图、历史画像、实物照片时调用；
+    历史纪实类题材出图前先调研能显著提升形制/材质一致性。纯虚构或动画
+    风格、用户明确不需要参考时不要调用。不要在用户没要求时自作主张调研。
+
+    node_id 必须取自画布摘要（每行行首的节点 id），画布上没有该资产时
+    先用 canvas_ops 建卡、下一轮再调研。后台串行执行：每个资产约 1-2 分钟，
+    发起后立即返回，用 get_reference_research_status 查进度；完成后提示
+    用户打开资产卡的「找参考图」面板勾选采纳（采纳后「补资产图」批量出图
+    会自动带上参考图）。
+
+    Args:
+        assets_json: 资产数组 JSON 文本，每个元素：
+            {"node_id":"画布节点id","name":"资产名","type":"character|scene|prop|costume","description":"设定描述（外形/朝代/材质越具体越好）"}
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return "无法定位当前项目：会话上下文缺少 thread_id"
+    pid = projects.project_id_of_thread(thread_id)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    try:
+        assets = json.loads(assets_json)
+        if not isinstance(assets, list):
+            return "assets_json 必须是数组 JSON"
+    except json.JSONDecodeError as e:
+        return f"assets_json 不是合法 JSON：{e}"
+    parsed = []
+    for a in assets:
+        if not isinstance(a, dict):
+            continue
+        node_id = str(a.get("node_id") or "").strip()
+        name = str(a.get("name") or "").strip()
+        if not node_id or not name:
+            continue
+        parsed.append(
+            {
+                "nodeId": node_id,
+                "name": name,
+                "type": str(a.get("type") or "character"),
+                "description": str(a.get("description") or ""),
+            }
+        )
+    if not parsed:
+        return "assets_json 缺少有效项：每项需要 node_id 与 name"
+    # 节点存在性校验（防幻觉 id）：画布上不存在的节点直接点名拒绝
+    canvas = projects.load_canvas(pid)
+    node_ids = {str(n.get("id") or "") for n in (canvas or {}).get("nodes", [])}
+    missing = [a["name"] for a in parsed if a["nodeId"] not in node_ids]
+    if missing:
+        return (
+            f"画布上找不到这些资产卡：{('、'.join(missing))[:120]}。"
+            "请核对画布摘要里的节点 id（先建卡再调研）"
+        )
+    batch_id = imgresearch.start_batch_research(pid, parsed)
+    names = "、".join(a["name"] for a in parsed)[:120]
+    return (
+        f"已发起 {len(parsed)} 个资产（{names}）的参考图调研，后台串行执行"
+        f"约 {len(parsed) * 1.5:.0f} 分钟。batch_id={batch_id}。"
+        "用 get_reference_research_status 查询进度；完成后提醒用户在资产卡上"
+        "打开「找参考图」面板勾选采纳，采纳后可用「补资产图」批量出图。"
+    )
+
+
+@tool
+async def get_reference_research_status(batch_id: str, config: RunnableConfig) -> str:
+    """查询参考图调研任务的进度与结果摘要。
+
+    发起 research_asset_references 后用户问进度/是否完成时调用；任务完成后
+    返回每个资产的候选数与模型推荐，提醒用户到资产卡面板勾选采纳。
+
+    Args:
+        batch_id: research_asset_references 返回的任务 id。
+    """
+    batch = imgresearch.get_batch_research_job(batch_id.strip())
+    if batch is None:
+        return "调研任务不存在（agent 可能已重启，请重新发起）"
+    lines = [f"进度 {batch['done']}/{batch['total']}，状态 {batch['status']}："]
+    for item in batch["items"]:
+        line = f"- {item['name']}：{item['status']}"
+        if item.get("error"):
+            line += f"（{item['error'][:80]}）"
+        lines.append(line)
+    if batch["status"] == "done":
+        summaries = []
+        for item in batch["items"]:
+            if item["status"] != "done":
+                continue
+            cands = imgresearch.list_candidates(batch["projectId"], item["nodeId"])
+            rec = [c["title"] for c in cands if c["recommended"]]
+            if rec:
+                summaries.append(
+                    f"{item['name']}：候选 {len(cands)} 张，推荐 {len(rec)} 张"
+                    f"（{'、'.join(t[:20] for t in rec[:3])}）"
+                )
+            elif cands:
+                summaries.append(f"{item['name']}：候选 {len(cands)} 张，无强推荐，建议用户自行挑选")
+        lines.extend(summaries)
+        lines.append("请提醒用户：打开资产卡的「找参考图」面板勾选采纳，采纳后「补资产图」会带上参考图。")
+    return "\n".join(lines)
+
+
+backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill, research_asset_references, get_reference_research_status]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）

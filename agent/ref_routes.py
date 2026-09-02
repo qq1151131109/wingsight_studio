@@ -54,6 +54,51 @@ def api_get_ref_research(pid: str, job_id: str, user: auth.CurrentUser):
     }
 
 
+@router.post("/projects/{pid}/refs/batch-research")
+async def api_start_batch_ref_research(pid: str, req: dict, user: auth.CurrentUser):
+    """批量调研（拆解链后）：assets 串行逐个跑单资产调研，返回 batchId。"""
+    projects.assert_access(user, pid)
+    assets_in = req.get("assets")
+    if not isinstance(assets_in, list) or not assets_in:
+        return Response(status_code=400, content="assets 不能为空", media_type="text/plain")
+    if len(assets_in) > 150:
+        return Response(status_code=400, content="单批最多 150 个资产", media_type="text/plain")
+    assets: list[dict[str, Any]] = []
+    for a in assets_in:
+        if not isinstance(a, dict):
+            continue
+        node_id = str(a.get("nodeId") or "").strip()
+        name = str(a.get("name") or "").strip()
+        if not node_id or not name:
+            continue
+        assets.append(
+            {
+                "nodeId": node_id,
+                "name": name[:60],
+                "type": str(a.get("type") or "character"),
+                "description": str(a.get("description") or "")[:600],
+            }
+        )
+    if not assets:
+        return Response(status_code=400, content="assets 缺少有效项（需 nodeId+name）", media_type="text/plain")
+    return {"batchId": imgresearch.start_batch_research(pid, assets)}
+
+
+@router.get("/projects/{pid}/refs/batch-research/{batch_id}")
+def api_get_batch_ref_research(pid: str, batch_id: str, user: auth.CurrentUser):
+    projects.assert_access(user, pid)
+    batch = imgresearch.get_batch_research_job(batch_id)
+    if batch is None or batch["projectId"] != pid:
+        return Response(status_code=404, content="批量调研任务不存在（agent 可能已重启）", media_type="text/plain")
+    return {
+        "status": batch["status"],
+        "total": batch["total"],
+        "done": batch["done"],
+        "current": batch["current"],
+        "items": batch["items"],
+    }
+
+
 @router.get("/projects/{pid}/refs/candidates")
 def api_list_ref_candidates(pid: str, nodeId: str = "", user: auth.CurrentUser = None):  # type: ignore[assignment]
     projects.assert_access(user, pid)

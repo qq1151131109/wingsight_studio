@@ -100,6 +100,11 @@ import { useDismissOnOutside } from "@/lib/useDismiss";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 import RefResearchDialog from "./RefResearchDialog";
+import RefReviewDialog from "./RefReviewDialog";
+import {
+  runBatchRefResearch,
+  type BatchRefJob,
+} from "@/lib/ref-research";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
 export const RETRY_GENERATION_EVENT = "wingsight:retry-generation";
@@ -999,10 +1004,14 @@ function NoteCard({ data, id, selected }: NodeProps) {
 function ScriptCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const nodes = useCanvasStore((s) => s.nodes);
+  const edges = useCanvasStore((s) => s.edges);
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
   const [fillingAssets, setFillingAssets] = useState(false);
   const [genError, setGenError] = useState("");
+  const [researching, setResearching] = useState(false);
+  const [researchMsg, setResearchMsg] = useState("");
+  const [reviewBatch, setReviewBatch] = useState<BatchRefJob | null>(null);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const body = d.body ?? "";
@@ -1019,6 +1028,21 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     ).trim();
 
   const missingAssetCount = countAssetsMissingImage(nodes, id);
+  const researchCount = researchTargetsOf(nodes, edges, id).length;
+  /** 批量调研：本卡拆出的缺参考资产串行调研，完成弹出审阅面板 */
+  const researchRefs = async () => {
+    if (researching) return;
+    setResearching(true);
+    setResearchMsg("");
+    try {
+      const job = await runBatchResearchForCard(id, setResearchMsg);
+      if (job) setReviewBatch(job);
+    } catch (exc) {
+      setResearchMsg(exc instanceof Error ? exc.message : "批量调研失败");
+    } finally {
+      setResearching(false);
+    }
+  };
   /** 补资产图：本卡拆解出的缺图资产卡一键批量出图（画风闸内） */
   const fillAssets = async () => {
     if (fillingAssets) return;
@@ -1113,7 +1137,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             <button
               type="button"
               disabled={empty || decomposing}
-              data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方。出分镜图前先给资产出设定图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方。出分镜图前先给资产出设定图，一致性最好"
+              data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）"
               className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1122,11 +1146,25 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             >
               {decomposing ? "拆解中…" : "拆解资产"}
             </button>
+            {researchCount > 0 ? (
+              <button
+                type="button"
+                disabled={empty || researching}
+                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→豆包/Wikimedia→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
+                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void researchRefs();
+                }}
+              >
+                {researching ? "调研中…" : `调研参考图·${researchCount}`}
+              </button>
+            ) : null}
             {missingAssetCount > 0 ? (
               <button
                 type="button"
                 disabled={empty || fillingAssets}
-                data-tip="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
+                data-tip="为本卡拆解出的缺设定图资产卡批量出图（自动带上已采纳的参考卡，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1155,8 +1193,20 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               {decomposeMsg}
             </p>
           ) : null}
+          {researchMsg ? (
+            <p className="ws-detail mt-1 text-[10px] text-text-3">
+              {researchMsg}
+            </p>
+          ) : null}
           {genError ? (
             <p className="ws-detail mt-1 text-[10px] text-danger">{genError}</p>
+          ) : null}
+          {reviewBatch ? (
+            <RefReviewDialog
+              projectId={useCanvasStore.getState().projectId ?? ""}
+              batch={reviewBatch}
+              onClose={() => setReviewBatch(null)}
+            />
           ) : null}
         </>
       }
@@ -2750,17 +2800,14 @@ async function runAssetDecompose(opts: {
         }
         return entry;
       });
-    // 全自动（juben 范式）：拆解后 agent 直接跑角色出图链（定妆照→逐 Look），
-    // 项目画风注入每张图；阶段进度经 onMsg 显示在卡上。
-    // 画风闸：无全局画风时只拆文字不自动出图（与出图按钮同一道闸）
-    const styleReady = Boolean(
-      (useCanvasStore.getState().projectStyle ?? "").trim(),
-    );
+    // 拆解只建卡不出图（流程重排）：后续走「调研参考图 → 审阅采纳 →
+    // 补资产图（带参考序列）」，调研结果才赶得上进出图参考序列；
+    // 原 autoLooks 自动链（画风已选即自动出定妆照）停用
     const { assets, errors: decompErrors, imagesNote } = await decomposeAssets(
       scriptSource,
       existing,
       {
-        autoLooks: styleReady,
+        autoLooks: false,
         visualStyle: useCanvasStore.getState().projectStyle ?? "",
         model: opts.model,
         onPhase: ({ phase, progress }) => {
@@ -2769,9 +2816,7 @@ async function runAssetDecompose(opts: {
         },
       },
     );
-    const styleNote = styleReady
-      ? ""
-      : "｜未选画风，未自动出图（底部坞「画风」选好后可在资产卡上单独出图）";
+    const styleNote = "";
     const imageNote = imagesNote ? `｜${imagesNote}` : "";
     const chars = assets;
     if (chars.length === 0) {
@@ -3310,7 +3355,7 @@ async function fillAssetImages(sourceId: string): Promise<string | null> {
   }
   const targets = st.nodes.filter(
     (n) =>
-      n.data.assetSource === sourceId &&
+      (n.data.assetSource === sourceId || !n.data.assetSource) &&
       ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
       (n.data.title as string)?.trim() &&
       (n.data.body as string)?.trim() &&
@@ -3329,19 +3374,36 @@ async function fillAssetImages(sourceId: string): Promise<string | null> {
   }
   try {
     const jobId = await startShotImageJob(
-      targets.map((n) => ({
-        rid: n.id,
-        name: n.data.title as string,
-        description: `${n.data.title}。${n.data.body}`,
-        // 服饰卡的设定图按道具契约（4:3 单件）出图
-        assetType:
-          n.data.nodeType === "costume"
-            ? "prop"
-            : (n.data.nodeType as "character" | "scene" | "prop"),
-        visualNotes: `全局视觉风格：${projectStyle}`,
-        // 卡片级模型/档位覆盖（PromptBar chips 写入的 data.gen）
-        params: saneGen(n.data.gen) ?? undefined,
-      })),
+      targets.map((n) => {
+        // 参考序列：资产卡上游连线卡（考据参考卡/设定图卡），带图才收。
+        // 调研→采纳→连线后，补资产图自动带上参考（职责段按 refSource 分流）
+        const refCards = st.edges
+          .filter((e) => e.target === n.id)
+          .map((e) => st.nodes.find((m) => m.id === e.source))
+          .filter((m): m is WingNode => Boolean(m?.data.imageUrl))
+          .slice(0, 4);
+        return {
+          rid: n.id,
+          name: n.data.title as string,
+          description: `${n.data.title}。${n.data.body}`,
+          // 服饰卡的设定图按道具契约（4:3 单件）出图
+          assetType:
+            n.data.nodeType === "costume"
+              ? "prop"
+              : (n.data.nodeType as "character" | "scene" | "prop"),
+          visualNotes: `全局视觉风格：${projectStyle}`,
+          referenceImages: refCards.map((m) => m.data.imageUrl as string),
+          referenceLabels: refCards.map((m) => ({
+            type:
+              m.data.refSource === "research"
+                ? "reference"
+                : String(m.data.nodeType),
+            name: String(m.data.title || "参考"),
+          })),
+          // 卡片级模型/档位覆盖（PromptBar chips 写入的 data.gen）
+          params: saneGen(n.data.gen) ?? undefined,
+        };
+      }),
     );
     const done: string[] = [];
     const failed: string[] = [];
@@ -3383,17 +3445,81 @@ async function fillAssetImages(sourceId: string): Promise<string | null> {
   }
 }
 
-/** 本卡（assetSource=sourceId）拆解出的资产卡里缺设定图的张数（补资产图按钮的计数与显隐） */
+/** 本卡（assetSource=sourceId）拆解出的资产卡里缺设定图的张数（补资产图按钮的计数与显隐）。
+ *  assetSource 为空的存量卡兜底计入，否则历史项目的补图/调研按钮永远不出现 */
 function countAssetsMissingImage(nodes: WingNode[], sourceId: string): number {
   return nodes.filter(
     (n) =>
-      n.data.assetSource === sourceId &&
+      (n.data.assetSource === sourceId || !n.data.assetSource) &&
       ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
       (n.data.title as string)?.trim() &&
       (n.data.body as string)?.trim() &&
       !n.data.imageUrl &&
       n.data.status !== "loading",
   ).length;
+}
+
+/**
+ * 本卡拆出的「待调研」资产：尚无考据参考卡连线的资产卡（不论是否已有
+ * 设定图——已出图的资产重出时同样要带参考）。assetSource 为空的存量卡
+ * （旧版拆解/聊天建卡）兜底计入本卡，否则历史项目永远数出 0。
+ */
+function researchTargetsOf(
+  nodes: WingNode[],
+  edges: { target: string; source: string }[],
+  sourceId: string,
+): WingNode[] {
+  const researchSources = new Set(
+    nodes.filter((n) => n.data.refSource === "research").map((n) => n.id),
+  );
+  return nodes.filter(
+    (n) =>
+      (n.data.assetSource === sourceId || !n.data.assetSource) &&
+      ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)) &&
+      (n.data.title as string)?.trim() &&
+      (n.data.body as string)?.trim() &&
+      n.data.status !== "loading" &&
+      !edges.some((e) => e.target === n.id && researchSources.has(e.source)),
+  );
+}
+
+/**
+ * 批量调研本卡拆出的缺参考资产（ScriptCard/ShotListCard「调研参考图」共用）：
+ * 串行调研（AI 出词→双渠道→终选）。返回终态 job（供审阅面板打开）；
+ * 用户取消/无目标/无 projectId 返回 null。
+ */
+async function runBatchResearchForCard(
+  sourceId: string,
+  onProgress: (msg: string) => void,
+): Promise<BatchRefJob | null> {
+  const st = useCanvasStore.getState();
+  const projectId = st.projectId;
+  if (!projectId) {
+    onProgress("项目未保存：先等画布保存完成再调研");
+    return null;
+  }
+  const targets = researchTargetsOf(st.nodes, st.edges, sourceId);
+  if (targets.length === 0) {
+    onProgress("没有需要调研的资产（缺参考的缺图资产为 0）");
+    return null;
+  }
+  const searches = targets.length * 2 * 5; // ≤2 轮 × ≤5 查询（豆包+wikimedia 计次口径）
+  const ask =
+    targets.length === 1
+      ? `为「${targets[0].data.title}」调研参考图（约 1 分钟，消耗约 ${searches} 次搜索配额）？`
+      : `将为 ${targets.length} 个资产串行调研参考图（每个约 1 分钟，消耗约 ${searches} 次搜索配额）。开始？`;
+  if (!window.confirm(ask)) return null;
+  onProgress(`批量调研中 0/${targets.length}…`);
+  return runBatchRefResearch(
+    projectId,
+    targets.map((n) => ({
+      nodeId: n.id,
+      name: String(n.data.title),
+      type: String(n.data.nodeType),
+      description: `${n.data.title}。${String(n.data.body ?? "")}`.slice(0, 600),
+    })),
+    (j) => onProgress(`批量调研中 ${j.done}/${j.total}（${j.current || "…"}）…`),
+  );
 }
 
 /** 分镜表卡：一张卡管整场戏（行=镜头，双击改格），支持拆解资产与镜头级批量出图 */
@@ -3423,6 +3549,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const rowsScrollRef = useRef<HTMLDivElement>(null);
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
+  const [researching, setResearching] = useState(false);
+  const [researchMsg, setResearchMsg] = useState("");
+  const [reviewBatch, setReviewBatch] = useState<BatchRefJob | null>(null);
   // 行内 @引用候选：rid=正在输入的行，draft=@ 后的过滤词，
   // rect=输入框视口坐标（候选面板 portal 到 body，fixed 定位防滚动容器裁剪）
   const [mention, setMention] = useState<{
@@ -3669,6 +3798,21 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       onError: setGenError,
     });
     setDecomposing(false);
+  };
+
+  /** 批量调研：本卡拆出的缺参考资产串行调研，完成弹出审阅面板 */
+  const researchRefs = async () => {
+    if (researching) return;
+    setResearching(true);
+    setResearchMsg("");
+    try {
+      const job = await runBatchResearchForCard(id, setResearchMsg);
+      if (job) setReviewBatch(job);
+    } catch (exc) {
+      setResearchMsg(exc instanceof Error ? exc.message : "批量调研失败");
+    } finally {
+      setResearching(false);
+    }
   };
 
   /** 批量物化镜头图（novanova 分镜视频的图片版）：选中行 → 画布右侧
@@ -3924,6 +4068,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   };
 
   const missingAssetCount = countAssetsMissingImage(nodes, id);
+  const researchCount = researchTargetsOf(nodes, edges, id).length;
   const totalDur = rows.reduce((sum, r) => {
     // LLM 可能返回数字型 duration（JSON 数值），String 化防 .match 崩渲染树
     const m = String(r.duration ?? "").match(/(\d+(?:\.\d+)?)/);
@@ -4305,8 +4450,18 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       {decomposeMsg ? (
         <p className="ws-detail mt-1 text-[10px] text-text-3">{decomposeMsg}</p>
       ) : null}
+      {researchMsg ? (
+        <p className="ws-detail mt-1 text-[10px] text-text-3">{researchMsg}</p>
+      ) : null}
       {genError ? (
         <p className="ws-detail mt-1 text-[10px] text-danger">{genError}</p>
+      ) : null}
+      {reviewBatch ? (
+        <RefReviewDialog
+          projectId={useCanvasStore.getState().projectId ?? ""}
+          batch={reviewBatch}
+          onClose={() => setReviewBatch(null)}
+        />
       ) : null}
       {/* 深缩放底栏只留统计概览（行操作/管线动作需拉近再用） */}
       {lod !== "full" ? (
@@ -4356,7 +4511,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           <button
             type="button"
             disabled={decomposing || !scriptSource}
-            data-tip="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡并出资产图（画风闸内自动链）。出分镜图前先给资产出设定图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡并出资产图（画风闸内自动链）。出分镜图前先给资产出设定图，一致性最好"
+            data-tip="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）"
             className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
             onClick={(e) => {
               e.stopPropagation();
@@ -4365,6 +4520,20 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           >
             {decomposing ? "拆解中…" : "拆解资产"}
           </button>
+            {researchCount > 0 ? (
+              <button
+                type="button"
+                disabled={!scriptSource || researching}
+                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→豆包/Wikimedia→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
+                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void researchRefs();
+                }}
+              >
+                {researching ? "调研中…" : `调研参考图·${researchCount}`}
+              </button>
+            ) : null}
             {missingAssetCount > 0 ? (
               <button
                 type="button"

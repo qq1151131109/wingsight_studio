@@ -189,6 +189,15 @@ def can_access(viewer: Any, row: sqlite3.Row) -> bool:
     return row["owner_id"] == viewer.id or viewer.sub in _collaborators_of(row)
 
 
+def project_id_of_thread(thread_id: str) -> str | None:
+    """聊天会话 → 所属项目 id（后端工具定位项目用；未知线程返回 None）。"""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT project_id FROM chat_threads WHERE id = ?", (thread_id,)
+        ).fetchone()
+    return row["project_id"] if row else None
+
+
 def assert_access(viewer: Any, pid: str) -> sqlite3.Row:
     """按 pid 取项目行并校验访问权；无权/不存在一律 404（防枚举）。"""
     with _conn() as conn:

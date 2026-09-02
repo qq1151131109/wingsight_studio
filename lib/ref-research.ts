@@ -129,3 +129,78 @@ export async function deleteRefCandidate(
   );
   if (!r.ok) throw new Error(`删除失败（${r.status}）`);
 }
+
+// ---------- 批量调研（拆解链后，多资产串行） ----------
+
+export interface BatchAssetInput {
+  nodeId: string;
+  name: string;
+  type: string;
+  description: string;
+}
+
+export interface BatchRefItem {
+  nodeId: string;
+  name: string;
+  status: "pending" | "running" | "done" | "error";
+  error: string;
+}
+
+export interface BatchRefJob {
+  batchId: string;
+  status: "running" | "done";
+  total: number;
+  done: number;
+  current: string;
+  items: BatchRefItem[];
+}
+
+/** 批量发起：后端串行逐资产调研（每资产 = AI 出词→双渠道→终选）。 */
+export async function startBatchRefResearch(
+  projectId: string,
+  assets: BatchAssetInput[],
+): Promise<string> {
+  const r = await apiFetch(
+    `/agent-service/projects/${projectId}/refs/batch-research`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assets }),
+    },
+  );
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || `批量调研发起失败（${r.status}）`);
+  }
+  const body = (await r.json()) as { batchId: string };
+  return body.batchId;
+}
+
+export async function getBatchRefResearchJob(
+  projectId: string,
+  batchId: string,
+): Promise<BatchRefJob> {
+  const r = await apiFetch(
+    `/agent-service/projects/${projectId}/refs/batch-research/${batchId}`,
+  );
+  if (r.status === 404) throw new Error("批量调研任务不存在（agent 可能已重启）");
+  if (!r.ok) throw new Error(`批量调研查询失败（${r.status}）`);
+  return (await r.json()) as BatchRefJob;
+}
+
+/** 发起 + 轮询到终态（2s 间隔；串行调研每资产约 30-60s，N 资产分钟级）。 */
+export async function runBatchRefResearch(
+  projectId: string,
+  assets: BatchAssetInput[],
+  onProgress?: (job: BatchRefJob) => void,
+): Promise<BatchRefJob> {
+  const batchId = await startBatchRefResearch(projectId, assets);
+  const deadline = Date.now() + 30 * 60_000;
+  for (;;) {
+    const job = await getBatchRefResearchJob(projectId, batchId);
+    onProgress?.(job);
+    if (job.status !== "running") return job;
+    if (Date.now() > deadline) throw new Error("批量调研超时，稍后可在各资产卡查看结果");
+    await new Promise((res) => setTimeout(res, 2000));
+  }
+}

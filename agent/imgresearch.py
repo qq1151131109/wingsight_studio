@@ -409,6 +409,86 @@ def start_research_job(
     return job_id
 
 
+# ---------- 批量调研（拆解链后对多个资产串行调研；防打爆搜索配额） ----------
+
+BATCH_JOBS: dict[str, dict[str, Any]] = {}
+# 队列并发 = 1：豆包免费配额按次计，批量调研串行跑，失败不影响后续资产
+BATCH_CONCURRENCY = 1
+
+
+def start_batch_research(
+    project_id: str, assets: list[dict[str, Any]]
+) -> str:
+    """assets: [{nodeId, name, type, description}]；返回 batchId。
+
+    逐资产串行跑单资产调研（AI 出词→双渠道搜→终选），每项结果记入
+    items；某资产失败只记该条 error，不中断整批。"""
+    batch_id = uuid.uuid4().hex[:12]
+    BATCH_JOBS[batch_id] = {
+        "batchId": batch_id,
+        "projectId": project_id,
+        "status": "running",
+        "total": len(assets),
+        "done": 0,
+        "current": assets[0]["name"] if assets else "",
+        "items": [
+            {"nodeId": a["nodeId"], "name": a["name"], "status": "pending", "error": ""}
+            for a in assets
+        ],
+    }
+    task = asyncio.create_task(_run_batch(batch_id, project_id, assets))
+    _prune_jobs(task)
+    return batch_id
+
+
+def get_batch_research_job(batch_id: str) -> dict[str, Any] | None:
+    return BATCH_JOBS.get(batch_id)
+
+
+async def _run_batch(
+    batch_id: str, project_id: str, assets: list[dict[str, Any]]
+) -> None:
+    batch = BATCH_JOBS.get(batch_id)
+    if batch is None:
+        return
+    sem = asyncio.Semaphore(BATCH_CONCURRENCY)
+    for i, a in enumerate(assets):
+        node_id = str(a.get("nodeId") or "")
+        name = str(a.get("name") or "")
+        batch["current"] = name
+        batch["items"][i]["status"] = "running"
+        try:
+            async with sem:
+                job_id = start_research_job(
+                    project_id,
+                    node_id,
+                    [],
+                    {
+                        "name": name,
+                        "type": str(a.get("type") or "character"),
+                        "description": str(a.get("description") or ""),
+                    },
+                )
+                # 串行等本资产调研结束（轮询 REF_JOBS 终态）
+                while True:
+                    job = REF_JOBS.get(job_id)
+                    if job is None or job["status"] != "running":
+                        break
+                    await asyncio.sleep(1.0)
+                job = REF_JOBS.get(job_id) or {}
+                if job.get("status") == "error" or job.get("error"):
+                    batch["items"][i].update(
+                        status="error", error=str(job.get("error") or "")[:160]
+                    )
+                else:
+                    batch["items"][i].update(status="done", error="")
+        except Exception as exc:  # noqa: BLE001 单资产失败不中断整批
+            batch["items"][i].update(status="error", error=str(exc)[:160])
+        batch["done"] = i + 1
+    batch["status"] = "done"
+    batch["current"] = ""
+
+
 def _prune_jobs(task: asyncio.Task) -> None:
     def _cleanup(t: asyncio.Task) -> None:
         done = [k for k, v in REF_JOBS.items() if v["status"] in ("done", "error")]
