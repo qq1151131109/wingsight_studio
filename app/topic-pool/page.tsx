@@ -276,6 +276,12 @@ function TopicPoolInner() {
               {refreshing ? "策展刷新进行中：采集信号 → 研判 → 取证 → 结论…" : "跨项目的候选选题库，认领即立项"}
             </p>
           </div>
+          <Link
+            href="/entities"
+            className="rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2"
+          >
+            实体库
+          </Link>
           <button
             type="button"
             onClick={() => void startRefresh()}

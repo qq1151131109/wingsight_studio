@@ -31,6 +31,8 @@ import auth  # noqa: E402  (在 dotenv 之后导入，读取最终环境变量)
 import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
+import entities  # noqa: E402
+import entity_routes  # noqa: E402
 import graph  # noqa: E402
 import imgresearch  # noqa: E402
 import models  # noqa: E402
@@ -48,6 +50,7 @@ import topics  # noqa: E402
 
 projects.init_db()
 topics.init_topics_db()
+entities.init_entities_db()
 style_presets.init_style_presets_db()
 prompt_presets.init_prompt_presets_db()
 imgresearch.init_ref_research_db()
@@ -83,6 +86,8 @@ app.add_middleware(
 app.include_router(auth_routes.router, prefix="/api/v1")
 # 选题池（生产前漏斗，跨项目全局）
 app.include_router(topic_routes.router, prefix="/api/v1")
+# 实体库（跨选题知识节点，实体图谱地基）
+app.include_router(entity_routes.router, prefix="/api/v1")
 # 我的画风（用户自建画风预设 + 参考图反推）
 app.include_router(style_routes.router, prefix="/api/v1")
 # 我的提示词（用户级提示词库 CRUD）

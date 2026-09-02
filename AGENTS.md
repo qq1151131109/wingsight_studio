@@ -32,6 +32,7 @@ node scripts/agui-client-test.mjs               # 两轮工具调用闭环（需
 node scripts/script-to-canvas-test.mjs          # 剧本→建卡全链路
 node scripts/card-editing-test.mjs              # 卡内文本编辑回归（光标/IME 组合/外部改值回写）
 node scripts/shotref-binding-test.mjs           # 分镜行→资产引用解析 + 出图软闸点名（mock 出图）
+node scripts/asset-create-test.mjs              # 手动建资产卡（空名聚焦/同名提醒/AI 写设定/素材库建为资产）
 node scripts/shotlist-resume-compose-test.mjs   # 分镜表断点恢复/补缺图/一键成片（自建测试项目+mock，不出真实图）
 python agent/auth-smoke-test.py                 # 认证冒烟
 ./scripts/setup-langflow.sh                     # langflow 环境重建/首个部署（装 venv → 起 7860 → 导 flows → flow id 回写 .env.local）
@@ -45,6 +46,7 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 - **图生图参考（输入条直连管线 directImagegen）**：本卡已有图自动并入参考首位（面板亮「本卡原图」chip）——「在带图的卡上出图 = 改这张图」；参考序列 = 本卡原图 + @引用/上游连线卡（去重 ≤4，refIds 生成时自愈已删卡）。显式引用（@/连线）存在却一张可用图都没有时**明报拦下**（不发任务，卡上出错误说明），不静默降级文生图（孝庄太后项目踩坑：引用空卡+已删卡被静默丢，纯文生图被当成「没参考」）；空卡无引用的纯文生图不受影响
 - **图片卡动作分层（"看图干活"进大图）**：缩略图悬浮条只留 版本V/复制提示词/重新生成/放大——标注重绘、九宫格切图、候选「设为主图」、版本「恢复」在灯箱里做（`Lightbox` 的 `actions` 注入，gallery 快照带 meta，动作只对本卡图片出现；他卡图片与 PromptBar 引用预览无动作区）。openZoom 快照顺序 = 主图→候选→版本→他卡主图。恢复版本 = 当前版入档 + genPrompt 回滚（与 `NodeMediaHistory.restore` 同逻辑，两处改一起改）。MaskEditDialog 画布自适应大屏 `min(92vw,1400px)`（入口在灯箱）
 - **分镜行→资产引用三通道**（`lib/canvas/shotRefs.ts` 共享解析，sanitize 存量迁移同源）：① 结构化 refIds（改名不失联）② 行内 `@完整标题` ③ **全名兜底**——无 @ 的完整资产标题也算引用（≥2 字、最长优先、区间不重叠；ai-moive-studio 按名解析范式），出图时活解析——**分镜先于资产生成时行文本天然含资产名，资产后建/后出图自动挂上，无需回填**。生成链路另注入名单并要求 flow 每行输出结构化 `assets` 名单（novanova referenceKey 范式的名字版）：agent `_parse_shot_rows` 解析 + 按名单二次校验（幻觉名剔除），前端转 refIds 后即剥离 assets 字段。出图软闸点名具体镜头（`镜2、镜4 未引用已出图的资产设定图…行内 @资产名 可绑定参考`），不再笼统报数。参考穿线：镜头图卡落 refIds + 「资产→镜头图」连线（open-ai-canvas materializer 范式）
+- **手动建资产卡（空名优先 + 同名防重）**：所有建卡入口标题一律留空（`Editable` placeholder 引导「输入角色名」；历史 hint 占位文案当真名会污染资产名单/@引用/全名匹配——已清除，勿回退），建卡即 `dispatchFocusEdit` 聚焦命名（`Editable.editingOn` 直接参与 open 渲染条件，**不在 effect 里 setState**——React Compiler 禁；`focusWhenVisible` 支持等挂载重试）。`CardShell` 资产卡同类同名 onSave 即时 confirm 提醒定位（titleToId 后者覆盖前者、重名绑定随机）。空名资产不进名单/候选（title 过滤天然挡住）。资产卡「AI 写设定」= `/text/rewrite` 直连（`ASSET_WRITE_HINT` 类型模板 + assetSource 源剧本上下文；空设定直接落正文、已有设定预览采用才覆盖）；素材库图片条目悬浮「建为角色/场景/道具/服饰」= 库图即设定图落资产卡（viedeo-workflow 库项即资产范式）。回归：`scripts/asset-create-test.mjs`
 - 前端与 agent 间一切流量走**同源代理**（`next.config.ts` rewrites：`/agent-service*`、`/api/v1/*` → 127.0.0.1:8123）。密钥（AGENT/LANGFLOW/DMX key）只存在根目录 `.env.local`（agent 经 dotenv 读取），**绝不下发浏览器、绝不提交**
 - 主 Agent 是**瘦编排者**：系统提示只放"宪法"（`graph.py` SYSTEM_PROMPT），任务知识一律放 Langflow 技能或工具 docstring。新增能力 = 新工具/技能，不是加提示词
 - **LLM 生成类能力一律走 Langflow**（做成 flow，不在 agent 代码里直调模型/写死提示词）；唯一例外是聊天主循环本身（`graph.py` LangGraph 直连 DeepSeek）。约定与清单见下节「Langflow 工作流」

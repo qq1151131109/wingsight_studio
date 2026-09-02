@@ -346,10 +346,13 @@ function AddNodeToolbar() {
       x: (rect?.left ?? 0) + (rect?.width ?? window.innerWidth) / 2,
       y: (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2,
     });
-    addNode({
+    const id = addNode({
       position: { x: Math.round(center.x - 128), y: Math.round(center.y - 90) },
-      data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+      // 标题留空（占位符引导输入）：hint 当真名会污染资产名单与 @ 引用
+      data: { nodeType: type, title: "", body: "" },
     });
+    // 资产卡聚焦标题命名；文档卡聚焦正文（FOCUS_EDIT 各自消费）
+    dispatchFocusEdit(id);
   };
   return (
     <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
@@ -1778,7 +1781,7 @@ export default function CanvasView() {
       });
       const id = addNode({
         position: { x: flow.x - 110, y: flow.y - 40 },
-        data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+        data: { nodeType: type, title: "", body: "" },
       });
       useCanvasStore.getState().connect({
         source: pendingLink.sourceId,
@@ -1935,7 +1938,7 @@ export default function CanvasView() {
         return;
       const id = addNode({
         position: { x: ctxMenu.fx - 110, y: ctxMenu.fy - 40 },
-        data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+        data: { nodeType: type, title: "", body: "" },
       });
       setCtxMenu(null);
       // 常驻编辑卡：建卡即把光标送入正文（文档型卡片零门槛开写）
@@ -2020,7 +2023,7 @@ export default function CanvasView() {
           position: { x: flow.x - 110, y: flow.y - 40 },
           data: {
             nodeType: paletteType as WingNodeType,
-            title: NODE_META[paletteType as WingNodeType]?.hint ?? "新卡片",
+            title: "",
             body: "",
           },
         });

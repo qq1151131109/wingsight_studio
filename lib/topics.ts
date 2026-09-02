@@ -51,6 +51,10 @@ export interface TopicResearch {
   scale?: "single" | "series" | "anthology";
   series_thread?: string;
   source_map?: SourceMapEntry[];
+  /** 角度生成器：verdict 择优采用的模板名 */
+  chosen_template?: string;
+  /** 角度生成器：候选角度方案（回看用） */
+  angle_options?: { template: string; angle: string; viewing_question?: string; unit_kind?: string }[];
 }
 
 export interface Topic {

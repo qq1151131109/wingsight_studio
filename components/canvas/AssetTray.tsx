@@ -12,8 +12,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useReactFlow } from "@xyflow/react";
 import { Music, Search, Trash2, X } from "lucide-react";
 import { NODE_META, useCanvasStore, type WingNodeData } from "@/lib/canvas/store";
+import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { assetThumbUrl } from "@/lib/asset-thumb";
-import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
+import { dispatchFocusEdit, FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 import {
   deleteAsset,
   listAssets,
@@ -73,6 +74,14 @@ const KIND_LABEL: Record<AssetKind, string> = {
   video: "视频",
   audio: "音频",
 };
+
+/** 库图一键建为资产卡的目标类型（viedeo-workflow「库项即资产」范式） */
+const ASSET_TARGETS = [
+  { type: "character", label: "角色" },
+  { type: "scene", label: "场景" },
+  { type: "prop", label: "道具" },
+  { type: "costume", label: "服饰" },
+] as const;
 
 export default function AssetTray({ onClose }: { onClose: () => void }) {
   const [assets, setAssets] = useState<AssetRecord[] | null>(null);
@@ -134,6 +143,35 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
     window.dispatchEvent(
       new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
     );
+    onClose();
+  };
+
+  /** 库图一键建为资产卡：库图即设定图，标题留空聚焦命名（空名不进资产名单，
+   *  命名后由 CardShell 同名提醒兜底防重） */
+  const addAsAsset = (
+    a: AssetRecord,
+    type: (typeof ASSET_TARGETS)[number]["type"],
+  ) => {
+    const rect = document.querySelector(".react-flow")?.getBoundingClientRect();
+    const center = screenToFlowPosition({
+      x: (rect?.left ?? 0) + (rect?.width ?? window.innerWidth) / 2,
+      y: (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2,
+    });
+    const id = useCanvasStore.getState().addNode({
+      position: { x: Math.round(center.x - 128), y: Math.round(center.y - 90) },
+      data: {
+        nodeType: type,
+        title: "",
+        body: "",
+        imageUrl: a.url,
+        status: "ready" as const,
+      },
+    });
+    useCanvasStore.getState().selectNodes([id]);
+    window.dispatchEvent(
+      new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [id] } }),
+    );
+    dispatchFocusEdit(id);
     onClose();
   };
 
@@ -228,6 +266,29 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
               >
                 <Trash2 className="h-3 w-3" />
               </button>
+              {a.kind === "image" ? (
+                <div className="absolute inset-0 z-10 hidden items-center gap-1 rounded-md bg-surface-1/95 px-1.5 group-hover:flex">
+                  <span className="shrink-0 text-[9px] text-text-4">建为</span>
+                  {ASSET_TARGETS.map(({ type, label }) => {
+                    const Icon = TYPE_ICONS[type];
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        data-tip={`建为${label}卡：库图作设定图，命名后进资产名单`} aria-label={`建为${label}卡`}
+                        className="flex items-center gap-0.5 rounded border border-hairline px-1 py-0.5 text-[9px] text-text-2 transition-colors hover:border-accent hover:text-text"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          addAsAsset(a, type);
+                        }}
+                      >
+                        {Icon ? <Icon className="h-3 w-3" /> : null}
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           ))
         )}

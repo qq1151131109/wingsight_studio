@@ -165,7 +165,16 @@ FLOW_IDS = {
     "followup": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",
     "verdict": "LANGFLOW_TOPIC_VERDICT_FLOW_ID",
     "rescan_plan": "LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID",
+    "angle": "LANGFLOW_TOPIC_ANGLE_FLOW_ID",
 }
+
+import entities as entity_store
+from entities import ENTITY_KINDS
+
+# 角度生成器：取证后按爆款角度模板生成候选方案（一件物/一个人/一个场域/
+# 过程叙事/档案考古/正义回归/悬念追查/时代切片），verdict 对照证据择优成卡。
+# 未配置 flow 时跳过（verdict 按证据自选角度），不拦主刷新。
+ANGLE_OPTIONS_CAP = 3
 
 
 def fingerprint_of(title: str) -> str:
@@ -532,7 +541,8 @@ class TopicCurator:
 
         for pick in picks:
             research_log = await self._research_candidate(pick)
-            card = await self._generate_card(pick, research_log)
+            angle_options = await self._plan_angles(pick, research_log)
+            card = await self._generate_card(pick, research_log, angle_options)
             if card is None:
                 continue
             try:
@@ -547,12 +557,13 @@ class TopicCurator:
                             angles=card["angles"],
                             research=card["research"],
                         )
+                        _register_entities(upgradable_id, card.get("entities") or [], pick.members)
                         result.upgraded += 1
                         logger.info("选题池观察卡升级 theme=%s", pick.theme[:50])
                     continue
                 if store.exists_by_any_fingerprint(pick.member_fingerprints):
                     continue
-                store.create_topic(
+                topic_row = store.create_topic(
                     vertical=pick.vertical,
                     title=card["title"],
                     title_fingerprint=pick.primary_fingerprint,
@@ -562,6 +573,7 @@ class TopicCurator:
                     research=card["research"],
                     source=str(pick.members[0].get("signal_type") or "material"),
                 )
+                _register_entities(topic_row["id"], card.get("entities") or [], pick.members)
                 if card["worth_it"]:
                     result.created += 1
                 else:
@@ -668,27 +680,67 @@ class TopicCurator:
                     queries.append({"label": label, "query": query})
         return queries
 
+    async def _plan_angles(self, pick: TriagePick, research_log: list[dict[str, Any]]) -> list[dict[str, str]]:
+        """角度生成：取证证据 → 爆款角度模板 × 具体切口的候选方案（≤3 个）。
+
+        规划失败/未配 flow 返回空——verdict 无 angleOptions 时按证据自选角度。
+        """
+        if not os.environ.get(FLOW_IDS["angle"], "").strip():
+            return []
+        try:
+            raw = await self._call_flow(
+                "angle",
+                {
+                    "title": pick.members[0]["title"],
+                    "theme": pick.theme,
+                    "evidencePack": _format_research_log(research_log, with_empty_hint=True),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - 角度规划失败不拦结论
+            logger.warning("选题池角度生成失败 theme=%s: %s", pick.theme[:50], str(exc)[:200])
+            return []
+        options: list[dict[str, str]] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                template = str(item.get("template") or "").strip()
+                angle = str(item.get("angle") or "").strip()
+                if template and angle:
+                    options.append(
+                        {
+                            "template": template,
+                            "angle": angle,
+                            "viewing_question": str(item.get("viewing_question") or "").strip(),
+                            "unit_kind": str(item.get("unit_kind") or "").strip(),
+                        }
+                    )
+                if len(options) >= ANGLE_OPTIONS_CAP:
+                    break
+        return options
+
     async def _generate_card(
         self,
         pick: TriagePick,
         research_log: list[dict[str, Any]],
+        angle_options: list[dict[str, str]] | None = None,
     ) -> dict[str, Any] | None:
         """一次 verdict 调用产出证据驱动的两级结论；解析失败跳过该线索。"""
+        payload: dict[str, Any] = {
+            "theme": pick.theme,
+            "reason": pick.reason,
+            "title": pick.members[0]["title"],
+            "priorContext": "",
+            "evidencePack": _format_research_log(research_log, with_empty_hint=True),
+        }
+        if angle_options:
+            payload["angleOptions"] = angle_options
         try:
-            card_raw = await self._call_flow(
-                "verdict",
-                {
-                    "theme": pick.theme,
-                    "reason": pick.reason,
-                    "title": pick.members[0]["title"],
-                    "priorContext": "",
-                    "evidencePack": _format_research_log(research_log, with_empty_hint=True),
-                },
-            )
+            card_raw = await self._call_flow("verdict", payload)
         except Exception as exc:  # noqa: BLE001 - 单项失败不影响其它线索
             logger.warning("选题池调研结论生成失败 theme=%s: %s", pick.theme[:50], str(exc)[:200])
             return None
-        return parse_verdict(card_raw, pick.members[0]["title"], research_log)
+        return parse_verdict(card_raw, pick.members[0]["title"], research_log, angle_options=angle_options)
 
     # --- 观察卡复查：冲着立项缺口去查，证据变硬就升级 -------------------------
 
@@ -832,11 +884,13 @@ def parse_verdict(
     card_raw: Any,
     fallback_title: str,
     research_log: list[dict[str, Any]],
+    angle_options: list[dict[str, str]] | None = None,
 ) -> dict[str, Any] | None:
-    """把 verdict JSON 规整为 {worth_it, title, summary, angles, research}。
+    """把 verdict JSON 规整为 {worth_it, title, summary, angles, research, entities}。
 
     建议卡自称证据充分却给不出题目与角度：降为观察也不硬凑。观察卡沿用
     热点原文作题目（不编片名），认领/列表仍可用。坏输出返回 None。
+    entities = verdict 从证据中抽取的具名实体（实体图谱的进料）。
     """
     if not isinstance(card_raw, dict):
         return None
@@ -864,6 +918,22 @@ def parse_verdict(
         angles = []
     raw_gaps = card_raw.get("gaps")
     gaps = [str(g).strip() for g in raw_gaps if str(g).strip()] if isinstance(raw_gaps, list) else []
+    # 实体抽取（图谱进料）：kind/name 校验，只留证据里具名的，上限 5 条
+    entities: list[dict[str, Any]] = []
+    raw_entities = card_raw.get("entities")
+    if isinstance(raw_entities, list):
+        for ent in raw_entities:
+            if not isinstance(ent, dict):
+                continue
+            ent_kind = str(ent.get("kind") or "").strip().lower()
+            ent_name = str(ent.get("name") or "").strip()
+            if ent_kind in ENTITY_KINDS and ent_name:
+                entities.append(
+                    {"kind": ent_kind, "name": ent_name, "summary": str(ent.get("summary") or "").strip()[:200]}
+                )
+            if len(entities) >= 5:
+                break
+    chosen_template = str(card_raw.get("chosen_template") or "").strip()
     research: dict[str, Any] = {
         "evidence_level": "strong" if worth_it else "thin",
         "event": str(card_raw.get("event") or "").strip(),
@@ -873,6 +943,10 @@ def parse_verdict(
         "gaps": gaps,
         "source_map": research_log,
     }
+    if chosen_template:
+        research["chosen_template"] = chosen_template
+    if angle_options:
+        research["angle_options"] = angle_options
     if emotion:
         research["emotion"] = emotion
     if person_anchor:
@@ -889,6 +963,7 @@ def parse_verdict(
         "summary": summary,
         "angles": angles[:3],
         "research": research,
+        "entities": entities,
     }
 
 
@@ -956,6 +1031,28 @@ def _evidence_of(item: dict[str, Any]) -> dict[str, Any]:
         "provider": item.get("provider") or "",
         "fetched_at": item.get("fetched_at"),
     }
+
+
+def _register_entities(topic_id: str, ents: list[dict[str, Any]], heat_items: list[dict[str, Any]]) -> int:
+    """把 verdict 抽出的实体落实体库并与选题卡关联；单实体失败只记日志。
+
+    实体证据底账用本簇信号条目（标题+链接），上限 10 条。
+    """
+    evidence = [{"title": str(it.get("title") or ""), "url": str(it.get("url") or "")} for it in heat_items][:10]
+    linked = 0
+    for ent in ents[:5]:
+        try:
+            row = entity_store.upsert_entity(
+                str(ent.get("kind") or ""),
+                str(ent.get("name") or ""),
+                summary=str(ent.get("summary") or ""),
+                evidence=evidence,
+            )
+            entity_store.link_topic(topic_id, row["id"])
+            linked += 1
+        except Exception as exc:  # noqa: BLE001 - 单实体失败不拖累落卡
+            logger.warning("实体登记失败 name=%s: %s", str(ent.get("name") or "")[:30], str(exc)[:120])
+    return linked
 
 
 def extract_json(text: str) -> Any:

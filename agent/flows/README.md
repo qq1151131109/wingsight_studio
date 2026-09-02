@@ -28,8 +28,9 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `topic-triage.json` | 选题研判 | 多源信号条目（material/validated/benchmark/anniversary 四类研判方式）→ 聚类+判垂类（垂类清单随载荷下发，注册表见 `topic_pool.VERTICAL_SPECS`）+价值排序的短名单（选题池管线第 1 步） | `LANGFLOW_TOPIC_TRIAGE_FLOW_ID` | 无（载荷走 input_value JSON） |
 | `topic-research-plan.json` | 选题调研规划 | 热点+研判线索 → ≤4 条覆盖证据面的检索查询（第 2 步） | `LANGFLOW_TOPIC_PLAN_FLOW_ID` | 无（同上） |
 | `topic-research-followup.json` | 选题调研追查 | 已执行检索记录 → 判断证据是否足够，不足给 ≤3 条追加查询（第 3 步） | `LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID` | 无（同上） |
-| `topic-verdict.json` | 选题两级结论 | 研判线索+调研证据 → 建议卡或观察卡（证据驱动，信源纪律；第 4 步） | `LANGFLOW_TOPIC_VERDICT_FLOW_ID` | 无（同上） |
+| `topic-verdict.json` | 选题两级结论 | 研判线索+调研证据(+angleOptions 候选角度) → 建议卡或观察卡（证据驱动+角度择优+entities 实体抽取；第 4 步） | `LANGFLOW_TOPIC_VERDICT_FLOW_ID` | 无（同上） |
 | `topic-rescan-plan.json` | 选题复查规划 | 观察卡缺口+已核实事实 → ≤3 条冲着缺口去的复查查询（观察卡复查第 1 步；复查的追查/结论复用 followup/verdict） | `LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID` | 无（同上） |
+| `topic-angle-gen.json` | 选题角度生成 | 研判线索+调研证据 → 2-3 个爆款角度模板×具体切口的候选方案（verdict 带 angleOptions 择优成卡，缺配时 verdict 自选角度） | `LANGFLOW_TOPIC_ANGLE_FLOW_ID` | 无（同上） |
 
 注：三个分类型拆解 flow 由 agent 三路并发调用（`/assets/decompose`），各自
 输出小、按类型定制提示词、单类失败不拖累其他；未配置三类变量时回落到

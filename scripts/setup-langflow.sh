@@ -178,6 +178,7 @@ FLOWS = {
     "topic-research-followup.json": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",
     "topic-verdict.json": "LANGFLOW_TOPIC_VERDICT_FLOW_ID",
     "topic-rescan-plan.json": "LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID",
+    "topic-angle-gen.json": "LANGFLOW_TOPIC_ANGLE_FLOW_ID",
     "promo-copy.json": None,
 }
 skills_idx = next((i for i, l in enumerate(lines) if l.startswith("LANGFLOW_SKILLS_JSON=")), None)

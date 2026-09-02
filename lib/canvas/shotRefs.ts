@@ -12,7 +12,8 @@
 
 import type { ShotRow, WingEdge, WingNode } from "./store";
 
-const ASSET_TYPES = ["character", "scene", "prop", "costume"];
+/** 资产卡四类型（角色/场景/道具/服饰）——引用解析与建卡防重共用 */
+export const ASSET_TYPES = ["character", "scene", "prop", "costume"];
 
 /** Look 图卡判定：image 卡且有来自资产卡的连线 = 派生参考图（一张卡一张图
  *  重构后，造型变体都是这种卡），可被行内 @ 引用当一致性参考。

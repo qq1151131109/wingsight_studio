@@ -14,6 +14,7 @@ import tempfile
 from pathlib import Path
 
 import topics as store
+import entities as entity_store
 import tikhub
 import topic_pool
 import wikiday
@@ -25,11 +26,14 @@ from topic_pool import TopicCurator, TopicRefreshService, auto_refresh_tick, get
 _tmp = Path(tempfile.mkdtemp(prefix="wstopic-test-"))
 store.DB_PATH = _tmp / "test.db"
 store.init_topics_db()
+entity_store.DB_PATH = _tmp / "test.db"
+entity_store.init_entities_db()
 os.environ["LANGFLOW_TOPIC_TRIAGE_FLOW_ID"] = "f-triage"
 os.environ["LANGFLOW_TOPIC_PLAN_FLOW_ID"] = "f-plan"
 os.environ["LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID"] = "f-followup"
 os.environ["LANGFLOW_TOPIC_VERDICT_FLOW_ID"] = "f-verdict"
 os.environ["LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID"] = "f-rescan-plan"
+os.environ["LANGFLOW_TOPIC_ANGLE_FLOW_ID"] = "f-angle"
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -263,7 +267,14 @@ VERDICT_THIN = {
     "event": "经办人接受采访称有疑点",
     "gaps": ["无官方定性"],
     "observation": "等官方通报再立项",
+    "entities": [{"kind": "case", "name": "某悬案", "summary": ""}],
 }
+
+# 角度生成器的候选方案输出
+ANGLE_OUT = [
+    {"template": "一件物", "angle": "以一片刻辞甲骨为透镜看商周之争", "viewing_question": "一片甲骨能改写年表吗", "unit_kind": "object"},
+    {"template": "一个人", "angle": "发掘负责人的三十年田野", "viewing_question": "一个人怎么啃一块遗址", "unit_kind": "person"},
+]
 
 # 复查（rescan）verdict 的输出：仍薄 → 升级场景再改写为强证据
 RESCAN_VERDICT = {
@@ -283,6 +294,9 @@ async def fake_flow_runner(flow_id: str, input_value: str) -> str:
     if flow_id == "f-plan":
         assert set(payload) == {"title", "theme", "reason"}, "规划载荷字段"
         return json.dumps([{"label": "事件核实", "query": f"{payload['title']} 经过"}], ensure_ascii=False)
+    if flow_id == "f-angle":
+        assert set(payload) == {"title", "theme", "evidencePack"}, "角度载荷字段"
+        return json.dumps(ANGLE_OUT, ensure_ascii=False)
     if flow_id == "f-rescan-plan":
         assert set(payload) == {"title", "event", "gaps", "observation"}, "复查规划载荷字段"
         return json.dumps([{"label": "缺口核查", "query": f"{payload['title']} 官方通报"}], ensure_ascii=False)
@@ -294,7 +308,15 @@ async def fake_flow_runner(flow_id: str, input_value: str) -> str:
         if str(payload.get("reason", "")).startswith("观察卡复查"):
             assert "先前观察" in payload.get("priorContext", ""), "复查结论应带先前观察上下文"
             return json.dumps(RESCAN_VERDICT, ensure_ascii=False)
-        return json.dumps(VERDICT_STRONG if "甲骨" in payload["title"] else VERDICT_THIN, ensure_ascii=False)
+        if "甲骨" in payload["title"]:
+            assert "angleOptions" in payload, "角度 flow 已配置时结论载荷应带候选角度"
+            out = dict(VERDICT_STRONG, chosen_template="一件物", entities=[
+                {"kind": "object", "name": "刻辞甲骨", "summary": "遗址出土甲骨百余片"},
+                {"kind": "person", "name": "徐廷", "summary": "长白山遗址群负责人"},
+                {"kind": "plant", "name": "不该收的种类", "summary": ""},
+            ])
+            return json.dumps(out, ensure_ascii=False)
+        return json.dumps(VERDICT_THIN, ensure_ascii=False)
     raise AssertionError(f"未知 flow: {flow_id}")
 
 
@@ -427,6 +449,17 @@ async def run_pipeline() -> None:
     thin = [c for c in cards if c["research"].get("evidence_level") != "strong"]
     expect(len(strong) == 1 and len(thin) == 2, f"池内应一强两弱：{len(strong)}/{len(thin)}")
     expect(any(c["vertical"] == "science" for c in thin), "science 垂类应贯通落库")
+
+    # 角度生成器 + 实体登记贯通
+    expect(strong[0]["research"].get("chosen_template") == "一件物", "择优角度应入 research")
+    expect(strong[0]["research"].get("angle_options"), "候选角度应留痕供回看")
+    ents = entity_store.list_entities()
+    by_name = {e["name"]: e for e in ents}
+    expect(set(by_name) == {"刻辞甲骨", "徐廷", "某悬案"}, f"实体应归一入库（非法 kind 丢弃）：{sorted(by_name)}")
+    expect(by_name["某悬案"]["topicCount"] == 2, "两张薄卡的同名实体应归一计数")
+    strong_ents = entity_store.entities_for_topic(strong[0]["id"])
+    expect({e["name"] for e in strong_ents} == {"刻辞甲骨", "徐廷"}, "建议卡应关联其抽取实体")
+    expect(len(entity_store.topics_for_entity(by_name["某悬案"]["id"])) == 2, "实体页应回链关联选题")
     strong_map = strong[0]["research"]["source_map"]
     probe_entries = [e for e in strong_map if str(e.get("label", "")).startswith("同题实查:")]
     expect(len(probe_entries) == 2, f"市场实查条目应进证据包：{len(probe_entries)}")
@@ -557,6 +590,22 @@ store.mark_rescanned(t_res["id"])
 expect(store.list_rescan_candidates(3) == [], "复查后应再次被冷却挡住")
 
 print("store 复查语义 ✓")
+
+# ---------- 实体库 store：归一 / 别名 / 证据底账 ----------
+
+e1 = entity_store.upsert_entity("person", "张德芳", summary="悬泉汉简整理人", evidence=[{"title": "报道A", "url": "https://e.com/a"}])
+e2 = entity_store.upsert_entity("person", "张德芳", summary="", evidence=[{"title": "报道B", "url": "https://e.com/b"}, {"title": "报道A重发", "url": "https://e.com/a"}])
+expect(e1["id"] == e2["id"], "同名同类型应归一")
+expect(e2["summary"] == "悬泉汉简整理人", "已有 summary 不被空值覆盖")
+expect(len(e2["evidence"]) == 2, "证据应按 url 去重追加")
+e3 = entity_store.upsert_entity("person", "老张", aliases=["张德芳"], summary="")
+expect(e3["id"] == e1["id"], "别名命中应归一到同一实体")
+expect("老张" in e3["aliases"], "新名应并入别名")
+expect(entity_store.upsert_entity("object", "张德芳")["id"] != e1["id"], "不同 kind 同名不归一")
+expect(entity_store.list_entities(kind="person", q="悬泉")[0]["name"] == "张德芳", "搜索应命中摘要")
+expect(len(entity_store.list_entities(kind="place")) == 0, "kind 筛选应生效")
+
+print("实体库 store ✓")
 
 
 # ---------- 观察卡复查管线：缺口导向 → 仍薄留痕 / 证据变硬升级 ----------

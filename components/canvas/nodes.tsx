@@ -70,7 +70,13 @@ import {
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { assetThumbUrl } from "@/lib/asset-thumb";
-import { isLookCard, preferLookRefs, resolveRowRefIds } from "@/lib/canvas/shotRefs";
+import { rewriteText } from "@/lib/textwrite";
+import {
+  ASSET_TYPES,
+  isLookCard,
+  preferLookRefs,
+  resolveRowRefIds,
+} from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
 import { downloadMedia } from "@/lib/download";
 import {
@@ -137,7 +143,8 @@ function createConnectedNode(sourceId: string, type: WingNodeType) {
   );
   const id = st.addNode({
     position: pos,
-    data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+    // 标题留空（占位符引导输入）：hint 文案当真名会污染资产名单/@引用/全名匹配
+    data: { nodeType: type, title: "", body: "" },
   });
   st.connect({ source: sourceId, target: id });
   useCanvasStore.getState().selectNodes([id]);
@@ -162,7 +169,7 @@ function createUpstreamNode(targetId: string, type: WingNodeType) {
   );
   const id = st.addNode({
     position: pos,
-    data: { nodeType: type, title: NODE_META[type].hint, body: "" },
+    data: { nodeType: type, title: "", body: "" },
   });
   st.connect({ source: id, target: targetId });
   useCanvasStore.getState().selectNodes([id]);
@@ -372,6 +379,19 @@ function CardShell({
   const handleDown = useRef<{ x: number; y: number } | null>(null);
   // agent 建卡后的瞬时高亮（选择器返回布尔，未命中的卡不重渲）
   const flashing = useCanvasStore((s) => s.flashIds.includes(id));
+  // 资产卡命名引导：FOCUS_EDIT 通道打开标题编辑并聚焦（手动建卡/素材库
+  // 建为资产后命令"先起名"——空名资产不进名单/候选，占位名会污染引用）
+  const isAsset = ASSET_TYPES.includes(String(data.nodeType));
+  const [titleForce, setTitleForce] = useState(false);
+  useEffect(() => {
+    if (!isAsset) return;
+    const onFocus = (e: Event) => {
+      if ((e as CustomEvent<FocusEditDetail>).detail?.nodeId === id)
+        setTitleForce(true);
+    };
+    window.addEventListener(FOCUS_EDIT_EVENT, onFocus);
+    return () => window.removeEventListener(FOCUS_EDIT_EVENT, onFocus);
+  }, [id, isAsset]);
   // LOD：低缩放时只留标题（布尔选择器，只有跨阈值才触发重渲）
   const tiny = useCanvasStore((s) => s.viewport.zoom < 0.5);
   const lod = useLod();
@@ -575,8 +595,38 @@ function CardShell({
         ) : (
           <Editable
             value={data.title}
-            onSave={(title, opts) => update({ title }, opts)}
-            placeholder="（无标题）"
+            onSave={(title, opts) => {
+              update({ title }, opts);
+              // 同类同名即时提醒（ai-moive 同名合并的轻量版）：重名会让
+              // @引用/资产名单绑定产生歧义（titleToId 后者覆盖前者），提示
+              // 定位人工处理，不强制
+              const t = title.trim();
+              if (!isAsset || !t) return;
+              const dup = useCanvasStore
+                .getState()
+                .nodes.find(
+                  (n) =>
+                    n.id !== id &&
+                    n.data.nodeType === data.nodeType &&
+                    (n.data.title as string)?.trim() === t,
+                );
+              if (
+                dup &&
+                window.confirm(
+                  `画布上已有同名${meta.label}「${t}」——@引用与出图名单会歧义。定位查看已有卡？`,
+                )
+              ) {
+                useCanvasStore.getState().selectNodes([dup.id]);
+                window.dispatchEvent(
+                  new CustomEvent(FOCUS_NODES_EVENT, {
+                    detail: { ids: [dup.id] },
+                  }),
+                );
+              }
+            }}
+            editingOn={titleForce}
+            onEditingEnd={() => setTitleForce(false)}
+            placeholder={isAsset ? `输入${meta.label}名` : "（无标题）"}
             className="min-w-0 flex-1 truncate text-xs font-medium text-text-2"
           />
         )}
@@ -748,6 +798,7 @@ function Editable({
   placeholder,
   fill,
   editingOn,
+  onEditingEnd,
   always,
 }: {
   value: string;
@@ -757,15 +808,21 @@ function Editable({
   multiline?: boolean;
   placeholder?: string;
   fill?: boolean;
-  /** 远程聚焦信号：命令此块把焦点移入正文（agent 建卡通道） */
+  /** 远程聚焦信号（FOCUS_EDIT 通道）：直接参与 open 渲染条件，命令此块
+   *  打开编辑并聚焦（agent 建卡/手动建资产卡的命名引导） */
   editingOn?: boolean;
+  /** editingOn 打开的编辑在失焦收尾后回调（宿主复位信号，避免编辑框常开） */
+  onEditingEnd?: () => void;
   /** 常驻编辑：不经过展示态，永远是输入框 */
   always?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // 打开状态：常驻卡恒开；双击进 editing；远程信号 editingOn 直接参与渲染
+  const open = always || editing || Boolean(editingOn);
 
-  // agent 建卡后的远程聚焦：常驻卡也要能被命令"光标就位"
+  // agent 建卡后的远程聚焦：textarea 由 open 条件渲染，挂载前 ref 为空——
+  // focusWhenVisible 的等挂载重试负责把光标落到字上
   useEffect(() => {
     if (!editingOn) return;
     return focusWhenVisible(ref);
@@ -783,6 +840,7 @@ function Editable({
 
   const commit = () => {
     setEditing(false);
+    if (editingOn) onEditingEnd?.();
     const next = (ref.current?.value ?? "").trim();
     if (next !== value) onSave(next);
   };
@@ -843,7 +901,7 @@ function Editable({
   // 常驻编辑：永远是输入框
   if (always) return renderTextarea("flat");
 
-  if (!editing) {
+  if (!open) {
     return (
       <div
         className={`group relative ${fill ? "flex min-h-0 flex-1 flex-col" : ""}`}
@@ -877,13 +935,18 @@ function makeUpdater(id: string) {
 }
 
 /** 聚焦直到真正落位：xyflow 新节点首帧 visibility:hidden（等待测量），
- *  此窗口内 focus() 静默失败。逐帧重试（上限 20 帧），返回取消函数。 */
+ *  此窗口内 focus() 静默失败；远程信号打开的编辑框还可能晚一帧才挂载
+ *  （ref 为 null）。都逐帧重试（上限 20 帧），返回取消函数。 */
 function focusWhenVisible(ref: React.RefObject<HTMLElement | null>) {
   let raf = 0;
   let tries = 0;
   const step = () => {
     const el = ref.current;
-    if (!el) return;
+    if (!el) {
+      if (++tries > 20) return;
+      raf = requestAnimationFrame(step);
+      return;
+    }
     el.focus();
     if (document.activeElement === el || ++tries > 20) return;
     raf = requestAnimationFrame(step);
@@ -1264,6 +1327,13 @@ const ASSET_BODY_PH = {
   prop: "形制 / 材质 / 色彩 / 使用痕迹",
   costume: "形制 / 材质 / 配色 / 工艺",
 } as const;
+/** 「AI 写设定」的类型模板：与占位符同一套维度（/text/rewrite 指令用） */
+const ASSET_WRITE_HINT: Record<keyof typeof ASSET_BODY_PH, string> = {
+  character: "外形与年龄感、性格气质、服装造型、说话方式",
+  scene: "空间布局、光线时段、氛围基调、陈设细节",
+  prop: "形制结构、材质、色彩、使用痕迹",
+  costume: "形制、材质、配色、工艺与纹样",
+};
 
 function AssetCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
@@ -1281,6 +1351,11 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [zoom, setZoom] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
+  // 「AI 写设定」直连管线（/text/rewrite）：空设定直接落正文，已有设定
+  // 先预览采用才覆盖（与文本卡撰写同规）
+  const [writing, setWriting] = useState(false);
+  const [writePreview, setWritePreview] = useState<string | null>(null);
+  const [writeMsg, setWriteMsg] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const lod = useLod();
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
@@ -1300,6 +1375,41 @@ function AssetCard({ data, id, selected }: NodeProps) {
           ].slice(-12),
         }
       : {};
+
+  /** AI 写设定（novanova 内联编辑 + ai-moive 字段模板的轻量合体）：
+   *  按资产类型模板 + 源剧本背景生成设定正文。上下文优先 assetSource
+   *  源卡（拆解来源的剧本/分镜表），回落画布第一张剧本卡 */
+  const writeSetting = async () => {
+    if (writing) return;
+    const title = String(d.title ?? "").trim();
+    if (!title) {
+      setWriteMsg("先给资产起名，AI 才能写设定");
+      return;
+    }
+    setWriting(true);
+    setWriteMsg("");
+    try {
+      const st = useCanvasStore.getState();
+      const srcId = typeof d.assetSource === "string" ? d.assetSource : "";
+      const src =
+        (srcId ? st.nodes.find((n) => n.id === srcId) : undefined) ??
+        st.nodes.find((n) => n.data.nodeType === "script");
+      const script = String((src?.data.body as string) ?? "").trim();
+      const style = st.projectStyle.trim();
+      const result = await rewriteText({
+        instruction: `你是影视美术设定师。为${NODE_META[kind].label}「${title}」写设定，覆盖：${ASSET_WRITE_HINT[kind]}。80 字内白描直给，不要客套与解释。${style ? `全局画风：${style}。` : ""}`,
+        body: "",
+        context: script ? `剧情背景（节选）：\n${script.slice(0, 600)}` : "",
+        model: String(d.textModel ?? "").trim() || undefined,
+      });
+      if (!String(d.body ?? "").trim()) update({ body: result });
+      else setWritePreview(result);
+    } catch (exc) {
+      setWriteMsg(exc instanceof Error ? exc.message : "AI 撰写失败");
+    } finally {
+      setWriting(false);
+    }
+  };
 
   /** AI 出主图（定妆照/概念图/设定图）：一张卡一张图。造型变体不再挂本卡
    *  （拆解自动出图链已物化成独立图片卡并连线），历史 looks 数据装载时迁移 */
@@ -1507,14 +1617,68 @@ function AssetCard({ data, id, selected }: NodeProps) {
         <p className="ws-detail mt-1 text-[10px] text-warn">{styleHint}</p>
       ) : null}
       {lod === "full" ? (
-        <Editable
-          value={d.body ?? ""}
-          onSave={(body, opts) => update({ body }, opts)}
-          multiline
-          always
-          placeholder={ASSET_BODY_PH[kind]}
-          className="ws-detail mt-1.5 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
-        />
+        writePreview ? (
+          <div className="ws-detail mt-1.5 rounded border border-accent-soft bg-surface-2 p-1.5">
+            <p className="max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2">
+              {writePreview}
+            </p>
+            <div className="mt-1 flex gap-1">
+              <button
+                type="button"
+                data-tip="用 AI 生成的设定覆盖当前正文（旧正文进撤销栈可恢复）" aria-label="采用覆盖"
+                className="nodrag rounded border border-accent bg-accent-dim px-1.5 py-0.5 text-[10px] font-medium text-text hover:bg-accent-soft"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  update({ body: writePreview });
+                  setWritePreview(null);
+                }}
+              >
+                采用覆盖
+              </button>
+              <button
+                type="button"
+                aria-label="放弃"
+                className="nodrag rounded border border-hairline px-1.5 py-0.5 text-[10px] text-text-3 hover:text-text"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setWritePreview(null);
+                }}
+              >
+                放弃
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="ws-detail mt-1.5 flex items-center justify-between gap-1">
+              <span className="text-[9px] text-text-4">设定</span>
+              <button
+                type="button"
+                disabled={writing}
+                data-tip="AI 按资产名与剧情背景补全设定（按类型模板：外形/材质/氛围…）；已有设定时先预览再采用" aria-label="AI 写设定"
+                className="nodrag flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void writeSetting();
+                }}
+              >
+                <Sparkles className="h-3 w-3" />
+                {writing ? "撰写中…" : "AI 写设定"}
+              </button>
+            </div>
+            <Editable
+              value={d.body ?? ""}
+              onSave={(body, opts) => update({ body }, opts)}
+              multiline
+              always
+              placeholder={ASSET_BODY_PH[kind]}
+              className="ws-detail mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+            />
+            {writeMsg ? (
+              <p className="ws-detail mt-1 text-[10px] text-danger">{writeMsg}</p>
+            ) : null}
+          </>
+        )
       ) : lod === "micro" && (d.body ?? "").trim() ? (
         <p className="mt-1.5 line-clamp-3 whitespace-pre-wrap text-[11px] leading-relaxed text-text-3">
           {d.body}
@@ -3639,13 +3803,7 @@ async function runBatchResearchForCard(
     onProgress("没有需要调研的资产（缺参考的缺图资产为 0）");
     return null;
   }
-  const searches = targets.length * 5 * 5; // ≤5 轮（自适应）× ≤5 查询（Serper 号池计次口径）
-  const estMin = Math.max(3, Math.ceil(targets.length / 100) * 4);
-  const ask =
-    targets.length === 1
-      ? `为「${targets[0].data.title}」调研参考图（约 1-2 分钟，消耗约 ${searches} 次搜索配额）？`
-      : `将为 ${targets.length} 个资产 100 路并发调研参考图（预计约 ${estMin} 分钟，消耗约 ${searches} 次搜索配额）。开始？`;
-  if (!window.confirm(ask)) return null;
+  // 直接开跑（调研可中途放弃、号池按量计费，无需确认弹窗打断）
   onProgress(`批量调研中 0/${targets.length}…`);
   return runBatchRefResearch(
     projectId,

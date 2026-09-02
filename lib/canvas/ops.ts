@@ -220,7 +220,9 @@ export function applyOps(rawOps: unknown): OpResult {
               : {}),
             data: {
               nodeType: op.nodeType,
-              title: (op.title ?? NODE_META[op.nodeType].hint).slice(0, 80),
+              // 标题缺省留空：占位文案当真名会污染资产名单/@引用（agent
+              // 建资产卡必须给业务名，不给就空着让用户命名）
+              title: (op.title ?? "").slice(0, 80),
               body: op.body ?? "",
               ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
               ...(op.videoUrl !== undefined ? { videoUrl: op.videoUrl } : {}),
