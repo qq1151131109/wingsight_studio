@@ -35,6 +35,10 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `research-extract.json` | 调研提纯 | 页面正文/摘要 → 相关性+来源分类（一手史料/学术/可靠媒体/自媒体/百科辞书/其他）+≤8 条带引句事实；严禁补写 content 外内容 | `LANGFLOW_RESEARCH_EXTRACT_FLOW_ID` | 无（同上）；快模型 |
 | `research-evaluate.json` | 调研完整性评估 | 已提纯证据 → 是否可开写+缺口+换角度补搜词（轮间步，Skywork CompletenessEvaluation 范式） | `LANGFLOW_RESEARCH_EVAL_FLOW_ID` | 无（同上）；快模型 |
 | `research-dossier.json` | 调研卷宗撰写 | 来源底账+提纯事实 → 五段卷宗（叙事脊/已证实事实/真实争议双版本/风险/材料簇），全 S 编号引用；agent 侧逐条校验引用剔幻觉 | `LANGFLOW_RESEARCH_DOSSIER_FLOW_ID` | 无（同上）——出厂模型保质量 |
+| `script-review-compliance.json` | 剧本审查·合规 | 剧本全文+敏感词表参考底料（`agent/lexicons/sensitive-lexicon.txt`）→ 合规 findings（类目/严重度/依据/改写建议），语境判定不搞词表精确匹配 | `LANGFLOW_SCRIPT_COMPLIANCE_FLOW_ID` | 无（载荷走 input_value JSON） |
+| `script-review-consistency.json` | 剧本审查·一致性 | 剧本全文 → 内部矛盾 findings（人物/时间线/设定，双位置引文） | `LANGFLOW_SCRIPT_CONSISTENCY_FLOW_ID` | 无（同上） |
+| `script-review-fact-claims.json` | 剧本审查·事实抽取 | 剧本全文 → 可核查现实事实断言 ≤12 条（quote+检索用 claim） | `LANGFLOW_SCRIPT_FACTCLAIMS_FLOW_ID` | 无（同上） |
+| `script-review-fact-verdict.json` | 剧本审查·事实判定 | 断言+Serper 证据清单 → 逐条 verdict（true/false/uncertain/unverifiable，S 编号引用） | `LANGFLOW_SCRIPT_FACTVERDICT_FLOW_ID` | 无（同上） |
 
 注：三个分类型拆解 flow 由 agent 三路并发调用（`/assets/decompose`），各自
 输出小、按类型定制提示词、单类失败不拖累其他；未配置三类变量时回落到
@@ -53,6 +57,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `POST /styles/reverse` + `GET /styles/reverse/{jobId}` | 画风反推 | 我的画风「从参考图反推」：起任务返回 jobId，前端轮询。路由 `agent/style_routes.py`（CRUD 同文件），任务机制同 prompt-optimize |
 | `POST /projects/{pid}/refs/research` + `GET .../refs/research/{jobId}` | 参考图调研规划+终选 | 资产参考图调研全链路：AI 出词（手填可覆盖）→ 豆包搜图+Wikimedia 双渠道 → 候选下载落盘 → gpt-5.6-luna 看图终选（recommended 落库）。**异步任务**：前端轮询。候选增删/采纳走 `/projects/{pid}/refs/candidates*`（采纳建参考卡连线进参考序列）。编排 `agent/imgresearch.py`，路由 `agent/ref_routes.py` |
 | `POST /projects/{pid}/research` + `GET .../research/{jobId}`（另有 `.../confirm`、`.../cancel`、`.../gap`、`.../sources`） | 调研四 flow 全链 | 深度调研：发起即开题（观看问题+方向）→ 聊天里确认 → 多轮（Serper Google 网页搜索→原文抓取→提纯→完整性评估→补搜）→ 五段卷宗（叙事脊/事实边界/争议/风险/材料簇，S 编号引用）。**异步任务**：job 落 SQLite，重启标 interrupted、证据保留可 gap 补研续跑。聊天工具 `start_deep_research`/`confirm_research_plan`/`get_research_result`（graph.py）；前端调研卡（nodeType:"research"，凭 researchId 轮询）+ ResearchReader 阅读器。编排 `agent/research.py`，路由 `agent/research_routes.py`；单测 `agent/test_research.py` |
+| `POST /projects/{pid}/script-review` + `GET .../script-review/{jobId}`（另有 `?nodeId=` 最新摘要、`.../findings/{fid}/dismiss`、`.../cancel`） | 剧本审查四 flow | 剧本三维度审查：合规（敏感词表 `agent/lexicons/sensitive-lexicon.txt` 作参考底料+语境判定，不做代码层规则匹配）/ 一致性（内部矛盾双引文）/ 事实核查（抽断言 ≤12 → Serper 取证 → 逐条判定，属实不报）。**异步任务**：job 落 SQLite（review_jobs/review_findings），findings 带正文锚点（quote+字符区间），job 记 body_sha1 供前端比对标过期；单维度软失败明报，取消 1s 粒度打断在途 flow。前端剧本卡 footer「审查」+ reviewJobId 锚续链 + ScriptReviewDialog（master-detail 高亮定位/忽略/应用建议）。编排 `agent/script_review.py`，路由 `agent/script_review_routes.py`；回归 `scripts/script-review-test.mjs` |
 
 出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?}`
 （项目级出图设置，目录与校验见 `agent/models.py`，`GET /models/image` 下发），

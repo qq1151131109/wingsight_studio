@@ -121,6 +121,8 @@ import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 import RefResearchDialog from "./RefResearchDialog";
 import RefReviewDialog from "./RefReviewDialog";
+import ScriptReviewDialog from "./ScriptReviewDialog";
+import { getLatestScriptReviewCached, getScriptReview, type ReviewJob } from "@/lib/script-review";
 import {
   startBatchRefResearch,
   getBatchRefResearchJob,
@@ -419,6 +421,65 @@ function useBatchRefJob(nodeId: string) {
   return state.batchId === batchId && batchId
     ? { batchId, job: state.job, error: state.error, running: state.job?.status === "running" }
     : { batchId: undefined, job: null, error: "", running: false };
+}
+
+/**
+ * 剧本审查任务续链：reviewJobId 锚在卡数据上（useBatchRefJob 同式，无状态总线）。
+ * 移出视口卸载/刷新后凭锚续轮询；终态由 ScriptCard 清锚并弹审查弹窗。
+ */
+function useScriptReviewJob(nodeId: string) {
+  const reviewJobId = useCanvasStore(
+    (s) => s.nodes.find((n) => n.id === nodeId)?.data.reviewJobId,
+  );
+  const [state, setState] = useState<{
+    jobId: string;
+    job: ReviewJob | null;
+    error: string;
+  }>({ jobId: "", job: null, error: "" });
+  useEffect(() => {
+    if (!reviewJobId) return;
+    let alive = true;
+    void (async () => {
+      const projectId = useCanvasStore.getState().projectId;
+      if (!projectId) return;
+      // 容忍 5 次网络抖动；404（任务不存在，agent 已重启）立即明报终态
+      let misses = 0;
+      for (;;) {
+        try {
+          const j = await getScriptReview(projectId, reviewJobId);
+          if (!alive) return;
+          setState({ jobId: reviewJobId, job: j, error: "" });
+          if (j.status !== "queued" && j.status !== "running") return;
+          misses = 0;
+        } catch (exc) {
+          misses += 1;
+          if (!alive) return;
+          const msg = exc instanceof Error ? exc.message : "审查任务查询失败";
+          if (msg.includes("不存在") || misses >= 5) {
+            setState({ jobId: reviewJobId, job: null, error: msg });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 2500));
+        if (!alive) return;
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [reviewJobId, nodeId]);
+  // 锚已清后旧结果不外露（防旧终态重复触发面板）
+  return reviewJobId && state.jobId === reviewJobId
+    ? {
+        jobId: reviewJobId,
+        job: state.job,
+        error: state.error,
+        running:
+          state.job?.status === "running" ||
+          state.job?.status === "queued" ||
+          (!state.job && !state.error),
+      }
+    : { jobId: undefined, job: null as ReviewJob | null, error: "", running: false };
 }
 
 /** nano 档媒体兜底：类型色着色块（构图/规模可辨，图片解码缓存随卡释放） */
@@ -1229,6 +1290,41 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   const [reviewBatch, setReviewBatch] = useState<BatchRefJob | null>(null);
   // 批量调研续链：锚在卡数据上，移出视口卸载/刷新后恢复进度与终态面板
   const refJob = useBatchRefJob(id);
+  // 剧本审查续链：同式（终态清锚自动弹结果弹窗）
+  const reviewJob = useScriptReviewJob(id);
+  const [showReview, setShowReview] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState<number | null>(null);
+  /** 卡面角标（审查·N）：该卡最新一次审查的待处理数（缓存 10s，防平移重挂载请求雨） */
+  const refreshReviewCount = useCallback((force = false) => {
+    const pid = useCanvasStore.getState().projectId;
+    if (!pid) return;
+    void getLatestScriptReviewCached(pid, id, force)
+      .then((s) => setReviewOpen(s?.status === "done" ? s.openCount : null))
+      .catch(() => setReviewOpen(null));
+  }, [id]);
+  useEffect(() => {
+    refreshReviewCount();
+  }, [refreshReviewCount]);
+  // 审查收尾（含跨卸载恢复到的终态）：清锚 + 弹结果 + 刷角标
+  useEffect(() => {
+    const j = reviewJob.job;
+    if (!j || reviewJob.running) return;
+    useCanvasStore.getState().updateNodeData(id, { reviewJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      refreshReviewCount(true);
+      setShowReview(true);
+    })();
+  }, [reviewJob.job, reviewJob.running, id, refreshReviewCount]);
+  // 审查续链查询失败（任务不存在等）：清锚 + 明报
+  useEffect(() => {
+    if (!reviewJob.error) return;
+    useCanvasStore.getState().updateNodeData(id, { reviewJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setResearchMsg(reviewJob.error);
+    })();
+  }, [reviewJob.error, id]);
   // 调研收尾（含跨卸载恢复到的终态）：清锚 + 弹审阅面板
   useEffect(() => {
     const j = refJob.job;
@@ -1417,6 +1513,18 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             <button
               type="button"
               disabled={empty}
+              data-tip="AI 审查剧本：合规（敏感内容）/ 一致性（内部矛盾）/ 事实核查（联网取证）→ 问题清单，可定位/忽略/一键改写" aria-label="剧本审查"
+              className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowReview(true);
+              }}
+            >
+              {reviewJob.running ? "审查中…" : reviewOpen !== null ? `审查·${reviewOpen}` : "审查"}
+            </button>
+            <button
+              type="button"
+              disabled={empty}
               data-tip="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）" aria-label="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
               className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-accent bg-accent-dim px-2 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
               onClick={(e) => {
@@ -1451,6 +1559,17 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               projectId={useCanvasStore.getState().projectId ?? ""}
               batch={reviewBatch}
               onClose={() => setReviewBatch(null)}
+            />
+          ) : null}
+          {showReview ? (
+            <ScriptReviewDialog
+              projectId={useCanvasStore.getState().projectId ?? ""}
+              nodeId={id}
+              jobId={reviewJob.jobId}
+              onClose={() => {
+                setShowReview(false);
+                refreshReviewCount(true);
+              }}
             />
           ) : null}
         </>

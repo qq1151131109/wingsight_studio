@@ -151,6 +151,9 @@ export interface WingNodeData {
   /** 剧本卡/分镜表卡：进行中的批量调研参考图任务（卡片被 onlyRenderVisibleElements
    *  卸载或刷新后凭它续轮询、终态照弹审阅面板，完事即清） */
   refBatchJobId?: string;
+  /** 剧本卡：进行中的剧本审查任务（useScriptReviewJob 续轮询，终态清锚并弹
+   *  审查弹窗；findings 真相在 agent review_jobs 表，不在画布数据里存档） */
+  reviewJobId?: string;
   /** 调研卡：深度调研任务 id（卡面是任务实况的视图：进度/卷宗摘要；
    *  正文真相在 agent research_jobs 表，卡片凭它轮询，不在画布数据里存档） */
   researchId?: string;
