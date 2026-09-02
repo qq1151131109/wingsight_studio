@@ -6,35 +6,42 @@ import {
   ArrowLeft,
   Check,
   Copy,
+  Globe,
   KeyRound,
   Loader2,
   Plus,
   ShieldCheck,
+  Trash2,
   Users,
 } from "lucide-react";
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import { getAuthSession, peekAuthSession } from "@/lib/auth-session";
 import {
+  addSerperKeys,
   createAdminUser,
   createApiKey,
   deleteApiKey,
+  deleteSerperKey,
   listAdminUsers,
   listApiKeys,
+  listSerperKeys,
   patchAdminUser,
   type AdminUser,
   type ApiKeyCreated,
   type ApiKeyMeta,
+  type SerperKeyMeta,
 } from "@/lib/admin";
 
 /**
  * 管理后台（信息架构照搬 juben AdminUsersPage + ApiKeysTab，纸感重写）：
  *  - 用户管理：统计 / 建号（用户名+密码+角色）/ 改角色 / 停用启用 / 重置密码
  *  - API Key：创建（明文仅展示一次，可复制）/ 列表 / 吊销
+ *  - Serper 号池：参考图调研的 Google 搜索 key 池（批量录入，额度耗尽自动作废）
  * 认证关闭时匿名 admin 也可用（单人管理自己的 API Key）。
  */
 
-type Tab = "users" | "apikeys";
+type Tab = "users" | "apikeys" | "serper";
 
 function AdminInner() {
   const router = useRouter();
@@ -91,6 +98,7 @@ function AdminInner() {
               [
                 { id: "users", label: "用户", icon: <Users className="h-3.5 w-3.5" /> },
                 { id: "apikeys", label: "API Key", icon: <KeyRound className="h-3.5 w-3.5" /> },
+                { id: "serper", label: "Serper 号池", icon: <Globe className="h-3.5 w-3.5" /> },
               ] as const
             ).map(({ id, label, icon }) => (
               <button
@@ -111,7 +119,13 @@ function AdminInner() {
         </div>
       </header>
       <main className="mx-auto max-w-4xl px-6 py-6">
-        {tab === "users" ? <UsersTab /> : <ApiKeysTab />}
+        {tab === "users" ? (
+          <UsersTab />
+        ) : tab === "apikeys" ? (
+          <ApiKeysTab />
+        ) : (
+          <SerperPoolTab />
+        )}
       </main>
     </div>
   );
@@ -590,5 +604,174 @@ export default function AdminPage() {
     <AuthGate>
       <AdminInner />
     </AuthGate>
+  );
+}
+
+// ==================== Serper 号池 ====================
+
+function SerperPoolTab() {
+  const [keys, setKeys] = useState<SerperKeyMeta[] | null>(null);
+  const [active, setActive] = useState(0);
+  const [draft, setDraft] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [error, setError] = useState("");
+  const [deleting, setDeleting] = useState<SerperKeyMeta | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await listSerperKeys();
+      setKeys(r.keys);
+      setActive(r.active);
+      setError("");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "读取失败");
+      setKeys([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      const r = await listSerperKeys().catch(() => null);
+      if (!alive) return;
+      if (r) {
+        setKeys(r.keys);
+        setActive(r.active);
+        setError("");
+      } else {
+        setError("读取失败");
+        setKeys([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const add = async () => {
+    if (!draft.trim() || adding) return;
+    setAdding(true);
+    setMsg("");
+    setError("");
+    try {
+      const r = await addSerperKeys(draft);
+      setMsg(`已入池 ${r.added} 个 key${r.duplicated ? `（跳过重复 ${r.duplicated} 个）` : ""}`);
+      setDraft("");
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "添加失败");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const remove = async (k: SerperKeyMeta) => {
+    try {
+      await deleteSerperKey(k.id);
+      await refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "删除失败");
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h2 className="mb-1 text-sm font-semibold text-text">Serper 号池</h2>
+        <p className="text-[11px] leading-relaxed text-text-3">
+          资产参考图调研的 Google 搜索 key 池（serper.dev，注册送 2500 次/号）。
+          调用时轮转分摊；key 额度耗尽或无效会<b>自动作废</b>（无需手动处理），
+          当前可用 <b className="text-accent">{active}</b> 个。
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-hairline bg-surface-1 p-4">
+        <h3 className="mb-2 text-xs font-semibold text-text-2">批量入池</h3>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={"每行一个 API key，可一次粘贴多个账号：\n614900e80d6d00…\n7a2b…"}
+          rows={4}
+          className="w-full resize-none rounded-md border border-hairline bg-surface-2/60 p-2 font-mono text-xs text-text outline-none focus:border-accent placeholder:text-text-4"
+        />
+        <div className="mt-2 flex items-center justify-between">
+          <p className="text-[10px] text-text-4">key 只存服务端，列表仅显示打码</p>
+          <button
+            type="button"
+            disabled={!draft.trim() || adding}
+            onClick={() => void add()}
+            className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-surface-1 transition-opacity hover:opacity-90 disabled:opacity-50"
+          >
+            {adding ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+            入池
+          </button>
+        </div>
+        {msg ? <p className="mt-2 text-[11px] text-accent">{msg}</p> : null}
+        {error ? <p className="mt-2 text-[11px] text-danger">{error}</p> : null}
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-hairline">
+        <table className="w-full text-left text-xs">
+          <thead className="border-b border-hairline bg-surface-2/60 text-[10px] text-text-3">
+            <tr>
+              <th className="px-3 py-2 font-medium">Key</th>
+              <th className="px-3 py-2 font-medium">状态</th>
+              <th className="px-3 py-2 font-medium">已用次数</th>
+              <th className="px-3 py-2 font-medium">入池时间</th>
+              <th className="px-3 py-2 font-medium">作废时间</th>
+              <th className="px-3 py-2" />
+            </tr>
+          </thead>
+          <tbody>
+            {(keys ?? []).map((k) => (
+              <tr key={k.id} className="border-b border-hairline-soft last:border-0">
+                <td className="px-3 py-2 font-mono text-text-2">{k.masked}</td>
+                <td className="px-3 py-2">
+                  {k.status === "active" ? (
+                    <span className="rounded bg-accent-dim px-1.5 py-0.5 text-[10px] font-medium text-accent">可用</span>
+                  ) : (
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-text-4">已作废</span>
+                  )}
+                </td>
+                <td className="px-3 py-2 tabular-nums text-text-2">{k.usedCount}</td>
+                <td className="px-3 py-2 text-text-3">{k.createdAt?.slice(5, 16).replace("T", " ") || "—"}</td>
+                <td className="px-3 py-2 text-text-3">{k.exhaustedAt?.slice(5, 16).replace("T", " ") || "—"}</td>
+                <td className="px-3 py-2 text-right">
+                  <button
+                    type="button"
+                    onClick={() => setDeleting(k)}
+                    data-tip="从号池删除" aria-label="从号池删除"
+                    className="rounded-md p-1 text-text-4 transition-colors hover:bg-danger/10 hover:text-danger"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </td>
+              </tr>
+            ))}
+            {keys && keys.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-3 py-6 text-center text-text-4">
+                  号池为空：粘贴 key 入池后，调研搜索即可使用
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+
+      {deleting ? (
+        <ConfirmDialog
+          title="删除号池 key"
+          message={`确定删除 ${deleting.masked}？删除后立即不再使用。`}
+          confirmText="删除"
+          danger
+          onConfirm={() => void remove(deleting)}
+          onCancel={() => setDeleting(null)}
+        />
+      ) : null}
+    </section>
   );
 }

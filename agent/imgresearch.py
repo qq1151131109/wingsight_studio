@@ -1,9 +1,9 @@
-"""资产参考图调研：豆包搜图（火山）+ Wikimedia Commons 双渠道搜图，
-候选下载落盘入库，调研任务异步 job + 轮询（Next 同源代理 30s 掐断，不能阻塞）。
+"""资产参考图调研：Serper 号池（Google 图片搜索）搜图，候选下载落盘入库，
+调研任务异步 job + 轮询（Next 同源代理 30s 掐断，不能阻塞）。
 
-一期人工筛选：搜回的候选由用户在面板勾选采纳，不做视觉模型自动复核。
-渠道错误各自明报（errors 进任务结果），不静默降级——豆包 key 未配/额度尽
-与 wikimedia 网络故障都能从面板看到。
+搜索词由 planner flow 生成（手填可覆盖），LLM 终选推荐；采纳权在用户。
+号池 round-robin 轮转，401/403（无效/额度耗尽）自动作废换下一个 key，
+429 限速换 key 重试；号池管理在 /api/v1/serper-keys（管理后台）。
 """
 
 from __future__ import annotations
@@ -27,13 +27,14 @@ ASSET_BASE_URL = os.environ.get("ASSET_BASE_URL", "http://127.0.0.1:8123")
 
 DB_PATH = Path(__file__).resolve().parent / "data" / "wingsight.db"
 
-# 豆包 SearchType=image 单次最多 5 条（接口上限）
-VOLC_MAX_PER_QUERY = 5
-# Commons API gsrlimit 上限 50，取 16 保查询速度
-WIKIMEDIA_MAX_PER_QUERY = 16
-# 单次调研任务最多入库候选数：2 轮 × 5 查询（豆包 25 + wikimedia 80/轮，
-# 去重后 ~100）；终选模型 gpt-5.6-luna 上游单请求限 50 张图，分 2 批跑
-MAX_CANDIDATES_PER_JOB = 100
+# Serper /images 单次最多 10 条（接口上限）
+SERPER_MAX_PER_QUERY = 10
+# 迭代轮数上限（质量优先）：每轮结束 planner 依据全部轮次历史判 enough，
+# 不够则换角度补搜；上限只是防失控安全网，通常 2-3 轮即够
+MAX_RESEARCH_ROUNDS = 5
+# 单次调研任务最多入库候选数：5 轮 × 5 查询 × 10 条（去重后 ≤250）；
+# 终选模型 gpt-5.6-luna 上游单请求限 50 张图，自动分批跑
+MAX_CANDIDATES_PER_JOB = 250
 # 采纳上限：对齐出图模型参考图上限的宽顶（seedream-5-pro 融合通道 10 张；
 # 具体模型的真实上限在出图时按 models.max_references 校验明报）
 MAX_ADOPT_PER_NODE = 10
@@ -52,7 +53,6 @@ _EXT_BY_MIME = {
 }
 # wikimedia UA 政策要求带联系信息，否则容易被限流
 _UA = "WingsightStudio/1.0 (reference-research; contact: admin@wingsight.local)"
-
 
 # ---------- 存储 ----------
 
@@ -166,195 +166,166 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-# ---------- 渠道一：豆包搜图（火山引擎 Custom 版） ----------
+# ---------- 搜索渠道：Serper 号池（serper.dev 中转的 Google 图片搜索） ----------
 
-_VOLC_ENDPOINT = "https://open.feedcoopapi.com/search_api/web_search"
-# ResponseMetadata.Error.CodeN → 业务错误分类（HTTP 200 也可能是业务错误）
-_VOLC_ERR_AUTH = {10401}
-_VOLC_ERR_UNCONFIGURED = {10402, 10403}
-_VOLC_ERR_QUOTA = {10406, 10412}
-_VOLC_ERR_RATE = {700429}
+_SERPER_IMAGES_ENDPOINT = "https://google.serper.dev/images"
+# 号池轮转指针（单事件循环，无需锁）
+_SERPER_RR = 0
 
 
-class _VolcRateLimited(ValueError):
-    """豆包限流（HTTP 429 / 业务码 700429）：可退避重试，与其他错误区分。"""
+def init_serper_pool_db() -> None:
+    with _conn() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS serper_keys (
+                id TEXT PRIMARY KEY,
+                api_key TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'active',
+                used_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                exhausted_at TEXT
+            );
+            """
+        )
 
 
-async def search_volc_images(query: str, limit: int = VOLC_MAX_PER_QUERY) -> list[dict[str, Any]]:
-    api_key = os.environ.get("VOLC_SEARCH_API_KEY", "").strip()
-    if not api_key:
-        raise ValueError("豆包搜图未配置：请在根目录 .env.local 填 VOLC_SEARCH_API_KEY")
-    payload = {"Query": query, "SearchType": "image", "Count": max(1, min(limit, VOLC_MAX_PER_QUERY))}
-    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _UA}
-    # 并发调研下 700429/429 会变常见，退避重试（2s/4s）再放弃明报
+def _active_serper_keys() -> list[sqlite3.Row]:
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT * FROM serper_keys WHERE status = 'active' ORDER BY created_at, id"
+        ).fetchall()
+
+
+def serper_pool_add_keys(keys: list[str]) -> dict[str, int]:
+    """批量入池（按 key 去重），返回 {added, duplicated}。"""
+    added = duplicated = 0
+    now = _now()
+    with _conn() as conn:
+        for k in keys:
+            k = k.strip()
+            if not k:
+                continue
+            if conn.execute("SELECT 1 FROM serper_keys WHERE api_key = ?", (k,)).fetchone():
+                duplicated += 1
+                continue
+            conn.execute(
+                "INSERT INTO serper_keys (id, api_key, status, used_count, created_at)"
+                " VALUES (?,?,'active',0,?)",
+                (uuid.uuid4().hex[:12], k, now),
+            )
+            added += 1
+    return {"added": added, "duplicated": duplicated}
+
+
+def serper_pool_list() -> list[dict[str, Any]]:
+    """号池清单（key 打码，绝不整串下发浏览器）。"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM serper_keys ORDER BY status, created_at"
+        ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "masked": (r["api_key"][:6] + "…" + r["api_key"][-4:]) if len(r["api_key"]) > 12 else "…",
+            "status": r["status"],
+            "usedCount": r["used_count"],
+            "createdAt": r["created_at"],
+            "exhaustedAt": r["exhausted_at"],
+        }
+        for r in rows
+    ]
+
+
+def serper_pool_delete(key_id: str) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM serper_keys WHERE id = ?", (key_id,))
+    return cur.rowcount > 0
+
+
+def _mark_serper_exhausted(key_id: str) -> None:
+    """额度耗尽/无效的 key 直接作废（号池语义：用完即弃）。"""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE serper_keys SET status = 'exhausted', exhausted_at = ?"
+            " WHERE id = ? AND status = 'active'",
+            (_now(), key_id),
+        )
+
+
+def _bump_serper_used(key_id: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE serper_keys SET used_count = used_count + 1 WHERE id = ?", (key_id,)
+        )
+
+
+async def search_serper_images(query: str, limit: int = SERPER_MAX_PER_QUERY) -> list[dict[str, Any]]:
+    """Google 图片搜索经 Serper 号池：结构化 imageUrl/宽高/来源域/来源页。
+
+    号池 round-robin 轮转：401/403 = key 无效或额度耗尽 → 该 key 自动作废
+    并立即换下一个；429 = 限速 → 换下一个 key 重试（不作废）。号池为空或
+    全部 key 不可用时明报（提示到管理后台补 key），不静默。"""
+    global _SERPER_RR
+    body = {"q": query, "num": max(1, min(limit, 10))}
+    actives = _active_serper_keys()
+    if not actives:
+        raise ValueError("Serper 号池为空：请在管理后台「Serper 号池」添加 API key（serper.dev，注册送 2500 次）")
     last_error: Exception | None = None
-    for attempt in range(_MAX_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
-                resp = await client.post(_VOLC_ENDPOINT, headers=headers, json=payload)
-            if resp.status_code == 429:
-                raise _VolcRateLimited(f"豆包搜图请求受限（HTTP 429）")
-            try:
-                data = resp.json()
-            except ValueError as exc:
-                raise ValueError(f"豆包搜图返回非 JSON（HTTP {resp.status_code}）") from exc
-            if not isinstance(data, dict):
-                raise ValueError("豆包搜图返回格式异常")
-            meta = data.get("ResponseMetadata")
-            if isinstance(meta, dict) and isinstance(meta.get("Error"), dict):
-                err = meta["Error"]
-                code_raw = err.get("CodeN")
-                try:
-                    code = int(code_raw) if code_raw is not None else None
-                except (TypeError, ValueError):
-                    code = None
-                msg = str(err.get("Message") or "")
-                if code in _VOLC_ERR_AUTH:
-                    raise ValueError(f"豆包搜图鉴权失败（{code}）：{msg}")
-                if code in _VOLC_ERR_QUOTA:
-                    raise ValueError(f"豆包搜图额度不足（{code}）：{msg}")
-                if code in _VOLC_ERR_RATE:
-                    raise _VolcRateLimited(f"豆包搜图请求受限（{code}）：{msg}")
-                if code in _VOLC_ERR_UNCONFIGURED:
-                    raise ValueError(f"豆包搜图服务未开通（{code}）：{msg}")
-                raise ValueError(f"豆包搜图失败（{code}）：{msg}")
-            break
-        except _VolcRateLimited as exc:
-            last_error = exc
-            if attempt < _MAX_ATTEMPTS - 1:
-                await asyncio.sleep(2.0 * (attempt + 1))
+    # 尝试遍历一圈活 key（429/作废换 key 在同一轮里消化）
+    for _ in range(len(actives)):
+        _SERPER_RR = (_SERPER_RR + 1) % len(actives)
+        entry = actives[_SERPER_RR]
+        headers = {"X-API-KEY": entry["api_key"], "Content-Type": "application/json"}
+        async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
+            resp = await client.post(_SERPER_IMAGES_ENDPOINT, headers=headers, json=body)
+        if resp.status_code in (401, 403):
+            # 无效 key / 额度耗尽：作废并换下一个（号池语义）
+            _mark_serper_exhausted(entry["id"])
+            last_error = ValueError(
+                f"Serper key {entry['api_key'][:6]}… 已作废（HTTP {resp.status_code}：无效或额度耗尽）"
+            )
+            actives = _active_serper_keys()
+            if not actives:
+                break
+            _SERPER_RR %= len(actives)
+            continue
+        if resp.status_code == 429:
+            # 限速：换 key 重试，不作废
+            last_error = ValueError("Serper 请求受限（HTTP 429）")
+            continue
+        if resp.status_code >= 400:
+            raise ValueError(f"Serper 搜索失败（HTTP {resp.status_code}）：{resp.text[:120]}")
+        _bump_serper_used(entry["id"])
+        data = resp.json()
+        images = data.get("images") if isinstance(data, dict) else None
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in images or []:
+            if not isinstance(item, dict):
                 continue
-            raise
-    if last_error is not None:
-        raise last_error
-    result = data.get("Result")
-    images = result.get("ImageResults") if isinstance(result, dict) else None
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in images or []:
-        if not isinstance(item, dict):
-            continue
-        info = item.get("Image")
-        if not isinstance(info, dict):
-            continue
-        url = str(info.get("Url") or "").strip()
-        if not url:
-            continue
-        key = _dedupe_key(url)
-        if key in seen:
-            continue
-        seen.add(key)
-        page_url = str(item.get("Url") or "").strip()
-        out.append(
-            {
-                "provider": "豆包搜图",
-                "title": str(item.get("Title") or "").strip() or url,
-                "sourceUrl": url,
-                "pageUrl": page_url,
-                "sourceDomain": _domain(url),
-                "width": _int_or_zero(info.get("Width")),
-                "height": _int_or_zero(info.get("Height")),
-            }
-        )
-        if len(out) >= limit:
-            break
-    return out
-
-
-# ---------- 渠道二：Wikimedia Commons（免 key，公版/自由版权图库） ----------
-
-_WIKIMEDIA_API = "https://commons.wikimedia.org/w/api.php"
-# 古籍扫描（CADAL 等）mime 以 image/ 开头但不是位图，不能进候选
-_NON_BITMAP_MIME = ("vnd.djvu", "x.djvu", "svg+xml")
-
-
-async def search_wikimedia_images(query: str, limit: int = WIKIMEDIA_MAX_PER_QUERY) -> list[dict[str, Any]]:
-    results = await _wikimedia_request(query, limit)
-    if results:
-        return results
-    # 0 结果降级：Commons 文件名以英文/专名为主，全文多词 AND 常无命中；
-    # intitle: 只匹配标题绕开 PDF 正文（juben 同款改写策略）
-    words = [w for w in re.split(r"[\s　]+", query.strip()) if w]
-    variants: list[str] = []
-    if len(words) >= 2:
-        variants.append(f"intitle:{words[0]} {words[1]}")
-    if words:
-        variants.append(f"intitle:{words[0]}")
-    for rewritten in variants:
-        results = await _wikimedia_request(rewritten, limit)
-        if results:
-            return results
-    return []
-
-
-async def _wikimedia_request(search_query: str, limit: int) -> list[dict[str, Any]]:
-    params: dict[str, Any] = {
-        "action": "query",
-        "generator": "search",
-        "gsrnamespace": 6,
-        "gsrsearch": search_query,
-        "gsrlimit": max(1, min(limit, 50)),
-        "prop": "imageinfo",
-        "iiprop": "url|size|mime",
-        "iiurlwidth": 300,
-        "format": "json",
-        "formatversion": 2,
-    }
-    headers = {"User-Agent": _UA}
-    data: dict[str, Any] = {}
-    for attempt in range(_MAX_ATTEMPTS):
-        try:
-            async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
-                resp = await client.get(_WIKIMEDIA_API, params=params, headers=headers)
-                resp.raise_for_status()
-                data = resp.json()
-            break
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in _RETRYABLE_STATUS and attempt < _MAX_ATTEMPTS - 1:
-                await asyncio.sleep(1.5 * (attempt + 1))
+            url = str(item.get("imageUrl") or "").strip()
+            if not url:
                 continue
-            raise
-    pages = (data.get("query") or {}).get("pages")
-    if not isinstance(pages, list):
-        return []
-    pages = [p for p in pages if isinstance(p, dict)]
-    pages.sort(key=lambda p: int(p.get("index") or 0))
-    out: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for page in pages:
-        title = str(page.get("title") or "")
-        infos = page.get("imageinfo")
-        if not isinstance(infos, list) or not infos or not isinstance(infos[0], dict):
-            continue
-        info = infos[0]
-        mime = str(info.get("mime") or "")
-        url = str(info.get("url") or "").strip()
-        if not url or not mime.startswith("image/"):
-            continue
-        if any(suffix in mime for suffix in _NON_BITMAP_MIME):
-            continue
-        key = _dedupe_key(url)
-        if key in seen:
-            continue
-        seen.add(key)
-        display = title.removeprefix("File:").strip() or url
-        page_url = str(info.get("descriptionurl") or "")
-        if not page_url and title:
-            page_url = f"https://commons.wikimedia.org/wiki/{title.replace(' ', '_')}"
-        out.append(
-            {
-                "provider": "wikimedia",
-                "title": display,
-                "sourceUrl": url,
-                "pageUrl": page_url,
-                "sourceDomain": _domain(page_url or url),
-                "width": _int_or_zero(info.get("width")),
-                "height": _int_or_zero(info.get("height")),
-            }
-        )
-        if len(out) >= limit:
-            break
-    return out
+            key = _dedupe_key(url)
+            if key in seen:
+                continue
+            seen.add(key)
+            page_url = str(item.get("link") or "").strip()
+            out.append(
+                {
+                    "provider": "google",
+                    "title": str(item.get("title") or "").strip() or url,
+                    "sourceUrl": url,
+                    "pageUrl": page_url,
+                    "sourceDomain": str(item.get("source") or "").strip() or _domain(page_url or url),
+                    "width": _int_or_zero(item.get("imageWidth")),
+                    "height": _int_or_zero(item.get("imageHeight")),
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+    raise last_error  # type: ignore[misc]
 
 
 # ---------- 下载落盘（外链有防盗链/时效，必须存本地才能喂出图） ----------
@@ -429,12 +400,12 @@ def start_research_job(
 # ---------- 批量调研（拆解链后对多个资产并发调研） ----------
 
 BATCH_JOBS: dict[str, dict[str, Any]] = {}
-# 10 路并发：每资产单跑约 60-120s，83 资产从 1.5-2.5 小时压到 15-25 分钟。
-# 渠道侧由各自的重试与全局下载信号量兜住（wikimedia 429 退避 / 豆包 700429 退避）
-BATCH_CONCURRENCY = 10
-# 跨任务全局下载并发：10 路调研各自的下载经同一信号量（否则 10×3=30 路
-# 叠加打爆 wikimedia，实测 429 会被打穿）
-_GLOBAL_DOWNLOAD_SEM = asyncio.Semaphore(8)
+# 100 路并发（serper 号池按 key 轮转承接 QPS；单 key 会被 429 打满，
+# 多 key 号池线性分摊——号池见 serper_keys 表/管理后台）
+BATCH_CONCURRENCY = 100
+# 跨任务全局下载并发：100 路调研的候选下载共享同一信号量（Google 图源
+# 域名分散，32 并发安全；过高会撞原站防盗链）
+_GLOBAL_DOWNLOAD_SEM = asyncio.Semaphore(32)
 
 
 def start_batch_research(
@@ -473,13 +444,15 @@ async def _run_batch(
     if batch is None:
         return
     sem = asyncio.Semaphore(BATCH_CONCURRENCY)
-    for i, a in enumerate(assets):
+
+    async def _run_one(i: int, a: dict[str, Any]) -> None:
         node_id = str(a.get("nodeId") or "")
         name = str(a.get("name") or "")
-        batch["current"] = name
         batch["items"][i]["status"] = "running"
-        try:
-            async with sem:
+        # 信号量在任务内抢：并发由它限（顺序循环里 async with 是串行的，
+        # 信号量形同虚设——首版踩坑：12 资产一个一个跑）
+        async with sem:
+            try:
                 job_id = start_research_job(
                     project_id,
                     node_id,
@@ -503,9 +476,15 @@ async def _run_batch(
                     )
                 else:
                     batch["items"][i].update(status="done", error="")
-        except Exception as exc:  # noqa: BLE001 单资产失败不中断整批
-            batch["items"][i].update(status="error", error=str(exc)[:160])
-        batch["done"] = i + 1
+            except Exception as exc:  # noqa: BLE001 单资产失败不中断整批
+                batch["items"][i].update(status="error", error=str(exc)[:160])
+        batch["done"] += 1
+        running = [
+            it["name"] for it in batch["items"] if it["status"] == "running"
+        ]
+        batch["current"] = "、".join(running[:3]) + ("…" if len(running) > 3 else "")
+
+    await asyncio.gather(*[_run_one(i, a) for i, a in enumerate(assets)])
     batch["status"] = "done"
     batch["current"] = ""
 
@@ -542,7 +521,7 @@ async def _run_research(
     rounds: list[dict[str, Any]] = []
     manual = bool(queries)
     try:
-        for round_num in (1, 2):
+        for round_num in range(1, MAX_RESEARCH_ROUNDS + 1):
             if round_num == 1:
                 # 首轮：手填词直用；AI 模式由 planner 出词
                 round_queries = queries if manual else (await skills.run_ref_plan_flow(asset, []))["queries"]
@@ -551,26 +530,26 @@ async def _run_research(
                 if plan["enough"]:
                     break
                 round_queries = plan["queries"]
+            round_start = len(merged)
             for query in round_queries:
-                channel_results = await asyncio.gather(
-                    _guarded(search_volc_images(query), "豆包搜图", errors),
-                    _guarded(search_wikimedia_images(query), "wikimedia", errors),
-                )
-                for items in channel_results:
-                    for item in items:
-                        key = _dedupe_key(item["sourceUrl"])
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        item["query"] = query
-                        merged.append(item)
-                await asyncio.sleep(1.0)  # 查询间隔，缓解 wikimedia API 限流
-            rounds.append({"queries": round_queries, "found": _rounds_summary(merged)})
+                items = await _guarded(search_serper_images(query), "google", errors)
+                for item in items:
+                    key = _dedupe_key(item["sourceUrl"])
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    item["query"] = query
+                    merged.append(item)
+                await asyncio.sleep(0.3)  # 查询间隔：单 job 内串行，号池在 100 并发 job 间轮转
+            # rounds 只记本轮增量摘要（多轮下累计摘要重复且撑长 planner 输入）
+            rounds.append(
+                {"queries": round_queries, "found": _rounds_summary(merged[round_start:])}
+            )
         if not merged:
             if errors:
                 raise RuntimeError("；".join(f"{k}：{v}" for k, v in errors.items()))
             job["status"] = "done"
-            job["error"] = "两个渠道都没有搜到候选图，请换个关键词"
+            job["error"] = "没有搜到候选图，请换个关键词"
             return
         merged = merged[:MAX_CANDIDATES_PER_JOB]
         # 并发下载走全局信号量（10 路调研共享 8 并发，防叠加打爆源站）；
@@ -614,13 +593,14 @@ async def _run_research(
         job["error"] = str(exc)[:300]
 
 
-def _rounds_summary(merged: list[dict[str, Any]]) -> str:
-    """已完成轮次的候选摘要（planner 判「够不够」的依据，抽样 15 条）。"""
-    if not merged:
+def _rounds_summary(items: list[dict[str, Any]], sample: int = 20) -> str:
+    """本轮新增候选的摘要（planner 判「够不够」的依据；只喂增量，防多轮
+    累积把 planner 输入撑长）。"""
+    if not items:
         return "无候选"
     return "；".join(
         f"{m.get('provider')}|{str(m.get('title') or '')[:40]}|{m.get('width')}x{m.get('height')}"
-        for m in merged[:15]
+        for m in items[:sample]
     )
 
 
@@ -697,7 +677,8 @@ async def _guarded(coro: Any, channel: str, errors: dict[str, str]) -> list[dict
     try:
         return await coro
     except Exception as exc:  # noqa: BLE001
-        errors[channel] = str(exc)[:160]
+        # 个别异常 str() 为空（httpx 某些超时类），兜底用类名避免空错误行
+        errors[channel] = (str(exc) or exc.__class__.__name__)[:160]
         return []
 
 

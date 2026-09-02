@@ -1,6 +1,6 @@
 "use client";
 
-/** 资产参考图调研客户端（豆包搜图 + wikimedia 双渠道，job + 轮询）。 */
+/** 资产参考图调研客户端（Google 搜索经 Serper 号池，job + 轮询）。 */
 
 import { apiFetch } from "@/lib/auth";
 

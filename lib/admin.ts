@@ -155,3 +155,44 @@ export async function removeCollaborator(pid: string, username: string): Promise
   if (!r.ok) throw new Error(`移除失败（${r.status}）`);
   return (await r.json()).collaborators;
 }
+
+// ---------- Serper 号池（调研搜索唯一渠道的 Google 搜索 key 池） ----------
+
+export interface SerperKeyMeta {
+  id: string;
+  masked: string;
+  status: "active" | "exhausted";
+  usedCount: number;
+  createdAt: string;
+  exhaustedAt: string | null;
+}
+
+export async function listSerperKeys(): Promise<{
+  keys: SerperKeyMeta[];
+  active: number;
+}> {
+  const r = await apiFetch(`${V1}/serper-keys`);
+  if (!r.ok) throw new Error(`读取号池失败（${r.status}）`);
+  return (await r.json()) as { keys: SerperKeyMeta[]; active: number };
+}
+
+export async function addSerperKeys(raw: string): Promise<{
+  added: number;
+  duplicated: number;
+}> {
+  const r = await apiFetch(`${V1}/serper-keys`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ keys: raw }),
+  });
+  if (!r.ok) {
+    const detail = (await r.text()) || `添加失败（${r.status}）`;
+    throw new Error(detail.slice(detail.indexOf(":") + 1) || detail);
+  }
+  return (await r.json()) as { added: number; duplicated: number };
+}
+
+export async function deleteSerperKey(id: string): Promise<void> {
+  const r = await apiFetch(`${V1}/serper-keys/${id}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 404) throw new Error(`删除失败（${r.status}）`);
+}

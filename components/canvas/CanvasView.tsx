@@ -1524,11 +1524,14 @@ export default function CanvasView() {
   const { screenToFlowPosition, setViewport: setRfViewport, fitView } =
     useReactFlow();
   // dev 测试钩子：headless E2E 恢复视口用（onlyRenderVisibleElements 会把
-  // 视口外节点卸载，聚焦平移后测试需要能把目标卡摆回视野）
+  // 视口外节点卸载，聚焦平移后测试需要能把目标卡摆回视野）；
+  // __wsCanvasStore 供编辑回归直接驱动 store（外部改值回写通道）
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
       (window as unknown as { __wsSetViewport?: unknown }).__wsSetViewport =
         setRfViewport;
+      (window as unknown as { __wsCanvasStore?: unknown }).__wsCanvasStore =
+        useCanvasStore;
     }
   }, [setRfViewport]);
   const lastSyncedVp = useRef<Viewport>(viewport);

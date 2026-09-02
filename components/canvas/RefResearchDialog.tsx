@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * 参考图调研面板：豆包搜图（火山）+ Wikimedia Commons 双渠道搜参考图，
+ * 参考图调研面板：Google 图片搜索经 Serper 号池轮转（key 在管理后台维护），
  * 人工勾选采纳（一期不做视觉自动复核）。采纳 = 候选标记 + 自动建图片卡
  * 连线到资产卡（连线即参考，directImagegen 参考序列自动收上游连线卡）。
  */
@@ -176,7 +176,7 @@ export default function RefResearchDialog({
           <div>
             <p className="text-sm font-semibold text-text">找参考图</p>
             <p className="mt-0.5 text-[11px] text-text-4">
-              AI 生成搜索词（清空输入框）或手填，双渠道搜回后由模型终选适合做生图参考的候选；
+              AI 生成搜索词（清空输入框）或手填，多渠道搜回后由模型终选适合做生图参考的候选；
               采纳后自动建参考卡连线到「{assetTitle || "本卡"}」
             </p>
           </div>

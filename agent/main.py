@@ -37,6 +37,7 @@ import models  # noqa: E402
 import projects  # noqa: E402
 import prompt_presets  # noqa: E402
 import ref_routes  # noqa: E402
+import serper_routes  # noqa: E402
 import skills  # noqa: E402
 import style_presets  # noqa: E402
 import style_routes  # noqa: E402
@@ -50,12 +51,15 @@ topics.init_topics_db()
 style_presets.init_style_presets_db()
 prompt_presets.init_prompt_presets_db()
 imgresearch.init_ref_research_db()
+imgresearch.init_serper_pool_db()
 auth.init_auth_db()
 auth.ensure_auth_password()
 
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    # 上轮刷新若被服务重启杀掉，把中断如实落进 last_run（前端"上次刷新中断"）
+    topic_pool.SERVICE.report_interrupted_run()
     # 选题池每日定时刷新（进程内 asyncio 轮询；关停随事件循环取消）
     scheduler = asyncio.create_task(topic_pool.auto_refresh_loop())
     try:
@@ -83,7 +87,9 @@ app.include_router(topic_routes.router, prefix="/api/v1")
 app.include_router(style_routes.router, prefix="/api/v1")
 # 我的提示词（用户级提示词库 CRUD）
 app.include_router(prompt_presets.router, prefix="/api/v1")
-# 资产参考图调研（豆包搜图 + wikimedia；项目域资源挂根路径）
+# Serper 号池管理（调研搜索唯一渠道的 key 池，admin）
+app.include_router(serper_routes.router, prefix="/api/v1")
+# 资产参考图调研（项目域资源挂根路径）
 app.include_router(ref_routes.router)
 
 

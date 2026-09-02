@@ -32,6 +32,13 @@ DECOMPOSE_FLOW_IDS = {
     "prop": os.environ.get("LANGFLOW_DECOMPOSE_PROP_FLOW_ID", ""),
     "costume": os.environ.get("LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID", ""),
 }
+# 资产类型 → 中文标签（清单文案/提示词共用；与前端卡型一一对应）
+ASSET_TYPE_LABELS = {
+    "character": "角色",
+    "scene": "场景",
+    "prop": "道具",
+    "costume": "服饰",
+}
 
 def _parse_shot_rows(text: str) -> list[dict]:
     """从 flow 输出文本中解析分镜 JSON 数组（容错：剥围栏、截取首尾括号）。
@@ -104,7 +111,7 @@ async def start_storyboard_gen_job(
     if str(visual_style or "").strip():
         parts.append(f"全局视觉风格：{str(visual_style).strip()}")
     assets = assets or []
-    label = {"character": "角色", "scene": "场景", "prop": "道具", "costume": "服饰"}
+    label = ASSET_TYPE_LABELS
     entries = [
         f"- [{label.get(a.get('type'), a.get('type'))}] {a.get('name')}"
         for a in assets
@@ -316,7 +323,8 @@ async def decompose_script(script: str) -> str:
 
     lines = [f"共拆出 {len(assets)} 个资产："]
     for i, a in enumerate(assets, 1):
-        label = {"character": "角色", "scene": "场景", "prop": "道具"}[a["type"]]
+        # 未知类型不炸整条拆解（四路 flow 并行，类型集合随配置浮动）
+        label = ASSET_TYPE_LABELS.get(a["type"], a["type"])
         lines.append(
             f"{i}. [{label}] {a['name']}｜{a['description']}"
             + (f"｜视觉：{a['visual_notes']}" if a["visual_notes"] else "")
@@ -1446,19 +1454,22 @@ async def run_ref_plan_flow(
     payload = {"asset": asset, "rounds": rounds}
     # 字段拍平成单行：tweaks 传输会把 \n 反转义成裸换行（imagegen 同款防坑）
     input_value = " ".join(str(json.dumps(payload, ensure_ascii=False)).split())
-    # luna 偶发 JSON 格式抖动（temperature 0.5 下不守输出格式），重试一次；
-    # 连续失败才明报，不让单次抖动打死整个调研任务
+    # luna 偶发 JSON 格式抖动/空 queries（10 路并发下更常见，实测 12 资产
+    # 约 1/4 概率）：3 次重试带间隔；连续失败带原文明报，不让单次抖动打死
+    # 整个调研任务
     last_error: Exception | None = None
-    for _ in range(2):
+    for attempt in range(3):
         try:
             raw = await run_flow_blocking(REF_PLAN_FLOW_ID, input_value=input_value)
             out = _parse_flow_json(raw, "搜索词规划")
             queries = [str(q).strip() for q in (out.get("queries") or []) if str(q).strip()][:5]
             if queries:
                 return {"queries": queries, "enough": bool(out.get("enough"))}
-            last_error = RuntimeError("搜索词规划未产出有效关键词")
+            last_error = RuntimeError(f"搜索词规划未产出有效关键词（原文：{raw[:100]}）")
         except Exception as exc:  # noqa: BLE001
             last_error = exc
+        if attempt < 2:
+            await asyncio.sleep(1.5)
     raise last_error  # type: ignore[misc]
 
 
@@ -1493,18 +1504,28 @@ async def run_ref_select_flow(
                 "api_key": DMX_API_KEY,
             }
         }
-        try:
-            raw = await run_flow_blocking(REF_SELECT_FLOW_ID, input_value="", tweaks=tweaks)
-            out = _parse_flow_json(raw, f"参考图终选（第{bi}批）")
-            recommended.extend(
-                int(i)
-                for i in (out.get("recommended") or [])
-                if isinstance(i, (int, float, str)) and str(i).strip().lstrip("-").isdigit()
-            )
-            if str(out.get("note") or "").strip():
-                notes.append(f"第{bi}批：{str(out['note']).strip()}")
-        except Exception as exc:  # noqa: BLE001 单批失败记批次，不拖垮其余批
-            batch_errors.append(f"第{bi}批：{str(exc)[:100]}")
+        # 每批 3 次重试带间隔：批量 10 路并发下终选偶发失败（重试即恢复），
+        # 失败会导致该资产无推荐预选，审阅体验明显劣化
+        batch_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                raw = await run_flow_blocking(REF_SELECT_FLOW_ID, input_value="", tweaks=tweaks)
+                out = _parse_flow_json(raw, f"参考图终选（第{bi}批）")
+                recommended.extend(
+                    int(i)
+                    for i in (out.get("recommended") or [])
+                    if isinstance(i, (int, float, str)) and str(i).strip().lstrip("-").isdigit()
+                )
+                if str(out.get("note") or "").strip():
+                    notes.append(f"第{bi}批：{str(out['note']).strip()}")
+                batch_error = None
+                break
+            except Exception as exc:  # noqa: BLE001 单批失败先重试再记错
+                batch_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+        if batch_error is not None:
+            batch_errors.append(f"第{bi}批：{str(batch_error)[:100]}")
     if batch_errors and not recommended and not notes:
         raise RuntimeError("；".join(batch_errors))
     note = "；".join(notes)[:300]

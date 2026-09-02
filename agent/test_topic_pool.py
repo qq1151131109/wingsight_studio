@@ -15,6 +15,8 @@ from pathlib import Path
 
 import topics as store
 import topic_pool
+import wikiday
+import podcastfeed
 from topic_pool import TopicCurator, TopicRefreshService, auto_refresh_tick, get_auto_refresh, parse_verdict, set_auto_refresh
 
 # ---------- 临时库与 fake flow id ----------
@@ -87,17 +89,56 @@ expect(store.get_topic(t3["id"])["status"] == "archived", "沉底后状态为 ar
 
 print("store 语义 ✓")
 
+# ---------- 维基大事记解析与周年算术 ----------
+
+WT = """
+==大事记==
+* [[前44年]]：西塞罗开始发表一系列演讲，号召反对马克·安东尼。
+* [[1192年]]：“狮心王”理查一世 (英格蘭)|理查一世与萨拉丁签订{{cite|迦法条约}}<ref>xx</ref>，结束第三次十字军东征。
+* [[1945年]]：日本签署降伏文书，第二次世界大战正式结束。
+* 2020年：某近年的事，不满 20 年不进周年池。
+* [[1986年]]：某逢一事件，非逢五逢十不进周年池。
+* 太短的行。
+
+==节假日==
+* 不该被解析的行
+"""
+events = wikiday.parse_day_wikitext(WT)
+expect([e["year"] for e in events] == [-44, 1192, 1945, 2020, 1986], f"应解析 5 条年份行：{events}")
+expect(all("[[" not in e["text"] and "<ref" not in e["text"] for e in events), "文本应剥维基标记")
+kept = wikiday.anniversary_filter(events, on_year=2026)
+ages = {e["age"] for e in kept}
+# 前44年→2070 ✓、1986→40 ✓；1192→834 ✗、1945→81 ✗（非 5 的倍数）、2020→6 ✗（不足 20 年）
+expect(ages == {2070, 40}, f"2026 年应只留逢五逢十且 ≥20 年：{sorted(ages)}")
+
+cache = wikiday.load_window_cache(wikiday.build_window_cache(wikiday.date(2026, 9, 2), kept))
+expect(cache["start"] == "2026-09-02" and cache["events"] == kept, "窗口缓存应回读一致")
+expect(wikiday.load_window_cache(None) is None and wikiday.load_window_cache("junk") is None, "坏缓存应判无效")
+
+print("wikiday 解析与周年算术 ✓")
+
+# ---------- 播客 RSS 解析 ----------
+
+RSS = """<?xml version="1.0"?><rss version="2.0"><channel><title>故事FM</title>
+<item><title>一个守林人的三十年 | 故事FM</title><link>https://storyfm.cn/ep1</link>
+<description>&lt;p&gt;他独自守着大山&lt;/p&gt;</description></item>
+<item><title></title><link>https://storyfm.cn/ep2</link></item>
+<item><title>第二期</title><link>https://storyfm.cn/ep3</link></item>
+</channel></rss>"""
+eps = podcastfeed.parse_feed(RSS, "故事FM")
+expect(len(eps) == 2 and eps[0]["title"] == "一个守林人的三十年 | 故事FM", "空标题条目应丢弃")
+expect(eps[0]["snippet"] == "他独自守着大山" and eps[0]["feed"] == "故事FM", "摘要应剥 HTML 标签")
+
+print("播客 RSS 解析 ✓")
+
+
 # ---------- 管线：fake flow + fake 搜索 ----------
 
-SIGNALS = [
-    {"index": 0, "title": "商周遗址新出土百余片甲骨", "platform": "web", "source": "材料窗口:考古新发现"},
-    {"index": 1, "title": "某悬案当年经办人退休后自述疑点", "platform": "web", "source": "材料窗口:悬案旧案重审"},
-]
-
 TRIAGE_OUT = [
-    # 采集序：history 4 种子 × 2 结果 = index 0-7，crime 从 index 8 起
-    {"members": [0], "vertical": "history", "theme": "商周甲骨新发现", "reason": "新材料罕见"},
-    {"members": [8], "vertical": "crime", "theme": "悬案经办人自述", "reason": "一手信源进场"},
+    # 采集序：history 4 种子（考古发布会/甲骨/简牍/档案）= index 0-3，crime 4-7；
+    # 甲骨在第 2 条（index 1），悬案自述在 crime 第 2 条（index 5）
+    {"members": [1], "vertical": "history", "theme": "商周甲骨新发现", "reason": "新材料罕见"},
+    {"members": [5], "vertical": "crime", "theme": "悬案经办人自述", "reason": "一手信源进场"},
 ]
 
 VERDICT_STRONG = {
@@ -154,34 +195,111 @@ async def fake_flow_runner(flow_id: str, input_value: str) -> str:
     raise AssertionError(f"未知 flow: {flow_id}")
 
 
-# 种子查询 → 该查得到的真实感信号标题（材料窗口条目的 title 是搜索结果标题）
+# 种子查询 → 该查得到的真实感信号标题（材料种子已带年份锚；未知查询返回空，
+# 管线测试只喂材料流——多源聚合另有专测）
+_Y = topic_pool._year_anchor()
 SIGNAL_TITLES = {
-    "考古新发现": "河南某商周遗址新出土百余片甲骨",
-    "出土简牍 整理公布": "里耶秦简新一批整理简牍公布",
-    "历史档案 解密公开": "某国档案馆解密一批冷战时期档案",
-    "史学研究 新成果 出版": "新研究推翻明代粮仓位置旧说",
-    "悬案旧案重审": "某县悬案经办人退休后自述疑点",
-    "再审改判 案件": "最高法再审改判一桩陈年旧案",
-    "判决文书 公开 案件": "某待决案件判决文书首次公开",
-    "案件档案 解密": "某历史案件档案解密移交地方",
+    f"考古中国 发布会 {_Y}": "考古中国发布会通报重要进展",
+    f"考古新发现 {_Y}": "河南某商周遗址新出土百余片甲骨",
+    f"出土简牍 整理公布 {_Y}": "里耶秦简新一批整理简牍公布",
+    f"历史档案 解密公开 {_Y}": "某国档案馆解密一批冷战时期档案",
+    f"最高人民法院 典型案例 {_Y}": "最高法发布年度典型案例",
+    f"再审改判 案件 {_Y}": "某悬案当年经办人退休后自述疑点",
+    f"判决文书 公开 案件 {_Y}": "某待决案件判决文书首次公开",
+    f"案件档案 解密 {_Y}": "某历史案件档案解密移交地方",
 }
 
 
 async def fake_search(query: str) -> dict:
-    title = SIGNAL_TITLES.get(query, f"结果：{query}")
+    title = SIGNAL_TITLES.get(query)
+    if title is None:
+        return {"query": query, "results": []}
     return {
         "query": query,
         "results": [
             {"title": title, "url": "https://example.com/a", "snippet": "snip", "provider": "tencent"},
-            {"title": f"{title}（转载）", "url": "https://en.wikipedia.org/wiki/x", "snippet": "w", "provider": "wikipedia"},
         ],
     }
 
 
+# 管线测试离线化：周年窗口与播客源打空桩（多源聚合在专测里覆盖）
+async def _empty_window(start=None, days=45, max_concurrency=8):
+    return []
+
+
+async def _empty_feeds():
+    return []
+
+
+wikiday.anniversary_window = _empty_window
+podcastfeed.fetch_all_feeds = _empty_feeds
+
+
+async def run_signal_matrix() -> None:
+    """多源聚合专测：四类采集器各自的信号标注与形态（独立 fake，不依赖上面）。"""
+    year = topic_pool._year_anchor()
+    matrix_titles = {
+        f"考古中国 发布会 {year}": "考古中国发布会通报重要进展",
+        f"考古新发现 {year}": "河南某商周遗址新出土百余片甲骨",
+        f"出土简牍 整理公布 {year}": "里耶秦简新一批整理简牍公布",
+        f"历史档案 解密公开 {year}": "某国档案馆解密一批冷战时期档案",
+        f"最高人民法院 典型案例 {year}": "最高法发布典型案例",
+        f"再审改判 案件 {year}": "最高法再审改判一桩陈年旧案",
+        f"判决文书 公开 案件 {year}": "某待决案件判决文书首次公开",
+        f"案件档案 解密 {year}": "某历史案件档案解密移交地方",
+        f"极昼工作室 报道 {year}": "极昼：外嫁女的胜诉之后",
+        f"谷雨实验室 特稿 {year}": "谷雨：一个守灯塔的人",
+        f"人物杂志 报道 {year}": "人物：退出大厂去修文物的年轻人",
+        f"人间 theLivings 故事 {year}": "人间：我的父亲是刑警",
+        f"IDFA 获奖纪录片 {year}": "IDFA获奖名单揭晓",
+        f"圣丹斯 纪录片 获奖 {year}": "圣丹斯纪录片单元获奖名单",
+        f"奥斯卡 最佳纪录片 提名 {year}": "奥斯卡最佳纪录片短名单公布",
+        f"BBC Storyville 纪录片 {year}": "BBC Storyville新片单",
+    }
+
+    async def matrix_search(query: str) -> dict:
+        return {
+            "query": query,
+            "results": [{"title": matrix_titles[query], "url": "https://example.com/a", "snippet": "snip", "provider": "tencent"}],
+        }
+
+    async def one_anniversary(start=None, days=45, max_concurrency=8):
+        return [{"year": 1945, "text": "日本签署降伏文书，二战正式结束", "age": 81, "date": "2026-09-03"}]
+
+    async def one_feed():
+        return [{"title": "故事FM：一个守林人的三十年", "url": "https://storyfm.cn/ep1", "snippet": "守山", "feed": "故事FM"}]
+
+    saved = (wikiday.anniversary_window, podcastfeed.fetch_all_feeds)
+    wikiday.anniversary_window, podcastfeed.fetch_all_feeds = one_anniversary, one_feed
+    try:
+        curator = TopicCurator(flow_runner=fake_flow_runner, search=matrix_search)
+        signals = await curator.collect_signals()
+        by_type: dict[str, list[dict]] = {}
+        for s in signals:
+            by_type.setdefault(s["signal_type"], []).append(s)
+        expect(len(by_type.get("material", [])) == 8, f"材料信号应 8 条：{len(by_type.get('material', []))}")
+        expect(len(by_type.get("validated", [])) == 5, f"已验证信号应特稿 4 + 播客 1：{len(by_type.get('validated', []))}")
+        expect(len(by_type.get("benchmark", [])) == 4, f"对标信号应 4 条：{len(by_type.get('benchmark', []))}")
+        expect(len(by_type.get("anniversary", [])) == 1, "周年信号应 1 条")
+        expect(signals[0]["snippet"] == "snip", "搜索信号应带 snippet")
+        pod = [s for s in by_type["validated"] if s["platform"] == "podcast"]
+        expect(pod and pod[0]["source"] == "播客:故事FM", "播客信号应标注来源")
+        ann = by_type["anniversary"][0]
+        expect("81周年" in ann["title"] and ann["platform"] == "calendar", f"周年信号应带周年数：{ann['title']}")
+    finally:
+        wikiday.anniversary_window, podcastfeed.fetch_all_feeds = saved
+
+    print("多源信号聚合 ✓")
+
+
+asyncio.run(run_signal_matrix())
+
+
 async def run_pipeline() -> None:
+    store.set_setting(wikiday.CACHE_KEY, "")  # 清掉多源专测留下的周年缓存
     curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
     result = await curator.run()
-    expect(result.collected == 16, f"8 条种子查询 × 每查 2 结果应采到 16 条，实际 {result.collected}")
+    expect(result.collected == 8, f"8 条材料种子 × 每查 1 结果应采到 8 条，实际 {result.collected}")
     expect(result.shortlisted == 2, f"研判应入围 2 条，实际 {result.shortlisted}")
     expect(result.created == 1, f"应产出 1 张建议卡，实际 {result.created}")
     expect(result.observed == 1, f"应产出 1 张观察卡，实际 {result.observed}")
@@ -402,6 +520,54 @@ expect(stub.calls == 1, "跳过不应调用 start")
 
 set_auto_refresh(enabled=False, time="08:00")
 expect(auto_refresh_tick(stub) == "idle", "开关关闭应 idle")
+
+
+# ---------- 刷新运行态：中断检测 ----------
+
+
+class _NeverFinishesCurator:
+    """卡死型 curator：验证 finally 清标记与中断落账。"""
+
+    class _Stuck(Exception):
+        pass
+
+    async def run(self):
+        await asyncio.sleep(3600)
+
+    async def rescan_observations(self):
+        return topic_pool.RescanSummary()
+
+
+async def run_interrupted_state() -> None:
+    svc = TopicRefreshService(curator=_NeverFinishesCurator())
+    expect(svc.start(), "应能启动")
+    expect(store.get_setting(topic_pool.RUN_STATE_KEY), "启动即写运行态标记")
+    await asyncio.sleep(0.05)  # 让任务进入 run()
+    task = svc._task
+    assert task is not None
+    task.cancel()  # 模拟服务重启杀任务（不触发 finally 之外的清理路径）
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    # cancel 走 finally → 标记应已清；人为再放一个"孤儿标记"模拟硬杀（SIGTERM 无 finally）
+    store.set_setting(topic_pool.RUN_STATE_KEY, json.dumps({"startedAt": "2099-01-01T00:00:00+00:00"}))
+    svc.report_interrupted_run()
+    lr = svc.last_run()
+    expect("被中断" in str(lr.get("error", "")) and "finishedAt" not in lr, f"孤儿标记应落中断账：{lr}")
+    expect(store.get_setting(topic_pool.RUN_STATE_KEY) in (None, ""), "检测后应清标记")
+    # 早于已记录中断的标记（旧轮残留）不覆盖 2099 那次的账
+    store.set_setting(topic_pool.RUN_STATE_KEY, json.dumps({"startedAt": "2000-01-01T00:00:00+00:00"}))
+    svc.report_interrupted_run()
+    expect(svc.last_run().get("interruptedAt") == "2099-01-01T00:00:00+00:00", "旧标记不应覆盖新中断账")
+    # 坏 JSON 标记：清掉即可不报错
+    store.set_setting(topic_pool.RUN_STATE_KEY, "{broken")
+    svc.report_interrupted_run()
+    expect(store.get_setting(topic_pool.RUN_STATE_KEY) in (None, ""), "坏标记应被清")
+    print("刷新运行态中断检测 ✓")
+
+
+asyncio.run(run_interrupted_state())
 
 
 class _BusyService:

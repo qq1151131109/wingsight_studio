@@ -62,6 +62,7 @@ import {
   findFreePosition,
   nodeSize,
   useCanvasStore,
+  type NodeDataUpdateOpts,
   type ShotRow,
   type WingNode,
   type WingNodeData,
@@ -574,7 +575,7 @@ function CardShell({
         ) : (
           <Editable
             value={data.title}
-            onSave={(title) => update({ title })}
+            onSave={(title, opts) => update({ title }, opts)}
             placeholder="（无标题）"
             className="min-w-0 flex-1 truncate text-xs font-medium text-text-2"
           />
@@ -726,6 +727,10 @@ function AudioPlayer({ src, title }: { src: string; title: string }) {
 
 /**
  * 就地编辑文本块（nodrag/nowheel 避免触发画布手势），统一用 textarea。
+ * **非受控**（defaultValue + 未聚焦守卫回写）：受控 value 撞上 xyflow 内部
+ * 节点副本晚一拍的现实，每击都会被 React 强写一次旧值——光标甩文末、IME
+ * 组合被毁。聚焦中 DOM 即事实源；外部改值（AI 撰写/版本恢复/撤销）在未聚焦
+ * 时由 effect 回写。
  * always（常驻编辑，文本/剧本/角色/分镜各类内容字段）：没有"编辑态"概念，
  * 直接渲染无边框透明 textarea——点击即输入、光标即点即落（浏览器原生行为，
  * 无需偏移映射），每击实时写回 store（novanova 范式，点别处零丢失）。
@@ -746,7 +751,8 @@ function Editable({
   always,
 }: {
   value: string;
-  onSave: (next: string) => void;
+  /** 打字流（onChange）以 {history:"coalesce"} 调用；失焦 commit 默认模式 */
+  onSave: (next: string, opts?: NodeDataUpdateOpts) => void;
   className?: string;
   multiline?: boolean;
   placeholder?: string;
@@ -764,6 +770,16 @@ function Editable({
     if (!editingOn) return;
     return focusWhenVisible(ref);
   }, [editingOn]);
+
+  // 非受控的守卫回写：外部改值（AI 撰写覆盖/版本恢复/agent 改卡/撤销）只在
+  // 未聚焦时同步进 DOM。绝不能用受控 value——xyflow 内部节点副本晚 zustand
+  // 一拍，打字时每次击键都会触发一次"旧值回写"（React 强写 .value 抹掉刚打的
+  // 字再把光标甩到文末、打断 IME 组合），实测中文打不进、中途改字必跳末尾。
+  // 聚焦中 DOM 即事实源，失焦后由 commit 落库
+  useEffect(() => {
+    const el = ref.current;
+    if (el && document.activeElement !== el && el.value !== value) el.value = value;
+  }, [value]);
 
   const commit = () => {
     setEditing(false);
@@ -785,18 +801,22 @@ function Editable({
     return (
       <textarea
         ref={ref}
-        value={value}
+        // 非受控（见上方 effect 注释）：defaultValue 只管进场首帧，
+        // 外部改值走未聚焦守卫回写
+        defaultValue={value}
         placeholder={placeholder}
         rows={multiline ? Math.min(10, Math.max(always ? 1 : 3, value.split("\n").length)) : 1}
         onBlur={commit}
         onChange={(e) => {
           // 实时写回（novanova 范式）：每击落 store，编辑中途点别处零丢失。
-          // 代价：打字不进撤销栈（与竞品一致，⌘Z 仍可撤手势类操作）
-          onSave(e.currentTarget.value);
+          // 打字流合并撤销；代价：打字不进撤销栈（与竞品一致，⌘Z 仍可撤手势类操作）
+          onSave(e.currentTarget.value, { history: "coalesce" });
         }}
         onClick={variant === "accent" ? (e) => e.stopPropagation() : undefined}
         onDoubleClick={(e) => e.stopPropagation()}
         onKeyDown={(e) => {
+          // IME 组合中的 Enter/Esc 是"确认/取消候选"，不是编辑命令
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
           if (e.key === "Escape") {
             // 常驻卡：Esc = 收尾并移出焦点（让位给画布快捷键）
             if (variant === "flat") {
@@ -849,10 +869,11 @@ function Editable({
   return renderTextarea("accent");
 }
 
-/** 节点数据更新器（普通函数，非 hook） */
+/** 节点数据更新器（普通函数，非 hook）。opts.history="coalesce"：
+ *  连续打字合并撤销（800ms 窗口一次快照，见 store.updateNodeData） */
 function makeUpdater(id: string) {
-  return (patch: Partial<WingNodeData>) =>
-    useCanvasStore.getState().updateNodeData(id, patch);
+  return (patch: Partial<WingNodeData>, opts?: NodeDataUpdateOpts) =>
+    useCanvasStore.getState().updateNodeData(id, patch, opts);
 }
 
 /** 聚焦直到真正落位：xyflow 新节点首帧 visibility:hidden（等待测量），
@@ -956,7 +977,7 @@ function TextCard({
           <div className="flex min-h-0 flex-1 flex-col">
             <Editable
               value={data.body ?? ""}
-              onSave={(body) => update({ body })}
+              onSave={(body, opts) => update({ body }, opts)}
               multiline
               fill
               always
@@ -1152,7 +1173,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 disabled={empty || researching}
-                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→豆包/Wikimedia→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
+                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1471,7 +1492,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       {lod === "full" ? (
         <button
           type="button"
-          data-tip="搜网络参考图（豆包搜图 + Wikimedia），采纳后自动建参考卡连线，出图时进参考序列" aria-label="找参考图"
+          data-tip="搜网络参考图（Google 经 Serper 号池），采纳后自动建参考卡连线，出图时进参考序列" aria-label="找参考图"
           className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-hairline px-2 py-1 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
           onClick={(e) => {
             e.stopPropagation();
@@ -1488,7 +1509,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       {lod === "full" ? (
         <Editable
           value={d.body ?? ""}
-          onSave={(body) => update({ body })}
+          onSave={(body, opts) => update({ body }, opts)}
           multiline
           always
           placeholder={ASSET_BODY_PH[kind]}
@@ -2517,7 +2538,7 @@ function AudioCard({ data, id, selected }: NodeProps) {
       {lod === "full" ? (
         <Editable
           value={d.title}
-          onSave={(title) => update({ title })}
+          onSave={(title, opts) => update({ title }, opts)}
           className="mt-1.5 line-clamp-1 text-xs font-medium text-text"
           placeholder="（无标题）"
         />
@@ -2735,7 +2756,7 @@ function ShotChip({
   label: string;
   value: string;
   accent?: boolean;
-  onSave: (v: string) => void;
+  onSave: (v: string, opts?: NodeDataUpdateOpts) => void;
 }) {
   return (
     <span
@@ -2768,14 +2789,14 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
       {lod === "full" ? (
         <>
           <div className="ws-detail mt-1.5 flex flex-wrap gap-1">
-            <ShotChip accent label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber) => update({ shotNumber })} />
-            <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize) => update({ shotSize })} />
-            <ShotChip label="运镜" value={d.cameraMove ?? ""} onSave={(cameraMove) => update({ cameraMove })} />
-            <ShotChip label="时长" value={d.duration ?? ""} onSave={(duration) => update({ duration })} />
+            <ShotChip accent label="镜号" value={d.shotNumber ?? ""} onSave={(shotNumber, opts) => update({ shotNumber }, opts)} />
+            <ShotChip label="景别" value={d.shotSize ?? ""} onSave={(shotSize, opts) => update({ shotSize }, opts)} />
+            <ShotChip label="运镜" value={d.cameraMove ?? ""} onSave={(cameraMove, opts) => update({ cameraMove }, opts)} />
+            <ShotChip label="时长" value={d.duration ?? ""} onSave={(duration, opts) => update({ duration }, opts)} />
           </div>
           <Editable
             value={d.body ?? ""}
-            onSave={(body) => update({ body })}
+            onSave={(body, opts) => update({ body }, opts)}
             multiline
             always
             placeholder="画面描述（谁、在哪、做什么）"
@@ -2783,7 +2804,7 @@ function StoryboardCard({ data, id, selected }: NodeProps) {
           />
           <Editable
             value={d.dialogue ?? ""}
-            onSave={(dialogue) => update({ dialogue })}
+            onSave={(dialogue, opts) => update({ dialogue }, opts)}
             multiline
             always
             placeholder="台词 / 旁白"
@@ -2844,7 +2865,7 @@ function GroupCard({ data, id, selected }: NodeProps) {
         })()}
         <Editable
           value={d.title}
-          onSave={(title) => update({ title })}
+          onSave={(title, opts) => update({ title }, opts)}
           className="truncate text-xs font-medium text-text-3"
           placeholder="分组名"
         />
@@ -3618,12 +3639,12 @@ async function runBatchResearchForCard(
     onProgress("没有需要调研的资产（缺参考的缺图资产为 0）");
     return null;
   }
-  const searches = targets.length * 2 * 5; // ≤2 轮 × ≤5 查询（豆包+wikimedia 计次口径）
-  const estMin = Math.max(2, Math.ceil(targets.length / 10) * 2);
+  const searches = targets.length * 5 * 5; // ≤5 轮（自适应）× ≤5 查询（Serper 号池计次口径）
+  const estMin = Math.max(3, Math.ceil(targets.length / 100) * 4);
   const ask =
     targets.length === 1
       ? `为「${targets[0].data.title}」调研参考图（约 1-2 分钟，消耗约 ${searches} 次搜索配额）？`
-      : `将为 ${targets.length} 个资产 10 路并发调研参考图（预计约 ${estMin} 分钟，消耗约 ${searches} 次搜索配额）。开始？`;
+      : `将为 ${targets.length} 个资产 100 路并发调研参考图（预计约 ${estMin} 分钟，消耗约 ${searches} 次搜索配额）。开始？`;
   if (!window.confirm(ask)) return null;
   onProgress(`批量调研中 0/${targets.length}…`);
   return runBatchRefResearch(
@@ -3823,10 +3844,17 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     }
   };
 
-  const setRow = (rid: string, patch: Partial<ShotRow>) => {
-    update({
-      rows: rows.map((r) => (r.rid === rid ? { ...r, ...patch } : r)),
-    });
+  const setRow = (
+    rid: string,
+    patch: Partial<ShotRow>,
+    opts?: NodeDataUpdateOpts,
+  ) => {
+    update(
+      {
+        rows: rows.map((r) => (r.rid === rid ? { ...r, ...patch } : r)),
+      },
+      opts,
+    );
   };
   const addRow = () => {
     const n = rowSeq + 1;
@@ -4406,17 +4434,17 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex flex-wrap items-center gap-1">
                     <ShotSelect label="景别" value={r.shotSize ?? ""} options={SHOT_SIZES} onSave={(v) => setRow(r.rid, { shotSize: v })} />
-                    <ShotChip label="运镜" value={r.cameraMove ?? ""} onSave={(v) => setRow(r.rid, { cameraMove: v })} />
-                    <ShotChip label="时长" value={r.duration ?? ""} onSave={(v) => setRow(r.rid, { duration: v })} />
-                    <ShotChip label="光影" value={r.lighting ?? ""} onSave={(v) => setRow(r.rid, { lighting: v })} />
-                    <ShotChip label="音效" value={r.sound ?? ""} onSave={(v) => setRow(r.rid, { sound: v })} />
+                    <ShotChip label="运镜" value={r.cameraMove ?? ""} onSave={(v, opts) => setRow(r.rid, { cameraMove: v }, opts)} />
+                    <ShotChip label="时长" value={r.duration ?? ""} onSave={(v, opts) => setRow(r.rid, { duration: v }, opts)} />
+                    <ShotChip label="光影" value={r.lighting ?? ""} onSave={(v, opts) => setRow(r.rid, { lighting: v }, opts)} />
+                    <ShotChip label="音效" value={r.sound ?? ""} onSave={(v, opts) => setRow(r.rid, { sound: v }, opts)} />
                   </div>
                   <div className="flex items-start gap-1">
                     <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">画面</span>
                     <Editable
                     value={r.action ?? ""}
-                    onSave={(action) => {
-                      setRow(r.rid, { action });
+                    onSave={(action, opts) => {
+                      setRow(r.rid, { action }, opts);
                       // 光标感知：草稿 = 光标前最近 @ 到光标；草稿带空格即收起
                       const ta = document.activeElement as HTMLTextAreaElement | null;
                       const caret =
@@ -4453,7 +4481,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">旁白</span>
                     <Editable
                     value={r.dialogue ?? ""}
-                    onSave={(dialogue) => setRow(r.rid, { dialogue })}
+                    onSave={(dialogue, opts) => setRow(r.rid, { dialogue }, opts)}
                     multiline
                     always
                     placeholder="台词 / 旁白"
@@ -4466,13 +4494,17 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     <span className="mt-0.5 w-7 shrink-0 text-[9px] leading-5 text-text-4">出图</span>
                     <Editable
                       value={r.finalPrompt ?? autoPrompt}
-                      onSave={(finalPrompt) =>
-                        setRow(r.rid, {
-                          finalPrompt:
-                            finalPrompt.trim() && finalPrompt.trim() !== autoPrompt.trim()
-                              ? finalPrompt
-                              : undefined,
-                        })
+                      onSave={(finalPrompt, opts) =>
+                        setRow(
+                          r.rid,
+                          {
+                            finalPrompt:
+                              finalPrompt.trim() && finalPrompt.trim() !== autoPrompt.trim()
+                                ? finalPrompt
+                                : undefined,
+                          },
+                          opts,
+                        )
                       }
                       multiline
                       always
@@ -4640,7 +4672,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               <button
                 type="button"
                 disabled={!scriptSource || researching}
-                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→豆包/Wikimedia→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
+                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
                 className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
                 onClick={(e) => {
                   e.stopPropagation();

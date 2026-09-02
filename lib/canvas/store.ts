@@ -170,6 +170,9 @@ interface CanvasSnapshot {
   edges: WingEdge[];
 }
 
+/** 节点数据更新选项：history="coalesce" 标记连续打字流（撤销合并窗口） */
+export type NodeDataUpdateOpts = { history?: "commit" | "coalesce" };
+
 interface CanvasState {
   nodes: WingNode[];
   edges: WingEdge[];
@@ -195,7 +198,7 @@ interface CanvasState {
   ) => void;
   setNodes: (nodes: WingNode[]) => void;
   addNode: (node: Omit<WingNode, "id"> & { id?: string }) => string;
-  updateNodeData: (id: string, patch: Partial<WingNodeData>) => void;
+  updateNodeData: (id: string, patch: Partial<WingNodeData>, opts?: NodeDataUpdateOpts) => void;
   deleteNodes: (ids: string[]) => void;
   connect: (connection: Connection | { source: string; target: string }) => void;
   removeEdges: (ids: string[]) => void;
@@ -287,6 +290,8 @@ let altDragClone: Map<string, string> | null = null;
 let flashTimer: ReturnType<typeof setTimeout> | null = null;
 /** 方向键微调的连击窗口（800ms 内算一次撤销单元） */
 let lastNudgeAt = 0;
+/** 打字类更新的撤销合并窗口时间戳（updateNodeData coalesce 模式） */
+let lastTypeCommitAt = 0;
 
 function snapshot(state: CanvasState): CanvasSnapshot {
   return {
@@ -662,8 +667,18 @@ export const useCanvasStore = create<CanvasState>()(
         return id;
       },
 
-      updateNodeData: (id, patch) => {
-        get().commitHistory();
+      updateNodeData: (id, patch, opts) => {
+        // 打字类更新（opts.history="coalesce"）：800ms 窗口内只入栈一次
+        // "打字前"快照（与 nudge 同款合并）——否则每字符一次全画布
+        // structuredClone + 一步撤销，大剧本上 undo 栈既爆内存又不可用
+        if (opts?.history === "coalesce") {
+          const now = Date.now();
+          if (now - lastTypeCommitAt > 800) get().commitHistory();
+          lastTypeCommitAt = now;
+        } else {
+          get().commitHistory();
+          lastTypeCommitAt = 0;
+        }
         let readyFlip = false;
         set((state) => ({
           nodes: state.nodes.map((n) => {

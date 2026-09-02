@@ -18,6 +18,8 @@ export interface TopicHeatEvidence {
   title: string;
   platform: string;
   source: string;
+  /** 信号类型：material/anniversary/validated/benchmark */
+  signal_type?: string;
   url: string;
   provider?: string;
   fetched_at?: string;

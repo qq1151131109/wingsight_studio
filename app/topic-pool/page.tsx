@@ -45,10 +45,10 @@ const VERTICAL_DOT: Record<TopicVertical, string> = {
   crime: "var(--color-danger)",
 };
 const SOURCE_LABEL: Record<string, string> = {
-  material: "材料窗口",
+  material: "材料事件",
   anniversary: "周年节点",
-  commission: "委托调研",
-  entity: "富矿库",
+  validated: "已验证内容",
+  benchmark: "对标片单",
 };
 
 function isStrong(t: Topic): boolean {

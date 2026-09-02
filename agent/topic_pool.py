@@ -29,7 +29,7 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Awaitable, Callable
 
 import topics as store
@@ -57,12 +57,43 @@ UNIT_KINDS: tuple[str, ...] = ("person", "object", "case", "era")
 # 体量形态；series 必须带串珠问题（series_thread），缺了诚实地按 single
 SCALES: tuple[str, ...] = ("single", "series", "anthology")
 
-# 每垂类固定材料事件种子（只收"材料事件"：新出土/新公布/新判决/新研究/
-# 新档案解密；泛事件舆情只产新闻卡，不收）
+# 材料事件种子（只收"材料事件"：新出土/新公布/新判决/新研究/新档案解密；
+# 泛事件舆情只产新闻卡，不收）。年份锚防同一批结果反复命中（固定种子
+# 实测单轮产出率 1/80 的主因）。官方发布口（考古中国季度发布会、最高法
+# 典型案例）信噪比远高于泛词。
 MATERIAL_SEED_QUERIES: dict[str, tuple[str, ...]] = {
-    "history": ("考古新发现", "出土简牍 整理公布", "历史档案 解密公开", "史学研究 新成果 出版"),
-    "crime": ("悬案旧案重审", "再审改判 案件", "判决文书 公开 案件", "案件档案 解密"),
+    "history": (
+        "考古中国 发布会 {year}",
+        "考古新发现 {year}",
+        "出土简牍 整理公布 {year}",
+        "历史档案 解密公开 {year}",
+    ),
+    "crime": (
+        "最高人民法院 典型案例 {year}",
+        "再审改判 案件 {year}",
+        "判决文书 公开 案件 {year}",
+        "案件档案 解密 {year}",
+    ),
 }
+# 已验证内容种子：特稿媒体（谷雨/极昼/人物等）的每篇报道都是"编辑部+
+# 田野"双重把关过的人物选题，故事性已验证——管线判断纪录片化增量。
+# 微信公众号无公开 RSS，走澎湃/腾讯新闻的分发镜像（通道实测可达）。
+VALIDATED_SEED_QUERIES: tuple[str, ...] = (
+    "极昼工作室 报道 {year}",
+    "谷雨实验室 特稿 {year}",
+    "人物杂志 报道 {year}",
+    "人间 theLivings 故事 {year}",
+)
+# 对标片单种子：节展/海外已验证题材 → 国产化空白（名单页一条信号含多部
+# 影片，研判负责拆解评估）。
+BENCHMARK_SEED_QUERIES: tuple[str, ...] = (
+    "IDFA 获奖纪录片 {year}",
+    "圣丹斯 纪录片 获奖 {year}",
+    "奥斯卡 最佳纪录片 提名 {year}",
+    "BBC Storyville 纪录片 {year}",
+)
+# 周年窗口天数（提前量给调研与立项留时间；juben 同款 45-60 天取下沿）
+ANNIVERSARY_WINDOW_DAYS = 45
 
 # 观察卡复查（兑现"证据变硬时自动升级"的承诺）：每轮刷新尾部顺带取最久
 # 未扫的几张薄卡做缺口导向小预算复查；也支持单卡手动深挖（异步任务）。
@@ -85,6 +116,11 @@ def fingerprint_of(title: str) -> str:
     """规范化标题的 sha256，作为池内幂等去重键。"""
     keep = [ch for ch in title.lower() if ch.isalnum()]
     return hashlib.sha256("".join(keep).encode("utf-8")).hexdigest()
+
+
+def _year_anchor() -> str:
+    """种子年份锚：查询词拼上当年年份，避免同一批旧结果反复命中。"""
+    return str(date.today().year)
 
 
 FlowRunner = Callable[[str, str], Awaitable[str]]
@@ -175,50 +211,144 @@ class TopicCurator:
                 logger.warning("选题 %s flow 输出解析失败（第 %d 次）: %s", key, attempt, str(exc)[:200])
         raise RuntimeError(f"选题 {key} flow 输出两次解析失败: {last_error}")
 
-    # --- 采集 ----------------------------------------------------------------
+    # --- 采集：五源信号矩阵（材料事件 / 周年 / 已验证内容 / 对标片单） ---------
 
     async def collect_material_window(self) -> list[dict[str, Any]]:
-        """材料窗口源：按垂类种子查询搜索，结果标题转原始条目。
+        """兼容旧测试面：材料事件采集（信号类型 material）。"""
+        return await self._collect_seed_queries(
+            {v: tuple(q.format(year=_year_anchor()) for q in qs) for v, qs in MATERIAL_SEED_QUERIES.items()},
+            signal_type="material",
+        )
 
-        单条种子查询失败只跳过该条（多源采集的既有语义），全部失败时
-        collected=0 由上层如实报错。
-        """
+    async def _collect_seed_queries(
+        self, seeds: dict[str | None, tuple[str, ...]], signal_type: str
+    ) -> list[dict[str, Any]]:
+        """按种子查询搜索并转信号条目；单条种子失败只跳过该条。"""
         if self.search is None:
             return []
         fetched_at = datetime.now(timezone.utc).isoformat()
         items: list[dict[str, Any]] = []
-        for vertical, seeds in MATERIAL_SEED_QUERIES.items():
-            for query in seeds:
+        for vertical, queries in seeds.items():
+            for query in queries:
                 try:
                     response = await self.search(query)
                 except Exception as exc:  # noqa: BLE001 - 采集失败不中断策展
-                    logger.warning("材料窗口搜索失败 query=%s: %s", query, str(exc)[:200])
+                    logger.warning("信号采集搜索失败 query=%s: %s", query, str(exc)[:200])
                     continue
                 for result in response.get("results", [])[:MAX_ITEMS_PER_QUERY]:
                     title = str(result.get("title") or "").strip()
                     if not title:
                         continue
-                    items.append(
-                        {
-                            "title": title,
-                            "platform": "web",
-                            "source": f"材料窗口:{query}",
-                            "url": result.get("url") or "",
-                            "provider": result.get("provider") or "",
-                            "vertical_seed": vertical,
-                            "fetched_at": fetched_at,
-                        }
-                    )
+                    items.append(self._signal_of(title, result, source=f"种子:{query}", signal_type=signal_type, vertical_seed=vertical, fetched_at=fetched_at))
         return items
+
+    def _signal_of(
+        self,
+        title: str,
+        result: dict[str, Any],
+        *,
+        source: str,
+        signal_type: str,
+        vertical_seed: str | None,
+        fetched_at: str,
+        platform: str = "web",
+        snippet: str = "",
+    ) -> dict[str, Any]:
+        return {
+            "title": title,
+            "platform": platform,
+            "source": source,
+            "url": result.get("url") or "",
+            "provider": result.get("provider") or "",
+            "vertical_seed": vertical_seed,
+            "signal_type": signal_type,
+            "snippet": (snippet or str(result.get("snippet") or "")).strip()[:160],
+            "fetched_at": fetched_at,
+        }
+
+    async def collect_anniversaries(self) -> list[dict[str, Any]]:
+        """周年信号（确定性时间信号，零 LLM）：维基大事记 → 逢五逢十 → 提前 45 天进池。
+
+        窗口按起点日期缓存（同一天内多次刷新不重拉维基）。
+        """
+        import topics as settings_store
+        import wikiday
+
+        today = date.today()
+        cache = wikiday.load_window_cache(settings_store.get_setting(wikiday.CACHE_KEY))
+        events = cache.get("events") if cache and cache.get("start") == today.isoformat() else None
+        if events is None:
+            events = await wikiday.anniversary_window(start=today, days=ANNIVERSARY_WINDOW_DAYS)
+            settings_store.set_setting(wikiday.CACHE_KEY, wikiday.build_window_cache(today, events))
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        return [
+            {
+                "title": f"{e['text']}（{e['age']}周年，{e['date']}）",
+                "platform": "calendar",
+                "source": f"周年节点:{e['date']}",
+                "url": "",
+                "provider": "wikipedia",
+                "vertical_seed": None,
+                "signal_type": "anniversary",
+                "snippet": f"{e['age']}周年节点：{e['text']}",
+                "fetched_at": fetched_at,
+            }
+            for e in events
+        ]
+
+    async def collect_validated_content(self) -> list[dict[str, Any]]:
+        """已验证内容信号：特稿镜像（搜索）+ 叙事播客（RSS），故事性已验证。"""
+        items = await self._collect_seed_queries(
+            {None: tuple(q.format(year=_year_anchor()) for q in VALIDATED_SEED_QUERIES)},
+            signal_type="validated",
+        )
+        try:
+            import podcastfeed
+
+            episodes = await podcastfeed.fetch_all_feeds()
+        except Exception as exc:  # noqa: BLE001 - 播客源失败不拖累特稿信号
+            logger.warning("播客信号采集失败: %s", str(exc)[:200])
+            episodes = []
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        items.extend(
+            self._signal_of(
+                ep["title"],
+                {"url": ep["url"], "snippet": ep["snippet"], "provider": "rss"},
+                source=f"播客:{ep['feed']}",
+                signal_type="validated",
+                vertical_seed=None,
+                fetched_at=fetched_at,
+                platform="podcast",
+            )
+            for ep in episodes
+        )
+        return items
+
+    async def collect_benchmarks(self) -> list[dict[str, Any]]:
+        """对标片单信号：节展/海外已验证题材 → 国产化空白。"""
+        return await self._collect_seed_queries(
+            {None: tuple(q.format(year=_year_anchor()) for q in BENCHMARK_SEED_QUERIES)},
+            signal_type="benchmark",
+        )
+
+    async def collect_signals(self) -> list[dict[str, Any]]:
+        """聚合五源信号（材料/周年/已验证内容/对标）；全部失败才返回空。"""
+        material, anniversary, validated, benchmark = await asyncio.gather(
+            self.collect_material_window(),
+            self.collect_anniversaries(),
+            self.collect_validated_content(),
+            self.collect_benchmarks(),
+        )
+        return material + anniversary + validated + benchmark
 
     # --- 主流程 ---------------------------------------------------------------
 
     async def run(self) -> CurateResult:
         result = CurateResult()
-        items = await self.collect_material_window()
+        items = await self.collect_signals()
         result.collected = len(items)
         if not items:
-            result.error = "材料窗口采集为零条（搜索通道全部失败或无结果）"
+            result.error = "信号采集为零条（搜索通道全部失败或无结果）"
             return result
 
         picks = (await self._triage(items))[:MAX_CARDS_PER_REFRESH]
@@ -257,7 +387,7 @@ class TopicCurator:
                     angles=card["angles"],
                     heat_evidence=[_evidence_of(item) for item in pick.members],
                     research=card["research"],
-                    source="material",
+                    source=str(pick.members[0].get("signal_type") or "material"),
                 )
                 if card["worth_it"]:
                     result.created += 1
@@ -291,6 +421,8 @@ class TopicCurator:
                 "title": item["title"],
                 "platform": item["platform"],
                 "source": item["source"],
+                "signal_type": item.get("signal_type") or "material",
+                "snippet": item.get("snippet") or "",
             }
             for idx, item in enumerate(items)
         ]
@@ -639,6 +771,7 @@ def _evidence_of(item: dict[str, Any]) -> dict[str, Any]:
         "title": item["title"],
         "platform": item["platform"],
         "source": item["source"],
+        "signal_type": item.get("signal_type") or "material",
         "url": item.get("url") or "",
         "provider": item.get("provider") or "",
         "fetched_at": item.get("fetched_at"),
@@ -662,6 +795,8 @@ def extract_json(text: str) -> Any:
 
 
 # ---------- 刷新编排：单飞 + 后台任务 + 结果落 settings ----------
+
+RUN_STATE_KEY = "topic_pool_run_state"  # 刷新运行态标记（服务重启后被杀可被检测）
 
 
 class TopicRefreshService:
@@ -689,32 +824,61 @@ class TopicRefreshService:
         """启动一次刷新；已有刷新在跑时返回 False（单飞）。"""
         if self._lock.locked():
             return False
+        # 运行态落账先于任务启动：服务重启杀任务后可检测出"被中断"
+        store.set_setting(RUN_STATE_KEY, json.dumps({"startedAt": datetime.now(timezone.utc).isoformat()}))
         self._task = asyncio.create_task(self._run())
         return True
 
     async def _run(self) -> CurateResult:
-        async with self._lock:
-            result = await self.curator.run()
-            # 刷新尾部顺带轮转复查观察卡（锁内串行，防与手动深挖同卡双跑）
-            try:
-                rescan = await self.curator.rescan_observations()
-            except Exception:  # noqa: BLE001 - 复查失败不拖累主刷新的结果记录
-                logger.exception("选题池观察卡轮转复查失败")
-                rescan = RescanSummary()
-        store.archive_stale(90)
-        store.set_setting(
-            "topic_pool_last_run",
-            json.dumps(
-                {
-                    "finishedAt": datetime.now(timezone.utc).isoformat(),
-                    "rescanned": rescan.rescanned,
-                    "rescanUpgraded": rescan.upgraded,
-                    **result.__dict__,
-                },
-                ensure_ascii=False,
-            ),
-        )
-        return result
+        try:
+            async with self._lock:
+                result = await self.curator.run()
+                # 刷新尾部顺带轮转复查观察卡（锁内串行，防与手动深挖同卡双跑）
+                try:
+                    rescan = await self.curator.rescan_observations()
+                except Exception:  # noqa: BLE001 - 复查失败不拖累主刷新的结果记录
+                    logger.exception("选题池观察卡轮转复查失败")
+                    rescan = RescanSummary()
+            store.archive_stale(90)
+            store.set_setting(
+                "topic_pool_last_run",
+                json.dumps(
+                    {
+                        "finishedAt": datetime.now(timezone.utc).isoformat(),
+                        "rescanned": rescan.rescanned,
+                        "rescanUpgraded": rescan.upgraded,
+                        **result.__dict__,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            return result
+        finally:
+            store.set_setting(RUN_STATE_KEY, "")
+
+    def report_interrupted_run(self) -> None:
+        """启动期检测：上轮刷新留有运行态标记 = 被服务重启杀掉，把中断落进 last_run。
+
+        只在标记晚于 lastRun.finishedAt 时记（更早的标记属于已正常完成的旧轮）。
+        """
+        raw = store.get_setting(RUN_STATE_KEY)
+        if not raw:
+            return
+        try:
+            state = json.loads(raw)
+        except json.JSONDecodeError:
+            store.set_setting(RUN_STATE_KEY, "")
+            return
+        started_at = str(state.get("startedAt") or "")
+        last = self.last_run()
+        already = max(str(last.get("finishedAt") or ""), str(last.get("interruptedAt") or ""))
+        if started_at and started_at > already:
+            last["interruptedAt"] = started_at
+            last["error"] = f"刷新于 {started_at} 被中断（服务重启），本轮产出可能不完整"
+            last.pop("finishedAt", None)
+            store.set_setting("topic_pool_last_run", json.dumps(last, ensure_ascii=False))
+            logger.warning("检测到被中断的选题池刷新：startedAt=%s", started_at)
+        store.set_setting(RUN_STATE_KEY, "")
 
 
 SERVICE = TopicRefreshService()
