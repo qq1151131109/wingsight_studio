@@ -1,57 +1,108 @@
 "use client";
 
 /**
- * 版本历史弹窗（对标 open-ai-canvas version-compare + ai-moive 历史抽屉）：
- *  - 列出当前主图 + 历史版本（重生成前自动存档），一键"设为当前"回滚
- *  - A/B 滑杆对比（移植 compare-node 的 clipPath 双图叠加方案）
+ * 版本历史弹窗（master-detail，对标 novanova 详情弹窗左大图+右信息栏、
+ * ai-moive 历史抽屉的列表密度）：
+ *  - 左侧主预览：object-contain 跟比例（竖图撑满高度看细节），点击进灯箱
+ *    看原尺寸；「与当前版本对比」在此区切换 A/B 滑杆（两层 contain 自动跟
+ *    随比例，竖图对比无黑边）
+ *  - 右侧版本列表：当前 + 历史存档（重生成/上传覆盖前自动入档），点行即
+ *    预览；「设为当前」回滚（当前版入档 + genPrompt 回滚，与 Lightbox 的
+ *    restoreVersion 同契约，两处改一起改）
+ *  - 经 OverlayModal portal 到 body：画布节点树内 fixed 定位会被 viewport
+ *    transform 劫持（宽度被钉死在卡宽、背板只盖卡片），必须 portal
  */
 
-import { useRef, useState } from "react";
-import { GitCompareArrows, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Columns2, GitCompareArrows, X } from "lucide-react";
 import type { WingNodeData } from "@/lib/canvas/store";
 import { useCanvasStore } from "@/lib/canvas/store";
+import OverlayModal from "./OverlayModal";
+import { Lightbox } from "./Lightbox";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 
 type Version = { url: string; at: string; prompt?: string };
-
-function Thumb({
-  url,
-  label,
-  onClick,
-  active,
-}: {
-  url: string;
-  label: string;
-  onClick: () => void;
-  active?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`group relative shrink-0 overflow-hidden rounded-lg border transition-colors ${
-        active ? "border-accent" : "border-hairline hover:border-accent-soft"
-      }`}
-      data-tip={`${label} — 点击查看大图 · 双击设为当前`} aria-label={`${label} — 点击查看大图 · 双击设为当前`}
-    >
-      {isVideoUrl(url) ? (
-        <video src={url} muted preload="metadata" className="h-24 w-36 bg-black object-cover" />
-      ) : (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={assetThumbUrl(url)} alt={label} className="h-24 w-36 object-cover" />
-      )}
-      <span className="absolute left-1 top-1 rounded bg-black/55 px-1 py-0.5 text-[9px] text-white">
-        {label}
-      </span>
-    </button>
-  );
-}
 
 function isVideoUrl(url: string) {
   return /\.(mp4|webm|mov)(\?|$)/i.test(url);
 }
 
-/** A/B 滑杆对比（clipPath 裁上层图露下层图） */
+/** 主预览：图片点击进灯箱；视频带控制条（不进灯箱——灯箱只处理图片） */
+function PreviewMedia({ url, onZoom }: { url: string; onZoom: () => void }) {
+  if (isVideoUrl(url)) {
+    return (
+      <video
+        src={url}
+        controls
+        preload="metadata"
+        className="max-h-full max-w-full rounded-lg object-contain"
+      />
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt=""
+      onClick={onZoom}
+      className="max-h-full max-w-full cursor-zoom-in rounded-lg object-contain shadow-2xl"
+      draggable={false}
+    />
+  );
+}
+
+/** 版本列表行：小方缩略图（识别用，看细节在左侧大图）+ 标签 + 时间 */
+function Row({
+  v,
+  label,
+  active,
+  onClick,
+}: {
+  v: Version;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-2 rounded-lg border p-1.5 text-left transition-colors ${
+        active
+          ? "border-accent bg-accent/5"
+          : "border-transparent hover:border-hairline hover:bg-surface-2"
+      }`}
+    >
+      {isVideoUrl(v.url) ? (
+        <video
+          src={v.url}
+          muted
+          preload="metadata"
+          className="h-12 w-12 shrink-0 rounded-md bg-black object-cover"
+        />
+      ) : (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={assetThumbUrl(v.url)}
+          alt={label}
+          className="h-12 w-12 shrink-0 rounded-md object-cover"
+        />
+      )}
+      <span className="min-w-0">
+        <span
+          className={`block text-xs font-medium ${active ? "text-text" : "text-text-2"}`}
+        >
+          {label}
+        </span>
+        <span className="block truncate text-[10px] text-text-4">
+          {v.at === "当前" ? "当前版本" : v.at}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+/** A/B 滑杆对比（clipPath 裁上层图露下层图；两层 object-contain，滑杆跟随图片比例） */
 function ABCompare({ a, b }: { a: string; b: string }) {
   const [split, setSplit] = useState(50);
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -79,7 +130,9 @@ function ABCompare({ a, b }: { a: string; b: string }) {
           e.currentTarget.releasePointerCapture(e.pointerId);
       }}
     >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img src={b} alt="B" className="absolute inset-0 h-full w-full object-contain" draggable={false} />
+      {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         src={a}
         alt="A"
@@ -114,19 +167,39 @@ export default function VersionHistoryModal({
   const versions = data.versions ?? [];
   const isVideo = Boolean(data.videoUrl);
   const [selected, setSelected] = useState<Version | null>(null);
+  const [compare, setCompare] = useState(false);
+  const [zoomed, setZoomed] = useState(false);
   const entries: Version[] = [
     ...versions,
     ...(primary ? [{ url: primary, at: "当前", prompt: data.genPrompt }] : []),
   ].reverse();
-  // 提示词追溯：选中的版本显示它的提示词，未选中显示当前版的
-  const detail = selected ?? entries.find((v) => v.at === "当前") ?? null;
+  const currentEntry = entries.find((v) => v.at === "当前") ?? null;
+  // 提示词/操作针对选中的版本，未选中默认当前版
+  const detail = selected ?? currentEntry;
+  const labelOf = (v: Version) =>
+    v.at === "当前" ? "当前" : `V${entries.length - entries.indexOf(v)}`;
+  const canCompare =
+    !!detail &&
+    !!currentEntry &&
+    detail !== currentEntry &&
+    !isVideoUrl(detail.url) &&
+    !isVideoUrl(primary);
+
+  useEffect(() => {
+    if (zoomed) return; // 灯箱开着时 Esc 归灯箱
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [zoomed, onClose]);
 
   const restore = (v: Version) => {
     const st = useCanvasStore.getState();
     st.commitHistory();
     const cur: Version = {
       url: primary,
-      at: new Date().toISOString().slice(0, 16).replace("T", " "),
+      at: new Date().toISOString().slice(5, 16).replace("T", " "),
       prompt: data.genPrompt,
     };
     const rest = (data.versions ?? []).filter((x) => x.url !== v.url);
@@ -139,13 +212,15 @@ export default function VersionHistoryModal({
     onClose();
   };
 
+  const previewLabel = compare && detail ? `A ${labelOf(detail)} / B 当前` : detail ? labelOf(detail) : "";
+
   return (
-    <div
+    <OverlayModal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-3xl flex-col gap-3 rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex h-[min(82vh,760px)] w-full max-w-5xl flex-col gap-3 rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2">
@@ -158,59 +233,99 @@ export default function VersionHistoryModal({
           </button>
         </div>
 
-        {selected ? (
-          <div className="flex h-72 flex-col gap-2">
-            <ABCompare a={selected.url} b={primary} />
-            <div className="flex items-center justify-between text-[11px] text-text-3">
-              <span>
-                A：{selected.at === "当前" ? "当前版本" : `历史 ${selected.at}`}
-                <button className="ml-2 text-accent hover:underline" onClick={() => setSelected(null)}>
-                  退出对比
-                </button>
+        <div className="flex min-h-0 flex-1 gap-3">
+          {/* 左：主预览（对比模式换成 A/B 滑杆） */}
+          <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg bg-black">
+            {detail ? (
+              compare && canCompare ? (
+                <ABCompare a={detail.url} b={primary} />
+              ) : (
+                <PreviewMedia url={detail.url} onZoom={() => setZoomed(true)} />
+              )
+            ) : null}
+            {detail && !compare ? (
+              <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
+                {previewLabel}
               </span>
-              <span>B：当前版本</span>
+            ) : null}
+          </div>
+
+          {/* 右：版本列表 + 提示词 + 操作 */}
+          <div className="flex w-56 shrink-0 flex-col gap-2">
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="flex flex-col gap-1">
+                {entries.map((v, i) => (
+                  <Row
+                    key={`${v.url}_${i}`}
+                    v={v}
+                    label={labelOf(v)}
+                    active={detail === v}
+                    onClick={() => {
+                      setSelected(v);
+                      setCompare(false);
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+            {detail?.prompt ? (
+              <div className="shrink-0 rounded-md border border-hairline-soft bg-surface-2 p-2">
+                <p className="text-[10px] text-text-4">
+                  {compare ? `${labelOf(detail)}（A）提示词` : `${labelOf(detail)}提示词`}
+                </p>
+                <p className="mt-0.5 max-h-24 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
+                  {detail.prompt}
+                </p>
+              </div>
+            ) : null}
+            <div className="flex shrink-0 flex-col gap-1.5">
+              {canCompare ? (
+                <button
+                  type="button"
+                  className={`flex items-center justify-center gap-1 rounded-md border px-3 py-1.5 text-xs font-medium transition-colors ${
+                    compare
+                      ? "border-accent text-accent hover:bg-accent/5"
+                      : "border-hairline text-text-2 hover:border-accent hover:text-text"
+                  }`}
+                  onClick={() => setCompare(!compare)}
+                >
+                  <Columns2 className="h-3.5 w-3.5" />
+                  {compare ? "退出对比" : "与当前版本对比"}
+                </button>
+              ) : null}
+              {detail && detail !== currentEntry ? (
+                <button
+                  type="button"
+                  className="flex items-center justify-center rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-surface-1 transition-opacity hover:opacity-90"
+                  onClick={() => restore(detail)}
+                >
+                  设为当前版本
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled
+                  className="flex items-center justify-center rounded-md border border-hairline px-3 py-1.5 text-xs font-medium text-text-4"
+                >
+                  当前版本
+                </button>
+              )}
+              <p className="text-center text-[10px] leading-relaxed text-text-4">
+                重生成时旧图自动存档{isVideoUrl(detail?.url ?? "") ? "" : " · 点预览看原尺寸"}
+              </p>
             </div>
           </div>
-        ) : (
-          <div className="nowheel flex gap-2 overflow-x-auto pb-1">
-            {entries.map((v, i) => (
-              <div key={`${v.url}_${i}`} className="flex flex-col items-start gap-1">
-                <Thumb
-                  url={v.url}
-                  label={v.at === "当前" ? "当前" : `V${entries.length - i}`}
-                  active={v.at === "当前"}
-                  onClick={() => setSelected(v)}
-                />
-                {v.at !== "当前" ? (
-                  <button
-                    type="button"
-                    className="self-center rounded-md border border-hairline px-2 py-0.5 text-[10px] text-text-2 hover:border-accent hover:text-text"
-                    onClick={() => restore(v)}
-                  >
-                    设为当前
-                  </button>
-                ) : (
-                  <span className="self-center text-[10px] text-text-4">当前版本</span>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {detail?.prompt ? (
-          <div className="rounded-md border border-hairline-soft bg-surface-2 p-2">
-            <p className="text-[10px] text-text-4">
-              {detail.at === "当前" ? "当前版本提示词" : `历史 ${detail.at} 提示词`}
-            </p>
-            <p className="mt-0.5 line-clamp-4 whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
-              {detail.prompt}
-            </p>
-          </div>
-        ) : null}
-
-        <p className="text-[10px] text-text-4">
-          {selected ? "左右拖动滑杆对比两个版本" : "点击版本进入 A/B 对比；重生成时旧结果自动存档"}
-        </p>
+        </div>
       </div>
-    </div>
+
+      {zoomed && detail ? (
+        <Lightbox
+          images={[{ src: detail.url, title: `${data.title ?? ""} · ${labelOf(detail)}` }]}
+          index={0}
+          onIndex={() => undefined}
+          onClose={() => setZoomed(false)}
+        />
+      ) : null}
+    </OverlayModal>
   );
 }

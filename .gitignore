@@ -60,3 +60,6 @@ agent/data/
 
 # 启动脚本日志与 pid
 logs/
+
+# E2E 截图产物
+scripts/verhist-*.png
