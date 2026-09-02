@@ -21,6 +21,7 @@ from typing_extensions import Literal
 
 import models
 import thumbs
+import usage
 
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
@@ -1145,6 +1146,8 @@ async def _generate_single_image(
         return {"ok": False, "error": str(e)[:200]}
     url = await _extract_image_url(raw)
     if url:
+        # 用量计量（按用户）：模型取解析后的目录 id；发起者来自请求上下文
+        usage.record_image(str((params or {}).get("model_name") or ""))
         return {"ok": True, "imageUrl": url}
     return {"ok": False, "error": raw[:200]}
 

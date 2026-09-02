@@ -32,6 +32,7 @@ import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
 import dmx_routes  # noqa: E402
+import usage_routes  # noqa: E402
 import entities  # noqa: E402
 import entity_routes  # noqa: E402
 import graph  # noqa: E402
@@ -106,6 +107,8 @@ app.include_router(ref_routes.router)
 app.include_router(research_routes.router)
 # DMX 余额（顶栏实时显示，admin）
 app.include_router(dmx_routes.router, prefix="/api/v1")
+# 出图用量（按用户张数/模型分布，admin）
+app.include_router(usage_routes.router, prefix="/api/v1")
 
 
 agent = LangGraphAgent(

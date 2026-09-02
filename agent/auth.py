@@ -26,6 +26,8 @@ from fastapi.security import OAuth2PasswordBearer
 from pwdlib import PasswordHash
 from pydantic import BaseModel, ConfigDict
 
+import usage  # noqa: E402  (出图计量读请求用户；usage 不反向依赖本模块)
+
 logger = logging.getLogger(__name__)
 
 # 与 projects.py 共用同一个 SQLite 文件
@@ -64,7 +66,16 @@ def is_register_open() -> bool:
 
 
 def _anonymous_user() -> CurrentUserInfo:
-    return CurrentUserInfo(id=DEFAULT_USER_ID, sub=_ANONYMOUS_USER_SUB, role="admin", via="local")
+    return _set_usage_user(
+        CurrentUserInfo(id=DEFAULT_USER_ID, sub=_ANONYMOUS_USER_SUB, role="admin", via="local")
+    )
+
+
+def _set_usage_user(user: CurrentUserInfo) -> CurrentUserInfo:
+    """出图计量上下文：请求身份在此注入 ContextVar，随 asyncio 任务快照
+    传播到后台出图任务（usage.record_image 缺省读取）。sub 即登录名。"""
+    usage.set_current_user(user.sub)
+    return user
 
 
 # ---------- JWT ----------
@@ -470,26 +481,26 @@ def _resolve_current_user(payload: dict) -> CurrentUserInfo:
     """DB 用户（JWT 带 uid）以库内 role/is_active 为准——改角色即时生效。"""
     via = str(payload.get("via") or "jwt")
     if via == "apikey" or "uid" not in payload:
-        return _payload_to_user(payload)
+        return _set_usage_user(_payload_to_user(payload))
 
     user_id = str(payload["uid"])
     try:
         row = user_get_by_id(user_id)
     except Exception:  # noqa: BLE001 —— DB 短暂不可用回退 JWT claim，避免全站锁死
         logger.exception("加载用户 %s 失败，回退 JWT role claim", user_id)
-        return _payload_to_user(payload)
+        return _set_usage_user(_payload_to_user(payload))
 
     if row is None:
         # env 管理员签发的 uid=default 可能尚未落库；回退 claim 避免登录后立刻 401
         if user_id == DEFAULT_USER_ID:
-            return _payload_to_user(payload)
+            return _set_usage_user(_payload_to_user(payload))
         raise HTTPException(
             status_code=401,
             detail="用户不存在或已停用",
             headers={"WWW-Authenticate": "Bearer"},
         )
     sub = str(payload.get("sub") or row["username"])
-    return CurrentUserInfo(id=str(row["id"]), sub=sub, role=str(row["role"]), via=via)
+    return _set_usage_user(CurrentUserInfo(id=str(row["id"]), sub=sub, role=str(row["role"]), via=via))
 
 
 async def get_current_user(
