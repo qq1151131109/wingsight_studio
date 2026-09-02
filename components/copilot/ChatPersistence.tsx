@@ -12,8 +12,8 @@
  *  - 读取失败（服务离线）本轮不保存，避免用内存空历史覆盖服务端
  */
 
-import { useEffect, useRef } from "react";
-import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useAgent } from "@copilotkit/react-core/v2";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { pendingAgentThreadId, useChatSession } from "@/lib/chat/session";
 import { decodeContent, encodeContent } from "@/lib/chat/content";
@@ -57,7 +57,24 @@ export default function ChatPersistence() {
   const projectId = useCanvasStore((s) => s.projectId);
   const threadId = useChatSession((s) => s.threadId);
   const setThreadId = useChatSession((s) => s.setThreadId);
-  const { messages, setMessages } = useCopilotChatHeadless_c();
+  // 消息源 = 注册 agent 的 messages。不能用 license 门控的 _c 钩子：它的
+  // messages 恒为空数组，会把每次保存都变成清空会话（数据丢失级事故）
+  const { agent } = useAgent({ agentId: "default" });
+  const [messages, setMessagesState] = useState<ChatMsg[]>([]);
+  const setMessages = useCallback(
+    (next: unknown) => {
+      agent?.setMessages?.(next as never);
+      setMessagesState([...((agent?.messages ?? []) as ChatMsg[])]);
+    },
+    [agent],
+  );
+  // agent.messages 会被流式原地追加，快照成 state 驱动保存/水合 effect
+  useEffect(() => {
+    if (!agent) return;
+    const update = () => setMessagesState([...(agent.messages ?? []) as ChatMsg[]]);
+    Promise.resolve().then(update);
+    return agent.subscribe({ onMessagesChanged: update, onEvent: update }).unsubscribe;
+  }, [agent]);
   // 已成功水合的 项目:会话 才允许保存（防离线/竞态覆盖）
   const hydratedKeyRef = useRef<string | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -100,7 +117,8 @@ export default function ChatPersistence() {
     if (threadId === null) {
       hydratedKeyRef.current = key;
       lastSavedRef.current = "";
-      setMessages([] as never);
+      console.log("[persist] null-branch scheduled (threadId=null)");
+      Promise.resolve().then(() => setMessages([] as never));
       return;
     }
 
@@ -109,16 +127,28 @@ export default function ChatPersistence() {
     void (async () => {
       try {
         if (threadId === undefined) {
-          // 进项目：选最新会话（listChatThreads 按 updated_at DESC）
-          const threads = await listChatThreads(projectId);
+          // 进项目：选最新会话（listChatThreads 按 updated_at DESC）。
+          // 首拉偶发空列表（代理/冷启动竞态，服务端实际有会话）：延迟重试
+          // 一次再下结论，误判会清空界面 + 误建新会话
+          let threads = await listChatThreads(projectId);
+          if (!cancelled && threads.length === 0) {
+            await new Promise((r) => setTimeout(r, 1200));
+            if (cancelled || useCanvasStore.getState().projectId !== projectId)
+              return;
+            threads = await listChatThreads(projectId);
+          }
           if (cancelled || useCanvasStore.getState().projectId !== projectId)
             return;
           if (JSON.stringify(messagesRef.current) !== before) return; // 用户已先开口
           const latest = threads[0]?.id ?? null;
           hydratedKeyRef.current = keyOf(projectId, latest);
           lastSavedRef.current = "";
+          if (process.env.NODE_ENV !== "production") console.log("[persist] pick latest:", latest, "threads:", threads.length);
           setThreadId(latest);
-          if (latest === null) setMessages([] as never);
+          if (latest === null) {
+            console.log("[persist] latest null → clear");
+            setMessages([] as never);
+          }
           return;
         }
         const history = await loadChatMessages(projectId, threadId);
@@ -162,6 +192,7 @@ export default function ChatPersistence() {
     if (!projectId || !hydratedKeyRef.current) return;
     if (hydratedKeyRef.current !== keyOf(projectId, threadId)) return;
     const records = toRecords(messages as ChatMsg[]);
+    useChatSession.getState().setHasMessages(records.length > 0);
     const snapshot = JSON.stringify(records);
     if (snapshot === lastSavedRef.current) return;
     dirtyRef.current = { pid: projectId, tid: threadId ?? null, records };

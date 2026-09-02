@@ -35,6 +35,11 @@ interface ChatSessionState {
   setThreadId: (threadId: string | null | undefined) => void;
   /** 只读派生： CopilotKit threadId（新会话期间与 threadId 不同步，首存后对齐） */
   agentThreadId: string | undefined;
+  /** 当前会话是否有可展示消息（ChatPersistence 保存/水合时维护）。建议 chips
+   *  的显隐依据——不能读 agent.messages：core 包装层会重建数组，且 useAgent
+   *  默认不在消息变化时重渲染 */
+  hasMessages: boolean;
+  setHasMessages: (v: boolean) => void;
 }
 
 export const useChatSession = create<ChatSessionState>()((set) => ({
@@ -43,6 +48,8 @@ export const useChatSession = create<ChatSessionState>()((set) => ({
   // 不能在初始化器里 get()：zustand 创建期 state 尚未赋值，get() 返回
   // undefined 会炸整页。初值 threadId=undefined → agentThreadId 同为 undefined
   agentThreadId: undefined,
+  hasMessages: false,
+  setHasMessages: (hasMessages) => set({ hasMessages }),
 }));
 
 /** 新会话首存落库：把 agent 用的 id 带给服务端（createChatThread），并对齐两边 */

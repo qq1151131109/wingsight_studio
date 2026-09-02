@@ -9,7 +9,6 @@ import type {
   CopilotKitCSSProperties,
   RenderSuggestionsListProps,
 } from "@copilotkit/react-ui";
-import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
 import {
   CircleAlert,
   PanelRightClose,
@@ -18,6 +17,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import ChatInput from "./ChatInput";
+import { useChatSession } from "@/lib/chat/session";
 import ChatSidebarHeader from "./ThreadsBar";
 
 /** 原始报错 → 人话（原文折叠保留，排查仍可看全） */
@@ -121,13 +121,15 @@ const SUGGESTIONS = [
   },
 ];
 
-/** 空态建议列表：对话一旦开始就隐藏；2×2 纸感卡片（stock 的 .suggestion 太碎太小） */
+/** 空态建议列表：对话一旦开始就隐藏；2×2 纸感卡片（stock 的 .suggestion 太碎太小）
+ *  显隐依据 = session store 的 hasMessages（ChatPersistence 保存/水合时维护）。
+ *  不能读 agent.messages：core 包装层会重建数组，useAgent 也不在消息变化时重渲染 */
 function EmptyStateSuggestions({
   suggestions,
   onSuggestionClick,
 }: RenderSuggestionsListProps) {
-  const count = useCopilotChatHeadless_c().messages.length;
-  if (count > 0) return null;
+  const hasMessages = useChatSession((s) => s.hasMessages);
+  if (hasMessages) return null;
   return (
     <div className="grid grid-cols-2 gap-1.5 px-1 pt-2">
       {suggestions.map((s) => (
