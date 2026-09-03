@@ -3,6 +3,7 @@
 /** 项目 API 客户端（经同源代理 /agent-service/projects）。 */
 
 import { apiFetch } from "@/lib/auth";
+import { showToast } from "@/lib/toast";
 
 export interface ProjectMeta {
   id: string;
@@ -85,7 +86,9 @@ export async function saveCanvas(
   return { ok: data?.ok !== false };
 }
 
-/** 上传媒体/文档附件（粘贴/拖拽/选择共用），返回同源可访问的 URL；失败返回 null。
+/** 上传媒体/文档附件（粘贴/拖拽/选择共用），返回同源可访问的 URL；失败返回 null
+ *  并经全局 toast 明报原因（历史上静默返回 null，拖拽导入直接跳过文件，
+ *  用户视角就是"拖了没反应"——大图上传挂死的事故因此长期看不出原因）。
  *  name 传原始文件名：文档类 mime 认不出时服务端靠它推断扩展名。 */
 export async function uploadAsset(
   file: Blob,
@@ -94,12 +97,32 @@ export async function uploadAsset(
 ): Promise<string | null> {
   const buf = await file.arrayBuffer();
   const qs = name ? `?name=${encodeURIComponent(name)}` : "";
-  const r = await apiFetch(`/agent-service/assets${qs}`, {
-    method: "POST",
-    headers: { "Content-Type": contentType || file.type || "image/png" },
-    body: buf,
-  });
-  if (!r.ok) return null;
+  let r: Response;
+  try {
+    r = await apiFetch(`/agent-service/assets${qs}`, {
+      method: "POST",
+      headers: { "Content-Type": contentType || file.type || "image/png" },
+      body: buf,
+    });
+  } catch {
+    showToast("网络中断，上传失败，请重试");
+    return null;
+  }
+  if (r.status === 413) {
+    const kind = (contentType || file.type || "").startsWith("video/")
+      ? "视频"
+      : (contentType || file.type || "").startsWith("image/")
+        ? "图片"
+        : "文档";
+    showToast(
+      `${kind}超过大小上限（${kind === "视频" ? 200 : kind === "图片" ? 50 : 20}MB），请压缩后重试`,
+    );
+    return null;
+  }
+  if (!r.ok) {
+    showToast(`上传失败（HTTP ${r.status}）`);
+    return null;
+  }
   const { url } = (await r.json()) as { url: string };
   return url;
 }

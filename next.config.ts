@@ -8,8 +8,14 @@ const nextConfig: NextConfig = {
   // 拆解/技能 flow 调用中段的静默期一过就把 AG-UI SSE 流掐断（前端报
   // ERR_INCOMPLETE_CHUNKED_ENCODING / agent network error）。放宽到 10 分钟；
   // 流式数据持续流动时会不断重置计时，真正的死连接最多多挂 10 分钟
+  //
+  // proxyClientMaxBodySize：代理会把请求体在内存里缓冲一份（供代理与路由
+  // 双读），默认上限 10MB——超限的请求整个代理挂死、上游根本收不到（ly
+  // 拖 4K 图上传必死的事故：4K PNG 常见 10-25MB）。调到 200MB 对齐 agent
+  // 的视频上传上限
   experimental: {
     proxyTimeout: 600_000,
+    proxyClientMaxBodySize: "200mb",
   },
 
   // langflow 代理（app/langflow/[[...path]]/route.ts）要求路径原样到达处理器：

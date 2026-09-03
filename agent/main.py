@@ -173,7 +173,8 @@ def serve_thumb(filename: str) -> FileResponse:
 async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "") -> dict:
     """粘贴/拖拽/附件上传：body 为二进制；返回同源可访问 URL。
 
-    图片 ≤15MB、视频 ≤200MB、文档（pdf/txt/md/json/csv/srt/docx…）≤20MB。
+    图片 ≤50MB（4K PNG 常见 10-25MB，15MB 曾把正常工作图全挡下）、
+    视频 ≤200MB、文档（pdf/txt/md/json/csv/srt/docx…）≤20MB。
     扩展名推断：mime 映射优先，认不出的再看 ?name= 原始文件名的后缀，
     仍无法确定则 415 拒收（避免存成错误的 .png 之类）。
     """
@@ -187,7 +188,7 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
     is_video = ctype.startswith("video/")
     is_image = ctype.startswith("image/")
     is_doc = not is_video and not is_image
-    limit = 200 * 1024 * 1024 if is_video else 15 * 1024 * 1024 if is_image else 20 * 1024 * 1024
+    limit = 200 * 1024 * 1024 if is_video else 50 * 1024 * 1024 if is_image else 20 * 1024 * 1024
     if len(body) > limit:
         return Response(status_code=413)  # type: ignore[return-value]
     ext = {

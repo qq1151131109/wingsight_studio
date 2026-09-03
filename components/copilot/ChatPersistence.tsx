@@ -13,8 +13,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAgent } from "@copilotkit/react-core/v2";
 import { useCanvasStore } from "@/lib/canvas/store";
+import { langgraphAgent } from "@/app/agent-provider";
 import { pendingAgentThreadId, useChatSession } from "@/lib/chat/session";
 import { decodeContent, encodeContent } from "@/lib/chat/content";
 import {
@@ -57,9 +57,11 @@ export default function ChatPersistence() {
   const projectId = useCanvasStore((s) => s.projectId);
   const threadId = useChatSession((s) => s.threadId);
   const setThreadId = useChatSession((s) => s.setThreadId);
-  // 消息源 = 注册 agent 的 messages。不能用 license 门控的 _c 钩子：它的
-  // messages 恒为空数组，会把每次保存都变成清空会话（数据丢失级事故）
-  const { agent } = useAgent({ agentId: "default" });
+  // 消息源 = 原始注册 agent 单例。不能用 useAgent()：runtime 握手完成前它返回
+  // 临时 agent，换真身后引用替换、旧订阅静默失效——若首条消息发生在握手期
+  // （E2E 即如此），之后所有消息变化都收不到，保存永不触发（数据丢失级）。
+  // 原始单例身份恒定、事件流完整（思考透传同样走它）。
+  const agent = langgraphAgent;
   const [messages, setMessagesState] = useState<ChatMsg[]>([]);
   const setMessages = useCallback(
     (next: unknown) => {
@@ -117,7 +119,6 @@ export default function ChatPersistence() {
     if (threadId === null) {
       hydratedKeyRef.current = key;
       lastSavedRef.current = "";
-      console.log("[persist] null-branch scheduled (threadId=null)");
       Promise.resolve().then(() => setMessages([] as never));
       return;
     }
@@ -139,14 +140,17 @@ export default function ChatPersistence() {
           }
           if (cancelled || useCanvasStore.getState().projectId !== projectId)
             return;
-          if (JSON.stringify(messagesRef.current) !== before) return; // 用户已先开口
+          if (JSON.stringify(messagesRef.current) !== before) {
+            // 用户已先开口：放弃用服务端历史覆盖界面，但必须标记"已水合"——
+            // 否则保存永远被闸死（threadId 停在 undefined，本会话不再落盘）
+            hydratedKeyRef.current = key;
+            return;
+          }
           const latest = threads[0]?.id ?? null;
           hydratedKeyRef.current = keyOf(projectId, latest);
           lastSavedRef.current = "";
-          if (process.env.NODE_ENV !== "production") console.log("[persist] pick latest:", latest, "threads:", threads.length);
           setThreadId(latest);
           if (latest === null) {
-            console.log("[persist] latest null → clear");
             setMessages([] as never);
           }
           return;
@@ -167,7 +171,11 @@ export default function ChatPersistence() {
           hydratedKeyRef.current = key;
           return;
         }
-        if (JSON.stringify(messagesRef.current) !== before) return;
+        if (JSON.stringify(messagesRef.current) !== before) {
+          // 同上：不覆盖用户已输入的内容，但放行后续保存
+          hydratedKeyRef.current = key;
+          return;
+        }
         setMessages(
           history.map((h) => ({
             id: h.id,

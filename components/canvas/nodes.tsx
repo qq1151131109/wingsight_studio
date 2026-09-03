@@ -109,6 +109,15 @@ import {
 } from "./PromptBar";
 import { CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import {
+  exportDocxFile,
+  exportTextFile,
+  shotlistToDocxBlocks,
+  shotlistToMarkdown,
+  shotlistToText,
+  textToDocxBlocks,
+  type ExportFormat,
+} from "@/lib/canvas/exportDoc";
+import {
   autoAdoptKeyOnce,
   autoAdoptTopRecommendations,
 } from "@/lib/canvas/refAdopt";
@@ -1151,6 +1160,109 @@ function downloadName(title: string, url: string, fallbackExt: string) {
   return `${safe || "wingsight"}.${ext}`;
 }
 
+/** 导出格式菜单（txt/md/docx）：portal 到 body 以 fixed 定位（卡内 absolute
+ *  弹层会被 .ws-card overflow:hidden 裁剪，矮卡里点不到——mention 候选弹层
+ *  同款先例）；文本/剧本/分镜表卡共用；埋点只记格式不记内容 */
+function ExportMenuButton({
+  onExport,
+  disabled,
+  track,
+  bare,
+}: {
+  onExport: (format: ExportFormat) => void;
+  disabled?: boolean;
+  track: string;
+  /** 无边框样式（文本卡底栏是一排无边框文本钮） */
+  bare?: boolean;
+}) {
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const openerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLSpanElement | null>(null);
+  // 外点关闭：portal 内容不在节点 DOM 里，dismiss 需同时认 弹层+按钮 两个 ref
+  useEffect(() => {
+    if (!anchor) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target;
+      if (
+        t instanceof Node &&
+        (menuRef.current?.contains(t) || openerRef.current?.contains(t))
+      )
+        return;
+      setAnchor(null);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setAnchor(null);
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown, true);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [anchor]);
+  const item = (format: ExportFormat, label: string) => (
+    <button
+      key={format}
+      type="button"
+      className="flex w-full items-center justify-between rounded px-1.5 py-1 text-left text-[11px] text-text-2 transition-colors hover:bg-surface-2"
+      data-track={`${track}.export`}
+      data-track-props={`{"format":"${format}"}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        setAnchor(null);
+        onExport(format);
+      }}
+    >
+      {label}
+      <span className="text-[9px] text-text-4">.{format}</span>
+    </button>
+  );
+  return (
+    <>
+      <button
+        ref={openerRef}
+        type="button"
+        disabled={disabled}
+        data-tip="导出为 txt / md / docx" aria-label="导出文件"
+        className={
+          bare
+            ? "nodrag flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            : "nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+        }
+        onClick={(e) => {
+          e.stopPropagation();
+          const rect = openerRef.current?.getBoundingClientRect();
+          if (rect) setAnchor((cur) => (cur ? null : rect));
+        }}
+      >
+        <Download className="h-3 w-3" />
+        导出
+        <ChevronDown className="h-3 w-3 opacity-60" />
+      </button>
+      {anchor
+        ? createPortal(
+            <span
+              ref={menuRef}
+              className="nodrag nowheel fixed z-50 flex w-32 flex-col rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
+              // 菜单右下角锚在按钮右上角上方：贴按钮向上展开，顶边钳在视口内
+              style={{
+                left: Math.max(140, anchor.right),
+                top: Math.max(8, anchor.top - 6),
+                transform: "translate(-100%, -100%)",
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {item("docx", "Word 文档")}
+              {item("md", "Markdown")}
+              {item("txt", "纯文本")}
+            </span>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
+
 /** 文本 / 剧本卡：紧凑文本卡 + 就地编辑（标题在卡外头部）。
  *  空卡 = 直接输入框 + AI 撰写输入条（对标 libtv 的"尝试"+输入区）。
  *  文本卡（非剧本）底部带字数徽标 + 「生图/生视频」快捷键（viedeo-workflow
@@ -1221,6 +1333,14 @@ function TextCard({
         {label}
       </button>
     );
+  };
+  /** 导出：txt/md 正文原样，docx = 标题+正文分段（文本卡与剧本卡同构） */
+  const doExport = (format: ExportFormat) => {
+    const text = (data.body ?? "").trim();
+    if (!text) return;
+    const title = (data.title || "").trim() || "文本";
+    if (format === "docx") void exportDocxFile(title, textToDocxBlocks(title, text));
+    else exportTextFile(title, text, format);
   };
   /** 深度调研：正文作 brief 发起调研，右侧建调研卡连线（卡面轮询任务实况） */
   const researchBtn = () => {
@@ -1306,6 +1426,7 @@ function TextCard({
               {genBtn("image", "生图")}
               {genBtn("video", "生视频")}
               {researchBtn()}
+              <ExportMenuButton onExport={doExport} disabled={empty} track="card" bare />
             </div>
           ) : null}
           {footer}
@@ -1474,15 +1595,13 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     );
   };
 
-  const exportMd = () => {
+  /** 导出：txt/md 正文原样，docx = 标题+正文分段（入口在 footer「导出」菜单） */
+  const doExport = (format: ExportFormat) => {
     const text = freshBody();
     if (!text) return;
-    const blob = new Blob([text], { type: "text/markdown;charset=utf-8" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${(d.title || "剧本").slice(0, 40)}.md`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    const title = (d.title || "").trim() || "剧本";
+    if (format === "docx") void exportDocxFile(title, textToDocxBlocks(title, text));
+    else exportTextFile(title, text, format);
   };
 
   return (
@@ -1502,20 +1621,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               {sceneCount > 0 ? ` · ${sceneCount} 场` : ""}
             </span>
             <span className="flex-1" />
-            <button
-              type="button"
-              disabled={empty}
-              data-tip="把剧本正文导出为 .md 文件" aria-label="把剧本正文导出为 .md 文件"
-              className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              data-track="script.export-md"
-  onClick={(e) => {
-                e.stopPropagation();
-                exportMd();
-              }}
-            >
-              <Download className="h-3 w-3" />
-              导出
-            </button>
+            <ExportMenuButton onExport={doExport} disabled={empty} track="script" />
             <button
               type="button"
               disabled={empty || decomposing}
@@ -3297,11 +3403,13 @@ function ShotChip({
 }) {
   return (
     <span
-      className={`inline-flex min-w-11 items-center gap-1 rounded border px-1 text-[10px] leading-4 ${
+      className={`inline-flex min-w-11 max-w-full items-center gap-1 rounded border px-1 text-[10px] leading-4 ${
         accent
           ? "border-accent bg-accent-dim font-semibold tabular-nums text-text"
           : "border-hairline bg-surface-2 text-text-3"
       }`}
+      // 长值（光影/音效常是整句）：列宽内尽量展示，超出悬停看全文
+      title={value || undefined}
     >
       <span className={`shrink-0 ${accent ? "text-accent" : "text-text-4"}`}>{label}</span>
       <Editable
@@ -3309,7 +3417,7 @@ function ShotChip({
         onSave={onSave}
         always
         placeholder="—"
-        className="max-w-32 text-text-2"
+        className="max-w-full text-text-2"
       />
     </span>
   );
@@ -3415,14 +3523,16 @@ function GroupCard({ data, id, selected }: NodeProps) {
 }
 
 /** 分镜行出图提示词合成（八段式轻量版；finalPrompt 有值时由调用方直用）。
- *  全局视觉风格收尾（novanova visualStyle 段），供合成与批量出图共用 */
+ *  全局视觉风格收尾（novanova visualStyle 段），供合成与批量出图共用。
+ *  只收静态图能表达的段：景别（景框）/画面/光影/风格。时长与运镜（推拉
+ *  摇移跟升降手持）是镜头运动语言，静帧表达不了；台词旁白与音效是听觉
+ *  信息，混进画面提示词只会成为噪点——它们保留在行字段与分镜表导出里
+ *  （制片交付与将来的行出视频用），不进生图提示词 */
 function composeShotPrompt(r: ShotRow, visualStyle: string): string {
   const seg = [
-    `镜头规格：${r.shotSize || "中景"}，${r.duration || 5} 秒`,
+    `镜头规格：${r.shotSize || "中景"}`,
     `画面内容：${r.action || "（无）"}`,
     r.lighting ? `光影氛围：${r.lighting}` : "",
-    r.cameraMove ? `运镜：${r.cameraMove}` : "",
-    `声音：${[r.dialogue, r.sound].filter(Boolean).join("；") || "无"}`,
     visualStyle ? `视觉风格：${visualStyle}` : "",
   ].filter(Boolean);
   return `${seg.join("。")}。`;
@@ -4861,6 +4971,20 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     await composeFromCard(composeId);
   };
 
+  /** 导出分镜表：txt/md 每镜一节，docx 横版表格（入口在底栏「导出」菜单） */
+  const doExport = (format: ExportFormat) => {
+    if (rows.length === 0) return;
+    const title = (d.title || "").trim() || "分镜表";
+    const style = (d.visualStyle ?? "").trim();
+    if (format === "docx")
+      void exportDocxFile(title, shotlistToDocxBlocks(title, rows, style), {
+        landscape: true,
+      });
+    else if (format === "md")
+      exportTextFile(title, shotlistToMarkdown(title, rows, style), "md");
+    else exportTextFile(title, shotlistToText(title, rows, style), "txt");
+  };
+
   return (
     <CardShell id={id} data={d} selected={selected}>
       {/* 深缩放（micro/nano）只留标题+统计概览：行编辑器是全画布最重的
@@ -4904,7 +5028,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             return (
             <div
               key={r.rid}
-              className="group/row rounded-md border border-hairline bg-surface-2/60 px-1 py-1"
+              className="group/row relative rounded-md border border-hairline bg-surface-2/60 px-1 py-1"
             >
               <div className="flex items-start gap-1">
                 {/* 左轨：勾选+序号在上（贴左），缩略图吊在其下 */}
@@ -5034,7 +5158,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     multiline
                     always
                     placeholder="画面描述（谁、在哪、做什么，@资产名 引用角色）"
-                    className="min-w-0 max-h-14 flex-1 overflow-auto text-[11px] leading-relaxed text-text-2"
+                    className="min-w-0 flex-1 text-[11px] leading-relaxed text-text-2"
                   />
                   </div>
                   <div className="flex items-start gap-1">
@@ -5045,7 +5169,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     multiline
                     always
                     placeholder="台词 / 旁白"
-                    className="min-w-0 max-h-9 flex-1 overflow-auto border-l-2 border-hairline pl-1.5 text-[11px] italic leading-relaxed text-text-3"
+                    className="min-w-0 flex-1 border-l-2 border-hairline pl-1.5 text-[11px] italic leading-relaxed text-text-3"
                   />
                   </div>
                   {/* 出图提示词与画面/旁白同列对齐；未覆盖时显示按本行字段
@@ -5069,7 +5193,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       multiline
                       always
                       placeholder="出图提示词（默认按本行字段自动合成，可直接改）"
-                      className="max-h-28 min-h-0 flex-1 overflow-auto text-[10px] leading-relaxed text-text-3"
+                      className="min-w-0 flex-1 text-[10px] leading-relaxed text-text-3"
                     />
                     {overridden ? (
                       <button
@@ -5086,7 +5210,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                     ) : null}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-start gap-1 opacity-0 transition-opacity group-hover/row:opacity-100">
+                {/* 行动作浮层：hover 才现身（带底色压在内容上），不常驻占位——
+                    曾因 opacity-0 常驻让每行右侧空出一条 ~100px 的死空间 */}
+                <div className="absolute right-1 top-1 z-10 flex items-start gap-1 rounded border border-hairline bg-surface-1/95 p-0.5 shadow-sm opacity-0 transition-opacity group-hover/row:opacity-100">
                   <button
                     type="button"
                     data-tip={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"} aria-label={r.finalPrompt?.trim() ? "重新出图（用最终提示词）" : r.imageUrl ? "重新出图" : "出图"}
@@ -5192,18 +5318,25 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       {/* 底栏 = 统计 + 行操作 + 管线动作（左→右即管线顺序：拆解资产 → 出图；
           出图降级样式+无参考行/大额确认防误触） */}
       <div className="mt-1.5 flex flex-wrap items-center justify-between gap-1 border-t border-hairline pt-1.5 text-[10px] text-text-4">
-        <span className="min-w-0 truncate">
-          {rows.length} 镜 · 总时长约 {totalDur > 0 ? `${Math.round(totalDur * 10) / 10}s` : "—"}
-          {imgAgg.ready + imgAgg.loading + imgAgg.error > 0 ? (
-            <>
-              {" · "}
-              已出图 {imgAgg.ready}
-              {imgAgg.loading > 0 ? ` · 出图中 ${imgAgg.loading}` : ""}
-              {imgAgg.error > 0 ? (
-                <span className="text-danger"> · 失败 {imgAgg.error}</span>
-              ) : null}
-            </>
-          ) : null}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="min-w-0 truncate">
+            {rows.length} 镜 · 总时长约 {totalDur > 0 ? `${Math.round(totalDur * 10) / 10}s` : "—"}
+            {imgAgg.ready + imgAgg.loading + imgAgg.error > 0 ? (
+              <>
+                {" · "}
+                已出图 {imgAgg.ready}
+                {imgAgg.loading > 0 ? ` · 出图中 ${imgAgg.loading}` : ""}
+                {imgAgg.error > 0 ? (
+                  <span className="text-danger"> · 失败 {imgAgg.error}</span>
+                ) : null}
+              </>
+            ) : null}
+          </span>
+          <ExportMenuButton
+            onExport={doExport}
+            disabled={rows.length === 0}
+            track="shotlist"
+          />
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           <label

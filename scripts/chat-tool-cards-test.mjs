@@ -95,7 +95,7 @@ const send = page.getByRole("button", { name: /发送/ });
 // ---- 1) list_langflow_skills 工具卡 ----
 await input.click();
 await page.keyboard.type("列出当前可用的技能", { delay: 20 });
-await send.click();
+await send.click({ timeout: 300_000 });
 const skillCard = page
   .getByText(/已获取技能清单|正在查询可用技能/)
   .first()
@@ -105,12 +105,12 @@ const skillCard = page
 check("后端工具卡渲染（list_langflow_skills）", await skillCard);
 
 // 等上一轮完全结束（思考模式会让单轮更久）
-await send.waitFor({ state: "visible", timeout: 120_000 });
+await send.waitFor({ state: "visible", timeout: 300_000 });
 
 // ---- 2) canvas_ops：建卡 + 删卡 → 审批卡内联 → 允许 → 结果卡 ----
-await send.waitFor({ state: "visible", timeout: 120_000 });
+await send.waitFor({ state: "visible", timeout: 300_000 });
 await input.click();
-await page.keyboard.type("在画布上建一张标题为「冒烟卡」的文本卡", { delay: 20 });
+await page.keyboard.type("请调用 canvas_ops 工具：op=add_node，nodeType=note，标题「冒烟卡」，正文一句话。", { delay: 20 });
 try {
   await send.click({ timeout: 15_000 });
 } catch {
@@ -128,8 +128,8 @@ const addOk = page
 check("canvas_ops 结果卡渲染（建卡）", await addOk);
 
 await input.click();
-await page.keyboard.type("把「冒烟卡」删掉", { delay: 20 });
-await send.click();
+await page.keyboard.type("请调用 canvas_ops 工具把「冒烟卡」这张卡删掉（op=delete_node）。", { delay: 20 });
+await send.click({ timeout: 300_000 });
 const approval = page
   .getByText("允许助手修改画布？")
   .first()
@@ -155,13 +155,13 @@ if (results.at(-1)?.ok) {
 }
 
 // ---- 3) propose_plan：多步任务先出计划，确认后逐步执行 ----
-await send.waitFor({ state: "visible", timeout: 120_000 });
+await send.waitFor({ state: "visible", timeout: 300_000 });
 await input.click();
 await page.keyboard.type(
   "请先列一个执行计划征求我确认，确认前不要动手：1）建一张标题为「计划测试」的文本卡；2）把它的标题改成「计划测试改」",
   { delay: 15 },
 );
-await send.click();
+await send.click({ timeout: 300_000 });
 const planCard = page
   .getByText(/计划待确认/)
   .first()
@@ -221,9 +221,9 @@ await page.keyboard.type(
   "把这段剧本拆解成资产清单（先不要建卡出图）：深夜便利店，店员小王遭遇劫匪，机智周旋后脱险。",
   { delay: 5 },
 );
-await send.click();
+await send.click({ timeout: 300_000 });
 let stripSeen = false;
-for (let i = 0; i < 60; i++) {
+for (let i = 0; i < 240; i++) {
   const row = await page
     .locator(".ws-task-row")
     .first()
@@ -243,23 +243,23 @@ for (let i = 0; i < 60; i++) {
   await page.waitForTimeout(1000);
 }
 check("长任务条实时显示（拆解中）", stripSeen);
-// 等拆解收尾，避免下轮测试残留
+// 等拆解收尾，避免下轮测试残留（含 GLM 思考长尾）
 await page
   .getByText(/剧本拆解完成/)
   .first()
-  .waitFor({ timeout: 120_000 })
+  .waitFor({ timeout: 300_000 })
   .catch(() => {});
 
 // ---- 6) 思考透传：GLM thinking → reasoning 消息（stock 折叠卡，头部 Thought*） ----
 await input.click();
 await page.keyboard.type("9.11 和 9.9 哪个大？先想清楚再回答。", { delay: 10 });
-await send.click();
+await send.click({ timeout: 300_000 });
 // GLM 是否触发思考有随机性：最多试 3 轮，每轮发送后轮询 25s
 let thinkingSeen = false;
 for (let attempt = 0; attempt < 3 && !thinkingSeen; attempt++) {
   await input.click();
   await page.keyboard.type("87 乘以 453 等于多少？仔细一步一步算，先想清楚再回答。", { delay: 5 });
-  await send.click();
+  await send.click({ timeout: 300_000 });
   for (let i = 0; i < 25; i++) {
     const row = await page
       .locator(".ws-thinking-row")

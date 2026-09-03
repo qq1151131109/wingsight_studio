@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import GlobalErrorDialog from "@/components/shell/GlobalErrorDialog";
 import TipHost from "@/components/shell/TipHost";
+import ToastHost from "@/components/shell/ToastHost";
 
 export const metadata: Metadata = {
   title: "Wingsight Studio",
@@ -54,6 +55,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <GlobalErrorDialog />
         <TipHost />
+        <ToastHost />
       </body>
     </html>
   );

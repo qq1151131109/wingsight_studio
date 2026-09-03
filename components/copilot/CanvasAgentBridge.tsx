@@ -1,13 +1,14 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
-  useCoAgent,
   useCopilotAction,
   useCopilotChat,
   useCopilotReadable,
 } from "@copilotkit/react-core";
+import { useAgent as useAgentV2 } from "@copilotkit/react-core/v2";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
+import { langgraphAgent } from "@/app/agent-provider";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
@@ -433,8 +434,6 @@ interface WingsightAgentState {
   canvasSummary: string;
 }
 
-const EMPTY: WingsightAgentState = { canvasSummary: "（画布为空）" };
-
 const NODE_TYPE_LABEL: Record<string, string> = {
   note: "文本",
   script: "剧本",
@@ -466,18 +465,19 @@ type OpResultEx = OpResult & {
 
 /**
  * 画布 ↔ Agent 桥：
- *   读通道：画布摘要写入共享状态（useCoAgent state）+ 上下文（useCopilotReadable）
+ *   读通道：画布摘要写入共享状态（原始 agent setState）+ 上下文（useCopilotReadable）
  *   写通道：canvas_ops 前端工具（available:"remote"），agent 调用 → 浏览器执行 applyOps
  */
 export default function CanvasAgentBridge() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
 
-  const { setState } = useCoAgent<WingsightAgentState>({
-    name: "default",
-    initialState: EMPTY,
-  });
-
+  // 共享状态写入 = run 实际使用的 agent 实例。v1 useCoAgent 不能用：它底层
+  // useAgent() 在 runtime 握手期返回临时 agent，换真身后引用替换——initialState
+  // 的"（画布为空）"留在真 agent 上、后续摘要更新全丢（模型会答"画布是空的"）。
+  // 这里双写：v2 useAgent 解析出的实例（与聊天 run 同源）+ 原始单例兜底，
+  // 并在实例换身后补推一次（临时实例期间的更新会丢）。
+  const { agent: runAgent } = useAgentV2({ agentId: "default" });
   const summary = summarizeCanvas(
     nodes,
     edges,
@@ -486,15 +486,36 @@ export default function CanvasAgentBridge() {
 
   // 画布变化 → 更新共享状态与上下文（agent 下轮读取 ground truth）。
   // 用 ref 记录上次同步值：setState 引用可能每轮渲染都变，不做值比较会死循环卡死页面。
+  // HttpAgent.setState 是 structuredClone 的整体替换语义（不收函数 updater），
+  // 只传我们拥有的键；messages/tools 等其余状态由 run 输入与桥接层各自维护。
   const lastSyncedRef = useRef<string | null>(null);
+  const pushSummary = useCallback(
+    (s: string) => {
+      for (const a of [runAgent, langgraphAgent]) {
+        try {
+          a?.setState?.({ canvasSummary: s });
+        } catch {
+          /* 临时实例可能未就绪，换真身后补推 */
+        }
+      }
+    },
+    [runAgent],
+  );
+  useEffect(() => {
+    if (typeof window !== "undefined")
+      (window as never as Record<string, unknown>).__dbgAgents = { runAgent, langgraphAgent };
+  }, [runAgent]);
   useEffect(() => {
     if (summary === lastSyncedRef.current) return;
     lastSyncedRef.current = summary;
-    setState((prev) => ({
-      ...(prev ?? EMPTY),
-      canvasSummary: summary,
-    }));
-  }, [summary, setState]);
+    pushSummary(summary);
+  }, [summary, pushSummary]);
+  // 换真身后补推：lastSynced 已有值说明临时实例期间同步过，真 agent 上可能没有
+  useEffect(() => {
+    if (runAgent && lastSyncedRef.current !== null) {
+      pushSummary(lastSyncedRef.current);
+    }
+  }, [runAgent, pushSummary]);
 
   useCopilotReadable({
     description: "当前画布内容（节点 / 连线 / 选中项）",

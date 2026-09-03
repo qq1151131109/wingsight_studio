@@ -24,7 +24,27 @@ import {
   type ChatThreadMeta,
 } from "@/lib/projects";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
-import { RunErrorBanner } from "./Sidebar";
+
+/** 运行错误横幅：人话摘要 + 可关（v2 onError 写入 session store） */
+function RunErrorBanner() {
+  const runError = useChatSession((s) => s.runError);
+  const setRunError = useChatSession((s) => s.setRunError);
+  if (!runError) return null;
+  return (
+    <div className="pointer-events-auto absolute inset-x-4 top-1 z-30 flex items-start gap-2 rounded-lg border border-danger/30 bg-surface-1/95 px-3 py-2 text-xs text-text-2 shadow-md backdrop-blur">
+      <span className="mt-0.5 h-2 w-2 shrink-0 rounded-full bg-danger" />
+      <p className="min-w-0 flex-1 leading-relaxed">{runError}</p>
+      <button
+        type="button"
+        data-tip="关闭" aria-label="关闭错误提示"
+        className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-text"
+        onClick={() => setRunError(null)}
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
 
 /** 相对时间（同首页项目卡规则） */
 function formatTime(iso: string): string {

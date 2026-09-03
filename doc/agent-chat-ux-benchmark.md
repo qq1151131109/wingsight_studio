@@ -3,6 +3,8 @@
 > 2026-09-02 盘点并落地第一轮优化。方法：本项目代码实查 + `references/` 下 8 个竞品源码扫描，所有结论带文件路径证据。
 > **落地状态（同日晚）**：P0 五项全修、P1 四项落地、P2 第一层（工具卡分型 + 审批内联）落地，E2E `scripts/chat-tool-cards-test.mjs` 全绿。文中所有状态标记已刷新到落地后；带 ✅ 的同时给出实现位置。
 > 决策过程沉淀在会话记忆 `wingsight-chat-ux-review`（含 CopilotKit v1.69.3 的 API 事实，改聊天前先读）。
+>
+> **2026-09-03 UI 壳换代（v2 官方组件）**：经竞品调研（deer-flow / open-ai-canvas 的自研消息层最值得抄，但无人直接用 CopilotKit）与三条现成路对比（CopilotKit v2 UI / assistant-ui / Vercel AI Elements），选定 **CopilotKit v2 官方 UI**（同包 `/v2` subpath，license 实测无门控）整体换壳——消息渲染（Streamdown 流式 markdown + 代码高亮 + CJK）、消息工具栏（复制/重试/赞踩，悬浮浮现）、思考折叠、打字光标全部用官方内置。自研面只剩 slot：header=ThreadsBar、input=ChatInput（@引用/附件/任务条/思考条）、suggestionView=空态 chips、toggleButton=关闭态 FAB。**v1 数据层零改动**：`useCopilotAction`（render→v2 renderToolCalls 注册表、handler→useFrontendTool）经官方兼容层继续工作，工具卡/计划卡/审批卡原样可见。同时修掉 4 个连锁坑：① v1 `react-ui/styles.css` 与 v2 类名冲突把侧栏压成 opacity:0（layout.tsx 摘除，输入区样式在 globals 自给）；② Turbopack 与包内 cpk: 工具类层叠不稳，侧栏骨架/主题变量在 globals 用 !important 自给（`aside.copilotKitSidebar` + `[data-copilotkit]` 语义变量映射米黄 token，夜间自动跟随）；③ v2 输入浮层整体 `pointer-events-none`，自绘输入容器必须自行恢复；④ 水合竞态——用户先开口时水合放弃却留下未水合标记，保存被永久闸死（ChatPersistence 已修，且消息源改订阅原始 agent 单例，绕开 useAgent 临时 agent 换真身的订阅失效）。顺带把 ChatInput/CanvasAgentBridge 的 `useCopilotChatHeadless_c`（license 门控桩，sendMessage 空操作）换成开源 `useCopilotChat`——多模态发送从静默失灵变为真正可用。agent 侧同日修：chat_node 改 `astream` 逐 token 聚合（此前 ainvoke 单发整段，打字机效果缺失）。注：旧记录里的"GLM 思考长尾"是错误归因——luna 实测不思考也不认 thinking 参数，首 token 前的沉默是 DMX 网关排队/冷启动延迟。E2E 全绿（canvas_ops/计划卡/任务条措辞已显式点名工具，避免 GLM 思考长尾与工具决策波动造成的假失败）。
 
 ---
 

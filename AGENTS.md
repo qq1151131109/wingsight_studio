@@ -37,6 +37,7 @@ node scripts/shotref-binding-test.mjs           # 分镜行→资产引用解析
 node scripts/asset-create-test.mjs              # 手动建资产卡（空名聚焦/同名提醒/AI 写设定/素材库建为资产）
 node scripts/shotlist-resume-compose-test.mjs   # 分镜表断点恢复/补缺图/一键成片（自建测试项目+mock，不出真实图）
 node scripts/script-review-test.mjs             # 剧本审查三维度回归（真跑 flow+Serper，需 agent+langflow 在跑，约 1 分钟）
+node scripts/card-export-test.mjs               # 文本类卡导出回归（txt/md/docx；docx 解包断言横版表格/表头重复）
 python agent/auth-smoke-test.py                 # 认证冒烟
 ./scripts/setup-langflow.sh                     # langflow 环境重建/首个部署（装 venv → 起 7860 → 导 flows → flow id 回写 .env.local）
 ./scripts/update-flow.sh <flows/xx.json>        # flow 内容更新回写实例（setup 按名字幂等跳过，改 flow 后用它 PATCH）
@@ -69,6 +70,7 @@ python agent/auth-smoke-test.py                 # 认证冒烟
 
 ## 已知坑
 
+- **卡内弹层必须 portal 到 body**（`.ws-card` 有 `overflow:hidden` 防内容越界）：卡内 `absolute` 弹层在矮卡里向上溢出卡顶被裁剪，Playwright 报「element is visible」但点击被节点级工具条（`absolute left-2 top-2 z-10`）拦截——视觉可见≠可点。先例：分镜行 @ 候选弹层与导出菜单（`ExportMenuButton`）都 `createPortal` + `fixed` + `getBoundingClientRect` 定位；注意 portal 内容不在节点 DOM 子树里，外点关闭要认 弹层+触发按钮 两个 ref，测试侧也不能按卡作用域定位菜单项
 - 画布基础交互（对标 Figma）：左拖空白=框选（`panOnDrag={[1]}` 是前提，另配 `selectionMode=Partial`）、中键/Space+拖/滚轮/双指滚动=平移（`panOnScrollSpeed={1}` 物理跟速）、⌘+滚/捏合=缩放（`zoomOnScroll=false`+`panOnScroll` 常开；`zoomActivationKeyCode` 默认 mac=Meta，按住即把 wheel 处理器重绑回 d3 缩放）、Alt+拖卡=原位克隆（store 的 `altDragClone` 改道拖动帧，注意"先改道后清表"）、双击空白/Tab=「添加节点」选择器、右键空白=上传/添加节点/撤销/重做/粘贴菜单（reference 产品范式）。滚轮**不做鼠标/触控板设备判定**（按 deltaY 量级猜设备的启发式会被触控板快扫/惯性步进误判成鼠标轮，平移中途误缩放；`onWheelCapture` 只留 nowheel 动态化——可滚动容器滚内容，不可滚动的现场摘类放行画布平移）。右键拖不做平移（macOS contextmenu 在 mousedown 即触发，会和右键菜单打架）。库级陷阱 2：RF 的 `onPointerCancel` 不清 `userSelectionRect`，pointercancel/漏 pointerup 会卡死框选——`CanvasView` 的 `SelectionGuard` 窗口级兜底，勿删
 - 画布快捷键（`CanvasShortcuts.tsx`，capture 阶段监听——**必须 capture**：xyflow 节点 a11y 会把聚焦卡上的 Enter 当作"带 multi 键的点击"切换选中（multiSelectionKeyCode 含 Meta），bubble 阶段读到的选区已被清空；⌘Enter 分支另加 stopPropagation 拦在它前面）：⌘0=适应画布（对齐竞品语义，⇧⌘0=复位 100%）、⌘G/⇧⌘G=成组/解组、⌘L=连线（恰好选中两张，去重）、⇧F=整理（有选区整理选区）、⌘Enter=生成选中卡（出图类、恰好单选；空提示词=按标题正文重生成；受画风闸与图生图参考闸约束）、Tab=视口中央弹「添加节点」、方向键微调、⇧E 连线显隐、`?`=速查表（`ShortcutsModal.tsx`，数据驱动与绑定一一对应，**改键两处同步**；底坞键盘按钮经 `OPEN_SHORTCUTS_EVENT` 呼出）。V/H 工具模式不做（直接操作范式，左拖=框选无模式状态）
 - Langflow 的 SSRF 白名单在 `langflow/.env`（仓库内，随 fork 走）的 `LANGFLOW_SSRF_ALLOWED_HOSTS`（含 dmxapi/amazonaws/deepseek/volces 等——volces 是 seedream 系出图产物 URL 的落域，缺了在保存图片一步报错）——出图报 Broken pipe / blocked IP 时先查这里，改后需重启 langflow
