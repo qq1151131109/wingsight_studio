@@ -652,12 +652,13 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     overflow-wrap: anywhere;
 }
 
-/* 助手消息：半透纸面气泡，左上收口与用户气泡镜像（v2 出厂无气泡底） */
+/* 助手消息：文档流排版（无气泡底，deer-flow/ChatGPT 共识）——只给 user 气泡，
+   助手长文贴纸面更透气；悬浮工具栏与正文间距靠 padding 微调 */
 .copilotKitMessage.copilotKitAssistantMessage {
-    background-color: color-mix(in oklab, var(--color-surface-2) 72%, transparent);
-    border: 1px solid var(--color-hairline);
-    border-radius: 4px 14px 14px 14px;
-    padding: 10px 14px;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 2px 2px 2px 0;
     max-width: 100%;
     min-width: 0;
 }
