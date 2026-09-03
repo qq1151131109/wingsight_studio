@@ -678,6 +678,11 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     opacity: 1;
 }
 
+/* 消息列表顶部留白：v2 滚动内容出厂无上内边距，首条消息贴死头部 */
+.copilotKitSidebar [data-testid="copilot-scroll-content"] {
+    padding-top: 14px;
+}
+
 /* 回到底部按钮：cpk:bg-white 等工具类在本工程层叠不稳，纸感底色在 globals 自给，
    否则透明圆钮悬浮在文字上像坏掉 */
 .copilotKitSidebar [data-testid="copilot-scroll-to-bottom"] {
