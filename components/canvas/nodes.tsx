@@ -1024,15 +1024,6 @@ function CardShell({
   );
 }
 
-/** 媒体区右上角的悬停操作簇（各媒体卡统一位置与样式） */
-function CornerActions({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="absolute right-1.5 top-1.5 flex gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-      {children}
-    </span>
-  );
-}
-
 /** 媒体空态：图标 + 主/副文案 + 点击上传（image/video/audio/character 共用） */
 function MediaEmpty({
   icon,
@@ -1947,10 +1938,6 @@ const ASSET_WRITE_HINT: Record<keyof typeof ASSET_BODY_PH, string> = {
   costume: "形制、材质、配色、工艺与纹样",
 };
 
-/** 资产卡动作条按钮：单行三联（出图/参考ⁿ/撰写），nowrap 防中文竖排 */
-const ACT_BTN =
-  "nodrag flex min-w-0 flex-1 items-center justify-center gap-0.5 whitespace-nowrap rounded-md border border-hairline px-1 py-1 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text disabled:cursor-not-allowed disabled:opacity-40";
-
 function AssetCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const rf = useReactFlow();
@@ -2131,12 +2118,17 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const assetTools = (
     <>
       <ToolBtn
-        title="调研参考图（AI 出词搜图 + 网页考据，自动采纳前 3 张）"
+        title={refRunning ? "调研中：AI 出词搜图 + 网页考据 + 终选" : "调研参考图（AI 出词搜图 + 网页考据，自动采纳前 3 张）"}
         label="调研"
         badge={refPending > 0 ? refPending : undefined}
+        disabled={refRunning}
         onClick={() => setResearchOpen(true)}
       >
-        <Search className="h-4 w-4" />
+        {refRunning ? (
+          <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+        ) : (
+          <Search className="h-4 w-4" />
+        )}
       </ToolBtn>
       <ToolBtn
         title="AI 按资产名与剧情背景补全设定（已有设定时先预览再采用）"
@@ -2159,7 +2151,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       {d.imageUrl ? (
         <ToolBtn
           title="版本历史（重生成/上传覆盖前的结果自动存档）"
-          label={`V${(d.versions?.length ?? 0) + 1}`}
+          label={`V${versionCount + 1}`}
           onClick={() => setHistoryOpen(true)}
         >
           <History className="h-4 w-4" />
@@ -3150,10 +3142,54 @@ function VideoCard({ data, id, selected }: NodeProps) {
     }
   };
 
+  // 快捷动作上浮到悬浮工具条（卡面只留视频，图片卡同范式）
+  const videoTools = (
+    <>
+      {versionCount > 0 ? (
+        <ToolBtn
+          title="版本历史（重生成前的结果自动存档）"
+          label={`V${versionCount + 1}`}
+          onClick={() => setHistoryOpen(true)}
+        >
+          <History className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      <ToolBtn
+        title={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
+        disabled={analyzing}
+        onClick={() => void runFrameAnalysis()}
+      >
+        <ScanSearch className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="下载视频"
+        onClick={() => {
+          void downloadMedia(d.videoUrl!, d.title || "video").catch((exc) =>
+            showToast(
+              `下载失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+            ),
+          );
+        }}
+      >
+        <Download className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn title="放大播放" onClick={() => setZoom(true)}>
+        <Maximize2 className="h-4 w-4" />
+      </ToolBtn>
+    </>
+  );
+
   return (
-    <CardShell id={id} data={d} selected={selected} aspect={d.status === "ready"}>
+    <CardShell
+      id={id}
+      data={d}
+      selected={selected}
+      aspect={d.status === "ready"}
+      bleed
+      extraTools={videoTools}
+    >
       <div
-        className={`mt-1.5 flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+        className={`flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -3184,54 +3220,6 @@ function VideoCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full bg-black object-contain"
               onClick={(e) => e.stopPropagation()}
             />
-            <CornerActions>
-              {versionCount > 0 ? (
-                <button
-                  type="button"
-                  data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
-                  className="flex items-center gap-0.5 rounded-md bg-black/40 px-1 py-0.5 text-[10px] text-white hover:bg-black/60"
-                  data-track="card.version-history"
-  onClick={(e) => {
-                    e.stopPropagation();
-                    setHistoryOpen(true);
-                  }}
-                >
-                  <History className="h-3 w-3" />V{versionCount + 1}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                data-tip={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"} aria-label={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
-                disabled={analyzing}
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60 disabled:opacity-50"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void runFrameAnalysis();
-                }}
-              >
-                <ScanSearch className="h-3.5 w-3.5" />
-              </button>
-              <a
-                href={d.videoUrl}
-                download={downloadName(d.title, d.videoUrl, "mp4")}
-                title="下载视频"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => e.stopPropagation()}
-              >
-                <Download className="h-3.5 w-3.5" />
-              </a>
-              <button
-                type="button"
-                data-tip="放大播放" aria-label="放大播放"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setZoom(true);
-                }}
-              >
-                <Maximize2 className="h-3.5 w-3.5" />
-              </button>
-            </CornerActions>
           </div>
         ) : (
           <MediaEmpty
@@ -3243,11 +3231,6 @@ function VideoCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {lod === "full" && d.body ? (
-        <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
-          {d.body}
-        </p>
-      ) : null}
       {/* 抽帧条：hover 某帧出"+图"，点击抽原生分辨率帧建连线图片卡；帧数可切换 */}
       {lod === "full" && d.videoUrl && frames.length > 0 ? (
         <div className="ws-detail nowheel mt-1 flex items-center gap-1 overflow-x-auto">
