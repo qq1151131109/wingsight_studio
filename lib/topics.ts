@@ -72,6 +72,8 @@ export interface Topic {
   stage: "raw" | "verified";
   /** 索引标签：时代/地域/题材（生成层打） */
   tags: string[];
+  /** 成片推演（跟拍谁/追查什么/从哪到哪）——生料卡的成立性凭证，新闻稿式选题在生成闸就被拒 */
+  arc: string;
   createdAt: string;
   updatedAt: string;
   lastProgressAt: string;
@@ -84,6 +86,8 @@ export interface TopicRefreshRun {
   batches?: number;
   created?: number;
   duplicates?: number;
+  /** 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题） */
+  rejected?: number;
   /** 刷新尾部顺带轮转复查观察卡的产出 */
   rescanned?: number;
   rescanUpgraded?: number;

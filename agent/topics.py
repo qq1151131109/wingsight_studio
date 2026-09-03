@@ -59,6 +59,9 @@ def init_topics_db() -> None:
             conn.execute("ALTER TABLE topics ADD COLUMN stage TEXT NOT NULL DEFAULT 'verified'")
         if "tags_json" not in cols:
             conn.execute("ALTER TABLE topics ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'")
+        # 成片推演（跟拍谁/追查什么/从哪到哪）：生料卡的成立性凭证，没有它不落库
+        if "arc" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN arc TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage)")
 
 
@@ -102,6 +105,7 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         "status": row["status"],
         "adoptedPid": row["adopted_pid"],
         "stage": row["stage"],
+        "arc": row["arc"],
         "tags": json.loads(row["tags_json"]),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -122,15 +126,16 @@ def create_topic(
     source: str = "material",
     stage: str = "verified",
     tags: list[str] | None = None,
+    arc: str = "",
 ) -> dict[str, Any]:
     tid = uuid.uuid4().hex[:12]
     now = _now()
     with _conn() as conn:
         conn.execute(
             "INSERT INTO topics (id, vertical, source, title, title_fingerprint, summary,"
-            " angles_json, heat_evidence_json, research_json, status, stage, tags_json,"
+            " angles_json, heat_evidence_json, research_json, status, stage, tags_json, arc,"
             " last_progress_at, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?)",
             (
                 tid,
                 vertical,
@@ -143,6 +148,7 @@ def create_topic(
                 json.dumps(research or {}, ensure_ascii=False),
                 stage,
                 json.dumps(tags or [], ensure_ascii=False),
+                arc,
                 now,
                 now,
                 now,

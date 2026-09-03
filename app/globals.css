@@ -677,6 +677,19 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     opacity: 1;
 }
 
+/* 回到底部按钮：cpk:bg-white 等工具类在本工程层叠不稳，纸感底色在 globals 自给，
+   否则透明圆钮悬浮在文字上像坏掉 */
+.copilotKitSidebar [data-testid="copilot-scroll-to-bottom"] {
+    background-color: var(--color-surface-1);
+    border: 1px solid var(--color-hairline);
+    box-shadow: 0 4px 16px oklch(0 0 0 / 0.14);
+    color: var(--color-text-3);
+}
+.copilotKitSidebar [data-testid="copilot-scroll-to-bottom"]:hover {
+    background-color: var(--color-surface-2);
+    color: var(--color-text);
+}
+
 /* 输入区：纸面容器 + 聚焦描边（自定义 ChatInput 复用 .copilotKitInput 类名；
    容器/控制行布局原由 v1 stock 样式提供，摘除 v1 样式后在这里自给） */
 .copilotKitSidebar .copilotKitInputContainer {

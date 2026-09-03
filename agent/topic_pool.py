@@ -223,11 +223,15 @@ def verticals_payload() -> list[dict[str, str]]:
 # --- 生料选题层（批量创意生成）：池子的常规刷新只跑这一层，量大、便宜 ---
 # 单批喂给生成 flow 的语料条数（约 1 次长上下文调用产 8-12 个选题；批越大
 # 模型输出越长，实测 70 条语料产 30 题会超 agent 侧 300s 超时——别调回去）
-IDEATE_BATCH_SIZE = 40
+# 单批喂给生成 flow 的线索条数。线索发散模式：少量线索深发散（每条 2-3 个
+# 方向），输出总量与旧批量模式的安全区间持平（10-18 题）——输出再长会超
+# agent 侧 300s 超时（实测 30 题/批超时），别调回去
+IDEATE_BATCH_SIZE = 6
 # 单轮刷新最多跑的批数（成本硬上界：≤24 次 LLM 调用，零检索成本）
 IDEATE_BATCHES_CAP = 24
-# 每条语料在单批内允许产出的选题上限（防单条刷屏；跨批同语料由指纹去重兜底）
-IDEATE_ENTRIES_PER_BATCH = 14
+# 单批落卡的选题上限（线索发散模式：6 线索 × 2-3 方向 ≈ 12-18，超量说明
+# flow 违规刷屏，掐到 18；跨批同题由指纹去重兜底）
+IDEATE_ENTRIES_PER_BATCH = 18
 # 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
 # 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
@@ -422,6 +426,7 @@ class IdeateResult:
     batches: int = 0  # 实际跑的生成批数
     created: int = 0  # 新落库的生料选题张数
     duplicates: int = 0  # 指纹去重跳过的条数
+    rejected: int = 0  # 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题）
     error: str = ""
 
 
@@ -807,19 +812,28 @@ class TopicCurator:
                 continue
             if not isinstance(entries, list):
                 continue
-            for entry in entries[:IDEATE_ENTRIES_PER_BATCH * 2]:
+            for entry in entries[:IDEATE_ENTRIES_PER_BATCH]:
                 self._create_raw_card(entry, batch, result)
 
     def _create_raw_card(
         self, entry: Any, corpus: list[dict[str, Any]], result: IdeateResult
     ) -> None:
-        """校验并落一张生料卡；不合法/重复静默跳过（生料层宁缺毋滥在 flow 纪律）。"""
+        """校验并落一张生料卡；不合法/重复静默跳过（生料层宁缺毋滥在 flow 纪律）。
+
+        arc（成片推演：跟拍谁/追查什么/从哪到哪）是成立性闸——模型给不出
+        拍摄推演的条目就是新闻稿式选题（单点发现/事件/文物），代码侧再拦一道。
+        """
         if not isinstance(entry, dict):
             return
         title = str(entry.get("title") or "").strip()
         hook = str(entry.get("hook") or "").strip()
         vertical = str(entry.get("vertical") or "").strip().lower()
+        arc = str(entry.get("arc") or "").strip()
         if not title or not hook or vertical not in VERTICALS:
+            return
+        # arc 必须含人与过程且不能只是把 hook 复读一遍——复读等同没推演
+        if len(arc) < 12 or fingerprint_of(arc) == fingerprint_of(hook):
+            result.rejected += 1
             return
         fingerprint = fingerprint_of(title)
         if store.exists_by_any_fingerprint([fingerprint]):
@@ -848,6 +862,7 @@ class TopicCurator:
                 source=str(proto.get("signal_type") or "corpus"),
                 stage="raw",
                 tags=tags,
+                arc=arc,
             )
             result.created += 1
         except Exception as exc:  # noqa: BLE001 - 唯一约束冲突/单卡失败不拖累整批

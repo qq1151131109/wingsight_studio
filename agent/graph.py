@@ -829,7 +829,16 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         parallel_tool_calls=False,
     )
 
-    canvas_summary = state.get("canvasSummary") or "（画布摘要不可用）"
+    # 画布摘要：主通道 = run 的 forwarded_props（前端 setProperties 每轮携带，
+    # 桥接层蛇形化落进 state.forwarded_props）；useCopilotReadable 的调用方
+    # 上下文经桥接补丁注入为 system 消息——都没有时不要写"不可用"误导模型，
+    # 让它以前文上下文为准。
+    forwarded = state.get("forwarded_props") or {}
+    canvas_summary = (
+        state.get("canvasSummary")
+        or forwarded.get("canvas_summary")
+        or "（本轮未随状态提供——若调用方附带的上下文里有画布内容，以它为准）"
+    )
     system_message = SystemMessage(
         content=SYSTEM_PROMPT.format(
             canvas_summary=canvas_summary,

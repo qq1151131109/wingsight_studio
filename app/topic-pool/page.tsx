@@ -76,6 +76,7 @@ function lastRunSummary(run: TopicRefreshRun): string {
   if (typeof run.batches === "number") parts.push(`${run.batches} 批`);
   if (typeof run.created === "number") parts.push(`生料 +${run.created}`);
   if (typeof run.duplicates === "number" && run.duplicates > 0) parts.push(`去重 ${run.duplicates}`);
+  if (typeof run.rejected === "number" && run.rejected > 0) parts.push(`拦下新闻稿式 ${run.rejected}`);
   if (run.rescanned) parts.push(`复查 ${run.rescanned}${run.rescanUpgraded ? `（升级 ${run.rescanUpgraded}）` : ""}`);
   const prefix = run.error ? `上次刷新中断（${run.error}）` : `上次刷新：${parts.join(" · ") || "无产出"}`;
   return `${prefix} · ${formatTime(run.finishedAt)}`;
@@ -684,6 +685,12 @@ function TopicDetail({
           <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
             <h4 className="text-[11px] font-medium text-text-4">情绪钩子</h4>
             <p className="font-editorial mt-0.5 text-sm text-text">{topic.summary}</p>
+          </div>
+        ) : null}
+        {raw && topic.arc ? (
+          <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
+            <h4 className="text-[11px] font-medium text-text-4">成片推演（跟拍谁 · 追什么 · 从哪到哪）</h4>
+            <p className="mt-0.5 text-sm leading-relaxed text-text-2">{topic.arc}</p>
           </div>
         ) : null}
         {raw && topic.tags.length > 0 ? (
