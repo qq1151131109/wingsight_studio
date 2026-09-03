@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useEffect } from "react";
 import {
   useCopilotAction,
   useCopilotChat,
@@ -8,7 +8,7 @@ import {
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Wrench } from "lucide-react";
-import { summarizeCanvas, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
 import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import {
@@ -477,11 +477,6 @@ async function recoverNodeImageJob(nodeId: string, jobId: string) {
   });
 }
 
-/** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
-interface WingsightAgentState {
-  canvasSummary: string;
-}
-
 const NODE_TYPE_LABEL: Record<string, string> = {
   note: "文本",
   script: "剧本",
@@ -539,7 +534,8 @@ export default function CanvasAgentBridge() {
   // 读节点全文：摘要只有 40 字截断，agent 需要时（如回剧本找漏掉的角色）按需读
   useCopilotAction({
     name: "read_node",
-    description: "读取一张画布卡片的完整内容（标题与正文全文）。摘要被截断时用它。",
+    description:
+      "读取一张画布卡片的完整内容（标题、正文全文；分镜表返回每行镜头清单含行 rid）。摘要被截断时用它。",
     available: "remote",
     parameters: [
       { name: "id", type: "string", required: true, description: "节点 id" },
@@ -549,9 +545,28 @@ export default function CanvasAgentBridge() {
       if (!node) return `节点 ${id} 不存在`;
       const d = node.data;
       const body = (d.body ?? "").slice(0, 6000);
+      // 分镜表的内容全在 rows（body 恒空）：行清单必须吐出来，含 rid 供
+      // update_node 行级回填——不吐的话 agent 对分镜表是瞎的，只能整表瞎改
+      let rowsText = "";
+      if (d.nodeType === "shotlist" && Array.isArray(d.rows)) {
+        const lines = (d.rows as ShotRow[])
+          .slice(0, 60)
+          .map((r, i) => {
+            const fields = [r.shotSize, r.cameraMove, r.duration]
+              .filter(Boolean)
+              .join("·");
+            return `${i + 1}. [${r.rid}]${fields ? `（${fields}）` : ""} ${(
+              r.action ?? ""
+            ).slice(0, 120)}${r.dialogue ? ` / 台词:${r.dialogue.slice(0, 60)}` : ""}`;
+          })
+          .join("\n");
+        rowsText = `\n\n分镜行（共 ${(d.rows as ShotRow[]).length} 行）：\n${lines}`;
+        if (rowsText.length > 4000)
+          rowsText = rowsText.slice(0, 4000) + "\n…（已截断）";
+      }
       return `【${NODE_TYPE_LABEL[d.nodeType] ?? d.nodeType}】${d.title ?? ""}\n\n${body}${
         (d.body ?? "").length > 6000 ? "\n…（已截断）" : ""
-      }`;
+      }${rowsText}`;
     },
     render: ({ status, args, result }) => {
       const id = String((args as { id?: unknown })?.id ?? "");
@@ -715,7 +730,7 @@ export default function CanvasAgentBridge() {
             )
             .join("\n"),
           `用户指令：${prompt || "按剧本重新生成整表"}`,
-          "整表重写时调用分镜生成技能，完成后用 canvas_ops update_node 把新 rows 写回该卡；小幅增删改直接 canvas_ops update_node 修改 rows，不要动其他卡。",
+          "整表重写时调用 generate_storyboard 工具（传剧本全文，可带画布资产名单），完成后用 canvas_ops update_node 把新 rows 写回该卡；小幅增删改直接 canvas_ops update_node 修改 rows，不要动其他卡。",
         ]
           .filter(Boolean)
           .join("\n");

@@ -41,6 +41,10 @@ export type AddNodeOp = {
     duration?: string;
     action?: string;
     dialogue?: string;
+    lighting?: string;
+    sound?: string;
+    /** 引用资产名清单（agent 整表写回时带）：按画布资产卡精确标题匹配转 refIds */
+    assets?: string[];
     imageUrl?: string;
   }[];
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长（建卡时可直接带上） */
@@ -85,6 +89,10 @@ export type UpdateNodeOp = {
     duration?: string;
     action?: string;
     dialogue?: string;
+    lighting?: string;
+    sound?: string;
+    /** 引用资产名清单（agent 整表写回时带）：按画布资产卡精确标题匹配转 refIds */
+    assets?: string[];
     imageUrl?: string;
   }[];
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长 / 台词 */
@@ -135,6 +143,55 @@ export interface OpResult {
 }
 
 const VALID_NODE_TYPES = Object.keys(NODE_META) as WingNodeType[];
+
+/** 行内 assets 资产名 → 画布资产卡 id（精确标题匹配；对不上忽略——
+ *  行文本全名兜底仍会命中，不在这里做模糊匹配误绑） */
+function assetsToRefIds(names: string[]): string[] | undefined {
+  const nodes = useCanvasStore.getState().nodes;
+  const ids = names
+    .map((name) =>
+      nodes.find(
+        (x) =>
+          ["character", "scene", "prop", "costume"].includes(
+            String(x.data.nodeType),
+          ) && (x.data.title ?? "").trim() === name.trim(),
+      )?.id,
+    )
+    .filter((id): id is string => Boolean(id));
+  return ids.length > 0 ? [...new Set(ids)] : undefined;
+}
+
+/** 分镜行归一（add_node / update_node 的 rows 共用）：字段截断 + assets→refIds */
+function normalizeRows(
+  raw: {
+    rid?: string;
+    shotSize?: string;
+    cameraMove?: string;
+    duration?: string;
+    action?: string;
+    dialogue?: string;
+    lighting?: string;
+    sound?: string;
+    assets?: string[];
+    imageUrl?: string;
+  }[],
+  ridPrefix: string,
+) {
+  return raw.slice(0, 60).map((r, i) => ({
+    rid: String(r.rid ?? `${ridPrefix}${i + 1}`),
+    ...(r.shotSize !== undefined ? { shotSize: String(r.shotSize).slice(0, 20) } : {}),
+    ...(r.cameraMove !== undefined ? { cameraMove: String(r.cameraMove).slice(0, 20) } : {}),
+    ...(r.duration !== undefined ? { duration: String(r.duration).slice(0, 20) } : {}),
+    ...(r.action !== undefined ? { action: String(r.action).slice(0, 500) } : {}),
+    ...(r.dialogue !== undefined ? { dialogue: String(r.dialogue).slice(0, 500) } : {}),
+    ...(r.lighting !== undefined ? { lighting: String(r.lighting).slice(0, 30) } : {}),
+    ...(r.sound !== undefined ? { sound: String(r.sound).slice(0, 30) } : {}),
+    ...(Array.isArray(r.assets)
+      ? { refIds: assetsToRefIds(r.assets.filter(Boolean).map(String)) }
+      : {}),
+    ...(r.imageUrl !== undefined ? { imageUrl: String(r.imageUrl) } : {}),
+  }));
+}
 
 /** 自动布点：在已有节点包围盒右侧或初始位置放新节点，避免重叠 */
 function autoPosition(): { x: number; y: number } {
@@ -235,17 +292,7 @@ export function applyOps(rawOps: unknown): OpResult {
                 : {}),
               ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
               ...(Array.isArray(op.rows)
-                ? {
-                    rows: op.rows.slice(0, 60).map((r, i) => ({
-                      rid: String(r.rid ?? `r${i + 1}`),
-                      ...(r.shotSize !== undefined ? { shotSize: String(r.shotSize).slice(0, 20) } : {}),
-                      ...(r.cameraMove !== undefined ? { cameraMove: String(r.cameraMove).slice(0, 20) } : {}),
-                      ...(r.duration !== undefined ? { duration: String(r.duration).slice(0, 20) } : {}),
-                      ...(r.action !== undefined ? { action: String(r.action).slice(0, 500) } : {}),
-                      ...(r.dialogue !== undefined ? { dialogue: String(r.dialogue).slice(0, 500) } : {}),
-                      ...(r.imageUrl !== undefined ? { imageUrl: String(r.imageUrl) } : {}),
-                    })),
-                  }
+                ? { rows: normalizeRows(op.rows, "r") }
                 : {}),
               ...(op.shotNumber !== undefined
                 ? { shotNumber: op.shotNumber.slice(0, 8) }
@@ -292,29 +339,7 @@ export function applyOps(rawOps: unknown): OpResult {
               : {}),
             ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
             ...(Array.isArray(op.rows)
-              ? {
-                  rows: op.rows.slice(0, 60).map((r, i) => ({
-                    rid: String(r.rid ?? `m${i + 1}`),
-                    ...(r.shotSize !== undefined
-                      ? { shotSize: String(r.shotSize).slice(0, 20) }
-                      : {}),
-                    ...(r.cameraMove !== undefined
-                      ? { cameraMove: String(r.cameraMove).slice(0, 20) }
-                      : {}),
-                    ...(r.duration !== undefined
-                      ? { duration: String(r.duration).slice(0, 20) }
-                      : {}),
-                    ...(r.action !== undefined
-                      ? { action: String(r.action).slice(0, 500) }
-                      : {}),
-                    ...(r.dialogue !== undefined
-                      ? { dialogue: String(r.dialogue).slice(0, 500) }
-                      : {}),
-                    ...(r.imageUrl !== undefined
-                      ? { imageUrl: String(r.imageUrl) }
-                      : {}),
-                  })),
-                }
+              ? { rows: normalizeRows(op.rows, "m") }
               : {}),
             ...(op.row && typeof op.row.rid === "string"
               ? {
@@ -375,7 +400,7 @@ export function applyOps(rawOps: unknown): OpResult {
           const has = (id: string) => store.nodes.some((n) => n.id === id);
           if (!has(op.fromId) || !has(op.toId)) {
             errors.push(
-              `connect_nodes: ${op.fromId} 或 ${op.toId} 不存在`,
+              `connect_nodes: ${op.fromId} 或 ${op.toId} 不存在（引用同批新建的节点时，add_node 要带 id 字段同值占位）`,
             );
             break;
           }

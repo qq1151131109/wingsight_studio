@@ -1374,6 +1374,12 @@ export function summarizeCanvas(
         n.data.nodeType === "group"
           ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
           : "";
+      // 分镜表带行数：空标题的分镜表行只剩一个类型标签，行数是它唯一的
+      // 内容信号（丢了行数 agent 分不清满表和空表）
+      const rowCount =
+        n.data.nodeType === "shotlist" && Array.isArray(n.data.rows)
+          ? `（${n.data.rows.length} 行）`
+          : "";
       const body =
         withBody && n.data.body ? ` “${n.data.body.slice(0, 24)}”` : "";
       const sel = selectedIds.includes(n.id) ? " [选中]" : "";
@@ -1393,7 +1399,7 @@ export function summarizeCanvas(
           ? `（调研卷宗 ${n.data.researchId}）`
           : "";
       lines.push(
-        `- ${n.id} [${meta.label}] ${title}${genNote}${mediaTag}${researchNote}${shot}${kids}${body}${sel}`,
+        `- ${n.id} [${meta.label}] ${title}${genNote}${mediaTag}${researchNote}${shot}${rowCount}${kids}${body}${sel}`,
       );
     }
     for (const e of edges) {
@@ -1406,13 +1412,20 @@ export function summarizeCanvas(
   let lines = build(true);
   if (lines.join("\n").length > budget) lines = build(false);
   while (lines.join("\n").length > budget) {
-    // 从尾往前找第一条可丢行：连线行与分组聚合行（组行是子卡的唯一索引，
-    // 丢了整组对 LLM 失明）永不丢，避免旧版"从尾部丢"把末尾整组丢瞎
+    // 从尾往前找第一条可丢行：连线行、分组聚合行（组行是子卡的唯一索引，
+    // 丢了整组对 LLM 失明）、剧本/分镜表行（叙事与分镜的唯一锚点，96 节点
+    // 画布上曾被挤掉导致 agent「看不到」分镜表跑去铺 27 张分镜卡）永不丢
     let lastNodeIdx = -1;
     for (let i = lines.length - 1; i >= 1; i--) {
       const l = lines[i];
       if (!l.startsWith("- ")) continue;
-      if (l.startsWith("- 连线 ") || l.includes("[分组]")) continue;
+      if (
+        l.startsWith("- 连线 ") ||
+        l.includes("[分组]") ||
+        l.includes("[剧本]") ||
+        l.includes("[分镜表]")
+      )
+        continue;
       lastNodeIdx = i;
       break;
     }

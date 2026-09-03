@@ -98,18 +98,18 @@ def get_storyboard_gen_job(job_id: str) -> Optional[Dict[str, Any]]:
     return STORYBOARD_GEN_JOBS.get(job_id)
 
 
-async def start_storyboard_gen_job(
+async def run_storyboard_flow(
     script: str,
     shot_count: Optional[int] = None,
     duration_seconds: Optional[int] = None,
     visual_style: str = "",
     assets: Optional[List[Dict[str, Any]]] = None,
     model: str = "",
-) -> str:
-    """启动分镜表生成任务（异步：代理 30s 掐断长请求）。返回 jobId。
+) -> List[Dict[str, Any]]:
+    """跑分镜生成 flow 并返回结构化 rows（HTTP job 与聊天工具共用的核心）。
 
-    model：文本模型覆盖（models.resolve_text_model 产物，空=flow 出厂模型），
-    经 LanguageModelComponent 的 model_name 覆盖字段按组件名注入。
+    失败抛 RuntimeError（调用方决定明报形态）；rows 内 assets 已按名单
+    二次校验剔除幻觉名。model：空=目录默认文本模型。
     """
     flow_id = os.environ.get("LANGFLOW_SHOTLIST_FLOW_ID", "")
     if not flow_id:
@@ -134,45 +134,65 @@ async def start_storyboard_gen_job(
         parts.extend(entries)
     parts.append("剧本：")
     parts.append(script)
-    input_value = "\n".join(parts)
 
+    text = await run_flow_blocking(
+        flow_id,
+        input_value="\n".join(parts),
+        tweaks={
+            "LanguageModelComponent": {
+                "temperature": 0.4,
+                **models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID),
+            }
+        },
+        timeout=900,
+    )
+    # run_flow_blocking 失败不抛错、返回全角括号错误文案（拆解同款守卫）：
+    # 明报真因，不落到 _parse_shot_rows 里被截括号伪装成 JSON 解析错
+    if text.startswith("（"):
+        raise RuntimeError(text.strip("（）"))
+    rows = _parse_shot_rows(text)
+    # 结构化资产名按名单二次校验（novanova 强约束的名字版）：LLM 幻觉
+    # 出的名字剔除，不报废整路；名单为空时一律清空（此时前端靠行文本
+    # 全名兜底匹配画布资产）
+    roster = {
+        str(a.get("name")).strip()
+        for a in (assets or [])
+        if str(a.get("name") or "").strip()
+    }
+    for row in rows:
+        row["assets"] = (
+            [a for a in row.get("assets", []) if a in roster] if roster else []
+        )
+    return rows
+
+
+async def start_storyboard_gen_job(
+    script: str,
+    shot_count: Optional[int] = None,
+    duration_seconds: Optional[int] = None,
+    visual_style: str = "",
+    assets: Optional[List[Dict[str, Any]]] = None,
+    model: str = "",
+) -> str:
+    """启动分镜表生成任务（异步：HTTP 端点立即返回 jobId，前端轮询）。
+
+    model：文本模型覆盖（models.resolve_text_model 产物，空=flow 出厂模型），
+    经 LanguageModelComponent 的 model_name 覆盖字段按组件名注入。
+    """
     job_id = uuid.uuid4().hex[:12]
     STORYBOARD_GEN_JOBS[job_id] = {"status": "running", "rows": None, "error": None}
 
     async def run() -> None:
         state = STORYBOARD_GEN_JOBS[job_id]
         try:
-            text = await run_flow_blocking(
-                flow_id,
-                input_value=input_value,
-                tweaks={
-                    "LanguageModelComponent": {
-                        "temperature": 0.4,
-                        **models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID),
-                    }
-                },
-                timeout=900,
+            state["rows"] = await run_storyboard_flow(
+                script,
+                shot_count=shot_count,
+                duration_seconds=duration_seconds,
+                visual_style=visual_style,
+                assets=assets,
+                model=model,
             )
-            # run_flow_blocking 失败不抛错、返回全角括号错误文案（拆解同款守卫）：
-            # 明报真因，不落到 _parse_shot_rows 里被截括号伪装成 JSON 解析错
-            if text.startswith("（"):
-                raise RuntimeError(text.strip("（）"))
-            rows = _parse_shot_rows(text)
-            # 结构化资产名按名单二次校验（novanova 强约束的名字版）：LLM 幻觉
-            # 出的名字剔除，不报废整路；名单为空时一律清空（此时前端靠行文本
-            # 全名兜底匹配画布资产）
-            roster = {
-                str(a.get("name")).strip()
-                for a in (assets or [])
-                if str(a.get("name") or "").strip()
-            }
-            for row in rows:
-                row["assets"] = (
-                    [a for a in row.get("assets", []) if a in roster]
-                    if roster
-                    else []
-                )
-            state["rows"] = rows
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
         finally:

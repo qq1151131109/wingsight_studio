@@ -78,6 +78,62 @@ async def decompose_script(script: str, config: RunnableConfig) -> str:
 
 
 @tool
+async def generate_storyboard(
+    script: str,
+    config: RunnableConfig,
+    shot_count: int = 0,
+    assets_json: str = "",
+    model: str = "",
+) -> str:
+    """从剧本生成整表分镜（结构化 rows：景别/运镜/时长/画面/光影/音效/台词/引用资产）。
+
+    用户要「拆分镜表 / 生成分镜表 / 重新分镜 / 整表重写到 N 镜」时用这个工具；
+    不要自己手写整表 rows（管线输出的字段规范与镜头语言质量都更好）。
+    生成完写回画布：画布已有分镜表卡（画布状态里的 [分镜表] 行）用 canvas_ops
+    update_node(id=分镜表id, rows=...) 整组替换；没有分镜表卡则 add_node
+    nodeType=shotlist 带 rows 新建。整表分镜不要为每个镜头铺独立 storyboard 卡
+    （storyboard 卡只用于单个镜头的画面卡）。
+
+    Args:
+        script: 剧本原文全文（从剧本卡取时先 read_node，不要自行摘要）。
+        shot_count: 目标镜头数，用户点名了才传（如「压到 20 镜」），0=按剧本自定。
+        assets_json: 画布已有资产名单 JSON 数组，如 [{"type":"character","name":"郑成功"}]；
+            生成的行会自动引用名单内资产（名单外的幻觉名会被剔除）。画布没有资产卡时留空。
+        model: 文本模型 id（GET /models/text 目录），留空用默认 gpt-5.6-luna。
+    """
+    assets = None
+    if assets_json.strip():
+        try:
+            assets = json.loads(assets_json)
+            if not isinstance(assets, list):
+                return "assets_json 必须是数组 JSON"
+        except json.JSONDecodeError as e:
+            return f"assets_json 不是合法 JSON：{e}"
+    await skills._emit_progress(config, "正在生成分镜表（分镜管线约 1-2 分钟）…")
+    job_id = skills.start_chat_job(
+        skills._thread_id_of_config(config), "tool", "生成分镜表"
+    )
+    task = asyncio.current_task()
+    if task is not None:
+        skills.job_attach_task(job_id, task)
+    try:
+        rows = await skills.run_storyboard_flow(
+            script,
+            shot_count=shot_count or None,
+            assets=assets,
+            model=model,
+        )
+    except Exception as e:  # noqa: BLE001
+        return f"分镜生成失败：{e}"
+    return (
+        f"分镜已生成（{len(rows)} 行）。rows JSON：\n"
+        + json.dumps(rows, ensure_ascii=False)
+        + '\n写回：画布已有 [分镜表] 卡 → canvas_ops update_node(id, rows=上述数组)；'
+        '没有 → add_node(nodeType="shotlist", rows=上述数组)。行里的 assets 资产名数组写回时保留，系统会解析成对画布资产卡的引用。'
+    )
+
+
+@tool
 async def run_langflow_skill(
     skill: str, input_text: str, params_json: str, config: RunnableConfig
 ) -> str:
@@ -408,7 +464,7 @@ async def get_research_result(job_id: str, config: RunnableConfig) -> str:
     return "\n".join(parts)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_asset_images, run_langflow_skill, research_asset_references, get_reference_research_status, start_deep_research, confirm_research_plan, get_research_result]
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, run_langflow_skill, research_asset_references, get_reference_research_status, start_deep_research, confirm_research_plan, get_research_result]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
@@ -615,7 +671,7 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 
 ## 操作画布
 调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项：
-- {{"op":"add_node","nodeType":"note|script|character|image|video|audio|compose|storyboard|shotlist","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,dialogue}}] 行数组）
+- {{"op":"add_node","nodeType":"note|script|character|image|video|audio|compose|storyboard|shotlist","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,lighting,sound,dialogue,assets:[资产名]}}] 行数组）
 - {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
 - {{"op":"update_node","id":"分镜表id","row":{{"rid":"行id","imageUrl":"url"}}}}  更新分镜表的单行（镜头级出图回填）
 - {{"op":"delete_nodes","ids":["节点id",...]}}  删除卡片
@@ -630,9 +686,15 @@ compose（合成）卡：把多张视频卡按顺序连线到它，用户点卡�
 storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么），
 add_node / update_node 可带 shotNumber（镜号，如 01）、shotSize（远景/全景/中景/近景/特写）、
 cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s）、dialogue（台词/旁白）。
-用户要求分镜/故事板时为每个镜头建一张 storyboard 卡并按顺序连线（镜号从 01 递增）。
+分镜分两类处理：
+- **整表分镜**（把剧本拆成分镜表 / 重新生成 / 整表压缩重写）→ 用 generate_storyboard 工具生成 rows
+  并写回：画布已有分镜表卡（画布状态里 [分镜表] 行）用 update_node 带 rows 整组替换；没有则
+  add_node nodeType=shotlist 带 rows 新建。整表分镜**不要为每个镜头铺独立 storyboard 卡**。
+- 单镜头画面卡 → storyboard 卡（字段见上），按顺序连线（镜号从 01 递增）。
 
-节点 id 形如 n_xxx_x，可以在「画布当前状态」里查到。新建后若要连线，先等工具结果返回新节点 id。
+节点 id 形如 n_xxx_x，在「画布当前状态」里查到，**不要按格式猜测或拼造**（时间戳段不可推算，猜必错）。
+新建的卡要在同批或后续连线/更新时，给 add_node 带 id 字段自拟占位符（如 "SB_1"），后续
+connect_nodes / update_node 直接引用同值即可；没带占位符就必须等工具结果返回的真实 id 再引用。
 
 ## 生成管线（Langflow 技能）
 涉及批量生成（宣发文案等）时，先用 list_langflow_skills 查可用技能，再用 run_langflow_skill 调用。
@@ -641,7 +703,7 @@ cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s�
 ≥3 步的任务（拆解→建卡→出图全链路、批量出图、整理画布等）：先用 propose_plan 列出计划
 （title + steps，每步一句动词开头的短句、可独立验证），计划卡会同步展示给用户——展示后立即开始执行，
 无需等待确认。按顺序执行，每完成一步调 update_plan(planId, step=步程序号) 打勾再继续，全部完成后
-简短汇报。单步操作（建一张卡、单张出图、改一句）直接做，不出计划。
+简短汇报；某步失败时在汇报里如实说明，不要把失败步骤标成完成。单步操作（建一张卡、单张出图、改一句）直接做，不出计划。
 
 ## 设定图与考据
 为真实历史人物/事件/器物（史料、纪录片题材）生成设定图时：优先给 generate_asset_images 的
