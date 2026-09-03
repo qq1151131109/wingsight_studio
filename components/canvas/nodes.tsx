@@ -14,6 +14,7 @@ import {
   NodeResizer,
   NodeToolbar,
   Position,
+  useViewport,
   type NodeProps,
 } from "@xyflow/react";
 import {
@@ -593,6 +594,29 @@ function CardShell({
   // 资产卡命名引导：FOCUS_EDIT 通道打开标题编辑并聚焦（手动建卡/素材库
   // 建为资产后命令"先起名"——空名资产不进名单/候选，占位名会污染引用）
   const isAsset = ASSET_TYPES.includes(String(data.nodeType));
+  // 顶部工具条防出屏：xyflow 工具条定位是纯算术（无贴边防裁剪），卡片停在
+  // 视口顶部时整条被渲染到屏外（"点卡片看不到入口"事故）。选中且视口变化
+  // 后量一次卡片屏幕位置，offset 钳制让工具条顶边不小于屏幕 8px——贴顶时
+  // 压在标题行上也不翻到卡下（卡下会被 PromptBar 盖住，画布层压不过它）。
+  // 视口用 xyflow 的 useViewport（与 DOM transform 同 commit 更新）+ 双
+  // rAF 确保量到的是新位置（单 rAF 会量到旧 transform，钳制反方向出错）
+  const rfViewport = useViewport();
+  const [tbOffset, setTbOffset] = useState(36);
+  useEffect(() => {
+    if (!selected) return;
+    let raf2 = 0;
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        const el = rootRef.current;
+        if (!el) return;
+        setTbOffset(Math.min(36, el.getBoundingClientRect().top - 38));
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [selected, rfViewport]);
   const [titleForce, setTitleForce] = useState(false);
   useEffect(() => {
     if (!isAsset) return;
@@ -736,7 +760,7 @@ function CardShell({
       />
       {/* 悬浮工具条（libtv 范式）：选中即在卡上方浮现常用操作，更多动作在右键菜单。
           offset 36：越过卡外标题行，不压住标题 */}
-      <NodeToolbar isVisible={selected && !tiny} position={Position.Top} offset={36}>
+      <NodeToolbar isVisible={selected && !tiny} position={Position.Top} offset={tbOffset}>
         <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-0.5 shadow-md">
           {(isAsset || data.nodeType === "image") && data.imageUrl ? (
             <>

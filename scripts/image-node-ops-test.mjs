@@ -208,6 +208,33 @@ check(
   (await page.locator('[aria-label="多视角…"]').count()) === 0,
 );
 
+// ---------- A6 贴顶钳制：卡片在视口顶边时工具条压在标题行上（不被裁出屏） ----------
+await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  // 把 img1 移到视口顶边（viewport y 负值 → 卡片屏幕 top < 96）
+  st.setViewport({ x: 600, y: -40, zoom: 0.8 });
+  st.selectNodes(["img1"]);
+});
+await page.waitForTimeout(600);
+{
+  const box = await page.locator('[aria-label="多视角…"]').boundingBox();
+  check("A6-1 贴顶时工具条仍可见（顶边钳在 8px）", Boolean(box && box.y > 0 && box.y < 40), JSON.stringify(box));
+}
+await page.evaluate(() => {
+  // 拉回正常位置：工具条回到卡片上方常规位
+  window.__wsCanvasStore.getState().setViewport({ x: 600, y: 300, zoom: 0.8 });
+});
+await page.waitForTimeout(600);
+{
+  const box = await page.locator('[aria-label="多视角…"]').boundingBox();
+  const card = await nodeOf("测试底图").boundingBox();
+  check(
+    "A6-2 离开顶边后工具条回到卡片上方",
+    Boolean(box && card && box.y < card.y && box.y > 40),
+    `toolbar.y=${box?.y} card.top=${card?.y}`,
+  );
+}
+
 await openMenu("测试角色");
 check("A3 角色卡菜单含三视图", (await page.locator("text=三视图…").count()) > 0);
 await page.mouse.click(400, 600);
