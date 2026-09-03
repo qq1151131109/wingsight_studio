@@ -38,8 +38,11 @@ os.environ["LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID"] = "f-followup"
 os.environ["LANGFLOW_TOPIC_VERDICT_FLOW_ID"] = "f-verdict"
 os.environ["LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID"] = "f-rescan-plan"
 os.environ["LANGFLOW_TOPIC_ANGLE_FLOW_ID"] = "f-angle"
-# 语料采集离线化：按天缓存预置为空列表（collect_wiki_corpus 短路，不打网络）
-store.set_setting(wikicategory.CACHE_KEY, wikicategory.build_day_cache([]))
+# 语料采集离线化：维基通道整体打空桩（不打网络/离线库）
+async def _no_wiki_corpus(self):
+    return []
+
+topic_pool.TopicCurator.collect_wiki_corpus = _no_wiki_corpus
 
 
 def expect(cond: bool, msg: str) -> None:
@@ -134,6 +137,10 @@ expect(ages == {2070, 40}, f"2026 年应只留逢五逢十且 ≥20 年：{sorte
 cache = wikiday.load_window_cache(wikiday.build_window_cache(wikiday.date(2026, 9, 2), kept))
 expect(cache["start"] == "2026-09-02" and cache["events"] == kept, "窗口缓存应回读一致")
 expect(wikiday.load_window_cache(None) is None and wikiday.load_window_cache("junk") is None, "坏缓存应判无效")
+expect(
+    wikicategory.load_day_cache(wikicategory.build_day_cache([])) is None,
+    "空维基缓存应按没缓存处理（防毒化整天）",
+)
 
 print("wikiday 解析与周年算术 ✓")
 
@@ -286,6 +293,8 @@ ANGLE_OUT = [
     {"template": "一个人", "angle": "发掘负责人的三十年田野", "viewing_question": "一个人怎么啃一块遗址", "unit_kind": "person"},
 ]
 
+_CONVERGE_CALLS = 0
+
 # 复查（rescan）verdict 的输出：仍薄 → 升级场景再改写为强证据
 RESCAN_VERDICT = {
     "evidence_level": "thin",
@@ -296,6 +305,7 @@ RESCAN_VERDICT = {
 
 
 async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
+    global _CONVERGE_CALLS
     payload = json.loads(input_value)
     if flow_id == "f-diverge":
         assert "corpus" in payload, "发散载荷应含线索清单"
@@ -313,6 +323,10 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
         return json.dumps(out, ensure_ascii=False)
     if flow_id == "f-ideate":
         assert "directions" in payload and "verticals" in payload, "收敛载荷应含方向清单与垂类"
+        global _CONVERGE_CALLS
+        _CONVERGE_CALLS += 1
+        if _CONVERGE_CALLS > 1:
+            assert payload.get("existingThemes"), "第二批起收敛载荷应带当日已产题眼清单（同题材去重）"
         out = []
         for j, d in enumerate(payload["directions"]):
             # 每个方向收敛成一张卡（标题锚定方向 sketch 保跨轮稳定）；垂类按序交替
@@ -520,6 +534,15 @@ async def run_ideate() -> None:
     series = next(c for c in cards if "单元选集" in c["tags"])
     expect(len(series["heatEvidence"]) == 3, f"选集卡原型出处应为 3 个候选单元：{len(series['heatEvidence'])}")
     expect(all(u["url"] for u in series["heatEvidence"]), "候选单元必须带真实链接")
+
+    # 当日题眼清单：落卡即记、同题去重（fake 的题眼只有 3 个方向 + 1 系列）
+    themes = json.loads(store.get_setting("topic_pool_ideate_themes") or "{}").get("themes") or []
+    expect(3 <= len(themes) <= 5 and len(themes) == len(set(themes)), f"题眼清单应去重记录：{themes}")
+
+    # 分层混批：垂类种子轮转交错，不是同垂类连排
+    mixed = [{"vertical_seed": v} for v in ["history"] * 8 + ["crime"] * 2]
+    first = [c["vertical_seed"] for c in topic_pool._stratified_batches(mixed, 5)[0][0]]
+    expect(first[:2] == ["history", "crime"], f"混批应垂类轮转：{first}")
     expect(all(len(c["heatEvidence"]) >= 1 and all(u["url"] for u in c["heatEvidence"]) for c in cards), "生料卡应锚定真实原型出处（选集卡=多个候选单元）")
     anchor = next(c for c in cards if "甲骨" in c["title"])
     expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指线索条目（经方向对象透传）")

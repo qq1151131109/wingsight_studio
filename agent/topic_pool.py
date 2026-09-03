@@ -242,6 +242,10 @@ IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
 IDEATE_CORPUS_KEY = "topic_pool_ideate_corpus"
 # 六源采集的通道级散账（每通道完成即落账，重启只补缺失通道）
 CORPUS_PARTIALS_KEY = "topic_pool_corpus_partials"
+# 当日已产选题的题眼清单（跨批跨轮去重注入收敛——指纹只挡完全同题，
+# 挡不住「军报到临安 vs 慢一步的军令」式同题异名）
+IDEATE_THEMES_KEY = "topic_pool_ideate_themes"
+THEMES_CAP = 120
 IDEATE_SEEN_CAP = 4000
 
 # 已深挖层（导演点名才跑）：取证/verdict/市场实查的全流程，见 deep_dive_one。
@@ -329,6 +333,34 @@ from entities import ENTITY_KINDS
 # 过程叙事/档案考古/正义回归/悬念追查/时代切片），verdict 对照证据择优成卡。
 # 未配置 flow 时跳过（verdict 按证据自选角度），不拦主刷新。
 ANGLE_OPTIONS_CAP = 3
+
+
+def _stratified_batches(
+    clues: list[dict[str, Any]], size: int
+) -> list[tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+    """按垂类种子轮转混编发散批：[(batch, 剩余线索), ...]。
+
+    语料构成天然偏斜（种子矩阵 history/military 词多），线性切片会让单批
+    全是同一垂类；轮转交错让每批尽量覆盖不同垂类，输出分布不再跟着
+    语料构成走。同批混编也利于发散层的跨垂类联想。
+    """
+    buckets: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for idx, clue in enumerate(clues):
+        buckets.setdefault(str(clue.get("vertical_seed") or "misc"), []).append((idx, clue))
+    keys = list(buckets)
+    interleaved: list[tuple[int, dict[str, Any]]] = []
+    while any(buckets[k] for k in keys):
+        for k in keys:
+            if buckets[k]:
+                interleaved.append(buckets[k].pop(0))
+    out: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = []
+    fed: set[int] = set()
+    for i in range(0, len(interleaved), size):
+        chunk = interleaved[i : i + size]
+        fed.update(idx for idx, _ in chunk)
+        remaining = [c for j, c in enumerate(clues) if j not in fed]
+        out.append(([c for _, c in chunk], remaining))
+    return out
 
 
 def fingerprint_of(title: str) -> str:
@@ -857,6 +889,31 @@ class TopicCurator:
             ),
         )
 
+    def _load_day_themes(self) -> list[str]:
+        """当日已产选题的题眼清单（注入收敛做跨批同题材去重）。"""
+        raw = store.get_setting(IDEATE_THEMES_KEY)
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if not isinstance(data, dict) or data.get("day") != date.today().isoformat():
+            return []
+        themes = data.get("themes")
+        return [str(t) for t in themes if isinstance(t, str)] if isinstance(themes, list) else []
+
+    def _add_day_theme(self, arc: str) -> None:
+        """落卡成功后记题眼（题眼段截断，最新在前）。"""
+        theme = arc.split("；")[0].replace("题眼：", "", 1).strip()[:60]
+        if not theme:
+            return
+        themes = [theme] + [t for t in self._load_day_themes() if t != theme]
+        store.set_setting(
+            IDEATE_THEMES_KEY,
+            json.dumps({"day": date.today().isoformat(), "themes": themes[:THEMES_CAP]}, ensure_ascii=False),
+        )
+
     async def ideate(
         self,
         clues: list[dict[str, Any]],
@@ -868,17 +925,18 @@ class TopicCurator:
 
         断点续跑顺序：先收敛上轮遗留的方向（最贵的发散已完成），再发散新线索。
         线索在发散成功后才记 seen——发散中途被杀的线索下轮重喂，方向不丢。
+        发散批按垂类种子轮转混编：语料天然偏 history/military，不混批会让
+        输出垂类跟着语料构成走。
         """
         # 1) 收敛存量方向（上轮被杀时遗留的半成品）
         if directions:
             await self._converge(directions, result)
             directions = []
             self._save_day_state(clues, directions)
-        # 2) 发散新线索 → 逐轮收敛
-        for offset in range(0, len(clues), DIVERGE_CLUES_PER_BATCH):
+        # 2) 发散新线索 → 逐轮收敛（分层混批）
+        for batch, remaining in _stratified_batches(clues, DIVERGE_CLUES_PER_BATCH):
             if result.batches >= IDEATE_BATCHES_CAP:
                 break  # 发散调用次数到帽：剩余线索留在当日状态里，下轮续
-            batch = clues[offset : offset + DIVERGE_CLUES_PER_BATCH]
             listing = [
                 {
                     "index": idx,
@@ -901,9 +959,9 @@ class TopicCurator:
                 continue
             result.directions += len(fresh)
             # 方向先落账再收敛：收敛中途被杀，重启后凭状态续收敛，不丢方向
-            self._save_day_state(clues[offset + DIVERGE_CLUES_PER_BATCH :], fresh)
+            self._save_day_state(remaining, fresh)
             await self._converge(fresh, result)
-            self._save_day_state(clues[offset + DIVERGE_CLUES_PER_BATCH :], [])
+            self._save_day_state(remaining, [])
 
     def _parse_directions(
         self, groups: Any, batch: list[dict[str, Any]]
@@ -956,6 +1014,9 @@ class TopicCurator:
                 ],
                 "verticals": verticals_payload(),
             }
+            themes = self._load_day_themes()
+            if themes:
+                payload["existingThemes"] = themes  # 跨批同题材去重（指纹只挡完全同题）
             try:
                 entries = await self._call_flow("ideate", payload)
             except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，继续下一批
@@ -1069,6 +1130,7 @@ class TopicCurator:
             )
             result.created += 1
             result.series_created += 1
+            self._add_day_theme(arc)
             logger.info("系列组题成卡 title=%s units=%d", title[:40], len(units))
         except Exception as exc:  # noqa: BLE001 - 唯一约束冲突/单卡失败不拖累整批
             logger.info("系列组题落库跳过 fingerprint=%s: %s", fingerprint[:12], str(exc)[:120])
@@ -1130,6 +1192,7 @@ class TopicCurator:
                 arc=arc,
             )
             result.created += 1
+            self._add_day_theme(arc)  # 记题眼：后续批次的同题材去重清单
         except Exception as exc:  # noqa: BLE001 - 唯一约束冲突/单卡失败不拖累整批
             logger.info("生料卡落库跳过 fingerprint=%s: %s", fingerprint[:12], str(exc)[:120])
             result.duplicates += 1

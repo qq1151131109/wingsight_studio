@@ -182,7 +182,9 @@ def load_day_cache(raw: str | None) -> list[dict[str, Any]] | None:
     if not isinstance(cache, dict) or cache.get("day") != date.today().isoformat():
         return None
     items = cache.get("signals")
-    return items if isinstance(items, list) else None
+    # 空缓存按没缓存处理：写入侧有"空结果不落账"纪律，空值一旦混入
+    # （历史 bug / 手改）不能让它毒化整天的维基语料
+    return items if isinstance(items, list) and items else None
 
 
 def build_day_cache(signals: list[dict[str, Any]]) -> str:

@@ -121,6 +121,16 @@ await save(
   ],
 );
 
+
+const selectShotlist = async () => {
+  await page.evaluate(() => {
+    const st = window.__wsCanvasStore.getState();
+    const shot = st.nodes.find((n) => n.data.nodeType === "shotlist");
+    if (shot) st.selectNodes([shot.id]);
+  });
+  await page.waitForTimeout(350);
+};
+
 const browser = await chromium.launch();
 const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
 // SPA 的 apiFetch 从 localStorage 取 Bearer：预置 token 免登录页重定向
@@ -151,6 +161,8 @@ await page.goto(`${BASE}/project/${pid}`);
 await page.waitForTimeout(1500);
 // 视口摆回原点，保证目标卡在 onlyRenderVisibleElements 视野内
 await page.evaluate(() => window.__wsSetViewport?.({ x: 0, y: 0, zoom: 0.6 }));
+await selectShotlist();
+await selectShotlist();
 await page.waitForTimeout(9000); // 等 mock 轮询（2.5s 间隔）跑完
 
 const stats = await page.locator("text=/已出图 \\d/").first().textContent().catch(() => "");
@@ -268,6 +280,7 @@ await save(
 await page.goto(`${BASE}/project/${pid}`);
 await page.waitForTimeout(1500);
 await page.evaluate(() => window.__wsSetViewport?.({ x: 0, y: 0, zoom: 0.5 }));
+await selectShotlist();
 await page.waitForTimeout(1500);
 // 成片钮已上浮悬浮工具条：选中分镜表卡后可见
 await page.evaluate(() => {
@@ -394,6 +407,7 @@ await page.route("**/agent-service/storyboard/images/e2e_job_gen", (route) => {
 await page.goto(`${BASE}/project/${pid}`);
 await page.waitForTimeout(1500);
 await page.evaluate(() => window.__wsSetViewport?.({ x: 0, y: 0, zoom: 0.5 }));
+await selectShotlist();
 await page.waitForTimeout(3500); // sanitize 迁移 + debounce 落库
 
 {

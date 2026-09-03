@@ -5237,6 +5237,32 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       >
         <Combine className="h-4 w-4" />
       </ToolBtn>
+      {researchCount > 0 ? (
+        <ToolBtn
+          title="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图"
+          label={
+            researching || refJob.batchId
+              ? refJob.running && refJob.job
+                ? `调研中 ${refJob.job.done}/${refJob.job.total}`
+                : "调研中…"
+              : `调研参考图·${researchCount}`
+          }
+          disabled={!scriptSource || researching || !!refJob.batchId}
+          onClick={() => void researchRefs()}
+        >
+          <Search className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      {missingAssetCount > 0 ? (
+        <ToolBtn
+          title="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
+          label={fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
+          disabled={!scriptSource || fillingAssets}
+          onClick={() => void fillAssets()}
+        >
+          <ImageUp className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
       <ToolBtn
         title="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
         label={imgGenerating ? "出图中…" : `出图·${selectedGenRows.length} 镜`}
@@ -5249,6 +5275,20 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       >
         <Sparkles className="h-4 w-4" />
       </ToolBtn>
+      {missingRows.length > 0 ? (
+        <ToolBtn
+          title={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`}
+          label={`补缺图·${missingRows.length}`}
+          disabled={imgGenerating}
+          onClick={() =>
+            void genShotImages(
+              missingRows.map((row) => ({ row, seq: rows.indexOf(row) })),
+            )
+          }
+        >
+          <ImageUp className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
       <ToolBtn
         title="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
         label="成片"
@@ -5677,67 +5717,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             全选
           </label>
           <span className="mx-1 h-4 w-px bg-hairline" />
-            {researchCount > 0 ? (
-              <button
-                type="button"
-                disabled={!scriptSource || researching || !!refJob.batchId}
-                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
-                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                data-track="card.batch-research"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  void researchRefs();
-                }}
-              >
-                {researching || refJob.batchId
-                  ? refJob.running && refJob.job
-                    ? `调研中 ${refJob.job.done}/${refJob.job.total}`
-                    : "调研中…"
-                  : `调研参考图·${researchCount}`}
-              </button>
-            ) : null}
-            {missingAssetCount > 0 ? (
-              <button
-                type="button"
-                disabled={!scriptSource || fillingAssets}
-                data-tip="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图（按卡上设定正文，画风闸内）"
-                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void fillAssets();
-                }}
-              >
-                {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
-              </button>
-            ) : null}
           <ShotGenSettings nodeId={id} />
-          <button
-            type="button"
-            disabled={imgGenerating || selectedGenRows.length === 0}
-            data-tip="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认" aria-label="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
-            className="nodrag shrink-0 rounded border border-accent bg-accent-dim px-1.5 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
-            data-track="shotlist.batch-images"
-  onClick={(e) => {
-              e.stopPropagation();
-              void genShotImages(selectedGenRows.map((row) => ({ row, seq: rows.indexOf(row) })));
-            }}
-          >
-            {imgGenerating ? "出图中…" : `出图·${selectedGenRows.length} 镜`}
-          </button>
-          {missingRows.length > 0 ? (
-            <button
-              type="button"
-              disabled={imgGenerating}
-              data-tip={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`} aria-label={`为还没出图/出图失败的 ${missingRows.length} 镜补图（自动跳过已完成的镜）`}
-              className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={(e) => {
-                e.stopPropagation();
-                void genShotImages(missingRows.map((row) => ({ row, seq: rows.indexOf(row) })));
-              }}
-            >
-              补缺图·{missingRows.length}
-            </button>
-          ) : null}
         </span>
       </div>
       </>
