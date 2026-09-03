@@ -10,6 +10,7 @@
 import {
   NODE_META,
   useCanvasStore,
+  type ShotRow,
   type WingNodeType,
 } from "./store";
 import type { CSSProperties } from "react";
@@ -179,6 +180,13 @@ export function validateOps(rawOps: unknown): {
     index: number,
   ) => {
     if (!Array.isArray(rows)) return;
+    const empties = emptyRowNumbers(rows);
+    if (empties.length > 0)
+      issues.push({
+        index,
+        severity: "error",
+        message: `第 ${empties.join(",")} 行内容全空——疑似工具参数被截断，请整批重发`,
+      });
     for (const name of rows.flatMap((r) => r.assets ?? []).filter(Boolean)) {
       if (!assetTitles.has(String(name).trim()))
         issues.push({
@@ -291,6 +299,32 @@ function assetsToRefIds(names: string[]): string[] | undefined {
   return ids.length > 0 ? [...new Set(ids)] : undefined;
 }
 
+/** 行内容全空（无任何字段也无 assets）的序号（1 起）——工具参数被截断的
+ * 典型残骸：部分解析抢救出前几行完整对象 + 尾部空对象 */
+function emptyRowNumbers(
+  raw: {
+    shotSize?: string;
+    cameraMove?: string;
+    duration?: string;
+    action?: string;
+    dialogue?: string;
+    lighting?: string;
+    sound?: string;
+    assets?: string[];
+    imageUrl?: string;
+  }[],
+): number[] {
+  return raw
+    .map((r, i) => ({ r, n: i + 1 }))
+    .filter(
+      ({ r }) =>
+        !Array.isArray(r.assets) &&
+        [r.shotSize, r.cameraMove, r.duration, r.action, r.dialogue, r.lighting, r.sound, r.imageUrl]
+          .every((v) => v === undefined || String(v).trim() === ""),
+    )
+    .map(({ n }) => n);
+}
+
 /** 分镜行归一（add_node / update_node 的 rows 共用）：字段截断 + assets→refIds */
 function normalizeRows(
   raw: {
@@ -306,21 +340,26 @@ function normalizeRows(
     imageUrl?: string;
   }[],
   ridPrefix: string,
-) {
-  return raw.slice(0, 60).map((r, i) => ({
-    rid: String(r.rid ?? `${ridPrefix}${i + 1}`),
-    ...(r.shotSize !== undefined ? { shotSize: String(r.shotSize).slice(0, 20) } : {}),
-    ...(r.cameraMove !== undefined ? { cameraMove: String(r.cameraMove).slice(0, 20) } : {}),
-    ...(r.duration !== undefined ? { duration: String(r.duration).slice(0, 20) } : {}),
-    ...(r.action !== undefined ? { action: String(r.action).slice(0, 500) } : {}),
-    ...(r.dialogue !== undefined ? { dialogue: String(r.dialogue).slice(0, 500) } : {}),
-    ...(r.lighting !== undefined ? { lighting: String(r.lighting).slice(0, 30) } : {}),
-    ...(r.sound !== undefined ? { sound: String(r.sound).slice(0, 30) } : {}),
-    ...(Array.isArray(r.assets)
-      ? { refIds: assetsToRefIds(r.assets.filter(Boolean).map(String)) }
-      : {}),
-    ...(r.imageUrl !== undefined ? { imageUrl: String(r.imageUrl) } : {}),
-  }));
+): { rows: ShotRow[]; emptyIdx: number[] } {
+  const emptyIdx = emptyRowNumbers(raw);
+  const rows = raw.slice(0, 60).map((r, i) => {
+    const norm = {
+      rid: String(r.rid ?? `${ridPrefix}${i + 1}`),
+      ...(r.shotSize !== undefined ? { shotSize: String(r.shotSize).slice(0, 20) } : {}),
+      ...(r.cameraMove !== undefined ? { cameraMove: String(r.cameraMove).slice(0, 20) } : {}),
+      ...(r.duration !== undefined ? { duration: String(r.duration).slice(0, 20) } : {}),
+      ...(r.action !== undefined ? { action: String(r.action).slice(0, 500) } : {}),
+      ...(r.dialogue !== undefined ? { dialogue: String(r.dialogue).slice(0, 500) } : {}),
+      ...(r.lighting !== undefined ? { lighting: String(r.lighting).slice(0, 30) } : {}),
+      ...(r.sound !== undefined ? { sound: String(r.sound).slice(0, 30) } : {}),
+      ...(Array.isArray(r.assets)
+        ? { refIds: assetsToRefIds(r.assets.filter(Boolean).map(String)) }
+        : {}),
+      ...(r.imageUrl !== undefined ? { imageUrl: String(r.imageUrl) } : {}),
+    };
+    return norm;
+  });
+  return { rows, emptyIdx };
 }
 
 /** 自动布点：在已有节点包围盒右侧或初始位置放新节点，避免重叠 */
@@ -393,6 +432,19 @@ export function applyOps(rawOps: unknown): OpResult {
             errors.push(`add_node: 节点 ${op.id} 已存在`);
             break;
           }
+          // rows 截断守卫：全空行 = 参数被截断的残骸，整 op 拒绝明报
+          // （静默落半截表曾让 8 镜分镜只写入 3 行 + 1 行空壳）
+          let rowsField: ShotRow[] | null = null;
+          if (Array.isArray(op.rows)) {
+            const norm = normalizeRows(op.rows, "r");
+            if (norm.emptyIdx.length > 0) {
+              errors.push(
+                `add_node: 第 ${norm.emptyIdx.join(",")} 行内容全空——疑似工具参数被截断，本 op 未应用，请整批重发`,
+              );
+              break;
+            }
+            rowsField = norm.rows;
+          }
           const pos = op.position ?? autoPosition();
           // 批量建卡级联入场（对标影策 45ms 错峰；CSS 变量经节点 style 继承到卡片）
           const stagger = Math.min(createdIds.length, 12) * 50;
@@ -424,9 +476,7 @@ export function applyOps(rawOps: unknown): OpResult {
                 ? { itemIds: op.itemIds.slice(0, 20).map(String) }
                 : {}),
               ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
-              ...(Array.isArray(op.rows)
-                ? { rows: normalizeRows(op.rows, "r") }
-                : {}),
+              ...(rowsField ? { rows: rowsField } : {}),
               ...(op.shotNumber !== undefined
                 ? { shotNumber: op.shotNumber.slice(0, 8) }
                 : {}),
@@ -454,6 +504,18 @@ export function applyOps(rawOps: unknown): OpResult {
             errors.push(`update_node: 节点 ${op.id} 不存在`);
             break;
           }
+          // rows 截断守卫：同 add_node（整表写回被截曾只落 3 行 + 空壳）
+          let rowsField: ShotRow[] | null = null;
+          if (Array.isArray(op.rows)) {
+            const norm = normalizeRows(op.rows, "m");
+            if (norm.emptyIdx.length > 0) {
+              errors.push(
+                `update_node: 第 ${norm.emptyIdx.join(",")} 行内容全空——疑似工具参数被截断，本 op 未应用，请整批重发`,
+              );
+              break;
+            }
+            rowsField = norm.rows;
+          }
           live.updateNodeData(op.id, {
             ...(op.title !== undefined ? { title: op.title.slice(0, 80) } : {}),
             ...(op.body !== undefined ? { body: op.body.slice(0, 8000) } : {}),
@@ -471,9 +533,7 @@ export function applyOps(rawOps: unknown): OpResult {
               ? { itemIds: op.itemIds.slice(0, 20).map(String) }
               : {}),
             ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
-            ...(Array.isArray(op.rows)
-              ? { rows: normalizeRows(op.rows, "m") }
-              : {}),
+            ...(rowsField ? { rows: rowsField } : {}),
             ...(op.row && typeof op.row.rid === "string"
               ? {
                   rows: (() => {

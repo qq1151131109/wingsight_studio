@@ -70,5 +70,16 @@ check("rows 资产名无同名卡告警", v5.ok && v5.issues.some(i => i.severit
 const v6 = validateOps([{ op: "connect_nodes", fromId: "n_a", toId: "n_a" }]);
 check("自连报错", !v6.ok);
 
+// 截断守卫：部分解析残骸（前几行完整 + 尾部空对象）整批拒绝，干跑同款报错
+const trunc = [
+  { rid: "r1", action: "雨夜面馆全景", shotSize: "大全景" },
+  { rid: "r2", action: "老周擦杯", shotSize: "中景" },
+  {},
+];
+const a1 = applyOps([{ op: "update_node", id: "n_a", rows: trunc }]);
+check("应用侧拒绝截断行（整 op 未落）", a1.applied === 0 && a1.errors.some(e => e.includes("内容全空")), a1.errors.join("|"));
+const a2 = validateOps([{ op: "update_node", id: "n_a", rows: trunc }]);
+check("干跑侧发现截断行", !a2.ok && a2.issues.some(i => i.message.includes("内容全空")));
+
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

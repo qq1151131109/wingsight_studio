@@ -12,6 +12,7 @@ import base64
 import asyncio
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
@@ -464,7 +465,57 @@ async def get_research_result(job_id: str, config: RunnableConfig) -> str:
     return "\n".join(parts)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, run_langflow_skill, research_asset_references, get_reference_research_status, start_deep_research, confirm_research_plan, get_research_result]
+# ---------- 技能手册（Agent Skills 规范，渐进披露：目录进系统提示，正文按需 read_skill）----------
+
+SKILLS_DIR = Path(__file__).resolve().parent / "skills"
+
+
+def load_skill_meta() -> List[Dict[str, str]]:
+    """扫描 skills/<name>/SKILL.md 的 frontmatter（name + description）。
+
+    与 skills.py 同名目录不冲突：Python 解析时模块（skills.py）优先于
+    命名空间包。description 兼作触发条件描述（影策 skills 范式）。"""
+    out: List[Dict[str, str]] = []
+    if not SKILLS_DIR.is_dir():
+        return out
+    for d in sorted(SKILLS_DIR.iterdir()):
+        f = d / "SKILL.md"
+        if not f.is_file():
+            continue
+        text = f.read_text(encoding="utf-8")
+        m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.S)
+        if not m:
+            continue
+        fields = dict(re.findall(r"^(\w+):\s*(.+?)\s*$", m.group(1), re.M))
+        name = fields.get("name") or d.name
+        desc = fields.get("description", "")
+        if name and desc:
+            out.append({"name": name, "description": desc})
+    return out
+
+
+SKILL_META = load_skill_meta()
+SKILL_CATALOG = "\n".join(
+    f"- {m['name']} — {m['description']}" for m in SKILL_META
+) or "（暂无）"
+
+
+@tool
+def read_skill(name: str) -> str:
+    """读取一份技能手册全文（SKILL.md）。系统提示里的「技能手册」目录只是
+    索引——执行对应任务（出设定图/批量编辑画布/读画布上下文）前先读手册。
+
+    Args:
+        name: 手册名（目录里列出的名称，如 asset-aware-generation）。
+    """
+    d = SKILLS_DIR / name.strip()
+    f = d / "SKILL.md"
+    if not f.is_file() or not d.resolve().is_relative_to(SKILLS_DIR.resolve()):
+        return f"手册 {name} 不存在。可用：{'、'.join(m['name'] for m in SKILL_META)}"
+    return f.read_text(encoding="utf-8")
+
+
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, run_langflow_skill, read_skill, research_asset_references, get_reference_research_status, start_deep_research, confirm_research_plan, get_research_result]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
@@ -708,11 +759,13 @@ connect_nodes / update_node 直接引用同值即可；没带占位符就必须�
 无需等待确认。按顺序执行，每完成一步调 update_plan(planId, step=步程序号) 打勾再继续，全部完成后
 简短汇报；某步失败时在汇报里如实说明，不要把失败步骤标成完成。单步操作（建一张卡、单张出图、改一句）直接做，不出计划。
 
+## 技能手册（按需加载）
+{skill_catalog}
+目录只是索引：执行对应任务前先调 read_skill(名称) 读手册全文再动手。
+
 ## 设定图与考据
-为真实历史人物/事件/器物（史料、纪录片题材）生成设定图时：优先给 generate_asset_images 的
-search_query 带上可公开检索的参考词（如「明制盔甲 博物馆」），出图会走图片检索考据，避免凭空臆造；
-史料性强的角色/服饰先查画布上是否已有同题材资产卡（有则 @ 引用其设定图保持一致，别重复建卡）。
-纯虚构题材不必检索。
+真实历史/史料题材出设定图前先 read_skill("asset-aware-generation")——考据检索、一致性参考
+（reference_images/reference_labels）、画风闸、防重复建卡的完整规则在手册里；纯虚构题材不必读。
 
 ## 深度调研（纪录片/罪案的故事取证）
 用户要选题论证、背景资料、史实核实、人物/事件深挖时：用 start_deep_research 发起 → 把开题（观看问题+查证方向）讲给用户听并请确认/修改 → confirm_research_plan 开跑 → 用 canvas_ops 建调研卡（nodeType:"research"，researchId=任务id）并 connect_nodes 连到相关卡。进度/结果用 get_research_result 查；完成后的卷宗（含 S 编号来源引用）是写剧本/文稿的事实权威——引用保留 S 编号，争议按双版本呈现不定论。
@@ -916,6 +969,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         content=SYSTEM_PROMPT.format(
             canvas_summary=canvas_summary,
             camera_cheat=camera.camera_cheat_sheet(),
+            skill_catalog=SKILL_CATALOG,
         ),
     )
 
