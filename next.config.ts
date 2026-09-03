@@ -4,6 +4,11 @@ const nextConfig: NextConfig = {
   // 关掉左下角的 N 开发指示器（纯开发态装饰，与产品 UI 无关）
   devIndicators: false,
 
+  // 关闭 Next 的响应压缩：代理会对上游 SSE（AG-UI 聊天流，text/event-stream）
+  // 也做 gzip——gzip 缓冲把整个流攒到结束一次发给浏览器，打字机效果失效
+  // （表现为回复"一次性吐出"）。自托管 + 隧道场景无带宽压力，压缩收益为零
+  compress: false,
+
   // 同源代理（rewrites → 8123）对上游 socket 的空闲超时：默认约 30s，
   // 拆解/技能 flow 调用中段的静默期一过就把 AG-UI SSE 流掐断（前端报
   // ERR_INCOMPLETE_CHUNKED_ENCODING / agent network error）。放宽到 10 分钟；
