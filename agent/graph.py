@@ -808,12 +808,14 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     if _unanswered_frontend_calls(messages):
         return Command(goto=END, update={})
 
-    # 思考模式（GLM 系默认开）：模型先流式输出 reasoning_content 再给正文，
-    # ag-ui 桥转成 reasoning 消息在聊天里折叠展示
+    # 思考/推理模式按通道二选一：GLM 系发 thinking:enabled（网关认该参数）；
+    # 其余（gpt-5 系等）显式 reasoning_effort="none"——DMX 上游给 luna 默认注入
+    # reasoning_effort，与 function tools 同发会被 400 拒绝（"Function tools with
+    # reasoning_effort are not supported"），报错给的建议就是显式设 none。
     thinking_kwargs = (
         {"extra_body": {"thinking": {"type": "enabled"}}}
         if _thinking_enabled()
-        else {}
+        else {"reasoning_effort": "none"}
     )
     model = _OneShotToolArgsCompatChatOpenAI(
         model=os.environ.get("AGENT_MODEL", "deepseek-chat"),

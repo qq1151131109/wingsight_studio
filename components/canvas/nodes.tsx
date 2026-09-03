@@ -56,6 +56,7 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  LocateFixed,
   ScanSearch,
   Search,
   Shirt,
@@ -2161,6 +2162,22 @@ function AssetCard({ data, id, selected }: NodeProps) {
                 >
                   <Download className="h-3.5 w-3.5" />
                 </a>
+                <button
+                  type="button"
+                  data-tip="复制图片到剪贴板" aria-label="复制图片到剪贴板"
+                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                  data-track="image.copy-image"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void copyImageToClipboard(d.imageUrl!).catch((exc) =>
+                      showToast(
+                        `复制图片失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+                      ),
+                    );
+                  }}
+                >
+                  <ImagePlus className="h-3.5 w-3.5" />
+                </button>
                 <button
                   type="button"
                   data-tip="查看大图（标注重绘/九宫格/版本在此操作）" aria-label="查看大图"
@@ -4495,6 +4512,7 @@ function shotlistExpected(scriptLen: number): number {
 
 function ShotListCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
+  const rf = useReactFlow();
   const update = makeUpdater(id);
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
@@ -5316,8 +5334,19 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                   {rowImg ? (
                     <button
                       type="button"
-                      data-tip="点击放大" aria-label="点击放大"
+                      data-tip={r.imageNodeId ? "点击放大；双击定位图片卡" : "点击放大"} aria-label="点击放大"
                       className="nodrag block"
+                      onDoubleClick={(e) => {
+                        e.stopPropagation();
+                        // 物化镜头图卡 = 全套图片工具（裁剪/多视角/打光…）
+                        // 的家，双击直接跳过去（open-storyboard 帧即节点范式）
+                        if (!r.imageNodeId) return;
+                        const st = useCanvasStore.getState();
+                        if (!st.nodes.some((n) => n.id === r.imageNodeId)) return;
+                        st.selectNodes([r.imageNodeId]);
+                        focusCardView(rf, r.imageNodeId);
+                        setRowZoom(null);
+                      }}
                       onClick={(e) => {
                         e.stopPropagation();
                         setRowZoom({ url: rowImg, seq: i });
@@ -5518,6 +5547,27 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           index={0}
           onIndex={() => undefined}
           onClose={() => setRowZoom(null)}
+          actions={() => {
+            const nodeId = rows[rowZoom.seq]?.imageNodeId;
+            if (!nodeId || !nodes.some((n) => n.id === nodeId)) return null;
+            return (
+              <button
+                type="button"
+                data-tip="跳到画布上的镜头图卡（全套图片工具在那）" aria-label="定位图片卡"
+                data-track="shotlist.locate-image-node"
+                className="flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-xs text-white hover:bg-white/20"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  useCanvasStore.getState().selectNodes([nodeId]);
+                  focusCardView(rf, nodeId);
+                  setRowZoom(null);
+                }}
+              >
+                <LocateFixed className="h-3.5 w-3.5" />
+                定位图片卡
+              </button>
+            );
+          }}
         />
       ) : null}
       {generating ? (
