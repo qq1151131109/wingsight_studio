@@ -398,8 +398,8 @@ function ToolBtn({
         onClick();
       }}
       onPointerDown={(e) => e.stopPropagation()}
-      className={`flex h-7 items-center rounded-md transition-colors disabled:opacity-40 ${
-        label ? "gap-1 px-2" : "w-7 justify-center"
+      className={`flex h-9 items-center rounded-lg transition-colors disabled:opacity-40 ${
+        label ? "gap-1.5 px-3" : "w-9 justify-center"
       } ${
         danger
           ? "text-text-3 hover:bg-danger/10 hover:text-danger"
@@ -409,7 +409,7 @@ function ToolBtn({
       }`}
     >
       {children}
-      {label ? <span className="whitespace-nowrap text-xs">{label}</span> : null}
+      {label ? <span className="whitespace-nowrap text-sm">{label}</span> : null}
     </button>
   );
 }
@@ -625,7 +625,7 @@ function CardShell({
   // 视口用 xyflow 的 useViewport（与 DOM transform 同 commit 更新）+ 双
   // rAF 确保量到的是新位置（单 rAF 会量到旧 transform，钳制反方向出错）
   const rfViewport = useViewport();
-  const [tbOffset, setTbOffset] = useState(36);
+  const [tbOffset, setTbOffset] = useState(28);
   useEffect(() => {
     if (!selected) return;
     let raf2 = 0;
@@ -633,7 +633,7 @@ function CardShell({
       raf2 = requestAnimationFrame(() => {
         const el = rootRef.current;
         if (!el) return;
-        setTbOffset(Math.min(36, el.getBoundingClientRect().top - 38));
+        setTbOffset(Math.min(28, el.getBoundingClientRect().top - 54));
       });
     });
     return () => {
@@ -785,9 +785,10 @@ function CardShell({
       {/* 悬浮工具条（libtv 范式）：选中即在卡上方浮现常用操作。
           不做 tiny（缩放）隐藏——工具条是屏幕空间固定尺寸，任意缩放都
           可读（zoom<0.5 时藏掉曾让用户"看不到入口"，竞品也是全档显示）。
-          offset 36：越过卡外标题行，不压住标题 */}
+          offset 28：越过 24px 卡外标题行，贴近不压字；按钮 36px 高图标+文字
+          （对标 Lovart 系工具条观感） */}
       <NodeToolbar isVisible={selected} position={Position.Top} offset={tbOffset}>
-        <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-0.5 shadow-md">
+        <div className="flex items-center gap-1 rounded-xl border border-hairline bg-surface-1 p-1 shadow-lg">
           {(isAsset || data.nodeType === "image") && data.imageUrl ? (
             <>
               <ToolBtn
@@ -796,7 +797,7 @@ function CardShell({
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "crop")}
               >
-                <Crop className="h-3.5 w-3.5" />
+                <Crop className="h-4 w-4" />
               </ToolBtn>
               <ToolBtn
                 title="生成其他机位视角"
@@ -804,7 +805,7 @@ function CardShell({
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "multiview")}
               >
-                <Camera className="h-3.5 w-3.5" />
+                <Camera className="h-4 w-4" />
               </ToolBtn>
               {data.nodeType === "character" ? (
                 <ToolBtn
@@ -813,7 +814,7 @@ function CardShell({
                   disabled={data.status === "loading"}
                   onClick={() => dispatchImageTool(id, "turnaround")}
                 >
-                  <Columns3 className="h-3.5 w-3.5" />
+                  <Columns3 className="h-4 w-4" />
                 </ToolBtn>
               ) : null}
               <ToolBtn
@@ -822,7 +823,7 @@ function CardShell({
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "lighting")}
               >
-                <Sun className="h-3.5 w-3.5" />
+                <Sun className="h-4 w-4" />
               </ToolBtn>
               <ToolBtn
                 title="人物质感精修（融合/光影/皮肤/纹理/锐度）"
@@ -830,7 +831,7 @@ function CardShell({
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "texture")}
               >
-                <Wand2 className="h-3.5 w-3.5" />
+                <Wand2 className="h-4 w-4" />
               </ToolBtn>
               <ToolBtn
                 title={data.freeResize ? "锁定比例（回原图比例）" : "解除比例锁定，任意拉伸"}
@@ -838,16 +839,16 @@ function CardShell({
                 active={Boolean(data.freeResize)}
                 onClick={() => toggleFreeResize(id)}
               >
-                <Scaling className="h-3.5 w-3.5" />
+                <Scaling className="h-4 w-4" />
               </ToolBtn>
               <span className="mx-0.5 h-3.5 w-px bg-hairline" />
             </>
           ) : null}
           <ToolBtn title="原地复制" onClick={() => useCanvasStore.getState().duplicateSelection()}>
-            <Copy className="h-3.5 w-3.5" />
+            <Copy className="h-4 w-4" />
           </ToolBtn>
           <ToolBtn title={locked ? "解锁" : "锁定"} onClick={() => update({ locked: !locked })}>
-            {locked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+            {locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
           </ToolBtn>
           <ToolBtn
             title="节点信息"
@@ -857,7 +858,7 @@ function CardShell({
               )
             }
           >
-            <Info className="h-3.5 w-3.5" />
+            <Info className="h-4 w-4" />
           </ToolBtn>
           <span className="mx-0.5 h-3.5 w-px bg-hairline" />
           <ToolBtn
@@ -869,7 +870,7 @@ function CardShell({
               st.deleteNodes([id]);
             }}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-4 w-4" />
           </ToolBtn>
         </div>
       </NodeToolbar>
