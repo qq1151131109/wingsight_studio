@@ -399,18 +399,18 @@ function ToolBtn({
         onClick();
       }}
       onPointerDown={(e) => e.stopPropagation()}
-      className={`flex h-9 items-center rounded-lg transition-colors disabled:opacity-40 ${
-        label ? "gap-1.5 px-3" : "w-9 justify-center"
+      className={`flex h-9 items-center rounded-full transition-all active:scale-[0.94] disabled:opacity-40 ${
+        label ? "gap-1.5 px-3.5" : "w-9 justify-center"
       } ${
         danger
           ? "text-text-3 hover:bg-danger/10 hover:text-danger"
           : active
-            ? "bg-accent-dim text-accent"
+            ? "bg-accent-dim text-accent shadow-[inset_0_0_0_1px_oklch(0.62_0.14_40/0.35)]"
             : "text-text-3 hover:bg-surface-2 hover:text-text"
       }`}
     >
       {children}
-      {label ? <span className="whitespace-nowrap text-sm">{label}</span> : null}
+      {label ? <span className="whitespace-nowrap text-[13px] font-medium">{label}</span> : null}
     </button>
   );
 }
@@ -791,7 +791,7 @@ function CardShell({
           offset 12：贴着标题行上缘；贴顶钳制时压住标题行贴住图片容器；按钮 36px 高图标+文字
           （对标 Lovart 系工具条观感） */}
       <NodeToolbar isVisible={selected} position={Position.Top} offset={tbOffset}>
-        <div className="flex items-center gap-1 rounded-xl border border-hairline bg-surface-1 p-1 shadow-lg">
+        <div className="flex items-center gap-0.5 rounded-full border border-hairline bg-surface-1/90 p-1 shadow-[0_1px_2px_oklch(0_0_0/0.05),0_8px_24px_oklch(0_0_0/0.10),0_20px_48px_oklch(0_0_0/0.08)] backdrop-blur-sm">
           {(isAsset || data.nodeType === "image") && data.imageUrl ? (
             <>
               <ToolBtn
@@ -844,7 +844,7 @@ function CardShell({
               >
                 <Scaling className="h-4 w-4" />
               </ToolBtn>
-              <span className="mx-0.5 h-3.5 w-px bg-hairline" />
+              <span className="mx-1 h-4 w-px bg-hairline" />
             </>
           ) : null}
           <ToolBtn title="原地复制" onClick={() => useCanvasStore.getState().duplicateSelection()}>
@@ -863,7 +863,7 @@ function CardShell({
           >
             <Info className="h-4 w-4" />
           </ToolBtn>
-          <span className="mx-0.5 h-3.5 w-px bg-hairline" />
+          <span className="mx-1 h-4 w-px bg-hairline" />
           <ToolBtn
             title="删除"
             danger
@@ -5680,7 +5680,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             />
             全选
           </label>
-          <span className="mx-0.5 h-3.5 w-px bg-hairline" />
+          <span className="mx-1 h-4 w-px bg-hairline" />
           <button
             type="button"
             disabled={decomposing || !scriptSource}
