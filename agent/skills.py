@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import Literal
 
+import imagejobs
 import models
 import thumbs
 import usage
@@ -1164,7 +1165,13 @@ def _prune_storyboard_image_jobs() -> None:
 
 
 def get_storyboard_image_job(job_id: str) -> Optional[Dict[str, Any]]:
-    return STORYBOARD_IMAGE_JOBS.get(job_id)
+    job = STORYBOARD_IMAGE_JOBS.get(job_id)
+    if job is not None:
+        return job
+    # 内存 miss：查持久层（agent 重启丢内存任务表）。已完成的结果原样
+    # 返回供前端恢复轮询收回；重启时在途的孤儿任务就地终态化（未完成项
+    # 标中断）——不再 404 让用户对已计费的部分全额重试
+    return imagejobs.load_job(job_id)
 
 
 COMPOSE_FLOW_ID = os.environ.get("LANGFLOW_COMPOSE_FLOW_ID", "")
@@ -1389,6 +1396,10 @@ async def start_storyboard_image_job(
         "cancelled": False,
         "images": {str(s.get("rid", "")): {"rid": str(s.get("rid", "")), "ok": False} for s in shots},
     }
+    # 任务落库（imagejobs）：agent 重启后轮询仍可命中、已完成的结果可找回
+    imagejobs.create_job(
+        job_id, [str(s.get("rid", "")) for s in shots]
+    )
 
     sem = asyncio.Semaphore(30)
 
@@ -1410,6 +1421,11 @@ async def start_storyboard_image_job(
             # 未完成的生成不再计费
             result = {"ok": False, "error": "已取消", "cancelled": True}
         STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = {"rid": rid, **result}
+        # 单张结果即时落库：重启窗口内已完成的图可被找回（计费已发生）
+        try:
+            imagejobs.save_item(job_id, rid, result)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[imagejobs] 结果落库失败 job={job_id} rid={rid}: {exc}", flush=True)
 
     async def run() -> None:
         job = STORYBOARD_IMAGE_JOBS[job_id]
@@ -1418,6 +1434,11 @@ async def start_storyboard_image_job(
             await asyncio.gather(*job["tasks"], return_exceptions=True)
         finally:
             job["status"] = "cancelled" if job["cancelled"] else "done"
+            # 终态以内存完整结果为准权威落库（自愈中途漏写的单项）
+            try:
+                imagejobs.finish_job(job_id, job["status"], job["images"])
+            except Exception as exc:  # noqa: BLE001
+                print(f"[imagejobs] 终态落库失败 job={job_id}: {exc}", flush=True)
 
     asyncio.create_task(run())
     return job_id
