@@ -1355,12 +1355,15 @@ function ExportMenuButton({
   disabled,
   track,
   bare,
+  className,
 }: {
   onExport: (format: ExportFormat) => void;
   disabled?: boolean;
   track: string;
   /** 无边框样式（文本卡底栏是一排无边框文本钮） */
   bare?: boolean;
+  /** 触发钮样式覆盖（悬浮工具条内与 ToolBtn 同款胶囊） */
+  className?: string;
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
@@ -1412,9 +1415,10 @@ function ExportMenuButton({
         disabled={disabled}
         data-tip="导出为 txt / md / docx" aria-label="导出文件"
         className={
-          bare
+          className ??
+          (bare
             ? "nodrag flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-            : "nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+            : "nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline px-1.5 py-0.5 text-text-3 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40")
         }
         onClick={(e) => {
           e.stopPropagation();
@@ -1848,6 +1852,12 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       >
         <Film className="h-4 w-4" />
       </ToolBtn>
+      <ExportMenuButton
+        onExport={doExport}
+        disabled={empty}
+        track="script"
+        className="nodrag flex h-9 items-center gap-1.5 rounded-full px-3.5 text-text-3 transition-all hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      />
     </>
   );
 
@@ -1869,7 +1879,6 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               {sceneCount > 0 ? ` · ${sceneCount} 场` : ""}
             </span>
             <span className="flex-1" />
-            <ExportMenuButton onExport={doExport} disabled={empty} track="script" />
           </div>
           {decomposeMsg ? (
             <p className="ws-detail mt-1 text-[10px] text-text-3">
@@ -5297,6 +5306,20 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       >
         <Combine className="h-4 w-4" />
       </ToolBtn>
+      <ToolBtn
+        title="分镜帧合成宫格大图（帧编号+画面备注，交付用）"
+        label="宫格图"
+        disabled={gridBusy || !rows.some((r) => r.imageUrl || r.imageNodeId)}
+        onClick={() => void exportGrid()}
+      >
+        <Grid3X3 className="h-4 w-4" />
+      </ToolBtn>
+      <ExportMenuButton
+        onExport={doExport}
+        disabled={rows.length === 0}
+        track="shotlist"
+        className="nodrag flex h-9 items-center gap-1.5 rounded-full px-3.5 text-text-3 transition-all hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      />
     </>
   );
 
@@ -5679,29 +5702,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               </>
             ) : null}
           </span>
-          <ExportMenuButton
-            onExport={doExport}
-            disabled={rows.length === 0}
-            track="shotlist"
-          />
-          <button
-            type="button"
-            data-tip="分镜帧合成宫格大图（帧编号+画面备注）" aria-label="分镜帧合成宫格大图"
-            disabled={gridBusy || !rows.some((r) => r.imageUrl || r.imageNodeId)}
-            data-track="shotlist.grid-export"
-            className="flex items-center gap-0.5 rounded px-1 py-0.5 transition-colors hover:text-text disabled:opacity-40"
-            onClick={(e) => {
-              e.stopPropagation();
-              void exportGrid();
-            }}
-          >
-            {gridBusy ? (
-              <Loader2 className="h-3 w-3 motion-safe:animate-spin" />
-            ) : (
-              <Grid3X3 className="h-3 w-3" />
-            )}
-            宫格图
-          </button>
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           <label

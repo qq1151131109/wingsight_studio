@@ -139,7 +139,34 @@ const tmp = mkdtempSync(join(tmpdir(), "wsexport-"));
 const card = (title) => page.locator(".react-flow__node", { hasText: title });
 const exportItem = async (cardTitle, itemLabel) => {
   const c = card(cardTitle);
-  await c.getByRole("button", { name: "导出文件" }).click();
+  // 导出钮已上浮悬浮工具条（选中才渲染）：选中目标卡并把视口居中到它
+  // （onlyRenderVisibleElements 会卸载视口外卡片，必须先入屏）
+  await page.evaluate((t) => {
+    const st = window.__wsCanvasStore.getState();
+    const n = st.nodes.find((x) => (x.data.title || "") === t);
+    if (!n) return;
+    st.selectNodes([n.id]);
+    const w = n.measured?.width ?? 288;
+    const h = n.measured?.height ?? 320;
+    const zoom = Math.min(1, Math.max(0.4, Math.min((1400 * 0.7) / w, (900 * 0.7) / h)));
+    st.setViewport({
+      x: 700 - (n.position.x + w / 2) * zoom,
+      y: 450 - (n.position.y + h / 2) * zoom,
+      zoom,
+    });
+  }, cardTitle);
+  await page.waitForTimeout(500);
+  // 文本卡导出在卡内底栏（节点子树内）；剧本/分镜表的导出在悬浮工具条
+  // （react-flow__node-toolbar，节点子树外）——两处可见时不能点错卡
+  const inCard = c.getByRole("button", { name: "导出文件" });
+  if (await inCard.count()) {
+    await inCard.first().click();
+  } else {
+    await page
+      .locator('.react-flow__node-toolbar [aria-label="导出文件"]:visible')
+      .first()
+      .click();
+  }
   const dlPromise = page.waitForEvent("download");
   dlPromise.catch(() => undefined); // 菜单项点击失败时不让悬挂的 waitForEvent 崩掉进程
   try {
