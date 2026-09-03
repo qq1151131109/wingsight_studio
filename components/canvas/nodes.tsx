@@ -379,6 +379,22 @@ function focusCardView(
   });
 }
 
+/** 卡面图片双档显示（竞品五家都是节点直载原图，靠浏览器缩放；我们保留
+ *  512 缩略图档省内存，双击聚焦放大后自动换原图——按卡片在屏幕上的实际
+ *  渲染尺寸（flow 宽 × zoom × DPR）超过缩略图容量即切换，带回滞防抖动） */
+function useDisplaySrc(id: string, imageUrl: string | undefined): string | undefined {
+  const { zoom } = useViewport();
+  const flowW = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.measured?.width);
+  const [hires, setHires] = useState(false);
+  useEffect(() => {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const onScreen = (flowW ?? 288) * zoom * dpr;
+    setHires((prev) => (prev ? onScreen > 430 : onScreen > 540));
+  }, [zoom, flowW]);
+  if (!imageUrl) return undefined;
+  return hires ? imageUrl : assetThumbUrl(imageUrl);
+}
+
 /** 悬浮工具条按钮（选中节点上方浮现的常用操作，libtv 范式；
  *  图片操作组在此条上直发 IMAGE_TOOL_EVENT——竞品共识：重动作入口
  *  挂选中卡上方工具条，右键只是备份路径。label 传出文字钮（对标
@@ -1930,6 +1946,7 @@ const ASSET_WRITE_HINT: Record<keyof typeof ASSET_BODY_PH, string> = {
 function AssetCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const rf = useReactFlow();
+  const displaySrc = useDisplaySrc(id, d.imageUrl);
   const update = makeUpdater(id);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const kind = (
@@ -2231,8 +2248,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={assetThumbUrl(d.imageUrl)}
+              src={displaySrc}
               alt={d.title}
+              decoding="async"
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
@@ -2485,6 +2503,7 @@ async function splitImageToGrid(nodeId: string, url: string, title: string) {
 function ImageCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const rf = useReactFlow();
+  const displaySrc = useDisplaySrc(id, d.imageUrl);
   const update = makeUpdater(id);
   // 放大查看：进入时快照画布全部图片（可翻页）。本卡的候选/版本一并入列
   // 并带 meta——灯箱上下文动作（标注重绘/九宫格/设为主图/恢复版本）只对本卡
@@ -2705,8 +2724,9 @@ function ImageCard({ data, id, selected }: NodeProps) {
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={assetThumbUrl(d.imageUrl)}
+              src={displaySrc}
               alt={d.title}
+              decoding="async"
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />

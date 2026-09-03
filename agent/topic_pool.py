@@ -773,8 +773,9 @@ class TopicCurator:
         pending = [(name, getattr(self, meth)) for name, meth in self._CORPUS_CHANNELS if name not in partials]
         if pending:
             await asyncio.gather(*(_one(name, coro) for name, coro in pending))
+        complete = self._load_corpus_partials()  # 重读：含本轮刚完成的通道
         store.set_setting(CORPUS_PARTIALS_KEY, "")  # 全通道齐：清散账
-        return [item for items in partials.values() for item in items]
+        return [item for items in complete.values() for item in items]
 
     # --- 主流程：批量创意生成（生料层） ----------------------------------------
 
