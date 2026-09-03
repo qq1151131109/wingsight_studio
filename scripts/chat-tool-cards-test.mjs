@@ -209,6 +209,8 @@ if (dragOk) {
   check("画布卡拖进聊天落成 @ 引用 chip", false, "找不到可拖拽的卡片把手");
 }
 // 清空输入框（拖入的 chip 残留会拼进下一条消息）
+// 先等上一轮结束（GLM 思考长尾可拖 2-3 分钟，发送按钮在此期间是"停止"态）
+await send.waitFor({ state: "visible", timeout: 240_000 });
 await input.click();
 await page.keyboard.press("Control+a");
 await page.keyboard.press("Delete");

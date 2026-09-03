@@ -67,3 +67,6 @@ scripts/refpipe-*.png
 
 # 选题测试集：当日采集缓存（运行时产物，删了重跑即重建）
 doc/.benchmark-cache.json
+
+# 并行调试探针（临时脚本不入库）
+scripts/_tmp-*.mjs
