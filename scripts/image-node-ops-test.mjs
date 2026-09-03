@@ -386,8 +386,8 @@ await page.waitForTimeout(900); // fitView duration 420ms + 余量
     `卡片中心 x=${Math.round(cx)} 视口中心=${Math.round(vw.width * 0.5)}`,
   );
   check(
-    "G3 卡片统一观感尺寸（占视口高 ~62%±25%）",
-    Boolean(card && Math.abs(card.height / vh.height - 0.62) < 0.16),
+    "G3 卡片统一观感尺寸（占视口高 ~78%±15%）",
+    Boolean(card && Math.abs(card.height / vh.height - 0.78) < 0.15),
     `占比=${card ? (card.height / vh.height).toFixed(2) : "?"}`,
   );
 }
