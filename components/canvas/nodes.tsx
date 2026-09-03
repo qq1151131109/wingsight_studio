@@ -366,12 +366,14 @@ function focusCardView(
 
 /** 悬浮工具条按钮（选中节点上方浮现的常用操作，libtv 范式；
  *  图片操作组在此条上直发 IMAGE_TOOL_EVENT——竞品共识：重动作入口
- *  挂选中卡上方工具条，右键只是备份路径） */
+ *  挂选中卡上方工具条，右键只是备份路径。label 传出文字钮（对标
+ *  Lovart 系工具条的图标+文字大按钮），不传=纯图标小钮） */
 function ToolBtn({
   title,
   danger,
   disabled,
   active,
+  label,
   onClick,
   children,
 }: {
@@ -380,28 +382,34 @@ function ToolBtn({
   disabled?: boolean;
   /** 开启态（如自由缩放已解锁） */
   active?: boolean;
+  /** 可读文字标签（与图标并排） */
+  label?: string;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
-      data-tip={title} aria-label={title}
+      data-tip={label ? undefined : title}
+      aria-label={title}
       disabled={disabled}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
       }}
       onPointerDown={(e) => e.stopPropagation()}
-      className={`grid h-6 w-6 place-items-center rounded-md transition-colors hover:bg-surface-2 disabled:opacity-40 ${
+      className={`flex h-7 items-center rounded-md transition-colors disabled:opacity-40 ${
+        label ? "gap-1 px-2" : "w-7 justify-center"
+      } ${
         danger
           ? "text-text-3 hover:bg-danger/10 hover:text-danger"
           : active
             ? "bg-accent-dim text-accent"
-            : "text-text-3 hover:text-text"
+            : "text-text-3 hover:bg-surface-2 hover:text-text"
       }`}
     >
       {children}
+      {label ? <span className="whitespace-nowrap text-xs">{label}</span> : null}
     </button>
   );
 }
@@ -783,14 +791,16 @@ function CardShell({
           {(isAsset || data.nodeType === "image") && data.imageUrl ? (
             <>
               <ToolBtn
-                title="裁剪…"
+                title="裁剪画面比例"
+                label="裁剪"
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "crop")}
               >
                 <Crop className="h-3.5 w-3.5" />
               </ToolBtn>
               <ToolBtn
-                title="多视角…"
+                title="生成其他机位视角"
+                label="多视角"
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "multiview")}
               >
@@ -798,7 +808,8 @@ function CardShell({
               </ToolBtn>
               {data.nodeType === "character" ? (
                 <ToolBtn
-                  title="三视图…"
+                  title="生成三视图设定表"
+                  label="三视图"
                   disabled={data.status === "loading"}
                   onClick={() => dispatchImageTool(id, "turnaround")}
                 >
@@ -806,21 +817,24 @@ function CardShell({
                 </ToolBtn>
               ) : null}
               <ToolBtn
-                title="打光…"
+                title="替换画面光效"
+                label="打光"
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "lighting")}
               >
                 <Sun className="h-3.5 w-3.5" />
               </ToolBtn>
               <ToolBtn
-                title="人物质感…"
+                title="人物质感精修（融合/光影/皮肤/纹理/锐度）"
+                label="质感"
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "texture")}
               >
                 <Wand2 className="h-3.5 w-3.5" />
               </ToolBtn>
               <ToolBtn
-                title={data.freeResize ? "锁定比例（回原图比例）" : "自由缩放"}
+                title={data.freeResize ? "锁定比例（回原图比例）" : "解除比例锁定，任意拉伸"}
+                label={data.freeResize ? "锁定比例" : "自由缩放"}
                 active={Boolean(data.freeResize)}
                 onClick={() => toggleFreeResize(id)}
               >

@@ -190,22 +190,22 @@ await page.mouse.click(400, 600); // 关菜单
 // ---------- A5 顶部工具条（主入口：选中即在卡上方，无需右键） ----------
 // 经 store 选中（点卡会被媒体区 zoom/工具条拦指针，选区才是唯一变量）
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["img1"]));
-await page.locator('[aria-label="多视角…"]').waitFor({ timeout: 5000 });
-for (const t of ["裁剪…", "多视角…", "打光…", "人物质感…", "自由缩放"]) {
-  check(`A5-1 图片卡顶部条含「${t}」`, (await page.locator(`[aria-label="${t}"]`).count()) > 0);
+await page.locator('[aria-label="生成其他机位视角"]').waitFor({ timeout: 5000 });
+for (const t of ["裁剪画面比例", "生成其他机位视角", "替换画面光效", "人物质感精修", "解除比例锁定，任意拉伸"]) {
+  check(`A5-1 图片卡顶部条含「${t}」`, (await page.locator(`[aria-label^="${t}"]`).count()) > 0);
 }
 check(
   "A5-2 图片卡顶部条不含三视图",
-  (await page.locator('[aria-label="三视图…"]').count()) === 0,
+  (await page.locator('[aria-label^="生成三视图"]').count()) === 0,
 );
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["ch1"]));
-await page.locator('[aria-label="三视图…"]').waitFor({ timeout: 5000 });
-check("A5-3 角色卡顶部条含三视图", (await page.locator('[aria-label="三视图…"]').count()) > 0);
+await page.locator('[aria-label^="生成三视图"]').waitFor({ timeout: 5000 });
+check("A5-3 角色卡顶部条含三视图", (await page.locator('[aria-label^="生成三视图"]').count()) > 0);
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["note1"]));
 await page.waitForTimeout(400);
 check(
   "A5-4 文本卡顶部条无图片操作",
-  (await page.locator('[aria-label="多视角…"]').count()) === 0,
+  (await page.locator('[aria-label^="生成其他机位视角"]').count()) === 0,
 );
 
 // ---------- A6 贴顶钳制：卡片在视口顶边时工具条压在标题行上（不被裁出屏） ----------
@@ -217,7 +217,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(600);
 {
-  const box = await page.locator('[aria-label="多视角…"]').boundingBox();
+  const box = await page.locator('[aria-label="生成其他机位视角"]').boundingBox();
   check("A6-1 贴顶时工具条仍可见（顶边钳在 8px）", Boolean(box && box.y > 0 && box.y < 40), JSON.stringify(box));
 }
 await page.evaluate(() => {
@@ -226,7 +226,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(600);
 {
-  const box = await page.locator('[aria-label="多视角…"]').boundingBox();
+  const box = await page.locator('[aria-label="生成其他机位视角"]').boundingBox();
   const card = await nodeOf("测试底图").boundingBox();
   check(
     "A6-2 离开顶边后工具条回到卡片上方",
@@ -242,7 +242,7 @@ for (const z of [0.45, 0.3]) {
   await page.waitForTimeout(500);
   check(
     `A7 zoom=${z} 时工具条仍可见`,
-    (await page.locator('[aria-label="多视角…"]').count()) > 0,
+    (await page.locator('[aria-label="生成其他机位视角"]').count()) > 0,
   );
 }
 await page.evaluate(() => {
