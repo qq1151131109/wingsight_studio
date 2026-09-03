@@ -1358,7 +1358,8 @@ export function summarizeCanvas(
     lines.push(`节点 ${nodes.length} 个，连线 ${edges.length} 条：`);
     for (const n of nodes) {
       const meta = NODE_META[n.data.nodeType];
-      const title = (n.data.title ?? "").slice(0, 30) || "（无标题）";
+      // 空标题直接省略（"（无标题）"是零信息占位，还污染 @ 引用匹配的观感）
+      const title = (n.data.title ?? "").slice(0, 30);
       const shotFields =
         n.data.nodeType === "storyboard"
           ? [
@@ -1374,7 +1375,7 @@ export function summarizeCanvas(
           ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
           : "";
       const body =
-        withBody && n.data.body ? ` “${n.data.body.slice(0, 40)}”` : "";
+        withBody && n.data.body ? ` “${n.data.body.slice(0, 24)}”` : "";
       const sel = selectedIds.includes(n.id) ? " [选中]" : "";
       // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
       // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
@@ -1405,9 +1406,17 @@ export function summarizeCanvas(
   let lines = build(true);
   if (lines.join("\n").length > budget) lines = build(false);
   while (lines.join("\n").length > budget) {
-    const lastNodeIdx = lines.map((l) => l.startsWith("- ")).lastIndexOf(true);
-    const isEdge = lines[lastNodeIdx]?.startsWith("- 连线 ");
-    if (lastNodeIdx <= 0 || isEdge) break;
+    // 从尾往前找第一条可丢行：连线行与分组聚合行（组行是子卡的唯一索引，
+    // 丢了整组对 LLM 失明）永不丢，避免旧版"从尾部丢"把末尾整组丢瞎
+    let lastNodeIdx = -1;
+    for (let i = lines.length - 1; i >= 1; i--) {
+      const l = lines[i];
+      if (!l.startsWith("- ")) continue;
+      if (l.startsWith("- 连线 ") || l.includes("[分组]")) continue;
+      lastNodeIdx = i;
+      break;
+    }
+    if (lastNodeIdx < 0) break;
     lines.splice(lastNodeIdx, 1);
   }
   let text = lines.join("\n");

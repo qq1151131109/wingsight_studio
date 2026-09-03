@@ -154,31 +154,30 @@ if (results.at(-1)?.ok) {
   check("批准后卡片确已从画布删除", cardGone);
 }
 
-// ---- 3) propose_plan：多步任务先出计划，确认后逐步执行 ----
+// ---- 3) propose_plan：多步任务先出计划卡（免确认直接执行）----
 await send.waitFor({ state: "visible", timeout: 300_000 });
 await input.click();
 await page.keyboard.type(
-  "请先列一个执行计划征求我确认，确认前不要动手：1）建一张标题为「计划测试」的文本卡；2）把它的标题改成「计划测试改」",
+  "请先列一个执行计划：1）建一张标题为「计划测试」的文本卡；2）把它的标题改成「计划测试改」",
   { delay: 15 },
 );
 await send.click({ timeout: 300_000 });
 const planCard = page
-  .getByText(/计划待确认/)
+  .getByText(/执行计划|执行中 · \d+\//)
   .first()
   .waitFor({ timeout: 90_000 })
   .then(() => true)
   .catch(() => false);
-check("多步任务触发计划卡（待确认）", await planCard);
+check("多步任务触发计划卡（免确认直接执行）", await planCard);
 
 if (results.at(-1)?.ok) {
-  await page.getByRole("button", { name: "开始执行" }).click();
   const executed = page
     .locator(".react-flow__node", { hasText: "计划测试" })
     .first()
     .waitFor({ timeout: 180_000 })
     .then(() => true)
     .catch(() => false);
-  check("确认后计划开始执行（卡片已建）", await executed);
+  check("计划直接开始执行（卡片已建）", await executed);
   const checkmark = await page
     .getByText(/执行中 · \d+\//)
     .first()

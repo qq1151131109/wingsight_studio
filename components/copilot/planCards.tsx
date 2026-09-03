@@ -24,7 +24,7 @@ export interface PlanRecord {
   steps: string[];
   /** 已完成的最高步序号（1-based；0=未开始） */
   done: number;
-  /** null=等确认 / true=已确认 / false=已暂缓 */
+  /** true=已开始执行（2026-09 起免确认，出卡即执行） */
   confirmed: boolean | null;
 }
 
@@ -37,23 +37,18 @@ interface PlanState {
   markStep: (id: string, step: number) => boolean;
 }
 
-/** confirm 解析器不进响应式状态（卡片经 settle 间接触发） */
-const resolvers = new Map<string, (ok: boolean) => void>();
-
 export const usePlanStore = create<PlanState>()((set, get) => ({
   plans: {},
   latestId: null,
   upsert: (id, title, steps) =>
     set((s) => ({
-      plans: { ...s.plans, [id]: { title, steps, done: 0, confirmed: null } },
+      plans: { ...s.plans, [id]: { title, steps, done: 0, confirmed: true } },
       latestId: id,
     })),
   settle: (id, ok) => {
     const rec = get().plans[id];
     if (!rec || rec.confirmed !== null) return;
     set((s) => ({ plans: { ...s.plans, [id]: { ...rec, confirmed: ok } } }));
-    resolvers.get(id)?.(ok);
-    resolvers.delete(id);
   },
   markStep: (id, step) => {
     const rec = get().plans[id];
@@ -65,16 +60,15 @@ export const usePlanStore = create<PlanState>()((set, get) => ({
   },
 }));
 
-/** propose_plan handler 用：登记计划并阻塞等用户在卡上点按钮 */
+/** propose_plan handler 用：登记计划并立即确认（2026-09 起免人工确认——
+ *  计划卡只是给用户看的进度单，agent 直接按步骤执行并 update_plan 打勾） */
 function requestPlanConfirm(
   id: string,
   title: string,
   steps: string[],
 ): Promise<boolean> {
   usePlanStore.getState().upsert(id, title, steps);
-  return new Promise<boolean>((resolve) => {
-    resolvers.set(id, resolve);
-  });
+  return Promise.resolve(true);
 }
 
 function normalizeSteps(raw: unknown): string[] {
@@ -101,21 +95,18 @@ function PlanCard({
 }) {
   const plans = usePlanStore((s) => s.plans);
   const latestId = usePlanStore((s) => s.latestId);
-  const settle = usePlanStore((s) => s.settle);
 
   const resultId = /planId=([a-z0-9]+)/.exec(resultText)?.[1] ?? null;
   const rec = plans[resultId ?? latestId ?? ""];
   const steps = rec?.steps.length ? rec.steps : argSteps;
   const title = rec?.title || argTitle;
-  const confirmed = rec?.confirmed ?? null;
   const done = rec?.done ?? 0;
-  const awaitingConfirm = status !== "complete" && confirmed === null && steps.length > 0;
+  const stepsN = steps.length;
+  const executing = status !== "complete" || done < stepsN;
 
   let label = "执行计划";
-  if (awaitingConfirm) label = "计划待确认";
-  else if (confirmed === false) label = "已暂缓，未执行";
-  else if (done >= steps.length && steps.length > 0) label = "计划已执行完";
-  else if (confirmed) label = `执行中 · ${done}/${steps.length}`;
+  if (done >= stepsN && stepsN > 0) label = "计划已执行完";
+  else if (executing) label = `执行中 · ${done}/${stepsN}`;
 
   return (
     <div className="my-1 rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
@@ -146,24 +137,6 @@ function PlanCard({
           <CircleAlert className="h-3 w-3" /> 计划内容为空
         </p>
       ) : null}
-      {awaitingConfirm ? (
-        <div className="mt-2 flex gap-1.5">
-          <button
-            type="button"
-            onClick={() => settle(resultId ?? latestId ?? "", true)}
-            className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
-          >
-            开始执行
-          </button>
-          <button
-            type="button"
-            onClick={() => settle(resultId ?? latestId ?? "", false)}
-            className="rounded-md border border-hairline bg-surface-2 px-2.5 py-1 text-[11px] text-text-2 transition-colors hover:text-text"
-          >
-            暂缓
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -176,8 +149,8 @@ export default function PlanTools() {
   useCopilotAction({
     name: "propose_plan",
     description:
-      "把多步任务的执行计划呈现给用户确认（卡片内联在聊天里，阻塞等用户点「开始执行」或「暂缓」）。" +
-      "≥3 步的任务必须先出计划；用户确认前绝不执行任何步骤。",
+      "把多步任务的执行计划展示给用户（卡片内联在聊天里，展示后直接开始执行，无需等待确认）。" +
+      "≥3 步的任务必须先出计划再执行；每完成一步调用 update_plan 打勾。",
     available: "remote",
     parameters: [
       {

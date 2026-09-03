@@ -879,6 +879,32 @@ async def _decompose_legacy(
 # ---------- 资产出图 ----------
 
 
+def _project_imagegen_from_config(config: Any = None) -> Dict[str, Any]:
+    """聊天线程 → 所属项目 → 画布 meta.imagegen（出图面板的项目级默认：
+    model/resolution/aspect）。非聊天路径、未知线程或读库失败时返回空 dict。"""
+    try:
+        thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+        if not thread_id:
+            return {}
+        import sqlite3
+
+        db_path = Path(__file__).resolve().parent / "data" / "wingsight.db"
+        db = sqlite3.connect(str(db_path))
+        try:
+            row = db.execute(
+                "select c.meta from canvases c join chat_threads t"
+                " on c.project_id = t.project_id where t.id = ?",
+                (thread_id,),
+            ).fetchone()
+        finally:
+            db.close()
+        meta = json.loads(row[0]) if row and row[0] else {}
+        gen = meta.get("imagegen")
+        return gen if isinstance(gen, dict) else {}
+    except Exception:
+        return {}
+
+
 def _project_style_from_config(config: Any = None) -> str:
     """聊天线程 → 所属项目 → 画布 meta 的全局画风。
 
@@ -1008,6 +1034,15 @@ async def generate_asset_images(
     # 项目画风（服务端按线程→项目→画布 meta 解析）：并进每张资产的
     # visual_notes，写实媒介时 _generate_single_image 会自动加主体锚点
     style = _project_style_from_config(config)
+    # 项目级默认画幅（底部坞「出图」面板的 meta.imagegen.aspect）：资产未带
+    # aspect 时兜底，替代 flow 的类型默认幅面（角色=竖幅）——用户反馈聊天出图
+    # 应跟随画布默认尺寸，而非角色一律竖图
+    project_default_aspect = str(_project_imagegen_from_config(config).get("aspect") or "")
+    if project_default_aspect:
+        assets = [
+            {**a, "aspect": str(a.get("aspect") or project_default_aspect)}
+            for a in assets
+        ]
 
     # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
     # 搜索 key，剥掉后走纯文生图（参考图是增强项，不影响出图）
