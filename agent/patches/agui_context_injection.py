@@ -6,9 +6,9 @@
 
     cd agent && uv run python patches/agui_context_injection.py
 
-幂等：已打补丁时直接跳过。补丁内容 = prepare_stream 里把 context 项拼成
-一条 Human 消息追加到 messages 末尾（merge_state 会剥掉首条 SystemMessage，
-且末位对模型注意力最友好，故不注入为 system）。
+幂等：已打补丁时直接跳过。补丁内容 = prepare_stream 里把 context 项
+（description 含"画布"）写入图状态键 canvasSummary——绝不能注入为 message：
+消息会进 checkpoint/UI/持久化，把内部上下文泄露成聊天气泡。
 """
 import sys
 from pathlib import Path
@@ -17,27 +17,23 @@ ANCHOR = '''        state_input["messages"] = agent_state.values.get("messages",
         langchain_messages = agui_messages_to_langchain(messages)'''
 PATCH = '''        state_input["messages"] = agent_state.values.get("messages", [])
         langchain_messages = agui_messages_to_langchain(messages)
-        # AG-UI RunAgentInput.context → 注入为一条 Human 消息（本地补丁，
-        # 上游不消费 context；wingsight 的画布摘要经 useCopilotReadable 走此通道）
+        # AG-UI RunAgentInput.context → 写入图状态键 canvasSummary（本地补丁，
+        # 上游不消费 context；wingsight 的画布摘要经 useCopilotReadable 走此通道）。
+        # 绝不能注入为 message：消息会进 checkpoint/UI/持久化，把内部上下文
+        # 泄露成聊天气泡。
         _ctx_items = getattr(input, "context", None) or []
-        _ctx_lines = []
         for _item in _ctx_items:
             _desc = getattr(_item, "description", "")
             _value = getattr(_item, "value", "")
-            if _value:
-                _ctx_lines.append(f"{_desc}: {_value}" if _desc else str(_value))
-        if _ctx_lines:
-            from langchain_core.messages import HumanMessage as _CtxHumanMessage
-            # 追加为末尾一条 Human 消息：merge_state 会剥掉首条 SystemMessage，
-            # 且末位对模型注意力最友好
-            langchain_messages = [
-                *langchain_messages,
-                _CtxHumanMessage(content="[调用方附带的上下文]\\n" + "\\n".join(_ctx_lines)),
-            ]'''
+            # 写入图状态键而非消息：消息会进 checkpoint/UI/持久化，把内部上下文
+            # 泄露成聊天气泡（wingsight AgentState 有 canvasSummary，merge 保它）
+            if _value and "画布" in _desc:
+                state_input["canvasSummary"] = _value
+        state = self.langgraph_default_merge_state(state_input, langchain_messages, input)'''
 
 target = Path(__file__).resolve().parent.parent / ".venv/lib/python3.12/site-packages/ag_ui_langgraph/agent.py"
 src = target.read_text()
-if "AG-UI RunAgentInput.context → 注入" in src:
+if "AG-UI RunAgentInput.context → 写入图状态键" in src:
     print("已打过补丁，跳过")
     sys.exit(0)
 if ANCHOR not in src:

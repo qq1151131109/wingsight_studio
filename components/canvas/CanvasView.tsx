@@ -342,52 +342,6 @@ async function importDroppedFiles(
   }
 }
 
-/** 工具条按钮拖到画布指定位置建卡（HTML5 拖拽，见 CanvasView onDrop） */
-export const PALETTE_DRAG_TYPE = "application/x-wingsight-node";
-
-function AddNodeToolbar() {
-  const addNode = useCanvasStore((s) => s.addNode);
-  const { screenToFlowPosition } = useReactFlow();
-  // 建卡落在画布可视区中心（而非随机坐标）
-  const addAtCenter = (type: WingNodeType) => {
-    const rect = document.querySelector(".react-flow")?.getBoundingClientRect();
-    const center = screenToFlowPosition({
-      x: (rect?.left ?? 0) + (rect?.width ?? window.innerWidth) / 2,
-      y: (rect?.top ?? 0) + (rect?.height ?? window.innerHeight) / 2,
-    });
-    const id = addNode({
-      position: { x: Math.round(center.x - 128), y: Math.round(center.y - 90) },
-      // 标题留空（占位符引导输入）：hint 当真名会污染资产名单与 @ 引用
-      data: { nodeType: type, title: "", body: "" },
-    });
-    // 资产卡聚焦标题命名；文档卡聚焦正文（FOCUS_EDIT 各自消费）
-    dispatchFocusEdit(id);
-  };
-  return (
-    <div className="flex items-center gap-1 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
-      {NODE_TYPE_ITEMS.map(({ type, key }) => {
-        const Icon = TYPE_ICONS[type];
-        return (
-          <button
-            key={key}
-            type="button"
-            draggable
-            data-tip={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`} aria-label={`添加${NODE_META[type].label}（${NODE_META[type].hint}）— 可拖到画布指定位置`}
-            className="flex h-8 w-8 cursor-grab items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-            onClick={() => addAtCenter(type)}
-            onDragStart={(e) => {
-              e.dataTransfer.setData(PALETTE_DRAG_TYPE, type);
-              e.dataTransfer.effectAllowed = "copy";
-            }}
-          >
-            {Icon ? <Icon className="h-4 w-4" /> : null}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 /** 节点搜索：标题/正文匹配，点击定位（选中 + 运镜） */
 function NodeSearch() {
   const [q, setQ] = useState("");
@@ -2010,10 +1964,7 @@ export default function CanvasView() {
 
   // ---------- 拖拽文件导入 / 工具条拖入建卡 ----------
   const onDragOver = useCallback((event: React.DragEvent) => {
-    if (
-      event.dataTransfer.types.includes("Files") ||
-      event.dataTransfer.types.includes(PALETTE_DRAG_TYPE)
-    ) {
+    if (event.dataTransfer.types.includes("Files")) {
       event.preventDefault();
       event.dataTransfer.dropEffect = "copy";
     }
@@ -2036,23 +1987,6 @@ export default function CanvasView() {
     (event: React.DragEvent) => {
       dragDepth.current = 0;
       setDropHover(false);
-      const paletteType = event.dataTransfer.getData(PALETTE_DRAG_TYPE);
-      if (paletteType) {
-        event.preventDefault();
-        const flow = screenToFlowPosition({
-          x: event.clientX,
-          y: event.clientY,
-        });
-        addNode({
-          position: { x: flow.x - 110, y: flow.y - 40 },
-          data: {
-            nodeType: paletteType as WingNodeType,
-            title: "",
-            body: "",
-          },
-        });
-        return;
-      }
       if (!event.dataTransfer.files?.length) return;
       event.preventDefault();
       const flow = screenToFlowPosition({
@@ -2061,7 +1995,7 @@ export default function CanvasView() {
       });
       void importDroppedFiles([...event.dataTransfer.files], flow);
     },
-    [screenToFlowPosition, addNode],
+    [screenToFlowPosition],
   );
 
   return (
@@ -2180,7 +2114,17 @@ export default function CanvasView() {
           />
         ) : null}
         <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
-          <AddNodeToolbar />
+          <button
+            type="button"
+            data-tip="添加节点（Tab / 双击空白同）" aria-label="添加节点"
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-hairline bg-surface-1 text-text-2 shadow-sm transition-colors hover:bg-surface-2 hover:text-text"
+            data-track="dock.add-node"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent(OPEN_ADD_MENU_EVENT))
+            }
+          >
+            <Plus className="h-4 w-4" />
+          </button>
           <NodeSearch />
           <CanvasSettings />
         </div>
