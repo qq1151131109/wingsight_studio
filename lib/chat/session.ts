@@ -40,6 +40,9 @@ interface ChatSessionState {
    *  默认不在消息变化时重渲染 */
   hasMessages: boolean;
   setHasMessages: (v: boolean) => void;
+  /** 最近一次运行错误的人话摘要（v2 onError 桥写入；重试/新运行成功即清） */
+  runError: string | null;
+  setRunError: (msg: string | null) => void;
 }
 
 export const useChatSession = create<ChatSessionState>()((set) => ({
@@ -50,6 +53,8 @@ export const useChatSession = create<ChatSessionState>()((set) => ({
   agentThreadId: undefined,
   hasMessages: false,
   setHasMessages: (hasMessages) => set({ hasMessages }),
+  runError: null,
+  setRunError: (runError) => set({ runError }),
 }));
 
 /** 新会话首存落库：把 agent 用的 id 带给服务端（createChatThread），并对齐两边 */

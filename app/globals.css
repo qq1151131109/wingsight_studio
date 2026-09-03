@@ -316,8 +316,18 @@ body {
 /* 幽灵 chip：引用的卡已被删除（生成时会被忽略） */
 .ws-mention-ghost { opacity: 0.55; border-style: dashed; filter: grayscale(1); }
 
-/* 聊天侧栏：MentionInput 与原 textarea 同版式（.copilotKitInput > textarea 的替代） */
-.copilotKitSidebar .copilotKitInput .ws-mention-input { font-size: 0.875rem; line-height: 1.6; }
+/* 聊天侧栏：MentionInput 版式（自定义 ChatInput 内的 contenteditable） */
+.copilotKitSidebar .copilotKitInput .ws-mention-input { font-size: 0.8125rem; line-height: 1.6; }
+.copilotKitSidebar .copilotKitInputControls .copilotKitInputControlButton {
+    color: var(--color-text-4);
+}
+.copilotKitSidebar .copilotKitInputControls .copilotKitInputControlButton:hover {
+    color: var(--color-text);
+}
+.copilotKitSidebar .copilotKitInputControls .copilotKitInputControlButton:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
 
 /* 生成中：媒体区的斜向扫描光带（对标 S-Copilot，配合进度文案） */
 .ws-loading-scan { position: relative; overflow: hidden; }
@@ -522,100 +532,161 @@ body {
     }
 }
 
-/* ── CopilotKit 聊天侧栏 · 纸感精修（覆盖 stock 默认样式） ──
-   变量映射在 components/copilot/Sidebar.tsx；这里只做结构性的观感修正 */
+/* ── CopilotKit 聊天侧栏（v2 官方 UI 壳）· 米黄纸感主题 ──
+   壳在 components/copilot/Sidebar.tsx（@copilotkit/react-core/v2 + 自带 styles.css）。
+   v2 的语义变量（shadcn 式）在 [data-copilotkit] 上定义出厂值，这里整体映射到
+   juben token——token 自身随 html.dark 翻转，夜间免维护 */
+
+[data-copilotkit] {
+    --background: var(--color-surface-1);
+    --foreground: var(--color-text);
+    --card: var(--color-surface-2);
+    --card-foreground: var(--color-text);
+    --popover: var(--color-surface-1);
+    --popover-foreground: var(--color-text);
+    --primary: var(--color-accent);
+    --primary-foreground: #fff;
+    --secondary: var(--color-surface-2);
+    --secondary-foreground: var(--color-text);
+    --muted: var(--color-surface-2);
+    --muted-foreground: var(--color-text-3);
+    --accent: var(--color-surface-2);
+    --accent-foreground: var(--color-text);
+    --destructive: var(--color-danger);
+    --destructive-foreground: #fff;
+    --border: var(--color-hairline);
+    --input: var(--color-hairline);
+    --ring: var(--color-accent-soft);
+    --radius: 0.75rem;
+    font-family: var(--font-sans);
+}
+
+/* 提一档特异性：包内出厂默认在页面里后加载，同特异性会盖掉上面的映射 */
+aside[data-copilotkit].copilotKitSidebar {
+    --background: var(--color-surface-1);
+    --foreground: var(--color-text);
+    --card: var(--color-surface-2);
+    --card-foreground: var(--color-text);
+    --popover: var(--color-surface-1);
+    --popover-foreground: var(--color-text);
+    --primary: var(--color-accent);
+    --primary-foreground: #fff;
+    --secondary: var(--color-surface-2);
+    --secondary-foreground: var(--color-text);
+    --muted: var(--color-surface-2);
+    --muted-foreground: var(--color-text-3);
+    --accent: var(--color-surface-2);
+    --accent-foreground: var(--color-text);
+    --destructive: var(--color-danger);
+    --destructive-foreground: #fff;
+    --border: var(--color-hairline);
+    --input: var(--color-hairline);
+    --ring: var(--color-accent-soft);
+}
 
 /* 调试球双保险：v2 的 web inspector 是 shadow DOM 自定义元素（cpk-web-inspector），
    enableInspector={false} 之外再加宿主隐藏兜底（shadow 内部样式不影响宿主 display） */
 cpk-web-inspector {
     display: none !important;
 }
-.copilotKitDevConsole {
-    display: none !important;
+
+/* 侧栏骨架自给：Turbopack 与包内 Tailwind 工具类（cpk:）层叠次序不稳，
+   关键定位不依赖它们——直接钉死右缘全高（与 v2 出厂观感一致） */
+aside.copilotKitSidebar {
+    position: fixed !important;
+    inset: 0 0 0 auto !important;
+    width: min(var(--sidebar-width, 420px), 100vw) !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    z-index: 1200 !important;
+    transform: none !important;
+    border-left: 1px solid var(--color-hairline);
+    background-color: var(--color-surface-1);
+    color: var(--color-text);
+    box-shadow: -8px 0 24px oklch(0 0 0 / 0.10);
 }
 
-/* 侧栏关闭态的 Window 残留：stock 靠 translateX(100%) 滑出，但边框阴影仍会
-   在屏幕右缘漏出一条白边（与助手入口按钮位置重叠）；关闭态直接不渲染 */
-.copilotKitWindow:not(.open) {
-    display: none !important;
+/* 侧栏关闭态：v2 靠 translate 滑出后仍留在 DOM，阴影会在屏幕右缘漏一条边
+   ——滑完（260ms）再整体隐藏；开着时保持可见 */
+aside.copilotKitSidebar[aria-hidden="true"] {
+    visibility: hidden;
+    transition: visibility 0s 300ms;
+}
+aside.copilotKitSidebar[aria-hidden="false"] {
+    visibility: visible;
 }
 
-/* 头部：纸面同色、编辑风标题（stock 是白底 + 橙色普通字重） */
+/* 头部：纸面同色、编辑风标题 */
 .copilotKitSidebar .copilotKitHeader {
     background-color: var(--color-surface-1);
     color: var(--color-text);
-    height: 52px;
+    min-height: 52px;
+    padding: 0 12px;
     font-family: var(--font-editorial);
     font-weight: 600;
     font-size: 0.95rem;
     letter-spacing: 0.01em;
+    border-bottom: 1px solid var(--color-hairline);
 }
 
-.copilotKitSidebar .copilotKitHeaderCloseButton {
-    color: var(--color-text-3);
-}
-.copilotKitSidebar .copilotKitHeaderCloseButton:hover {
-    color: var(--color-text);
+/* 侧栏关闭态：v2 滑出后仍留在 DOM（translate-x-full），xl 阴影会在屏幕右缘
+   漏出一条边——滑完（260ms）再整体隐藏 */
+.copilotKitSidebar[aria-hidden="true"] {
+    visibility: hidden;
+    transition: visibility 0s 300ms;
 }
 
-/* 用户气泡：收小字号行高，右上角收口（stock 是 1rem 大字 + 全圆角） */
+/* 用户气泡：米黄纸面 + 右上收口（v2 出厂是 muted 灰盒全圆角 + pt-10 工具栏位） */
 .copilotKitMessage.copilotKitUserMessage {
+    padding-top: 0 !important;
+    font-size: 0.8125rem;
+}
+.copilotKitMessage.copilotKitUserMessage .cpk\:prose {
+    background-color: color-mix(in oklab, var(--color-accent) 88%, transparent);
+    color: #fff;
     border-radius: 14px 14px 4px 14px;
-    padding: 8px 12px;
-    font-size: 0.875rem;
+    padding: 7px 12px;
+    font-size: 0.8125rem;
     line-height: 1.65;
     max-width: 88%;
+    overflow-wrap: anywhere;
 }
 
-/* 助手消息：半透纸面气泡（对应用户气泡的视觉分量，长文不再糊在侧栏底上），
-   左上收口与用户气泡镜像 */
+/* 助手消息：半透纸面气泡，左上收口与用户气泡镜像（v2 出厂无气泡底） */
 .copilotKitMessage.copilotKitAssistantMessage {
     background-color: color-mix(in oklab, var(--color-surface-2) 72%, transparent);
     border: 1px solid var(--color-hairline);
     border-radius: 4px 14px 14px 14px;
     padding: 10px 14px;
-    font-size: 0.875rem;
+    max-width: 100%;
+    min-width: 0;
+}
+.copilotKitMessage.copilotKitAssistantMessage .cpk\:prose {
+    font-size: 0.8125rem;
     line-height: 1.7;
-    max-width: 96%;
+    max-width: 100%;
+    overflow-wrap: anywhere;
 }
 
-/* 助手正文里的 markdown 分隔线：细 hairline、收紧边距——模型输出的 --- 在
-   无容器排版下曾被误读成 UI 断裂 */
-.copilotKitAssistantMessage hr,
-.copilotKitAssistantMessage .copilotKitMarkdownElement hr {
-    border: none;
-    border-top: 1px solid var(--color-hairline);
-    margin: 0.6em 0;
-}
-
-/* 消息悬浮操作栏：紧凑胶囊 + 悬停浮现（stock 常驻散排在文本下方） */
-.copilotKitMessageControls {
-    gap: 2px;
-    padding: 2px;
-    margin-top: 6px;
-    background-color: var(--color-surface-1);
-    border: 1px solid var(--color-hairline);
-    border-radius: 8px;
+/* 消息悬浮操作栏：悬停浮现（v2 默认常驻） */
+.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] {
     opacity: 0;
     transition: opacity 120ms ease;
 }
-.copilotKitMessage:hover .copilotKitMessageControls {
+.copilotKitAssistantMessage:hover [data-testid="copilot-assistant-toolbar"] {
     opacity: 1;
 }
-.copilotKitMessageControlButton {
-    color: var(--color-text-4);
-}
-.copilotKitMessageControlButton:hover {
-    color: var(--color-text);
-}
 
-/* 消息区左右留白与节奏 */
-.copilotKitSidebar .copilotKitMessagesContainer {
-    padding: 14px 16px 8px;
-    gap: 4px;
+/* 输入区：纸面容器 + 聚焦描边（自定义 ChatInput 复用 .copilotKitInput 类名；
+   容器/控制行布局原由 v1 stock 样式提供，摘除 v1 样式后在这里自给） */
+.copilotKitSidebar .copilotKitInputContainer {
+    position: relative;
+    z-index: 20; /* 压过 scrollView（height:100% 内联铺满），否则点击被吃 */
+    pointer-events: auto; /* v2 的输入浮层整体 none，stock 组件靠自身恢复——自绘组件同款 */
+    flex-shrink: 0;
+    padding: 8px 12px 10px;
+    background: transparent;
 }
-
-/* 输入框：纸面容器 + 聚焦描边（stock 是 20px 大圆角白盒、最小高度 75px） */
 .copilotKitSidebar .copilotKitInput {
     border-radius: 14px;
     border: 1px solid var(--color-hairline);
@@ -628,9 +699,21 @@ cpk-web-inspector {
     border-color: var(--color-accent-soft);
     box-shadow: 0 0 0 3px var(--color-accent-dim);
 }
-.copilotKitSidebar .copilotKitInput > textarea {
-    font-size: 0.875rem;
-    line-height: 1.6;
+.copilotKitSidebar .copilotKitInputControls {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.copilotKitSidebar .copilotKitInputControlButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    padding: 5px;
+    transition: background-color 0.15s ease;
+}
+.copilotKitSidebar .copilotKitInputControlButton:hover {
+    background-color: var(--color-surface-2);
 }
 
 /* ---------- 常驻编辑输入框自适应（Editable always） ----------

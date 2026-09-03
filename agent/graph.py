@@ -15,7 +15,13 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.outputs import ChatGenerationChunk
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
@@ -834,8 +840,20 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # 截断历史 + 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400。
     # 画布摘要只随 system prompt 注入一次（每轮重建，值恒为最新，无需末尾再放）
     trimmed = _sanitize_messages_for_model(messages[-14:])
-    response = await model_with_tools.ainvoke(
-        [system_message, *trimmed], config
+
+    # 流式聚合：必须用 astream 而非 ainvoke——ag-ui 桥的 TEXT_MESSAGE_CONTENT
+    # 靠 on_chat_model_stream 事件逐 token 下发，ainvoke 是单次非流式请求，
+    # 整段回复憋到节点结束才一次性吐出（前端表现为"没有打字机效果"）。
+    # 聚合后的完整消息照常入 state/checkpoint，图逻辑与 ainvoke 等价。
+    merged: AIMessageChunk | None = None
+    async for chunk in model_with_tools.astream([system_message, *trimmed], config):
+        merged = chunk if merged is None else merged + chunk
+    if merged is None:
+        raise RuntimeError("模型未返回任何内容")
+    response = AIMessage(
+        content=merged.content,
+        additional_kwargs=merged.additional_kwargs,
+        tool_calls=merged.tool_calls,
     )
 
     tool_calls = getattr(response, "tool_calls", None) or []

@@ -5,7 +5,6 @@ import {
   useCoAgent,
   useCopilotAction,
   useCopilotChat,
-  useCopilotChatHeadless_c,
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
@@ -555,10 +554,9 @@ export default function CanvasAgentBridge() {
   });
 
   // image 卡"点击重试" → 转成聊天指令让 agent 重新生成该资产
-  const { sendMessage, isLoading } = useCopilotChatHeadless_c();
-  // 文本指令发送走 v1 开源钩子：_c 的 sendMessage 对纯文本消息静默不跑
-  // （Intelligence 层特性门控），侧栏纯文本也走的 v1 通道（ChatInput onSend）
-  const { appendMessage } = useCopilotChat();
+  // 发送统一走 v1 开源钩子（appendMessage = 入列 + 触发 run，多模态 parts 同路；
+  // _c 钩子是 Intelligence 付费门控——调用即弹 license toast，发送还是空操作）
+  const { appendMessage, isLoading } = useCopilotChat();
 
   // 生成中断恢复（对标 viedeo-workflow useGenerationRecovery）：刷新页面会杀掉
   // agent 运行。挂载后聊天空闲时，把仍在 loading 的卡标记为"生成中断"，
@@ -779,7 +777,7 @@ export default function CanvasAgentBridge() {
         "分析角度：景别变化与镜头切换、运镜推断（推拉摇跟固定）、构图与光线、节奏与建议的剪辑点。",
         `把结论写成一张文本卡（canvas_ops add_node，nodeType=note，标题「拉片分析：${title}」，正文分小节精炼输出），并用 connect_nodes 连线 ${nodeId} → 新节点。`,
       ].join("\n");
-      void sendMessage(
+      void appendMessage(
         {
           id: `frames_${nodeId}_${Date.now()}`,
           role: "user",
@@ -791,12 +789,11 @@ export default function CanvasAgentBridge() {
             })),
           ],
         } as never,
-        { followUp: true },
       );
     };
     window.addEventListener(FRAME_ANALYSIS_EVENT, onAnalyze);
     return () => window.removeEventListener(FRAME_ANALYSIS_EVENT, onAnalyze);
-  }, [sendMessage]);
+  }, [appendMessage]);
 
   // 分镜表某行"出图"→ 聊天指令（agent 生成后 update_row 回填行缩略图）
   useEffect(() => {

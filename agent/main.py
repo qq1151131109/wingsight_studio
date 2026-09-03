@@ -70,8 +70,10 @@ auth.ensure_auth_password()
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    # 上轮刷新若被服务重启杀掉，把中断如实落进 last_run（前端"上次刷新中断"）
-    topic_pool.SERVICE.report_interrupted_run()
+    # 上轮刷新若被服务重启杀掉，把中断如实落进 last_run（前端"上次刷新中断"）；
+    # 生料层可断点续跑（语料缓存+已喂指纹已落账）→ 自动续跑，重启节奏不丢进度
+    if topic_pool.SERVICE.report_interrupted_run():
+        topic_pool.SERVICE.start()
     # 深度调研同理：running/planning 孤儿标记 interrupted，证据保留可补研续跑
     research.report_interrupted_jobs()
     # 剧本审查：queued/running 孤儿标记 interrupted

@@ -58,9 +58,9 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "max_references": 4,
     },
     {
-        "id": "gpt-image-2-ssvip",
-        "label": "GPT Image 2 SSVIP",
-        "tag": "同 03 · DMX 推荐通道 · 服务更稳响应更快",
+        "id": "gemini-3.1-flash-image",
+        "label": "Gemini 3.1 Flash Image",
+        "tag": "谷歌系 Nano Banana 2 · 幅面/分辨率接口级精确 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
         "aspects": DEFAULT_ASPECTS,
         "default_resolution": "1K",
@@ -93,15 +93,6 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "aspects": ["16:9", "9:16", "1:1", "4:3", "3:4"],
         "default_resolution": "1K",
         "max_references": 10,
-    },
-    {
-        "id": "gemini-3.1-flash-image",
-        "label": "Gemini 3.1 Flash Image",
-        "tag": "谷歌系 Nano Banana 2 · 幅面/分辨率接口级精确 · 1K/2K/4K",
-        "resolutions": ["1K", "2K", "4K"],
-        "aspects": DEFAULT_ASPECTS,
-        "default_resolution": "1K",
-        "max_references": 4,
     },
 ]
 

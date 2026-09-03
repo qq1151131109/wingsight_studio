@@ -97,6 +97,7 @@ def init_ref_research_db() -> None:
         for col, ddl in (
             ("recommended", "ALTER TABLE ref_candidates ADD COLUMN recommended INTEGER NOT NULL DEFAULT 0"),
             ("rec_reason", "ALTER TABLE ref_candidates ADD COLUMN rec_reason TEXT NOT NULL DEFAULT ''"),
+            ("rec_rank", "ALTER TABLE ref_candidates ADD COLUMN rec_rank INTEGER NOT NULL DEFAULT 0"),
         ):
             if col not in cols:
                 conn.execute(ddl)
@@ -117,6 +118,7 @@ def _to_dict(r: sqlite3.Row) -> dict[str, Any]:
         "height": r["height"],
         "adopted": bool(r["adopted"]),
         "recommended": bool(r["recommended"]),
+        "recRank": int(r["rec_rank"] or 0),
         "recReason": r["rec_reason"],
         "createdAt": r["created_at"],
     }
@@ -475,6 +477,7 @@ def start_research_job(
         "projectId": project_id,
         "nodeId": node_id,
         "status": "running",
+        "phase": "",
         "candidates": [],
         "errors": {},
         "error": "",
@@ -682,6 +685,7 @@ async def _run_research(
     rounds: list[dict[str, Any]] = []
     manual = bool(queries)
     try:
+        job["phase"] = "出搜索词"
         text_task: asyncio.Task | None = None
         for round_num in range(1, MAX_RESEARCH_ROUNDS + 1):
             if round_num == 1:
@@ -690,9 +694,11 @@ async def _run_research(
                 # 搜图，不跑文路）
                 if manual:
                     round_queries = queries
+                    job["phase"] = "搜图与下载"
                 else:
                     plan = await skills.run_ref_plan_flow(asset, [])
                     round_queries = plan["queries"]
+                    job["phase"] = "搜图与下载"
                     text_queries = list(plan.get("text_queries") or [])
                     if text_queries:
                         text_task = asyncio.create_task(
@@ -759,6 +765,7 @@ async def _run_research(
                 (project_id, node_id),
             )
         _insert_candidates(project_id, node_id, rows)
+        job["phase"] = "考据与终选"
         # join：收文路考据简报（超时/失败记软错误，不拦终选与采纳）
         brief = ""
         if text_task is not None:
@@ -824,15 +831,28 @@ def _apply_recommendation(
     rows: list[dict[str, Any]],
     selection: dict[str, Any],
 ) -> None:
-    """把终选结果回填 ref_candidates.recommended（按 source_url 匹配行）。"""
-    rec_idx = set(selection.get("recommended") or [])
+    """把终选结果回填 ref_candidates（按 source_url 匹配行）。
+
+    recommended 照旧存布尔；rec_rank 存 LLM 排序位（selection 列表顺序 =
+    适配度降序，自动采纳按它取 top-K——只存布尔会让"最好的 3 张"退化成
+    "任选 3 张推荐"）。多批合并时批内严格按 LLM 排序，批间按批先后。"""
+    rec_list = [int(i) for i in (selection.get("recommended") or [])]
+    rec_idx = set(rec_list)
+    rank_of = {idx: r + 1 for r, idx in enumerate(rec_list)}
     note = selection.get("note") or ""
     with _conn() as conn:
         for i, m in enumerate(rows):
             conn.execute(
-                "UPDATE ref_candidates SET recommended = ?, rec_reason = ?"
+                "UPDATE ref_candidates SET recommended = ?, rec_rank = ?, rec_reason = ?"
                 " WHERE project_id = ? AND node_id = ? AND source_url = ?",
-                (1 if i in rec_idx else 0, note, project_id, node_id, m["sourceUrl"][:800]),
+                (
+                    1 if i in rec_idx else 0,
+                    rank_of.get(i, 0),
+                    note,
+                    project_id,
+                    node_id,
+                    m["sourceUrl"][:800],
+                ),
             )
 
 

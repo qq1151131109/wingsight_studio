@@ -47,9 +47,11 @@ def api_get_ref_research(pid: str, job_id: str, user: auth.CurrentUser):
         return Response(status_code=404, content="调研任务不存在（agent 可能已重启）", media_type="text/plain")
     return {
         "status": job["status"],
+        "phase": job.get("phase", ""),
         "error": job["error"],
         "errors": job["errors"],
         "note": job.get("note", ""),
+        "researchBrief": job.get("researchBrief", ""),
         "candidates": job["candidates"],
     }
 

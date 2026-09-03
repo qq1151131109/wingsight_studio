@@ -13,8 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import type { InputProps } from "@copilotkit/react-ui";
-import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
+import { useCopilotChat } from "@copilotkit/react-core";
 import { langgraphAgent } from "@/app/agent-provider";
 import {
   ArrowUp,
@@ -122,13 +121,21 @@ type ContentPart =
 
 let attachSeq = 0;
 
+/** v2 input 槽位绑定 props（用不到的 value/onChange 忽略：编辑器非受控自管） */
+interface ChatInputSlotProps {
+  isRunning?: boolean;
+  onSubmitMessage?: (value: string) => void;
+  onStop?: () => void;
+}
+
 export default function ChatInput({
-  inProgress,
-  onSend,
+  isRunning: inProgress,
+  onSubmitMessage: onSend,
   onStop,
-}: InputProps) {
+}: ChatInputSlotProps) {
   const nodes = useCanvasStore((s) => s.nodes);
-  const { sendMessage } = useCopilotChatHeadless_c();
+  // 开源 headless 面（appendMessage = 入列 + 触发 run；多模态 content parts 同路）
+  const { appendMessage: sendMessage } = useCopilotChat();
   // 内联引用编辑器（与画布面板同款）：display 文本镜像 + 序列化结果
   const edRef = useRef<MentionInputHandle>(null);
   const [lastRead, setLastRead] = useState<MentionRead | null>(null);
@@ -368,7 +375,7 @@ export default function ChatInput({
         } as never,
       );
     } else {
-      void onSend(textPart);
+      if (onSend) void onSend(textPart);
     }
     edRef.current?.setValue("");
     setAttachments([]);

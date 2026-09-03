@@ -19,12 +19,16 @@ export interface RefCandidate {
   adopted: boolean;
   /** LLM 终选推荐（适合做生图参考） */
   recommended: boolean;
+  /** LLM 适配度排序位（1=最推荐；0=未入推）——自动采纳按它取 top-K */
+  recRank: number;
   recReason: string;
   createdAt: string;
 }
 
 export interface RefResearchJob {
   status: "running" | "done" | "error";
+  /** 当前阶段（出搜索词/搜图与下载/考据与终选） */
+  phase: string;
   error: string;
   errors: Record<string, string>;
   /** LLM 终选的取舍说明 */
@@ -81,6 +85,7 @@ export async function runRefResearch(
   nodeId: string,
   queries: string[],
   asset?: RefAsset,
+  onPhase?: (phase: string) => void,
 ): Promise<RefResearchJob> {
   const jobId = await startRefResearch(projectId, nodeId, queries, asset);
   const deadline = Date.now() + 300_000;
@@ -88,6 +93,7 @@ export async function runRefResearch(
     await new Promise((res) => setTimeout(res, 2000));
     const job = await getRefResearchJob(projectId, jobId);
     if (job.status !== "running") return job;
+    onPhase?.(job.phase);
     if (Date.now() > deadline) throw new Error("调研超时（候选下载可能较慢），稍后可在面板重开查看");
   }
 }

@@ -1,15 +1,16 @@
 "use client";
 
 /**
- * 自绘聊天侧栏 Header（替换 stock Header，经 CopilotSidebar 的 Header prop 注入）：
- *   标题 + [新会话] [历史] [关闭]
+ * 自绘聊天侧栏 Header（v2 CopilotSidebar 的 header 槽位替换 CopilotModalHeader；
+ * 槽位组件不收绑定 props——关闭走 useCopilotChatConfiguration）：
+ *   错误横幅 + 标题 + [新会话] [历史] [关闭]
  * 历史面板：列表（自动标题 + 时间 + 条数）/ 点击切换 / 重命名 / 删除；
  * 删除当前会话时自动落到最新一条。会话状态在 lib/chat/session.ts。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useChatContext } from "@copilotkit/react-ui";
-import { useCopilotChatHeadless_c } from "@copilotkit/react-core";
+import { useCopilotChat } from "@copilotkit/react-core";
+import { useCopilotChatConfiguration } from "@copilotkit/react-core/v2";
 import { History, MessageSquarePlus, Pencil, Download, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { useChatSession } from "@/lib/chat/session";
@@ -23,6 +24,7 @@ import {
   type ChatThreadMeta,
 } from "@/lib/projects";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
+import { RunErrorBanner } from "./Sidebar";
 
 /** 相对时间（同首页项目卡规则） */
 function formatTime(iso: string): string {
@@ -37,8 +39,10 @@ function formatTime(iso: string): string {
 }
 
 export default function ChatSidebarHeader() {
-  const { labels, icons, setOpen } = useChatContext();
-  const { isLoading, stopGeneration } = useCopilotChatHeadless_c();
+  // v1 useCopilotChat 是开源无门控的 headless 面（isLoading/stopGeneration 真
+  // 功能；_c 变体才是付费门控桩）。v2 槽位环境下它读 <CopilotKit> 的 v1 上下文桥
+  const { isLoading, stopGeneration } = useCopilotChat();
+  const config = useCopilotChatConfiguration();
   const projectId = useCanvasStore((s) => s.projectId);
   const threadId = useChatSession((s) => s.threadId);
   const setThreadId = useChatSession((s) => s.setThreadId);
@@ -149,7 +153,8 @@ export default function ChatSidebarHeader() {
       ref={wrapRef}
       className="copilotKitHeader relative flex w-full items-center"
     >
-      <span className="truncate">{labels.title}</span>
+      <RunErrorBanner />
+      <span className="truncate">Wingsight 助手</span>
 
       <div className="ml-auto flex items-center gap-0.5">
         <button
@@ -173,10 +178,10 @@ export default function ChatSidebarHeader() {
         <button
           type="button"
           aria-label="关闭" data-tip="关闭"
-          onClick={() => setOpen(false)}
+          onClick={() => config?.setModalOpen(false)}
           className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
         >
-          {icons.headerCloseIcon ?? <X className="h-4 w-4" />}
+          <X className="h-4 w-4" />
         </button>
       </div>
 

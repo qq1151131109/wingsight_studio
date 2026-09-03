@@ -230,6 +230,8 @@ IDEATE_BATCHES_CAP = 24
 IDEATE_ENTRIES_PER_BATCH = 14
 # 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
+# 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
+IDEATE_CORPUS_KEY = "topic_pool_ideate_corpus"
 IDEATE_SEEN_CAP = 4000
 
 # 已深挖层（导演点名才跑）：取证/verdict/市场实查的全流程，见 deep_dive_one。
@@ -710,7 +712,16 @@ class TopicCurator:
 
     async def run(self) -> IdeateResult:
         result = IdeateResult()
-        items = await self.collect_signals()
+        # 当日语料落账（采集是最贵的阶段，几十次搜索跑十几分钟）：外部看护
+        # 可能每 ~20 分钟重启一次服务，重启后凭当日缓存直接续跑剩余批次，
+        # 不再重新采集——断点续跑让进度在任意重启节奏下都能累积
+        items = self._load_corpus_cache()
+        if items is None:
+            items = await self.collect_signals()
+            if not items:
+                result.error = "语料采集为零条（全部通道失败或无结果）"
+                return result
+            self._save_corpus_cache(items)
         if not items:
             result.error = "语料采集为零条（全部通道失败或无结果）"
             return result
@@ -725,6 +736,28 @@ class TopicCurator:
         random.shuffle(items)
         await self.ideate(items, result, seen)
         return result
+
+    def _load_corpus_cache(self) -> list[dict[str, Any]] | None:
+        raw = store.get_setting(IDEATE_CORPUS_KEY)
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(data, dict) or data.get("day") != date.today().isoformat():
+            return None
+        signals = data.get("signals")
+        return signals if isinstance(signals, list) and signals else None
+
+    def _save_corpus_cache(self, signals: list[dict[str, Any]]) -> None:
+        store.set_setting(
+            IDEATE_CORPUS_KEY,
+            json.dumps(
+                {"day": date.today().isoformat(), "signals": signals},
+                ensure_ascii=False,
+            ),
+        )
 
     def _load_ideate_seen(self) -> set[str]:
         """当日已喂语料指纹（按天存 app_settings；跨日自动重置）。"""
@@ -1328,10 +1361,12 @@ class TopicRefreshService:
         finally:
             store.set_setting(RUN_STATE_KEY, "")
 
-    def report_interrupted_run(self) -> None:
+    def report_interrupted_run(self) -> bool:
         """启动期检测：上轮刷新留有运行态标记 = 被服务重启杀掉，把中断落进 last_run。
 
         只在标记晚于 lastRun.finishedAt 时记（更早的标记属于已正常完成的旧轮）。
+        返回 True = 确有被中断的刷新（生料层可断点续跑：语料缓存+已喂指纹
+        都已落账，调用方可直接 SERVICE.start() 自动续跑）。
         """
         raw = store.get_setting(RUN_STATE_KEY)
         if not raw:
@@ -1344,13 +1379,16 @@ class TopicRefreshService:
         started_at = str(state.get("startedAt") or "")
         last = self.last_run()
         already = max(str(last.get("finishedAt") or ""), str(last.get("interruptedAt") or ""))
+        found = False
         if started_at and started_at > already:
             last["interruptedAt"] = started_at
             last["error"] = f"刷新于 {started_at} 被中断（服务重启），本轮产出可能不完整"
             last.pop("finishedAt", None)
             store.set_setting("topic_pool_last_run", json.dumps(last, ensure_ascii=False))
             logger.warning("检测到被中断的选题池刷新：startedAt=%s", started_at)
+            found = True
         store.set_setting(RUN_STATE_KEY, "")
+        return found
 
 
 SERVICE = TopicRefreshService()

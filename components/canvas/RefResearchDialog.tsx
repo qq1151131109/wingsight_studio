@@ -7,7 +7,7 @@
  */
 
 import { Loader2, Search, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import OverlayModal from "./OverlayModal";
 import { assetThumbUrl } from "@/lib/asset-thumb";
@@ -20,7 +20,19 @@ import {
   runRefResearch,
   type RefCandidate,
 } from "@/lib/ref-research";
+import { AUTO_REF_TARGET, adoptRefRows } from "@/lib/canvas/refAdopt";
 import { useRefStatusStore } from "@/lib/refStatus";
+
+/** 简报按【节】拆分：第一节（视觉细节）作速览，其余节归「详细考据」；
+ *  无节标记的纯文本整段归速览。 */
+function splitBrief(text: string): { top: string; rest: string } {
+  const first = text.indexOf("【");
+  if (first < 0) return { top: text.trim(), rest: "" };
+  const second = text.indexOf("【", first + 1);
+  return second > first
+    ? { top: text.slice(first, second).trim(), rest: text.slice(second).trim() }
+    : { top: text.slice(first).trim(), rest: "" };
+}
 
 export default function RefResearchDialog({
   nodeId,
@@ -41,23 +53,17 @@ export default function RefResearchDialog({
   const [note, setNote] = useState("");
   const [brief, setBrief] = useState("");
   const [err, setErr] = useState("");
+  const [phase, setPhase] = useState("");
 
   const pid = projectId ?? "";
 
-  useEffect(() => {
-    if (!pid) return;
-    void (async () => {
-      try {
-        setCandidates(await listRefCandidates(pid, nodeId));
-      } catch (exc) {
-        setErr(exc instanceof Error ? exc.message : "候选列表加载失败");
-      }
-    })();
-  }, [pid, nodeId]);
+
 
   const adoptedIds = new Set(
     candidates.filter((c) => c.adopted).map((c) => c.id),
   );
+  const briefText = brief || String(node?.data.researchBrief ?? "");
+  const { top: briefTop, rest: briefRest } = splitBrief(briefText);
 
   const search = async () => {
     const text = queries.trim();
@@ -77,7 +83,8 @@ export default function RefResearchDialog({
     setRunning(true);
     setErr("");
     try {
-      const job = await runRefResearch(pid, nodeId, manual, asset);
+      setPhase("出搜索词");
+      const job = await runRefResearch(pid, nodeId, manual, asset, setPhase);
       setCandidates(job.candidates);
       setNote(job.note ?? "");
       setBrief(job.researchBrief ?? "");
@@ -87,6 +94,34 @@ export default function RefResearchDialog({
       );
       setChannelErrors(job.errors ?? {});
       if (job.status === "error" || job.error) setErr(job.error);
+      // 自动采纳：推荐候选补齐到 3 张建卡连线（出图立刻有参考可用）；
+      // 其余候选留在本弹窗手动增补，删掉自动采纳的参考卡即撤
+      const adoptedCount = job.candidates.filter((c) => c.adopted).length;
+      const picks = job.candidates
+        .filter((c) => c.recommended && !c.adopted)
+        .slice(0, Math.max(0, AUTO_REF_TARGET - adoptedCount));
+      if (picks.length) {
+        try {
+          await adoptRefCandidates(
+            pid,
+            nodeId,
+            picks.map((c) => c.id),
+          );
+          adoptRefRows([{ nodeId, candidates: picks }]);
+          setCandidates((prev) =>
+            prev.map((c) =>
+              picks.some((p) => p.id === c.id) ? { ...c, adopted: true } : c,
+            ),
+          );
+          setSelected((prev) => {
+            const next = new Set(prev);
+            picks.forEach((p) => next.delete(p.id));
+            return next;
+          });
+        } catch {
+          setErr("自动采纳失败：候选已保留，可手动勾选后点「采纳为参考图」");
+        }
+      }
       // 候选落库：刷新资产卡「N 张待选」徽标
       void useRefStatusStore.getState().refresh(pid, { force: true });
     } catch (exc) {
@@ -95,6 +130,26 @@ export default function RefResearchDialog({
       setRunning(false);
     }
   };
+
+  // 打开即调研：没有候选就自动以 AI 出词模式开跑；有候选 = 查看历史不重跑
+  const autoStarted = useRef(false);
+  useEffect(() => {
+    if (autoStarted.current || !pid) return;
+    autoStarted.current = true;
+    void (async () => {
+      let existing: RefCandidate[] = [];
+      try {
+        existing = await listRefCandidates(pid, nodeId);
+      } catch {
+        setErr("候选列表加载失败");
+      }
+      setCandidates(existing);
+      if (existing.length === 0 && String(node?.data.body ?? "").trim()) {
+        void search();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pid, nodeId]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -177,15 +232,15 @@ export default function RefResearchDialog({
       onClick={running || adopting ? undefined : onClose}
     >
       <div
-        className="flex max-h-[86vh] w-[min(46rem,92vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[86vh] w-[min(80rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <p className="text-sm font-semibold text-text">找参考图</p>
+            <p className="text-sm font-semibold text-text">调研</p>
             <p className="mt-0.5 text-[11px] text-text-4">
-              AI 生成搜索词（清空输入框）或手填，多渠道搜回后由模型终选适合做生图参考的候选；
-              采纳后自动建参考卡连线到「{assetTitle || "本卡"}」
+              AI 出词搜图 + 网页考据，模型终选后自动采纳前 3 张为参考图；其余候选可手动勾选增补。
+              采纳的参考卡连线到「{assetTitle || "本卡"}」，出图时进参考序列
             </p>
           </div>
           <button
@@ -219,41 +274,83 @@ export default function RefResearchDialog({
             ) : (
               <Search className="h-3.5 w-3.5" />
             )}
-            {running ? "调研中…" : "搜索"}
+            {running ? "调研中…" : "重新调研"}
           </button>
         </div>
-        {note ? (
-          <p className="mt-2 shrink-0 text-[11px] text-text-3">
-            <span className="font-medium text-text-2">终选说明：</span>
-            {note}
-          </p>
-        ) : null}
-        {(brief || String(node?.data.researchBrief ?? "")).trim() ? (
-          <details className="mt-2 shrink-0 rounded border border-hairline bg-surface-2/60">
-            <summary className="cursor-pointer select-none px-1.5 py-1 text-[10px] text-text-3 hover:text-text-2">
-              考据简报（AI 出词调研附带的文字考据，已同步到资产卡）
-            </summary>
-            <p className="max-h-32 overflow-auto whitespace-pre-wrap px-1.5 pb-1.5 text-[10px] leading-relaxed text-text-3">
-              {brief || String(node?.data.researchBrief ?? "")}
-            </p>
-          </details>
-        ) : null}
-        {Object.entries(channelErrors).length ? (
-          <div className="mt-2 space-y-0.5">
-            {Object.entries(channelErrors).map(([channel, msg]) => (
-              <p key={channel} className="text-[11px] text-warn">
-                {channel}：{msg}
+        <div className="mt-3 flex min-h-0 flex-1 gap-3">
+          {/* 左栏：考据简报（速览）+ 详细考据，常开不折叠 */}
+          <aside className="flex w-72 shrink-0 flex-col gap-2 overflow-y-auto">
+            {briefText.trim() ? (
+              <>
+                <div className="rounded-lg border border-hairline bg-surface-2/40 p-2">
+                  <p className="text-[11px] font-medium text-text-2">考据简报</p>
+                  <p className="mt-1 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
+                    {briefTop}
+                  </p>
+                </div>
+                {briefRest ? (
+                  <div className="rounded-lg border border-hairline bg-surface-2/40 p-2">
+                    <p className="text-[11px] font-medium text-text-2">详细考据</p>
+                    <p className="mt-1 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
+                      {briefRest}
+                    </p>
+                  </div>
+                ) : null}
+              </>
+            ) : (
+              <div className="rounded-lg border border-hairline bg-surface-2/40 p-2 text-[10px] leading-relaxed text-text-4">
+                本次调研没有文字考据：手填词搜索不产考据；清空输入框用 AI 出词会自动附带。
+              </div>
+            )}
+            {Object.entries(channelErrors).length ? (
+              <div className="space-y-0.5">
+                {Object.entries(channelErrors).map(([channel, msg]) => (
+                  <p key={channel} className="text-[11px] text-warn">
+                    {channel}：{msg}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </aside>
+          {/* 右栏：候选图 */}
+          <div className="flex min-w-0 flex-1 flex-col">
+            {note ? (
+              <p className="shrink-0 text-[11px] text-text-3">
+                <span className="font-medium text-text-2">终选说明：</span>
+                {note}
               </p>
-            ))}
+            ) : null}
+            {running ? (
+          <div className="mt-3 flex shrink-0 items-center gap-2 rounded-lg border border-hairline bg-surface-2/40 px-3 py-2.5">
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" />
+            <p className="text-xs text-text-2">
+              调研中：<span className="font-medium text-text">{phase || "准备中"}</span>
+            </p>
+            <span className="flex-1" />
+            <div className="flex items-center gap-2 text-[10px] text-text-4">
+              {["出搜索词", "搜图与下载", "考据与终选"].map((s, i) => {
+                const cur = ["出搜索词", "搜图与下载", "考据与终选"].indexOf(phase);
+                const state = phase && i < cur ? "done" : i === cur ? "now" : "todo";
+                return (
+                  <span
+                    key={s}
+                    className={state === "now" ? "font-medium text-accent" : state === "done" ? "text-text-3" : ""}
+                  >
+                    {state === "done" ? "✓ " : ""}
+                    {s}
+                  </span>
+                );
+              })}
+            </div>
           </div>
         ) : null}
-        <div className="nowheel mt-3 min-h-40 flex-1 overflow-y-auto">
+        <div className="nowheel mt-2 min-h-40 flex-1 overflow-y-auto">
           {candidates.length === 0 && !running ? (
             <p className="flex h-32 items-center justify-center text-xs text-text-4">
-              还没有候选图。清空输入框点「搜索」让 AI 出词，或手填关键词（历史候选保留在这里）
+              还没有候选。点「重新调研」开始，或手填关键词（历史候选保留在这里）
             </p>
           ) : (
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-4 gap-2">
               {[...candidates]
                 .sort((a, b) => Number(b.recommended) - Number(a.recommended))
                 .map((c) => {
@@ -346,8 +443,10 @@ export default function RefResearchDialog({
               })}
             </div>
           )}
+            </div>
+            {err ? <p className="mt-2 shrink-0 text-[11px] text-danger">{err}</p> : null}
+          </div>
         </div>
-        {err ? <p className="mt-2 shrink-0 text-[11px] text-danger">{err}</p> : null}
         <div className="mt-3 flex shrink-0 items-center justify-between gap-2">
           <p className="text-[10px] text-text-4">
             生效张数随出图模型：默认上限 4 张，Seedream 5 Pro 融合通道 10 张
