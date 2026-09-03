@@ -427,6 +427,56 @@ async function supplementCandidates(nodeId: string, count: number) {
   }
 }
 
+/** 中断恢复（viedeo useGenerationRecovery 原版语义）：刷新/重挂载后卡在
+ *  loading 且带 imageJobId 的图卡，先查任务真实状态——还在跑就续轮询把
+ *  结果收回来，只有任务确实丢了（agent 重启 gone）才标「生成中断」。
+ *  修复：此前 6 秒一刀切误标在途任务，服务端已成功的图被标败+被旧快照
+ *  覆盖，用户侧表现为「重试永远不生效」（萧燕燕项目三次成功全丢的事故） */
+async function recoverNodeImageJob(nodeId: string, jobId: string) {
+  const urls: string[] = [];
+  let lastError = "";
+  const outcome = await pollShotImageJob(jobId, (item) => {
+    // 直连路径 rid=`${nodeId}#${i}`、候选补出 rid=`${nodeId}#s..#i`——
+    // 只收本节点的产物（分镜批量的行 rid 不走这里，由分镜卡续轮询收）
+    if (item.rid.split("#")[0] !== nodeId) return;
+    if (item.ok && item.imageUrl) urls.push(item.imageUrl);
+    else if (item.error) lastError = item.error;
+  });
+  const st = useCanvasStore.getState();
+  const cur = st.nodes.find((n) => n.id === nodeId);
+  // 轮询期间已被在途轮询/用户手动重试处理过（不再是 loading）就不动
+  if (!cur || cur.data.status !== "loading") return;
+  if (urls.length > 0) {
+    st.updateNodeData(nodeId, {
+      status: "ready",
+      imageUrl: urls[0],
+      primaryIndex: 0,
+      ...(urls.length > 1 ? { imageUrls: urls } : {}),
+      imageJobId: undefined,
+    });
+    return;
+  }
+  if (outcome === "gone") {
+    st.updateNodeData(nodeId, {
+      status: "error",
+      errorMessage: "生成中断（页面刷新导致），点击重试",
+      imageJobId: undefined,
+    });
+    return;
+  }
+  // 取消回原态（有图保持 ready）；其余按最后错误置败
+  const cancelledNoImg = outcome === "cancelled" && Boolean(cur.data.imageUrl);
+  st.updateNodeData(nodeId, {
+    status: cancelledNoImg ? "ready" : "error",
+    errorMessage: cancelledNoImg
+      ? undefined
+      : outcome === "timeout"
+        ? "出图超时（任务可能仍在跑），可重试"
+        : lastError || "出图失败，请重试",
+    imageJobId: undefined,
+  });
+}
+
 /** 与 agent 侧 AgentState 对齐的共享状态（读通道 ground truth） */
 interface WingsightAgentState {
   canvasSummary: string;
@@ -543,16 +593,31 @@ export default function CanvasAgentBridge() {
   // _c 钩子是 Intelligence 付费门控——调用即弹 license toast，发送还是空操作）
   const { appendMessage, isLoading } = useCopilotChat();
 
-  // 生成中断恢复（对标 viedeo-workflow useGenerationRecovery）：刷新页面会杀掉
-  // agent 运行。挂载后聊天空闲时，把仍在 loading 的卡标记为"生成中断"，
-  // 用户点卡上的重试即可重发；聊天运行中则跳过（生成还在进行）。
+  // 生成中断恢复（对标 viedeo-workflow useGenerationRecovery 原版：先查任务
+  // 再下结论，不盲标）：刷新页面会杀掉前端轮询，但 agent 侧任务还在跑或已
+  // 出结果。挂载后聊天空闲时：带 imageJobId 的图卡交给 recoverNodeImageJob
+  // 查真实任务状态续收；分镜批量出图的图卡由分镜卡的挂载续轮询负责（锚在
+  // 分镜卡上），跳过防误标；其余（拆解链/聊天驱动等无任务锚的）才标
+  // "生成中断"，点卡上的重试即可重发。
   useEffect(() => {
     if (isLoading) return;
     const t = setTimeout(() => {
       const st = useCanvasStore.getState();
       if (!st.hydrated) return;
-      const stuck = st.nodes.filter((n) => n.data.status === "loading");
-      for (const n of stuck) {
+      const batchOwned = new Set<string>();
+      for (const c of st.nodes) {
+        if (c.data.nodeType !== "shotlist" || !c.data.imageJobId) continue;
+        for (const r of (c.data.rows as { imageNodeId?: string }[] | undefined) ?? []) {
+          if (r.imageNodeId) batchOwned.add(r.imageNodeId);
+        }
+      }
+      for (const n of st.nodes) {
+        if (n.data.status !== "loading" || batchOwned.has(n.id)) continue;
+        const jobId = n.data.imageJobId as string | undefined;
+        if (jobId) {
+          void recoverNodeImageJob(n.id, jobId);
+          continue;
+        }
         st.updateNodeData(n.id, {
           status: "error",
           errorMessage: "生成中断（页面刷新导致），点击重试",

@@ -146,6 +146,7 @@ import {
   startShotImageJob,
   type DecomposedLook,
   type ExistingAsset,
+  type ShotImageRequest,
   type ShotImageResult,
 } from "@/lib/shotlist";
 import { useDismissOnOutside } from "@/lib/useDismiss";
@@ -2587,7 +2588,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               >
                 <History className="h-3 w-3" />V{versionCount + 1}
               </button>
-              {d.body ? (
+              {d.body || d.genPrompt ? (
                 <button
                   type="button"
                   data-tip="复制提示词" aria-label="复制提示词"
@@ -2595,8 +2596,12 @@ function ImageCard({ data, id, selected }: NodeProps) {
                   data-track="card.copy-prompt"
   onClick={(e) => {
                     e.stopPropagation();
+                    // 优先复制实际发出的生成提示词快照（批量/重生成后不再是
+                    // 一句行文案）；无快照回退卡上正文
                     void navigator.clipboard
-                      ?.writeText(d.body ?? "")
+                      ?.writeText(
+                        String(d.genPrompt ?? "").trim() || (d.body ?? ""),
+                      )
                       .catch(() => undefined);
                   }}
                 >
@@ -4888,37 +4893,61 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     );
     try {
       // 每镜 genCount 张候选：rid 带 #k 后缀，全部完成后聚合成该行图卡的
-      // 变体（imageUrls，主图取首张）——「一卡一图」画布语义不裂多卡
-      const jobId = await startShotImageJob(
-        jobs.flatMap((j) => {
-          const t = targets.find((x) => x.row.rid === j.rid)!;
-          // 参考资产带图者才收：URL 与职责标签同源对齐（无图引用卡不占位）
-          const refAssets = rowRefNodes(t.row).filter((n) =>
-            Boolean(n.data.imageUrl),
-          );
-          const base = {
-            name: `镜头${t.seq + 1}`,
-            // @ 是画布引用记号，出图模型不认识——剥成裸名字（juben 剥 []同款）
-            description: composeRowPrompt(t.row).replace(/@/g, ""),
+      // 变体（imageUrls，主图取首张）——「一卡一图」画布语义不裂多卡。
+      // 逐镜把实际发出的提示词与参考快照落图卡 genPrompt/genShot（novanova
+      // final_prompt 落库范式）：重试/面板预填/复制用真实内容，不再只有
+      // 一句行文案——批量链路的提示词从此不是黑箱
+      const requests: ShotImageRequest[] = [];
+      const snapshots = new Map<
+        string,
+        { genPrompt: string; genShot: NonNullable<WingNode["data"]["genShot"]> }
+      >();
+      for (const j of jobs) {
+        const t = targets.find((x) => x.row.rid === j.rid)!;
+        // 参考资产带图者才收：URL 与职责标签同源对齐（无图引用卡不占位）
+        const refAssets = rowRefNodes(t.row).filter((n) =>
+          Boolean(n.data.imageUrl),
+        );
+        // @ 是画布引用记号，出图模型不认识——剥成裸名字（juben 剥 []同款）
+        const description = composeRowPrompt(t.row).replace(/@/g, "");
+        const visualNotes = [refNotesFor(t.row), ...styleStack]
+          .filter(Boolean)
+          .join("；");
+        const referenceImages = refAssets.map((n) => n.data.imageUrl as string);
+        const referenceLabels = refAssets.map((n) => ({
+          type: String(n.data.nodeType),
+          name: String(n.data.title || "无题"),
+        }));
+        snapshots.set(j.rid, {
+          genPrompt: description,
+          genShot: {
+            description,
             // 镜头剧照契约（flow 侧 shot 布局：有人物有剧情，区别于场景空镜）
-            assetType: "shot" as const,
-            visualNotes: [refNotesFor(t.row), ...styleStack]
-              .filter(Boolean)
-              .join("；"),
-            referenceImages: refAssets.map((n) => n.data.imageUrl as string),
-            referenceLabels: refAssets.map((n) => ({
-              type: String(n.data.nodeType),
-              name: String(n.data.title || "无题"),
-            })),
+            assetType: "shot",
+            visualNotes,
+            referenceImages,
+            referenceLabels,
             aspect,
-          };
-          return Array.from({ length: genCount }, (_, k) => ({
+          },
+        });
+        for (let k = 0; k < genCount; k++) {
+          requests.push({
             rid: genCount > 1 ? `${j.rid}#${k}` : j.rid,
-            ...base,
-          }));
-        }),
-        cardGen ?? undefined,
-      );
+            name: `镜头${t.seq + 1}`,
+            description,
+            assetType: "shot",
+            visualNotes,
+            referenceImages,
+            referenceLabels,
+            aspect,
+          });
+        }
+      }
+      const jobId = await startShotImageJob(requests, cardGen ?? undefined);
+      for (const j of jobs) {
+        const snap = snapshots.get(j.rid);
+        if (snap) useCanvasStore.getState().updateNodeData(j.nodeId, snap);
+      }
       // jobId 落卡：出图中刷新/关标签后挂载续轮询收尾（完事即清）
       useCanvasStore.getState().updateNodeData(id, { imageJobId: jobId });
       // 轮询任务：按镜聚合候选（张张计票，齐了才回填该行图卡）

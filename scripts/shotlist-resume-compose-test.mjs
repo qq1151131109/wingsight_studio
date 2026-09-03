@@ -160,13 +160,15 @@ check("A2 恢复轮询真的发生", jobCalls >= 2, `mock 被调 ${jobCalls} 次
 const queuing = await page.getByRole("button", { name: /出图中/ }).count();
 check("A3 恢复后出图按钮回到可点态", queuing === 0);
 
-const buque = await page.getByRole("button", { name: /补缺图·(\d+)/ }).first();
-const buqueText = await buque.textContent().catch(() => "");
-check("A4 补缺图按钮计数=3（r2失败/r3无卡/r5失败）", /补缺图·3/.test(buqueText ?? ""), `文案:「${buqueText}」`);
+// 55fde0d4e 起按钮 title 迁 data-tip+aria-label：可访问名=aria-label
+// （「为还没出图/出图失败的 N 镜补图…」），按计数词匹配
+const buque = await page.getByRole("button", { name: /镜补图/ }).first();
+const buqueText = await buque.getAttribute("aria-label").catch(() => "");
+check("A4 补缺图按钮计数=3（r2失败/r3无卡/r5失败）", /3 镜补图/.test(buqueText ?? ""), `文案:「${buqueText}」`);
 
-// r2 行缩略图应显示错误态（title 带出图失败原因）
+// r2 行缩略图应显示错误态（aria-label 带出图失败原因）
 const r2err = await page
-  .locator('button[title*="模拟：内容审核未过"]')
+  .locator('button[aria-label*="模拟：内容审核未过"]')
   .count();
 check("A5 失败镜缩略图带错误原因", r2err >= 1);
 
@@ -207,7 +209,7 @@ const goneMsg = await page
   .textContent()
   .catch(() => "");
 check("B1 gone 路径提示任务失效", (goneMsg ?? "").includes("出图任务已失效"));
-const deadErrors = await page.locator('button[title*="agent 重启"]').count();
+const deadErrors = await page.locator('button[aria-label*="agent 重启"]').count();
 check("B2 loading 图卡被置败", deadErrors >= 2, `${deadErrors} 张错误缩略图`);
 await page.waitForTimeout(2500);
 const { body: canvasB } = await api(`/projects/${pid}/canvas`);
@@ -412,7 +414,7 @@ await page.waitForTimeout(3500); // sanitize 迁移 + debounce 落库
 }
 
 // E：补缺图实跑（genShotImages 新建卡路径）— 参考随行解析落卡 + 建线
-const buqueD = page.getByRole("button", { name: /补缺图·1/ }).first();
+const buqueD = page.getByRole("button", { name: /1 镜补图/ }).first();
 const hasBuque = await buqueD.count();
 check("E0 补缺图按钮计数=1", hasBuque >= 1);
 if (hasBuque > 0) {
@@ -465,6 +467,19 @@ await page.waitForTimeout(2500); // debounce 落库
       target?.data?.imageUrls[1] === png1pxRed &&
       target?.data?.primaryIndex === 0,
     `imageUrls=${JSON.stringify(target?.data?.imageUrls)}`,
+  );
+  // 批量出图快照落卡（novanova final_prompt 范式）：实际发出的组装提示词
+  // 与参考进 genPrompt/genShot，重试/预填/复制不再是黑箱
+  check(
+    "E7 批量出图落 genPrompt/genShot 快照",
+    typeof target?.data?.genPrompt === "string" &&
+      /镜头规格/.test(target.data.genPrompt) &&
+      /画面内容/.test(target.data.genPrompt) &&
+      target?.data?.genShot?.assetType === "shot" &&
+      Array.isArray(target?.data?.genShot?.referenceImages) &&
+      target.data.genShot.referenceImages.length > 0 &&
+      target?.data?.genShot?.visualNotes?.includes("全局视觉风格"),
+    `genPrompt=${JSON.stringify(String(target?.data?.genPrompt ?? "").slice(0, 60))} genShot=${JSON.stringify(target?.data?.genShot)?.slice(0, 80)}`,
   );
 }
 
