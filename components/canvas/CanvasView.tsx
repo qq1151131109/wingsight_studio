@@ -67,6 +67,7 @@ import { copyImageToClipboard, downloadMedia } from "@/lib/download";
 import { showToast } from "@/lib/toast";
 import { trackEvent } from "@/lib/telemetry";
 import { ASSET_TYPES } from "@/lib/canvas/shotRefs";
+import { toggleFreeResize } from "@/lib/canvas/imageTools";
 import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
 import { useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
@@ -2449,67 +2450,7 @@ export default function CanvasView() {
                               )
                             }
                             onClick={() => {
-                              const st = useCanvasStore.getState();
-                              const nd = st.nodes.find(
-                                (n) => n.id === ctxMenu.id,
-                              );
-                              if (!nd) return;
-                              st.commitHistory();
-                              const wasFree = Boolean(nd.data.freeResize);
-                              st.updateNodeData(ctxMenu.id, {
-                                freeResize: !wasFree,
-                              });
-                              // 切回锁定：按图片原始比例回弹（保宽调高，
-                              // novanova freeResize 范式补上回弹半步）
-                              if (wasFree && nd.data.imageUrl) {
-                                const url = nd.data.imageUrl;
-                                const img = new Image();
-                                img.onload = () => {
-                                  if (!img.naturalWidth || !img.naturalHeight)
-                                    return;
-                                  const st2 = useCanvasStore.getState();
-                                  const cur = st2.nodes.find(
-                                    (n) => n.id === ctxMenu.id,
-                                  );
-                                  if (!cur) return;
-                                  const w =
-                                    cur.measured?.width ??
-                                    cur.width ??
-                                    Number(cur.style?.width) ??
-                                    320;
-                                  const h = Math.max(
-                                    140,
-                                    Math.round(
-                                      (w * img.naturalHeight) /
-                                        img.naturalWidth,
-                                    ),
-                                  );
-                                  if (
-                                    Math.abs(
-                                      h -
-                                        (cur.measured?.height ??
-                                          cur.height ??
-                                          0),
-                                    ) < 2
-                                  )
-                                    return;
-                                  st2.setNodes(
-                                    st2.nodes.map((n) =>
-                                      n.id === ctxMenu.id
-                                        ? {
-                                            ...n,
-                                            style: {
-                                              ...n.style,
-                                              width: w,
-                                              height: h,
-                                            },
-                                          }
-                                        : n,
-                                    ),
-                                  );
-                                };
-                                img.src = url;
-                              }
+                              toggleFreeResize(ctxMenu.id);
                               closeCtx();
                             }}
                           />

@@ -187,6 +187,27 @@ check(
 await page.keyboard.press("Escape");
 await page.mouse.click(400, 600); // 关菜单
 
+// ---------- A5 顶部工具条（主入口：选中即在卡上方，无需右键） ----------
+// 经 store 选中（点卡会被媒体区 zoom/工具条拦指针，选区才是唯一变量）
+await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["img1"]));
+await page.locator('[aria-label="多视角…"]').waitFor({ timeout: 5000 });
+for (const t of ["裁剪…", "多视角…", "打光…", "人物质感…", "自由缩放"]) {
+  check(`A5-1 图片卡顶部条含「${t}」`, (await page.locator(`[aria-label="${t}"]`).count()) > 0);
+}
+check(
+  "A5-2 图片卡顶部条不含三视图",
+  (await page.locator('[aria-label="三视图…"]').count()) === 0,
+);
+await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["ch1"]));
+await page.locator('[aria-label="三视图…"]').waitFor({ timeout: 5000 });
+check("A5-3 角色卡顶部条含三视图", (await page.locator('[aria-label="三视图…"]').count()) > 0);
+await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["note1"]));
+await page.waitForTimeout(400);
+check(
+  "A5-4 文本卡顶部条无图片操作",
+  (await page.locator('[aria-label="多视角…"]').count()) === 0,
+);
+
 await openMenu("测试角色");
 check("A3 角色卡菜单含三视图", (await page.locator("text=三视图…").count()) > 0);
 await page.mouse.click(400, 600);

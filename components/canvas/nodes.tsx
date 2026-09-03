@@ -19,18 +19,23 @@ import {
 import {
   BookOpen,
   Brush,
+  Camera,
   Check,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   CircleAlert,
+  Columns3,
   Combine,
   Copy,
+  Crop,
   Download,
   Drama,
   Film,
   GripVertical,
+  Scaling,
   Sparkles,
+  Sun,
   Grid3X3,
   History,
   Image as ImageIcon,
@@ -55,6 +60,7 @@ import {
   Trash2,
   Undo2,
   Upload,
+  Wand2,
   X,
   ZoomIn,
 } from "lucide-react";
@@ -100,11 +106,14 @@ import {
   FOCUS_EDIT_EVENT,
   FOCUS_NODES_EVENT,
   FRAME_ANALYSIS_EVENT,
+  IMAGE_TOOL_EVENT,
   NODE_INFO_EVENT,
   OPEN_STYLE_EVENT,
   type FocusEditDetail,
+  type ImageToolDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
+import { toggleFreeResize } from "@/lib/canvas/imageTools";
 import {
   GENERATE_EVENT,
   SUPPLEMENT_CANDIDATES_EVENT,
@@ -328,15 +337,31 @@ export function NodeInfoModal({
   );
 }
 
-/** 悬浮工具条按钮（选中节点上方浮现的常用操作，libtv 范式） */
+/** 图片操作事件派发（顶部工具条/右键菜单两入口同源，弹窗侧统一接） */
+function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
+  window.dispatchEvent(
+    new CustomEvent<ImageToolDetail>(IMAGE_TOOL_EVENT, {
+      detail: { nodeId, tool },
+    }),
+  );
+}
+
+/** 悬浮工具条按钮（选中节点上方浮现的常用操作，libtv 范式；
+ *  图片操作组在此条上直发 IMAGE_TOOL_EVENT——竞品共识：重动作入口
+ *  挂选中卡上方工具条，右键只是备份路径） */
 function ToolBtn({
   title,
   danger,
+  disabled,
+  active,
   onClick,
   children,
 }: {
   title: string;
   danger?: boolean;
+  disabled?: boolean;
+  /** 开启态（如自由缩放已解锁） */
+  active?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -344,15 +369,18 @@ function ToolBtn({
     <button
       type="button"
       data-tip={title} aria-label={title}
+      disabled={disabled}
       onClick={(e) => {
         e.stopPropagation();
         onClick();
       }}
       onPointerDown={(e) => e.stopPropagation()}
-      className={`grid h-6 w-6 place-items-center rounded-md transition-colors hover:bg-surface-2 ${
+      className={`grid h-6 w-6 place-items-center rounded-md transition-colors hover:bg-surface-2 disabled:opacity-40 ${
         danger
           ? "text-text-3 hover:bg-danger/10 hover:text-danger"
-          : "text-text-3 hover:text-text"
+          : active
+            ? "bg-accent-dim text-accent"
+            : "text-text-3 hover:text-text"
       }`}
     >
       {children}
@@ -709,6 +737,55 @@ function CardShell({
           offset 36：越过卡外标题行，不压住标题 */}
       <NodeToolbar isVisible={selected && !tiny} position={Position.Top} offset={36}>
         <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-0.5 shadow-md">
+          {(isAsset || data.nodeType === "image") && data.imageUrl ? (
+            <>
+              <ToolBtn
+                title="裁剪…"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "crop")}
+              >
+                <Crop className="h-3.5 w-3.5" />
+              </ToolBtn>
+              <ToolBtn
+                title="多视角…"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "multiview")}
+              >
+                <Camera className="h-3.5 w-3.5" />
+              </ToolBtn>
+              {data.nodeType === "character" ? (
+                <ToolBtn
+                  title="三视图…"
+                  disabled={data.status === "loading"}
+                  onClick={() => dispatchImageTool(id, "turnaround")}
+                >
+                  <Columns3 className="h-3.5 w-3.5" />
+                </ToolBtn>
+              ) : null}
+              <ToolBtn
+                title="打光…"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "lighting")}
+              >
+                <Sun className="h-3.5 w-3.5" />
+              </ToolBtn>
+              <ToolBtn
+                title="人物质感…"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "texture")}
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+              </ToolBtn>
+              <ToolBtn
+                title={data.freeResize ? "锁定比例（回原图比例）" : "自由缩放"}
+                active={Boolean(data.freeResize)}
+                onClick={() => toggleFreeResize(id)}
+              >
+                <Scaling className="h-3.5 w-3.5" />
+              </ToolBtn>
+              <span className="mx-0.5 h-3.5 w-px bg-hairline" />
+            </>
+          ) : null}
           <ToolBtn title="原地复制" onClick={() => useCanvasStore.getState().duplicateSelection()}>
             <Copy className="h-3.5 w-3.5" />
           </ToolBtn>
