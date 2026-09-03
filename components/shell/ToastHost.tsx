@@ -4,10 +4,12 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AlertCircle } from "lucide-react";
 import { onToast, type ToastItem } from "@/lib/toast";
+import { useMounted } from "@/lib/use-mounted";
 
 /** 全局 toast 宿主（layout 挂载，portal 到 body）：底部居中，4 秒自动消失。 */
 export default function ToastHost() {
   const [items, setItems] = useState<ToastItem[]>([]);
+  const mounted = useMounted();
 
   useEffect(
     () =>
@@ -21,7 +23,7 @@ export default function ToastHost() {
     [],
   );
 
-  if (typeof document === "undefined") return null;
+  if (!mounted) return null;
   return createPortal(
     <div className="pointer-events-none fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 flex-col items-center gap-2">
       {items.map((t) => (
