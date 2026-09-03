@@ -389,6 +389,7 @@ function ToolBtn({
   disabled,
   active,
   label,
+  badge,
   onClick,
   children,
 }: {
@@ -399,6 +400,8 @@ function ToolBtn({
   active?: boolean;
   /** 可读文字标签（与图标并排） */
   label?: string;
+  /** 文字旁的小数字角标（如调研待采纳数） */
+  badge?: number;
   onClick: () => void;
   children: React.ReactNode;
 }) {
@@ -425,6 +428,11 @@ function ToolBtn({
     >
       {children}
       {label ? <span className="whitespace-nowrap text-[13px] font-medium">{label}</span> : null}
+      {badge ? (
+        <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold tabular-nums text-surface-1">
+          {badge}
+        </span>
+      ) : null}
     </button>
   );
 }
@@ -1956,7 +1964,6 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const imgLabel = ASSET_IMAGE_LABEL[kind];
   const [uploading, setUploading] = useState(false);
   const [imgJob, setImgJob] = useState(false);
-  const [styleHint, setStyleHint] = useState("");
   const [zoom, setZoom] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [researchOpen, setResearchOpen] = useState(false);
@@ -2049,11 +2056,10 @@ function AssetCard({ data, id, selected }: NodeProps) {
     // 画风闸（juben image_style_required 同款）：设定图是全片一致性锚点，
     // 无画风出图 = 风格随机漂移，拦下并自动弹出画风设定弹窗
     if (!projectStyle.trim()) {
-      setStyleHint("未选画风：请在弹出的「项目画风」里设定，再 AI 出图");
+      showToast("未选画风：请在弹出的「项目画风」里设定，再 AI 出图");
       window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
       return;
     }
-    setStyleHint("");
     update({ status: "loading", errorMessage: undefined });
     setImgJob(true);
     try {
@@ -2121,10 +2127,109 @@ function AssetCard({ data, id, selected }: NodeProps) {
     })();
   };
 
+  // 快捷动作上浮到悬浮工具条（卡面只留图+设定正文，图片卡同范式）
+  const assetTools = (
+    <>
+      <ToolBtn
+        title="调研参考图（AI 出词搜图 + 网页考据，自动采纳前 3 张）"
+        label="调研"
+        badge={refPending > 0 ? refPending : undefined}
+        onClick={() => setResearchOpen(true)}
+      >
+        <Search className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="AI 按资产名与剧情背景补全设定（已有设定时先预览再采用）"
+        label="撰写"
+        disabled={writing}
+        onClick={() => void writeSetting()}
+      >
+        <Sparkles className="h-4 w-4" />
+      </ToolBtn>
+      {!d.imageUrl ? (
+        <ToolBtn
+          title={`按设定正文 AI 出${imgLabel}（需先在底部坞「画风」选项目画风）`}
+          label="出图"
+          disabled={imgJob}
+          onClick={() => void genLook()}
+        >
+          <Sparkles className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      {d.imageUrl ? (
+        <ToolBtn
+          title="版本历史（重生成/上传覆盖前的结果自动存档）"
+          label={`V${(d.versions?.length ?? 0) + 1}`}
+          onClick={() => setHistoryOpen(true)}
+        >
+          <History className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      {d.imageUrl ? (
+        <ToolBtn
+          title="AI 重新出设定图（用设定正文）"
+          disabled={imgJob}
+          onClick={() => void genLook()}
+        >
+          <RefreshCw className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      <ToolBtn
+        title={`更换${imgLabel}（上传替换，旧图入版本档）`}
+        disabled={uploading}
+        onClick={() => fileRef.current?.click()}
+      >
+        <Upload className="h-4 w-4" />
+      </ToolBtn>
+      {d.imageUrl ? (
+        <>
+          <ToolBtn
+            title="下载图片（原图）"
+            onClick={() => {
+              void downloadMedia(d.imageUrl!, d.title || "image").catch(
+                (exc) =>
+                  showToast(
+                    `下载失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+                  ),
+              );
+            }}
+          >
+            <Download className="h-4 w-4" />
+          </ToolBtn>
+          <ToolBtn
+            title="复制图片到剪贴板"
+            onClick={() => {
+              void copyImageToClipboard(d.imageUrl!).catch((exc) =>
+                showToast(
+                  `复制图片失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+                ),
+              );
+            }}
+          >
+            <ImagePlus className="h-4 w-4" />
+          </ToolBtn>
+          <ToolBtn
+            title="查看大图（标注重绘/九宫格/版本在此操作）"
+            onClick={() => setZoom(true)}
+          >
+            <ZoomIn className="h-4 w-4" />
+          </ToolBtn>
+        </>
+      ) : null}
+    </>
+  );
+
   return (
-    <CardShell id={id} data={d} selected={selected} aspect={Boolean(d.imageUrl)}>
+    <CardShell
+      id={id}
+      data={d}
+      selected={selected}
+      aspect={Boolean(d.imageUrl)}
+      bleed
+      extraTools={assetTools}
+    >
       <div
-        className={`mt-1.5 flex min-h-[120px] w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+        className={`flex min-h-[120px] w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -2150,81 +2255,6 @@ function AssetCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
-            {lod === "full" ? (
-              <CornerActions>
-                <button
-                  type="button"
-                  data-tip="版本历史（重生成/上传覆盖前的结果自动存档）" aria-label="版本历史（重生成/上传覆盖前的结果自动存档）"
-                  className="nodrag flex items-center gap-0.5 rounded-md bg-black/40 p-1 text-[10px] text-white hover:bg-black/60"
-                  data-track="card.version-history"
-  onClick={(e) => {
-                    e.stopPropagation();
-                    setHistoryOpen(true);
-                  }}
-                >
-                  <History className="h-3.5 w-3.5" />V{versionCount + 1}
-                </button>
-                <button
-                  type="button"
-                  data-tip="AI 重新出设定图（用设定正文）" aria-label="AI 重新出设定图（用设定正文）"
-                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void genLook();
-                  }}
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  data-tip={`更换${imgLabel}`} aria-label={`更换${imgLabel}`}
-                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    fileRef.current?.click();
-                  }}
-                >
-                  <Upload className="h-3.5 w-3.5" />
-                </button>
-                <a
-                  href={d.imageUrl}
-                  download={downloadName(d.title, d.imageUrl, "png")}
-                  title="下载"
-                  className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                </a>
-                <button
-                  type="button"
-                  data-tip="复制图片到剪贴板" aria-label="复制图片到剪贴板"
-                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  data-track="image.copy-image"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void copyImageToClipboard(d.imageUrl!).catch((exc) =>
-                      showToast(
-                        `复制图片失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
-                      ),
-                    );
-                  }}
-                >
-                  <ImagePlus className="h-3.5 w-3.5" />
-                </button>
-                <button
-                  type="button"
-                  data-tip="查看大图（标注重绘/九宫格/版本在此操作）" aria-label="查看大图"
-                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  data-track="card.open-lightbox"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setZoom(true);
-                  }}
-                >
-                  <ZoomIn className="h-3.5 w-3.5" />
-                </button>
-              </CornerActions>
-            ) : null}
           </div>
         ) : (
           <MediaEmpty
@@ -2239,68 +2269,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {lod === "full" && d.status !== "loading" ? (
-        <div className="mt-1.5 flex gap-1">
-          <button
-            type="button"
-            data-tip={refRunning ? "调研中：AI 出词搜图 + 网页考据 + 终选" : "AI 出词搜图 + 网页考据，自动采纳前 3 张为参考图（其余候选点开增补）"} aria-label="调研参考图"
-            className={`${ACT_BTN} ${refPending > 0 ? "border-accent-soft bg-accent-dim/60 font-medium text-text" : ""}`}
-            data-track="asset.find-refs"
-            onClick={(e) => {
-              e.stopPropagation();
-              setResearchOpen(true);
-            }}
-          >
-            {refRunning ? (
-              <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
-            ) : (
-              <Search className="h-3 w-3" />
-            )}
-            调研
-            {refPending > 0 ? <span className="text-accent">{refPending}</span> : null}
-          </button>
-          <button
-            type="button"
-            disabled={writing}
-            data-tip="AI 按资产名与剧情背景补全设定（考据简报作事实依据）；已有设定时先预览再采用" aria-label="AI 写设定"
-            className={ACT_BTN}
-            data-track="asset.write"
-            onClick={(e) => {
-              e.stopPropagation();
-              void writeSetting();
-            }}
-          >
-            {writing ? (
-              <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
-            ) : (
-              <Sparkles className="h-3 w-3" />
-            )}
-            {writing ? "撰写中" : "撰写"}
-          </button>
-          {!d.imageUrl ? (
-            <button
-              type="button"
-              disabled={imgJob}
-              data-tip={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`} aria-label={`按设定正文 AI 出${imgLabel}`}
-              className={`${ACT_BTN} border-accent bg-accent-dim font-medium text-text`}
-              data-track="asset.gen"
-              onClick={(e) => {
-                e.stopPropagation();
-                void genLook();
-              }}
-            >
-              <Sparkles className="h-3 w-3" />
-              {imgJob ? "生成中" : "出图"}
-            </button>
-          ) : null}
-        </div>
-      ) : null}
-      {lod === "full" && styleHint ? (
-        <p className="ws-detail mt-1 text-[10px] text-warn">{styleHint}</p>
-      ) : null}
       {lod === "full" ? (
         writePreview ? (
-          <div className="ws-detail mt-1.5 rounded border border-accent-soft bg-surface-2 p-1.5">
+          <div className="ws-detail mx-1.5 mb-1.5 rounded border border-accent-soft bg-surface-2 p-1.5">
             <p className="max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2">
               {writePreview}
             </p>
@@ -2339,10 +2310,10 @@ function AssetCard({ data, id, selected }: NodeProps) {
               multiline
               always
               placeholder={ASSET_BODY_PH[kind]}
-              className="ws-detail mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+              className="ws-detail mx-1.5 mb-1 mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
             />
             {writeMsg ? (
-              <p className="ws-detail mt-1 text-[10px] text-danger">{writeMsg}</p>
+              <p className="ws-detail mx-1.5 mb-1 mt-1 text-[10px] text-danger">{writeMsg}</p>
             ) : null}
           </>
         )

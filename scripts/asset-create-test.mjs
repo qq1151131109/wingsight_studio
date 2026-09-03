@@ -83,8 +83,9 @@ page.on("dialog", async (d) => {
 await page.goto(`${BASE}/project/${pid}`);
 await page.waitForTimeout(1200);
 
-// ---------- A1: 工具条点「角色」→ 空名卡 + 标题聚焦 ----------
-await page.getByRole("button", { name: "添加角色（角色设定卡）— 可拖到画布指定位置" }).click();
+// ---------- A1: 头部「+」→ 菜单点「角色」→ 空名卡 + 标题聚焦 ----------
+await page.getByRole("button", { name: "添加节点" }).click();
+await page.getByRole("button", { name: "角色", exact: true }).click();
 await page.waitForTimeout(900); // focusWhenVisible 等挂载重试窗口
 const a1 = await page.evaluate(() => {
   const node = [...document.querySelectorAll(".react-flow__node")].find((n) =>
@@ -113,7 +114,8 @@ const named = await page.evaluate(() => {
 check("A3 Esc 收尾落库名字", named.title === "侲子领首者", `title=「${named.title}」`);
 
 // ---------- A4: 第二张卡同名 → confirm 提醒 ----------
-await page.getByRole("button", { name: "添加角色（角色设定卡）— 可拖到画布指定位置" }).click();
+await page.getByRole("button", { name: "添加节点" }).click();
+await page.getByRole("button", { name: "角色", exact: true }).click();
 await page.waitForTimeout(700);
 await page.keyboard.type("侲子领首者");
 await page.keyboard.press("Escape");
@@ -126,7 +128,14 @@ check(
 
 // ---------- B: 资产卡「AI 写设定」（真实 /text/rewrite，空设定直接落正文） ----------
 // A4 建的第二张同名卡叠在第一张上方（都在视口中心），操作置顶那张
-const writeBtn = page.getByRole("button", { name: "AI 写设定" }).last();
+// 工具条只渲染在选中卡上：先显式选中置顶（最后建）的角色卡
+await page.evaluate(() => {
+  const s = window.__wsCanvasStore.getState();
+  const chars = s.nodes.filter((x) => x.data.nodeType === "character");
+  s.selectNodes([chars[chars.length - 1].id]);
+});
+await page.waitForTimeout(300);
+const writeBtn = page.getByRole("button", { name: /AI 按资产名与剧情背景补全设定/ }).last();
 check("B1 资产卡有「AI 写设定」入口", (await writeBtn.count()) > 0);
 if ((await writeBtn.count()) > 0) {
   await writeBtn.click();
