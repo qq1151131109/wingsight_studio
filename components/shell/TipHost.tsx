@@ -8,8 +8,9 @@
  * 上方压进顶栏安全区（SAFE_TOP，遮挡实测来自不透明 h-11 顶栏）则翻到下方，
  * 下方出屏则翻回/夹紧；横向按最大半宽夹紧不出屏。滚动/按下即隐藏。
  */
-import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useMounted } from "@/lib/use-mounted";
 
 type Tip = {
   text: string;
@@ -28,15 +29,6 @@ const SAFE_TOP = 60;
 const EST_H = 28;
 // 气泡 max-width 280 的一半：横向夹紧用（比真实半宽保守，窄气泡更安全）
 const HALF_MAX = 144;
-
-// hydration 探测：portal 依赖 document，SSR 首帧不渲染
-const subscribeNoop = () => () => {};
-const useMounted = () =>
-  useSyncExternalStore(
-    subscribeNoop,
-    () => true,
-    () => false,
-  );
 
 export default function TipHost() {
   const [tip, setTip] = useState<Tip | null>(null);

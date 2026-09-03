@@ -9,6 +9,13 @@ set -u
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 LOGS="$ROOT/logs"; mkdir -p "$LOGS"
 
+# pnpm/node 经 nvm 安装时只在交互 shell 的 PATH 里（裸 shell/cron/开机自启
+# 会 nohup: pnpm: No such file or directory）——不在 PATH 就把最新的 nvm bin 补上
+if ! command -v pnpm >/dev/null 2>&1; then
+  _nvm_bin="$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | sort -V | tail -1)"
+  [ -n "$_nvm_bin" ] && export PATH="$_nvm_bin:$PATH"
+fi
+
 AGENT_PORT=8123
 WEB_PORT=8008
 
