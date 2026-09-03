@@ -83,6 +83,8 @@ export interface Topic {
 export interface TopicRefreshRun {
   finishedAt?: string;
   collected?: number;
+  /** 本轮发散出的方向总数（先发散再收敛的两步管线） */
+  directions?: number;
   batches?: number;
   created?: number;
   duplicates?: number;

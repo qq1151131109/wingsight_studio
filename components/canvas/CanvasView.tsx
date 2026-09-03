@@ -55,6 +55,7 @@ import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import {
   dispatchFocusEdit,
   FOCUS_NODES_EVENT,
+  IMAGE_TOOL_EVENT,
   NODE_INFO_EVENT,
   OPEN_ADD_MENU_EVENT,
   OPEN_SHORTCUTS_EVENT,
@@ -62,6 +63,11 @@ import {
   type FocusNodesDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
+import { copyImageToClipboard, downloadMedia } from "@/lib/download";
+import { showToast } from "@/lib/toast";
+import { trackEvent } from "@/lib/telemetry";
+import { ASSET_TYPES } from "@/lib/canvas/shotRefs";
+import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
 import { useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
 import { useCanvasPref } from "@/lib/canvas/prefs";
@@ -86,6 +92,7 @@ import OverlayModal from "./OverlayModal";
 import ServiceBanner from "./ServiceBanner";
 import OutlinePanel from "./OutlinePanel";
 import DirectorPanel from "./DirectorPanel";
+import ImageToolDialogs from "./ImageToolDialogs";
 import CanvasSettings from "./CanvasSettings";
 
 /** 离线指示：断网时顶部常驻小条（保存走 saveState "offline" 文案，这里补全局感知） */
@@ -2203,6 +2210,7 @@ export default function CanvasView() {
       {trayOpen ? <AssetTray onClose={() => setTrayOpen(false)} /> : null}
       {promptsOpen ? <PromptLibraryPanel onClose={() => setPromptsOpen(false)} /> : null}
       {outlineOpen ? <OutlinePanel onClose={() => setOutlineOpen(false)} /> : null}
+      <ImageToolDialogs />
       {directorNode ? (
         <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />
       ) : null}
@@ -2375,6 +2383,201 @@ export default function CanvasView() {
                         }}
                       />
                     ) : null}
+                    {type === "image" ||
+                    (type && ASSET_TYPES.includes(type as never)) ? (
+                      node?.data.imageUrl ? (
+                        <>
+                          <p className="px-2 pb-0.5 pt-1 text-[10px] text-text-4">
+                            图片操作
+                          </p>
+                          <CtxItem
+                            label="下载图片"
+                            onClick={() => {
+                              trackEvent("image.download", { via: "menu" });
+                              void downloadMedia(
+                                node.data.imageUrl!,
+                                node.data.title || "image",
+                              ).catch(() => showToast("下载失败，请重试"));
+                              closeCtx();
+                            }}
+                          />
+                          <CtxItem
+                            label="复制图片"
+                            onClick={() => {
+                              trackEvent("image.copy-image", { via: "menu" });
+                              void copyImageToClipboard(
+                                node.data.imageUrl!,
+                              ).catch(() =>
+                                showToast("复制图片失败，请重试"),
+                              );
+                              closeCtx();
+                            }}
+                          />
+                          {String(node.data.genPrompt ?? "").trim() ? (
+                            <CtxItem
+                              label="复制出图提示词"
+                              onClick={() => {
+                                void navigator.clipboard?.writeText(
+                                  String(node.data.genPrompt ?? ""),
+                                );
+                                closeCtx();
+                              }}
+                            />
+                          ) : null}
+                          <CtxItem
+                            label="裁剪…"
+                            disabled={node?.data.status === "loading"}
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent(IMAGE_TOOL_EVENT, {
+                                  detail: {
+                                    nodeId: ctxMenu.id,
+                                    tool: "crop",
+                                  },
+                                }),
+                              );
+                              closeCtx();
+                            }}
+                          />
+                          <CtxItem
+                            label={node?.data.freeResize ? "锁定比例" : "自由缩放"}
+                            icon={
+                              node?.data.freeResize ? (
+                                <Lock className="h-4 w-4" />
+                              ) : (
+                                <LockOpen className="h-4 w-4" />
+                              )
+                            }
+                            onClick={() => {
+                              const st = useCanvasStore.getState();
+                              const nd = st.nodes.find(
+                                (n) => n.id === ctxMenu.id,
+                              );
+                              if (!nd) return;
+                              st.commitHistory();
+                              const wasFree = Boolean(nd.data.freeResize);
+                              st.updateNodeData(ctxMenu.id, {
+                                freeResize: !wasFree,
+                              });
+                              // 切回锁定：按图片原始比例回弹（保宽调高，
+                              // novanova freeResize 范式补上回弹半步）
+                              if (wasFree && nd.data.imageUrl) {
+                                const url = nd.data.imageUrl;
+                                const img = new Image();
+                                img.onload = () => {
+                                  if (!img.naturalWidth || !img.naturalHeight)
+                                    return;
+                                  const st2 = useCanvasStore.getState();
+                                  const cur = st2.nodes.find(
+                                    (n) => n.id === ctxMenu.id,
+                                  );
+                                  if (!cur) return;
+                                  const w =
+                                    cur.measured?.width ??
+                                    cur.width ??
+                                    Number(cur.style?.width) ??
+                                    320;
+                                  const h = Math.max(
+                                    140,
+                                    Math.round(
+                                      (w * img.naturalHeight) /
+                                        img.naturalWidth,
+                                    ),
+                                  );
+                                  if (
+                                    Math.abs(
+                                      h -
+                                        (cur.measured?.height ??
+                                          cur.height ??
+                                          0),
+                                    ) < 2
+                                  )
+                                    return;
+                                  st2.setNodes(
+                                    st2.nodes.map((n) =>
+                                      n.id === ctxMenu.id
+                                        ? {
+                                            ...n,
+                                            style: {
+                                              ...n.style,
+                                              width: w,
+                                              height: h,
+                                            },
+                                          }
+                                        : n,
+                                    ),
+                                  );
+                                };
+                                img.src = url;
+                              }
+                              closeCtx();
+                            }}
+                          />
+                          <CtxItem
+                            label="多视角…"
+                            disabled={node?.data.status === "loading"}
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent(IMAGE_TOOL_EVENT, {
+                                  detail: {
+                                    nodeId: ctxMenu.id,
+                                    tool: "multiview",
+                                  },
+                                }),
+                              );
+                              closeCtx();
+                            }}
+                          />
+                          {type === "character" ? (
+                            <CtxItem
+                              label="三视图…"
+                              disabled={node?.data.status === "loading"}
+                              onClick={() => {
+                                window.dispatchEvent(
+                                  new CustomEvent(IMAGE_TOOL_EVENT, {
+                                    detail: {
+                                      nodeId: ctxMenu.id,
+                                      tool: "turnaround",
+                                    },
+                                  }),
+                                );
+                                closeCtx();
+                              }}
+                            />
+                          ) : null}
+                          <CtxItem
+                            label="打光…"
+                            disabled={node?.data.status === "loading"}
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent(IMAGE_TOOL_EVENT, {
+                                  detail: {
+                                    nodeId: ctxMenu.id,
+                                    tool: "lighting",
+                                  },
+                                }),
+                              );
+                              closeCtx();
+                            }}
+                          />
+                          <CtxItem
+                            label="人物质感…"
+                            disabled={node?.data.status === "loading"}
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent(IMAGE_TOOL_EVENT, {
+                                  detail: {
+                                    nodeId: ctxMenu.id,
+                                    tool: "texture",
+                                  },
+                                }),
+                              );
+                              closeCtx();
+                            }}
+                          />
+                        </>
+                      ) : null
+                    ) : null}
                     <CtxItem
                       label="复制"
                       onClick={() => {
@@ -2479,6 +2682,48 @@ export default function CanvasView() {
               </>
             ) : ctxMenu.kind === "selection" ? (
               <>
+                {(() => {
+                  const IMG_TYPES = ["image", ...ASSET_TYPES];
+                  const imgNodes = nodes
+                    .filter(
+                      (n) =>
+                        ctxMenu.ids.includes(n.id) &&
+                        n.data.imageUrl &&
+                        IMG_TYPES.includes(n.data.nodeType),
+                    )
+                    .sort(
+                      (a, b) =>
+                        a.position.y - b.position.y ||
+                        a.position.x - b.position.x,
+                    );
+                  return imgNodes.length >= 2 ? (
+                    <CtxItem
+                      label={`合成宫格导出（${imgNodes.length} 图）`}
+                      onClick={() => {
+                        trackEvent("image.grid-export", {
+                          count: imgNodes.length,
+                        });
+                        void (async () => {
+                          try {
+                            const blob = await mergeImagesToGrid(
+                              imgNodes.map((n, i) => ({
+                                url: n.data.imageUrl as string,
+                                label: `S${i + 1}`,
+                                note: (n.data.title as string) || undefined,
+                              })),
+                            );
+                            downloadBlobFile("wingsight-宫格导出.png", blob);
+                          } catch (e) {
+                            showToast(
+                              `宫格导出失败${e instanceof Error && e.message ? `：${e.message}` : ""}`,
+                            );
+                          }
+                        })();
+                        closeCtx();
+                      }}
+                    />
+                  ) : null;
+                })()}
                 <CtxItem
                   label={`复制 ${ctxMenu.ids.length} 张`}
                   onClick={() => {

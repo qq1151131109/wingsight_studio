@@ -145,6 +145,8 @@ export interface WingNodeData {
   refIds?: string[];
   /** 历史版本（每次重生成前把当前主图存档；对比/回滚用；prompt=产出该版的提示词，可追溯） */
   versions?: { url: string; at: string; prompt?: string }[];
+  /** 自由缩放（右键切换；默认锁图片原始比例）——切回锁定时按原图比例回弹 */
+  freeResize?: boolean;
   /** 锁定：不可拖动、不可改标题（卡上工具条切换） */
   locked?: boolean;
   /** 分镜表：镜头行 */

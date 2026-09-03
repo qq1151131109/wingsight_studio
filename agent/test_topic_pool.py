@@ -30,6 +30,7 @@ store.init_topics_db()
 entity_store.DB_PATH = _tmp / "test.db"
 entity_store.init_entities_db()
 os.environ["LANGFLOW_TOPIC_IDEATE_FLOW_ID"] = "f-ideate"
+os.environ["LANGFLOW_TOPIC_DIVERGE_FLOW_ID"] = "f-diverge"
 os.environ["LANGFLOW_TOPIC_TRIAGE_FLOW_ID"] = "f-triage"
 os.environ["LANGFLOW_TOPIC_PLAN_FLOW_ID"] = "f-plan"
 os.environ["LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID"] = "f-followup"
@@ -295,35 +296,38 @@ RESCAN_VERDICT = {
 
 async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
     payload = json.loads(input_value)
-    if flow_id == "f-ideate":
-        assert "corpus" in payload and "verticals" in payload, "生成载荷应含语料与垂类清单"
-        corpus = payload["corpus"]
+    if flow_id == "f-diverge":
+        assert "corpus" in payload, "发散载荷应含线索清单"
         out = []
-        for item in corpus:
-            # 线索发散模式：每条线索产两个方向（人物轴/制度轴），标题锚定语料
-            # 标题保跨轮稳定（指纹去重可命中）；垂类按序号交替
-            vertical = "history" if item["index"] % 2 == 0 else "crime"
+        for item in payload["corpus"]:
+            # 每条线索发散三个方向（人物/制度/工艺轴）
             out.append({
-                "title": f"选题：{item['title']}",
-                "hook": f"钩子{item['index']}",
+                "sourceIndex": item["index"],
+                "directions": [
+                    {"name": "人物方向", "sketch": f"跟拍{item['title']}的当事人与传承者"},
+                    {"name": "制度方向", "sketch": f"追查{item['title']}背后的制度与行业变迁"},
+                    {"name": "工艺方向", "sketch": f"拆解{item['title']}涉及的手艺与技术过程"},
+                ],
+            })
+        return json.dumps(out, ensure_ascii=False)
+    if flow_id == "f-ideate":
+        assert "directions" in payload and "verticals" in payload, "收敛载荷应含方向清单与垂类"
+        out = []
+        for j, d in enumerate(payload["directions"]):
+            # 每个方向收敛成一张卡（标题锚定方向 sketch 保跨轮稳定）；垂类按序交替
+            vertical = "history" if j % 2 == 0 else "crime"
+            out.append({
+                "title": f"选题：{d['sketch']}",
+                "hook": f"钩子{j}",
                 "prototype": "原型概括",
-                "arc": f"跟拍{item['title']}相关当事人，追查从起点到现状的全过程",
+                "arc": f"跟拍{d['name']}相关当事人，追查从起点到现状的全过程",
                 "vertical": vertical,
                 "tags": ["测试标签"],
-                "sourceIndex": item["index"],
+                "sourceIndex": j,
             })
-            out.append({
-                "title": f"发散：{item['title']}",
-                "hook": f"另一个方向的钩子{item['index']}",
-                "prototype": "原型概括",
-                "arc": f"追查{item['title']}背后的制度与行业，从建立起到衰落的跨度",
-                "vertical": vertical,
-                "tags": ["测试标签"],
-                "sourceIndex": item["index"],
-            })
-        out.append({"title": "无源卡", "hook": "h", "vertical": "history", "tags": []})  # 缺 sourceIndex → 跳过
+        out.append({"title": "无源卡", "hook": "h", "vertical": "history", "tags": []})  # 缺 arc → 成立性闸拒绝
         out.append({"title": "垂类卡", "hook": "h", "vertical": "sports", "sourceIndex": 0})  # 非法垂类 → 跳过
-        out.append({"title": "无推演卡", "hook": "一条钩子", "vertical": "history", "sourceIndex": 0})  # 缺 arc → 成立性闸拒绝
+        out.append({"title": "无推演卡", "hook": "一条钩子", "vertical": "history", "sourceIndex": 0})  # 缺 arc → 拒绝
         out.append({"title": "复读卡", "hook": "他守了它三十年，如今它要消失", "arc": "他守了它三十年，如今它要消失",
                     "vertical": "crime", "sourceIndex": 1})  # arc 复读 hook（无过程推演）→ 拒绝
         return json.dumps(out, ensure_ascii=False)
@@ -468,29 +472,28 @@ async def run_ideate() -> None:
     curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
     result = await curator.run()
     expect(result.collected == 10, f"10 条材料种子（含 science2）× 每查 1 结果应采到 10 条，实际 {result.collected}")
-    expect(result.batches == 2, f"10 条线索按 6 条/批应跑 2 批：{result.batches}")
-    expect(result.created == 20, f"每条线索发散 2 方向应产出 20 张生料卡（含 4 条非法项跳过/拒绝），实际 {result.created}")
-    # 拒绝口径：无源卡/无推演卡（都缺 arc，arc 闸先于锚定校验）+ 复读卡（arc 复读 hook），
-    # 每批各带 3 条被拒样本 × 2 批 = 6；垂类卡在 arc 闸之前就被非法垂类拦下，不计入
+    expect(result.batches == 2, f"10 条线索按 5 条/批应跑 2 次发散：{result.batches}")
+    expect(result.directions == 30, f"每条线索发散 3 方向应得 30 个方向：{result.directions}")
+    expect(result.created == 30, f"30 个方向各收敛一卡应产出 30 张生料卡：{result.created}")
+    # 拒绝口径：每个收敛批带 3 条被拒样本（缺 arc ×2 + 复读卡）× 2 批 = 6；
+    # 垂类卡在 arc 闸之前就被非法垂类拦下，不计入
     expect(result.rejected == 6, f"缺 arc 与 arc 复读 hook 的条目应被成立性闸拦下：{result.rejected}")
     expect(result.duplicates == 0, f"首轮无重复：{result.duplicates}")
 
     cards = store.list_topics(status="candidate", stage="raw")
-    expect(len(cards) == 20, f"池内生料卡应 20 张：{len(cards)}")
+    expect(len(cards) == 30, f"池内生料卡应 30 张：{len(cards)}")
     expect(all(c["stage"] == "raw" and c["tags"] == ["测试标签"] for c in cards), "生料卡应带 stage/tags")
     expect(all(len(c["arc"]) >= 12 for c in cards), "生料卡必须带成片推演落库（新闻稿闸）")
     expect(all(len(c["heatEvidence"]) == 1 and c["heatEvidence"][0]["url"] for c in cards), "生料卡应锚定真实原型出处")
     anchor = next(c for c in cards if "甲骨" in c["title"])
-    expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指语料条目")
+    expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指线索条目（经方向对象透传）")
     anchor_cards = [c for c in cards if "甲骨" in c["title"]]
     expect(
-        all(c["summary"].startswith("钩子") or c["summary"].startswith("另一个方向的钩子") for c in anchor_cards),
-        "生料卡摘要应为钩子（含发散方向）",
+        all(c["summary"].startswith("钩子") for c in anchor_cards),
+        "生料卡摘要应为钩子",
     )
-    expect(
-        len({c["title"].split("：")[0] for c in anchor_cards}) == 2,
-        "同一线索的两个发散方向都应落卡",
-    )
+    expect(len(anchor_cards) == 3, f"同一线索的三个发散方向都应落卡：{len(anchor_cards)}")
+    expect(len({c["title"] for c in anchor_cards}) == 3, "同线索不同方向的卡不应重样")
 
     # 幂等：原样重跑，当日已喂语料全部被消费指纹拦下 → 轮空不重喂
     again = await curator.run()

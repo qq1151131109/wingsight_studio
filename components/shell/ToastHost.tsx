@@ -1,17 +1,22 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AlertCircle } from "lucide-react";
 import { onToast, type ToastItem } from "@/lib/toast";
 
+const emptySubscribe = () => () => {};
+
 /** 全局 toast 宿主（layout 挂载，portal 到 body）：底部居中，4 秒自动消失。 */
 export default function ToastHost() {
   const [items, setItems] = useState<ToastItem[]>([]);
-  // portal 组件必须挂载后再渲染：SSR 返回 null、客户端首帧直接 createPortal
-  // 会让两棵树不一致（hydration failed → 整树重建 + script 标签警告）
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  // portal 必须挂载后再渲染：服务端快照 false / 客户端 true（同步 setState
+  // in effect 会被 React Compiler 规则打回，useSyncExternalStore 是规范解）
+  const mounted = useSyncExternalStore(
+    emptySubscribe,
+    () => true,
+    () => false,
+  );
 
   useEffect(
     () =>

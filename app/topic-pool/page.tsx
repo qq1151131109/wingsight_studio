@@ -73,6 +73,7 @@ function lastRunSummary(run: TopicRefreshRun): string {
   if (!run?.finishedAt) return "";
   const parts: string[] = [];
   if (typeof run.collected === "number") parts.push(`语料 ${run.collected}`);
+  if (typeof run.directions === "number" && run.directions > 0) parts.push(`方向 ${run.directions}`);
   if (typeof run.batches === "number") parts.push(`${run.batches} 批`);
   if (typeof run.created === "number") parts.push(`生料 +${run.created}`);
   if (typeof run.duplicates === "number" && run.duplicates > 0) parts.push(`去重 ${run.duplicates}`);

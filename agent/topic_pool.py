@@ -223,15 +223,14 @@ def verticals_payload() -> list[dict[str, str]]:
 # --- 生料选题层（批量创意生成）：池子的常规刷新只跑这一层，量大、便宜 ---
 # 单批喂给生成 flow 的语料条数（约 1 次长上下文调用产 8-12 个选题；批越大
 # 模型输出越长，实测 70 条语料产 30 题会超 agent 侧 300s 超时——别调回去）
-# 单批喂给生成 flow 的线索条数。线索发散模式：少量线索深发散（每条 2-3 个
-# 方向），输出总量与旧批量模式的安全区间持平（10-18 题）——输出再长会超
-# agent 侧 300s 超时（实测 30 题/批超时），别调回去
-IDEATE_BATCH_SIZE = 6
-# 单轮刷新最多跑的批数（成本硬上界：≤24 次 LLM 调用，零检索成本）
-IDEATE_BATCHES_CAP = 24
-# 单批落卡的选题上限（线索发散模式：6 线索 × 2-3 方向 ≈ 12-18，超量说明
-# flow 违规刷屏，掐到 18；跨批同题由指纹去重兜底）
-IDEATE_ENTRIES_PER_BATCH = 18
+# 两步生成的批参数：先发散（线索→方向清单，不筛选），再收敛（方向→过闸成片卡）。
+# 每步的输出都受 agent 侧 300s 超时约束（实测单次输出 ~30 个 JSON 对象会超时，
+# 别把任何一步的期望输出量调回去）
+DIVERGE_CLUES_PER_BATCH = 5  # 发散批：5 线索 × 6-10 方向 ≈ 2k token 输出，安全
+CONVERGE_DIRECTIONS_PER_BATCH = 24  # 收敛批：24 方向过三问闸，过闸率天然 <1，输出 8-16 题
+CONVERGE_ENTRIES_CAP = 20  # 单个收敛批的落卡上限（flow 违规刷屏时掐断）
+# 单轮刷新的发散调用上限（成本硬上界：≤16 次发散 + 各 ~2 次收敛）
+IDEATE_BATCHES_CAP = 16
 # 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
 # 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
@@ -305,6 +304,7 @@ ZHIHU_DISCUSSION_SEEDS: dict[str, tuple[str, ...]] = {
 ZHIHU_MIN_VOTES = 100
 
 FLOW_IDS = {
+    "diverge": "LANGFLOW_TOPIC_DIVERGE_FLOW_ID",
     "ideate": "LANGFLOW_TOPIC_IDEATE_FLOW_ID",
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
@@ -422,8 +422,9 @@ class TriagePick:
 class IdeateResult:
     """单轮生料刷新的外部可观测结果（落 lastRun 给前端展示）。"""
 
-    collected: int = 0  # 本轮语料条数（五源信号 + 维基语料）
-    batches: int = 0  # 实际跑的生成批数
+    collected: int = 0  # 本轮待发散线索条数（五源信号 + 维基语料，扣当日已喂）
+    directions: int = 0  # 本轮发散出的方向总数（含上轮中断遗留的待收敛方向）
+    batches: int = 0  # 实际跑的发散调用次数
     created: int = 0  # 新落库的生料选题张数
     duplicates: int = 0  # 指纹去重跳过的条数
     rejected: int = 0  # 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题）
@@ -717,49 +718,56 @@ class TopicCurator:
 
     async def run(self) -> IdeateResult:
         result = IdeateResult()
-        # 当日语料落账（采集是最贵的阶段，几十次搜索跑十几分钟）：外部看护
-        # 可能每 ~20 分钟重启一次服务，重启后凭当日缓存直接续跑剩余批次，
-        # 不再重新采集——断点续跑让进度在任意重启节奏下都能累积
-        items = self._load_corpus_cache()
-        if items is None:
-            items = await self.collect_signals()
-            if not items:
+        # 当日状态两桶落账（采集是最贵的阶段，几十次搜索跑十几分钟）：外部看护
+        # 可能每 ~20 分钟重启一次服务，重启后凭当日状态续跑（未发散线索 + 已发散
+        # 待收敛的方向都不丢），不再重新采集——断点续跑让进度在任意重启节奏下累积
+        clues, directions = self._load_day_state()
+        if clues is None:
+            signals = await self.collect_signals()
+            if not signals:
                 result.error = "语料采集为零条（全部通道失败或无结果）"
                 return result
-            self._save_corpus_cache(items)
-        if not items:
-            result.error = "语料采集为零条（全部通道失败或无结果）"
-            return result
-        # 当日已喂过的语料不再进批：同日多轮刷新各喂新料，直到当日语料池耗尽
+            clues, directions = signals, []
+            self._save_day_state(clues, directions)
+        # 当日已喂过的线索不再发散：同日多轮刷新各喂新料，直到当日线索池耗尽
         seen = self._load_ideate_seen()
-        items = [i for i in items if fingerprint_of(i["title"]) not in seen]
-        result.collected = len(items)
-        if not items:
+        clues = [c for c in clues if fingerprint_of(c["title"]) not in seen]
+        result.collected = len(clues)
+        result.directions = len(directions)
+        if not clues and not directions:
             result.error = "当日语料已全部喂过（次日换片续喂），本轮无新料"
             return result
         # 洗牌混垂类：语料按来源聚集，不洗牌会让单批垂类单一
-        random.shuffle(items)
-        await self.ideate(items, result, seen)
+        random.shuffle(clues)
+        await self.ideate(clues, directions, result, seen)
         return result
 
-    def _load_corpus_cache(self) -> list[dict[str, Any]] | None:
+    def _load_day_state(self) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+        """当日两桶状态：(未发散线索, 待收敛方向)；None 表示今天还没采过（要采集）。
+
+        旧结构 {"signals": [...]}（单桶语料）迁移为线索桶——当天已采集的语料不重采。
+        当日已耗尽（两桶皆空）返回空列表而非 None：同日再触发刷新不重采集，直接轮空。
+        """
         raw = store.get_setting(IDEATE_CORPUS_KEY)
         if not raw:
-            return None
+            return None, []
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
-            return None
+            return None, []
         if not isinstance(data, dict) or data.get("day") != date.today().isoformat():
-            return None
-        signals = data.get("signals")
-        return signals if isinstance(signals, list) and signals else None
+            return None, []
+        clues = data.get("clues")
+        if not isinstance(clues, list):
+            clues = data.get("signals") or []  # 旧单桶结构迁移
+        directions = data.get("directions")
+        return clues, directions if isinstance(directions, list) else []
 
-    def _save_corpus_cache(self, signals: list[dict[str, Any]]) -> None:
+    def _save_day_state(self, clues: list[dict[str, Any]], directions: list[dict[str, Any]]) -> None:
         store.set_setting(
             IDEATE_CORPUS_KEY,
             json.dumps(
-                {"day": date.today().isoformat(), "signals": signals},
+                {"day": date.today().isoformat(), "clues": clues, "directions": directions},
                 ensure_ascii=False,
             ),
         )
@@ -786,16 +794,28 @@ class TopicCurator:
             ),
         )
 
-    async def ideate(self, items: list[dict[str, Any]], result: IdeateResult, seen: set[str]) -> None:
-        """语料分批喂生成 flow，产出的创意选题以生料卡落库（指纹幂等）。"""
-        batches = [
-            items[i : i + IDEATE_BATCH_SIZE]
-            for i in range(0, len(items), IDEATE_BATCH_SIZE)
-        ][:IDEATE_BATCHES_CAP]
-        result.batches = len(batches)
-        for batch in batches:
-            seen.update(fingerprint_of(i["title"]) for i in batch)
-            self._save_ideate_seen(seen)  # 每批落账：中断不重喂
+    async def ideate(
+        self,
+        clues: list[dict[str, Any]],
+        directions: list[dict[str, Any]],
+        result: IdeateResult,
+        seen: set[str],
+    ) -> None:
+        """两步生成：先发散（线索→方向清单，不筛选），再收敛（方向→过闸成片卡）。
+
+        断点续跑顺序：先收敛上轮遗留的方向（最贵的发散已完成），再发散新线索。
+        线索在发散成功后才记 seen——发散中途被杀的线索下轮重喂，方向不丢。
+        """
+        # 1) 收敛存量方向（上轮被杀时遗留的半成品）
+        if directions:
+            await self._converge(directions, result)
+            directions = []
+            self._save_day_state(clues, directions)
+        # 2) 发散新线索 → 逐轮收敛
+        for offset in range(0, len(clues), DIVERGE_CLUES_PER_BATCH):
+            if result.batches >= IDEATE_BATCHES_CAP:
+                break  # 发散调用次数到帽：剩余线索留在当日状态里，下轮续
+            batch = clues[offset : offset + DIVERGE_CLUES_PER_BATCH]
             listing = [
                 {
                     "index": idx,
@@ -806,14 +826,82 @@ class TopicCurator:
                 for idx, item in enumerate(batch)
             ]
             try:
-                entries = await self._call_flow("ideate", {"corpus": listing, "verticals": verticals_payload()})
+                groups = await self._call_flow("diverge", {"corpus": listing})
             except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，继续下一批
-                logger.warning("选题批量生成本批失败: %s", str(exc)[:200])
+                logger.warning("选题发散本批失败: %s", str(exc)[:200])
+                continue
+            fresh = self._parse_directions(groups, batch)
+            result.batches += 1
+            seen.update(fingerprint_of(i["title"]) for i in batch)
+            self._save_ideate_seen(seen)  # 发散成功即记喂过（空产出也算，贫瘠线索不反复重喂）
+            if not fresh:
+                continue
+            result.directions += len(fresh)
+            # 方向先落账再收敛：收敛中途被杀，重启后凭状态续收敛，不丢方向
+            self._save_day_state(clues[offset + DIVERGE_CLUES_PER_BATCH :], fresh)
+            await self._converge(fresh, result)
+            self._save_day_state(clues[offset + DIVERGE_CLUES_PER_BATCH :], [])
+
+    def _parse_directions(
+        self, groups: Any, batch: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """发散输出 → 方向对象（复制线索上下文进来，收敛产出可回溯原型出处）。"""
+        if not isinstance(groups, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            idx = group.get("sourceIndex")
+            clue = batch[idx] if isinstance(idx, int) and 0 <= idx < len(batch) else None
+            if clue is None:
+                continue
+            for d in group.get("directions") or []:
+                if not isinstance(d, dict):
+                    continue
+                name = str(d.get("name") or "").strip()
+                sketch = str(d.get("sketch") or "").strip()
+                if not name or not sketch:
+                    continue
+                out.append(
+                    {
+                        "title": clue["title"],
+                        "url": clue.get("url") or "",
+                        "snippet": clue.get("snippet") or "",
+                        "source": clue.get("source") or "",
+                        "signal_type": clue.get("signal_type") or "corpus",
+                        "name": name,
+                        "sketch": sketch,
+                    }
+                )
+        return out
+
+    async def _converge(self, directions: list[dict[str, Any]], result: IdeateResult) -> None:
+        """方向分批过收敛 flow（成立性三问 + arc），产出的成片卡落库。"""
+        for i in range(0, len(directions), CONVERGE_DIRECTIONS_PER_BATCH):
+            chunk = directions[i : i + CONVERGE_DIRECTIONS_PER_BATCH]
+            payload = {
+                "directions": [
+                    {
+                        "index": j,
+                        "clue": d["title"],
+                        "clue_snippet": d.get("snippet") or "",
+                        "name": d["name"],
+                        "sketch": d["sketch"],
+                    }
+                    for j, d in enumerate(chunk)
+                ],
+                "verticals": verticals_payload(),
+            }
+            try:
+                entries = await self._call_flow("ideate", payload)
+            except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，继续下一批
+                logger.warning("选题收敛本批失败: %s", str(exc)[:200])
                 continue
             if not isinstance(entries, list):
                 continue
-            for entry in entries[:IDEATE_ENTRIES_PER_BATCH]:
-                self._create_raw_card(entry, batch, result)
+            for entry in entries[:CONVERGE_ENTRIES_CAP]:
+                self._create_raw_card(entry, chunk, result)
 
     def _create_raw_card(
         self, entry: Any, corpus: list[dict[str, Any]], result: IdeateResult

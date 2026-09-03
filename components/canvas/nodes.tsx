@@ -34,6 +34,7 @@ import {
   Grid3X3,
   History,
   Image as ImageIcon,
+  ImagePlus,
   ImageUp,
   Info,
   Landmark,
@@ -90,7 +91,9 @@ import {
   resolveRowRefIds,
 } from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, useImageModels } from "@/lib/imagegen";
-import { downloadMedia } from "@/lib/download";
+import { copyImageToClipboard, downloadMedia } from "@/lib/download";
+import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
+import { showToast } from "@/lib/toast";
 import { reportError } from "@/lib/error-dialog";
 import {
   dispatchFocusEdit,
@@ -698,7 +701,7 @@ function CardShell({
         isVisible={selected}
         minWidth={200}
         minHeight={140}
-        keepAspectRatio={aspect}
+        keepAspectRatio={aspect && !data.freeResize}
         handleClassName="ws-resize-handle"
         lineClassName="ws-resize-line"
       />
@@ -2525,6 +2528,39 @@ function ImageCard({ data, id, selected }: NodeProps) {
               ) : null}
               <button
                 type="button"
+                data-tip="下载图片（原图）" aria-label="下载图片（原图）"
+                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                data-track="image.download"
+  onClick={(e) => {
+                  e.stopPropagation();
+                  void downloadMedia(d.imageUrl!, d.title || "image").catch(
+                    (exc) =>
+                      showToast(
+                        `下载失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+                      ),
+                  );
+                }}
+              >
+                <Download className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                data-tip="复制图片到剪贴板" aria-label="复制图片到剪贴板"
+                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                data-track="image.copy-image"
+  onClick={(e) => {
+                  e.stopPropagation();
+                  void copyImageToClipboard(d.imageUrl!).catch((exc) =>
+                    showToast(
+                      `复制图片失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+                    ),
+                  );
+                }}
+              >
+                <ImagePlus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
                 data-tip="重新生成" aria-label="重新生成"
                 className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
                 data-track="card.regenerate"
@@ -4309,6 +4345,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
   const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState("");
+  // 宫格大图合成中（纯前端 canvas，帧多时秒级）
+  const [gridBusy, setGridBusy] = useState(false);
   // 生成已等秒数：驱动进度条与「排队较久」提示
   const [genSec, setGenSec] = useState(0);
   const [rowSeq, setRowSeq] = useState(0);
@@ -4985,6 +5023,48 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     else exportTextFile(title, shotlistToText(title, rows, style), "txt");
   };
 
+  /** 分镜帧合成宫格大图（P1-3 交付格式：帧编号+画面备注）。
+   *  行图优先行内 imageUrl，物化节点行读节点实时主图 */
+  const exportGrid = async () => {
+    if (gridBusy) return;
+    const st = useCanvasStore.getState();
+    const frames = rows
+      .map((r, i) => {
+        const url =
+          r.imageUrl ??
+          (r.imageNodeId
+            ? (st.nodes.find((n) => n.id === r.imageNodeId)?.data.imageUrl as
+                | string
+                | undefined)
+            : undefined);
+        return url
+          ? {
+              url,
+              label: `镜${i + 1}`,
+              note:
+                (r.action ?? r.dialogue ?? "").replace(/\s+/g, " ").trim() ||
+                undefined,
+            }
+          : null;
+      })
+      .filter((f): f is NonNullable<typeof f> => Boolean(f));
+    if (frames.length === 0) return;
+    setGridBusy(true);
+    try {
+      const blob = await mergeImagesToGrid(frames);
+      downloadBlobFile(
+        `${(d.title || "").trim() || "分镜表"}·宫格.png`,
+        blob,
+      );
+    } catch (e) {
+      showToast(
+        `宫格导出失败${e instanceof Error && e.message ? `：${e.message}` : ""}`,
+      );
+    } finally {
+      setGridBusy(false);
+    }
+  };
+
   return (
     <CardShell id={id} data={d} selected={selected}>
       {/* 深缩放（micro/nano）只留标题+统计概览：行编辑器是全画布最重的
@@ -5337,6 +5417,24 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             disabled={rows.length === 0}
             track="shotlist"
           />
+          <button
+            type="button"
+            data-tip="分镜帧合成宫格大图（帧编号+画面备注）" aria-label="分镜帧合成宫格大图"
+            disabled={gridBusy || !rows.some((r) => r.imageUrl || r.imageNodeId)}
+            data-track="shotlist.grid-export"
+            className="flex items-center gap-0.5 rounded px-1 py-0.5 transition-colors hover:text-text disabled:opacity-40"
+            onClick={(e) => {
+              e.stopPropagation();
+              void exportGrid();
+            }}
+          >
+            {gridBusy ? (
+              <Loader2 className="h-3 w-3 motion-safe:animate-spin" />
+            ) : (
+              <Grid3X3 className="h-3 w-3" />
+            )}
+            宫格图
+          </button>
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           <label
