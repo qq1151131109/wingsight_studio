@@ -349,8 +349,9 @@ function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
   );
 }
 
-/** 双击聚焦（open-ai-canvas focusCanvasImageNode 范式）：视口平滑居中到
- *  该卡，缩放钳制 0.78–1.25（跟当前档位走，不猛跳） */
+/** 双击聚焦（open-ai-canvas focusCanvasImageNode 范式的修正版）：视口平滑
+ *  居中到该卡。只钳上限 1.25（小卡不炸屏）——大卡（手动拉大的/长图）要
+ *  缩到完整可见，设缩放下限会撑满整屏（用户反馈"放得过于大了"） */
 function focusCardView(
   rf: { fitView: (o: Record<string, unknown>) => Promise<boolean> | void },
   id: string,
@@ -358,7 +359,6 @@ function focusCardView(
   void rf.fitView({
     nodes: [{ id }],
     duration: 420,
-    minZoom: 0.78,
     maxZoom: 1.25,
     padding: 0.3,
   });

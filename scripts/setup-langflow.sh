@@ -186,6 +186,7 @@ FLOWS = {
     "topic-ideate.json": "LANGFLOW_TOPIC_IDEATE_FLOW_ID",
     "topic-diverge.json": "LANGFLOW_TOPIC_DIVERGE_FLOW_ID",
     "topic-retitle.json": "LANGFLOW_TOPIC_RETITLE_FLOW_ID",
+    "topic-upscale.json": "LANGFLOW_TOPIC_UPSCALE_FLOW_ID",
     "promo-copy.json": None,
     "research-plan.json": "LANGFLOW_RESEARCH_PLAN_FLOW_ID",
     "research-extract.json": "LANGFLOW_RESEARCH_EXTRACT_FLOW_ID",

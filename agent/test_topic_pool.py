@@ -320,7 +320,7 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
                 "title": f"选题：{d['sketch']}",
                 "hook": f"钩子{j}",
                 "prototype": "原型概括",
-                "arc": f"跟拍{d['name']}相关当事人，追查从起点到现状的全过程",
+                "arc": f"题眼：{d['name']}背后的大主题；跟拍：相关当事人；弧线：从起点到现状",
                 "vertical": vertical,
                 "tags": ["测试标签"],
                 "sourceIndex": j,
@@ -483,7 +483,7 @@ async def run_ideate() -> None:
     cards = store.list_topics(status="candidate", stage="raw")
     expect(len(cards) == 30, f"池内生料卡应 30 张：{len(cards)}")
     expect(all(c["stage"] == "raw" and c["tags"] == ["测试标签"] for c in cards), "生料卡应带 stage/tags")
-    expect(all(len(c["arc"]) >= 12 for c in cards), "生料卡必须带成片推演落库（新闻稿闸）")
+    expect(all(len(c["arc"]) >= 12 and "题眼" in c["arc"][:12] for c in cards), "生料卡 arc 必须带题眼三段式（小事闸）")
     expect(all(len(c["heatEvidence"]) == 1 and c["heatEvidence"][0]["url"] for c in cards), "生料卡应锚定真实原型出处")
     anchor = next(c for c in cards if "甲骨" in c["title"])
     expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指线索条目（经方向对象透传）")

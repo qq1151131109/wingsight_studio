@@ -372,8 +372,8 @@ await page.waitForTimeout(900); // fitView duration 420ms + 余量
 {
   const vp = await page.evaluate(() => window.__wsCanvasStore.getState().viewport);
   check(
-    "G1 双击图片 → 视口聚焦（zoom 钳在 0.78–1.25）",
-    vp.zoom >= 0.75 && vp.zoom <= 1.3,
+    "G1 双击图片 → 视口聚焦（zoom ≤1.25，大卡可缩到完整可见）",
+    vp.zoom >= 0.3 && vp.zoom <= 1.3,
     `zoom=${vp.zoom.toFixed(2)}`,
   );
   const card = await nodeOf("测试底图").boundingBox();

@@ -919,8 +919,9 @@ class TopicCurator:
         arc = str(entry.get("arc") or "").strip()
         if not title or not hook or vertical not in VERTICALS:
             return
-        # arc 必须含人与过程且不能只是把 hook 复读一遍——复读等同没推演
-        if len(arc) < 12 or fingerprint_of(arc) == fingerprint_of(hook):
+        # arc 三段式（题眼/跟拍/弧线）：题眼是人群/行业/时代/现象级大主题，
+        # 缺题眼 = 单人物单事件的小事选题（撑不起一部片）；复读 hook 同判
+        if len(arc) < 12 or "题眼" not in arc[:12] or fingerprint_of(arc) == fingerprint_of(hook):
             result.rejected += 1
             return
         fingerprint = fingerprint_of(title)
