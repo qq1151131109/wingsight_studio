@@ -35,6 +35,11 @@ function asSlot<C>(component: unknown): C {
   return component as C;
 }
 
+/** 空渲染（用于从工具栏里摘掉某个内置按钮） */
+function NullSlot(): null {
+  return null;
+}
+
 const SUGGESTIONS = [
   {
     title: "✍️ 建个剧本卡",
@@ -125,6 +130,16 @@ export default function ThemedSidebar() {
         input={asSlot<typeof CopilotChatInput>(ChatInput)}
         toggleButton={asSlot<typeof CopilotChatToggleButton>(AssistantFab)}
         suggestionView={asSlot<typeof CopilotChatSuggestionView>(EmptyStateSuggestions)}
+        messageView={{
+          // 复制按钮暂不需要（且按钮在本工程层叠下偏大）：user/assistant 两侧
+          // 都替换成空渲染；重新生成/赞踩等其余工具栏保留
+          assistantMessage: {
+            copyButton: asSlot<never>(NullSlot),
+          },
+          userMessage: {
+            copyButton: asSlot<never>(NullSlot),
+          },
+        }}
         onError={(ev) => {
           if (!("error" in ev)) return;
           const raw = typeof ev.error?.message === "string" ? ev.error.message : "";

@@ -610,6 +610,8 @@ function CardShell({
   data,
   selected,
   aspect,
+  bleed,
+  extraTools,
   children,
 }: {
   id: string;
@@ -617,6 +619,10 @@ function CardShell({
   selected: boolean;
   /** 就绪的图片/视频锁定宽高比缩放 */
   aspect?: boolean;
+  /** 图片满幅卡：去卡内边距，图贴到卡框（图片卡"只显示图片"） */
+  bleed?: boolean;
+  /** 卡专属工具（渲染在图片操作组之后、通用组之前），如版本/下载/重生成 */
+  extraTools?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [plusMenu, setPlusMenu] = useState<null | "left" | "right">(null);
@@ -648,9 +654,14 @@ function CardShell({
       raf2 = requestAnimationFrame(() => {
         const el = rootRef.current;
         if (!el) return;
-        // 贴顶时 offset 允许为负：工具条下滑压住标题行、贴住图片容器上缘
-        // （用户反馈：悬在半空像被应用头部吞掉，要"离图片容器更近"）
-        setTbOffset(Math.min(12, el.getBoundingClientRect().top - 54));
+        // 应用头部（画布左上角工具条行，覆盖在画布上 z-10）会拦工具条的
+        // 点击。实测其底缘（data-canvas-header），钳制 = 工具条顶边不低于
+        // 头部下缘 +4px；贴顶时 offset 为负、下滑压住标题行贴住图片上缘
+        const header = document.querySelector("[data-canvas-header]");
+        const headerBottom = header ? header.getBoundingClientRect().bottom : 8;
+        setTbOffset(
+          Math.min(12, el.getBoundingClientRect().top - headerBottom - 50),
+        );
       });
     });
     return () => {
@@ -861,6 +872,12 @@ function CardShell({
               <span className="mx-1 h-4 w-px bg-hairline" />
             </>
           ) : null}
+          {extraTools ? (
+            <>
+              {extraTools}
+              <span className="mx-1 h-4 w-px bg-hairline" />
+            </>
+          ) : null}
           <ToolBtn title="原地复制" onClick={() => useCanvasStore.getState().duplicateSelection()}>
             <Copy className="h-4 w-4" />
           </ToolBtn>
@@ -984,7 +1001,7 @@ function CardShell({
         </span>
       </div>
       <div
-        className={`ws-card relative flex min-h-0 flex-1 flex-col p-3 ${selected ? "selected" : ""} ${flashing ? "ws-flash" : ""} ${halo ? "ws-ref-halo" : ""}`}
+        className={`ws-card relative flex min-h-0 flex-1 flex-col ${bleed ? "p-0" : "p-3"} ${selected ? "selected" : ""} ${flashing ? "ws-flash" : ""} ${halo ? "ws-ref-halo" : ""}`}
       >
         {justReady ? (
           <span className="ws-success-badge absolute left-2 top-2 z-10 grid h-5 w-5 place-items-center rounded-full bg-good text-white shadow">
@@ -2124,7 +2141,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
               e.stopPropagation();
               focusCardView(rf, id);
             }}
-            title="双击：视口聚焦本卡；右上角 ⌕ 看大图"
+            title="双击：视口聚焦本卡"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -2640,12 +2657,82 @@ function ImageCard({ data, id, selected }: NodeProps) {
   const candidates = d.imageUrls ?? [];
   const versionCount = d.versions?.length ?? 0;
 
+  // 快捷动作上浮到悬浮工具条（卡面只留图，竞品 Lovart 系范式）
+  const quickTools = d.imageUrl ? (
+    <>
+      <ToolBtn
+        title="版本历史（重生成前的结果自动存档）"
+        label={`V${versionCount + 1}`}
+        onClick={() => setHistoryOpen(true)}
+      >
+        <History className="h-4 w-4" />
+      </ToolBtn>
+      {d.body || d.genPrompt ? (
+        <ToolBtn
+          title="复制提示词"
+          onClick={() => {
+            void navigator.clipboard
+              ?.writeText(String(d.genPrompt ?? "").trim() || (d.body ?? ""))
+              .catch(() => undefined);
+          }}
+        >
+          <Copy className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      <ToolBtn
+        title="下载图片（原图）"
+        onClick={() => {
+          void downloadMedia(d.imageUrl!, d.title || "image").catch((exc) =>
+            showToast(
+              `下载失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+            ),
+          );
+        }}
+      >
+        <Download className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="复制图片到剪贴板"
+        onClick={() => {
+          void copyImageToClipboard(d.imageUrl!).catch((exc) =>
+            showToast(
+              `复制图片失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
+            ),
+          );
+        }}
+      >
+        <ImagePlus className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="重新生成（快照原样重跑）"
+        onClick={() => {
+          window.dispatchEvent(
+            new CustomEvent(RETRY_GENERATION_EVENT, {
+              detail: { nodeId: id },
+            }),
+          );
+        }}
+      >
+        <RefreshCw className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn title="查看大图（标注重绘/九宫格/版本在此操作）" onClick={() => openZoom()}>
+        <ZoomIn className="h-4 w-4" />
+      </ToolBtn>
+    </>
+  ) : null;
+
   return (
-    <CardShell id={id} data={d} selected={selected} aspect={d.status === "ready"}>
-      {/* 媒体区弹性伸缩（flex-1 + min-h-0）：卡被拖小（Look 卡/手动缩放）
-          时跟着缩，object-contain 保图完整，内容永不溢出卡体 */}
+    <CardShell
+      id={id}
+      data={d}
+      selected={selected}
+      aspect={d.status === "ready"}
+      bleed
+      extraTools={quickTools}
+    >
+      {/* 媒体区满幅（bleed 去卡内边距）：图片卡只显示图片，图贴卡框 */}
       <div
-        className={`mt-1.5 flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+        className={`flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -2662,7 +2749,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               e.stopPropagation();
               focusCardView(rf, id);
             }}
-            title="双击：视口聚焦本卡；右上角 ⌕ 看大图"
+            title="双击：视口聚焦本卡"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -2671,103 +2758,6 @@ function ImageCard({ data, id, selected }: NodeProps) {
               className="ws-media-in h-full w-full object-contain"
               {...mediaDragProps(id)}
             />
-            {lod === "full" ? (
-              <CornerActions>
-              <button
-                type="button"
-                data-tip="版本历史（重生成前的结果自动存档）" aria-label="版本历史（重生成前的结果自动存档）"
-                className="nodrag flex items-center gap-0.5 rounded-md bg-black/40 p-1 text-[10px] text-white hover:bg-black/60"
-                data-track="card.version-history"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  setHistoryOpen(true);
-                }}
-              >
-                <History className="h-3 w-3" />V{versionCount + 1}
-              </button>
-              {d.body || d.genPrompt ? (
-                <button
-                  type="button"
-                  data-tip="复制提示词" aria-label="复制提示词"
-                  className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                  data-track="card.copy-prompt"
-  onClick={(e) => {
-                    e.stopPropagation();
-                    // 优先复制实际发出的生成提示词快照（批量/重生成后不再是
-                    // 一句行文案）；无快照回退卡上正文
-                    void navigator.clipboard
-                      ?.writeText(
-                        String(d.genPrompt ?? "").trim() || (d.body ?? ""),
-                      )
-                      .catch(() => undefined);
-                  }}
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                </button>
-              ) : null}
-              <button
-                type="button"
-                data-tip="下载图片（原图）" aria-label="下载图片（原图）"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                data-track="image.download"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  void downloadMedia(d.imageUrl!, d.title || "image").catch(
-                    (exc) =>
-                      showToast(
-                        `下载失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
-                      ),
-                  );
-                }}
-              >
-                <Download className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                data-tip="复制图片到剪贴板" aria-label="复制图片到剪贴板"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                data-track="image.copy-image"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  void copyImageToClipboard(d.imageUrl!).catch((exc) =>
-                    showToast(
-                      `复制图片失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`,
-                    ),
-                  );
-                }}
-              >
-                <ImagePlus className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                data-tip="重新生成" aria-label="重新生成"
-                className="rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                data-track="card.regenerate"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  window.dispatchEvent(
-                    new CustomEvent(RETRY_GENERATION_EVENT, {
-                      detail: { nodeId: id },
-                    }),
-                  );
-                }}
-              >
-                <RefreshCw className="h-3.5 w-3.5" />
-              </button>
-              <button
-                type="button"
-                data-tip="查看大图（标注重绘/九宫格/版本在此操作）" aria-label="查看大图"
-                className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
-                data-track="card.open-lightbox"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  openZoom();
-                }}
-              >
-                <ZoomIn className="h-3.5 w-3.5" />
-              </button>
-            </CornerActions>
-            ) : null}
           </div>
         ) : (
           <MediaEmpty
@@ -2830,11 +2820,6 @@ function ImageCard({ data, id, selected }: NodeProps) {
             </button>
           ) : null}
         </div>
-      ) : null}
-      {lod === "full" && d.body ? (
-        <p className="ws-detail mt-1 line-clamp-2 whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
-          {d.body}
-        </p>
       ) : null}
       {zoom !== null && gallery.length > 0 ? (
         <Lightbox

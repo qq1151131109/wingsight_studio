@@ -1,6 +1,6 @@
 {
-  "name": "选题调研规划",
-  "description": "热点+研判线索 → ≤4 条覆盖证据面的检索查询（选题池管线第 2 步）",
+  "name": "topic-series-compose",
+  "description": "系列组题：按单元规格从真实检索结果挑候选单元（≥3），合成选集选题卡",
   "icon": null,
   "icon_bg_color": null,
   "gradient": null,
@@ -33,7 +33,7 @@
                 "api_editable": false,
                 "input_types": [],
                 "dynamic": false,
-                "info": "Overrides global provider settings. Leave blank to use your pre-configured API Key.",
+                "info": "Falls back to OPENAI_API_KEY environment variable",
                 "real_time_refresh": true,
                 "title_case": false,
                 "track_in_telemetry": false,
@@ -432,7 +432,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "system_message",
-                "value": "你是纪录片的选题调研员。用户消息是 JSON 载荷：{\"title\": 热点标题, \"theme\": 研判主题, \"reason\": 研判理由, \"arc\": 成片方案（可能缺省；四段式：题眼/素材/呈现/弧线）}。为这个选题规划最多 4 条定向检索查询，覆盖 AIGC 纪录片选题五问需要的证据面：\n- 素材基础（优先）：这个题的档案、文物、遗址、馆藏机构、地图数据、判决文书在哪些机构能否查到——AIGC 画面从哪来的落地入口\n- 事件核实：发生了什么（提炼地点/人物/事件要素，别照抄热搜句式）\n- 官方通报：警方/机构/政府怎么说\n- 深度报道：有没有媒体深度进场\n- 对标片：同题材已有纪录片/影视作品及其表现（爆款模式是否已验证）\n- 候选单元（reason 是系列组题时）：按单元规格收集多个合格实例——换地域、年代、机构组合着搜（如 不同省份的同类案件、不同年代的同类人物），一条查询要瞄准「一批」而不是「一个」\n载荷有 arc 时优先对着它的主张取证：题眼说的现象是否真实存在、素材段点名的档案/文物是否可查、呈现段的人物是否可考据。\n每条查询带一个简短标签（从上面选或自拟，如\"素材追查\"）；查询词要像调研员的手法——换关键词、用 机构名+材料类型 组合，而不是热搜原句加后缀。\n只输出 JSON 数组（不要任何解释或 Markdown 围栏）：[{\"label\": \"素材追查\", \"query\": \"...\"}]",
+                "value": "你是纪录片选题的组题策划。用户消息是 JSON 载荷：{\"theme\": 题眼短语（如 冷案重启）, \"unitSpec\": 合格单元的规格, \"seed\": {\"title\": 种子线索标题, \"snippet\": 摘要}, \"candidates\": 检索记录（按查询组织；每条结果含标题/链接/摘要，\"未检索到\"就是没有）}。\n\n任务：从 candidates 的真实结果里挑出符合 unitSpec 的候选单元，组成一个系列/选集选题。候选单元不足 3 个时输出 {\"insufficient\": true}——凑不够数不成题，宁缺毋滥。\n\n输出 JSON 对象（不输出任何其他文字）：\n{\"title\": 片名式标题, \"hook\": 一句情绪钩子, \"arc\": \"题眼：一句话大主题；素材：单元规格与来源类型；呈现：串珠结构怎么讲（每集一个单元？按什么排序？）；弧线：串珠问题——多个单元共同回答的一个问题\", \"vertical\": 垂类id, \"tags\": [\"索引标签\"], \"units\": [{\"title\": 真实结果标题, \"url\": 真实链接, \"snippet\": 摘要}]}\n\n硬纪律：\n- units 只能取自 candidates 里真实出现的结果：title/url 原样取，不许发明单元、不许编链接、不许把不满足 unitSpec 的硬塞进来；seed 若在 candidates 中有印证也可作一个单元\n- 串珠问题是系列的心脏：多个单元共同回答的一个问题（《人生第一次》=人生的每个节点我们如何第一次度过）；没有串珠问题只是一堆案例堆砌，不成系列\n- arc 必须以「题眼：」开头且含「素材：」段（四段式）\n- 标题守爆款纪律：陈述式为主、疑问≤三分之一、禁散文腔（抽象名词短语/比喻造境/含蓄留白）、2-10 字、不带书名号\n- tags 含一个形态词（单元选集/系列网格）\n- vertical 只能用载荷给定的垂类之外——若载荷无垂类清单，按 unitSpec 领域自选通用垂类 id（history/crime/humanity/science/food/nature/music/finance/travel/kids/military）",
                 "display_name": "System Message",
                 "advanced": false,
                 "api_editable": false,
@@ -479,7 +479,7 @@
                 "type": "slider",
                 "_input_type": "SliderInput"
               },
-              "is_refresh": true
+              "is_refresh": false
             },
             "description": "Runs a language model given a specified provider.",
             "icon": "brain-circuit",
@@ -571,7 +571,7 @@
               }
             },
             "tool_mode": false,
-            "last_updated": "2026-08-31T13:55:18.983Z"
+            "last_updated": "2026-08-31T13:54:24.880Z"
           },
           "showNode": true,
           "selected_output": "text_output"
@@ -1255,13 +1255,13 @@
       }
     ],
     "viewport": {
-      "x": 326.2546709848074,
-      "y": 21.912400231581955,
-      "zoom": 0.8667870323128959
+      "x": -170.3742933780577,
+      "y": -76.98871905809347,
+      "zoom": 0.9236971347236809
     }
   },
   "is_component": false,
-  "updated_at": "2026-09-01T03:16:47+00:00",
+  "updated_at": "2026-09-02T04:25:31+00:00",
   "webhook": false,
   "endpoint_name": null,
   "tags": null,
@@ -1273,7 +1273,7 @@
   "flow_type": "workflow",
   "a2a_enabled": false,
   "a2a_card_overrides": null,
-  "id": "ff504f2c-63b4-437a-abc0-629e25ac6889",
+  "id": "08961a01-263f-4697-b001-6ea74a5b9daa",
   "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
   "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
   "workspace_id": null,

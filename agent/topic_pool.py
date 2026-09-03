@@ -231,6 +231,11 @@ CONVERGE_DIRECTIONS_PER_BATCH = 24  # 收敛批：24 方向过三问闸，过闸
 CONVERGE_ENTRIES_CAP = 20  # 单个收敛批的落卡上限（flow 违规刷屏时掐断）
 # 单轮刷新的发散调用上限（成本硬上界：≤16 次发散 + 各 ~2 次收敛）
 IDEATE_BATCHES_CAP = 16
+# 组题（集合型题眼 → 检索收集候选单元 → 选集卡）单轮名额：每次组题 =
+# 1 次查询规划 + 2-3 条检索 + 1 次合成，帽住检索成本
+SERIES_ASSEMBLE_CAP = 6
+# 组题成功的最少候选单元数：凑不够不成卡（不做单片降级，明记 missed）
+SERIES_MIN_UNITS = 3
 # 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
 # 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
@@ -306,6 +311,7 @@ ZHIHU_MIN_VOTES = 100
 FLOW_IDS = {
     "diverge": "LANGFLOW_TOPIC_DIVERGE_FLOW_ID",
     "ideate": "LANGFLOW_TOPIC_IDEATE_FLOW_ID",
+    "series_compose": "LANGFLOW_TOPIC_SERIES_COMPOSE_FLOW_ID",
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
     "followup": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",
@@ -412,6 +418,7 @@ class TriagePick:
     vertical: str
     theme: str
     reason: str
+    arc: str = ""  # 生料卡的成片方案（题眼/素材/呈现/弧线），深挖取证与结论要核对它
 
     @property
     def primary_fingerprint(self) -> str:
@@ -426,6 +433,8 @@ class IdeateResult:
     directions: int = 0  # 本轮发散出的方向总数（含上轮中断遗留的待收敛方向）
     batches: int = 0  # 实际跑的发散调用次数
     created: int = 0  # 新落库的生料选题张数
+    series_created: int = 0  # 组题成功的选集卡张数（计入 created）
+    series_missed: int = 0  # 组题失败/候选不足/超名额的次数（明记不做单片降级）
     duplicates: int = 0  # 指纹去重跳过的条数
     rejected: int = 0  # 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题）
     error: str = ""
@@ -901,7 +910,115 @@ class TopicCurator:
             if not isinstance(entries, list):
                 continue
             for entry in entries[:CONVERGE_ENTRIES_CAP]:
-                self._create_raw_card(entry, chunk, result)
+                if (
+                    isinstance(entry, dict)
+                    and str(entry.get("scale") or "").strip().lower() == "series"
+                    and str(entry.get("unitSpec") or "").strip()
+                ):
+                    await self._assemble_series(entry, chunk, result)
+                else:
+                    self._create_raw_card(entry, chunk, result)
+
+    async def _assemble_series(
+        self, entry: dict[str, Any], corpus: list[dict[str, Any]], result: IdeateResult
+    ) -> None:
+        """集合型题眼组系列选题：按单元规格检索收集候选 → 合成选集卡。
+
+        候选单元不足 SERIES_MIN_UNITS 个不成卡（明记 series_missed，不做单片
+        降级——单个种子案子撑不起系列是收敛层的判断，组题失败不推翻它）。
+        """
+        if result.series_created + result.series_missed >= SERIES_ASSEMBLE_CAP:
+            result.series_missed += 1  # 名额用完：本系列不落，留给下一轮
+            return
+        if self.search is None:
+            result.series_missed += 1
+            return
+        source_index = entry.get("sourceIndex")
+        proto = corpus[source_index] if isinstance(source_index, int) and 0 <= source_index < len(corpus) else None
+        if proto is None:
+            result.series_missed += 1
+            return
+        theme = str(entry.get("theme") or entry.get("title") or proto["title"]).strip()
+        unit_spec = str(entry["unitSpec"]).strip()
+        queries = await self._plan_queries(
+            "plan",
+            {
+                "title": proto["title"],
+                "theme": theme,
+                "reason": f"系列组题：按单元规格收集候选单元——{unit_spec}",
+            },
+            3,
+        )
+        if not queries:
+            result.series_missed += 1
+            return
+        log = await execute_queries(self.search, queries)
+        payload = {
+            "theme": theme,
+            "unitSpec": unit_spec,
+            "seed": {"title": proto["title"], "snippet": proto.get("snippet") or ""},
+            "candidates": _format_research_log(log, with_empty_hint=True),
+        }
+        try:
+            out = await self._call_flow("series_compose", payload)
+        except Exception as exc:  # noqa: BLE001 - 组题失败明记，不拖累其余收敛
+            logger.warning("系列组题失败 theme=%s: %s", theme[:50], str(exc)[:200])
+            result.series_missed += 1
+            return
+        if not isinstance(out, dict) or out.get("insufficient"):
+            result.series_missed += 1
+            return
+        title = str(out.get("title") or "").strip()
+        hook = str(out.get("hook") or "").strip()
+        vertical = str(out.get("vertical") or "").strip().lower()
+        arc = str(out.get("arc") or "").strip()
+        units: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for u in out.get("units") or []:
+            if not isinstance(u, dict):
+                continue
+            ut, uu = str(u.get("title") or "").strip(), str(u.get("url") or "").strip()
+            if ut and uu and uu not in seen_urls:
+                seen_urls.add(uu)
+                units.append({"title": ut, "url": uu, "snippet": str(u.get("snippet") or "").strip(), "source": ""})
+        if (
+            not title
+            or not hook
+            or vertical not in VERTICALS
+            or len(arc) < 12
+            or "题眼" not in arc[:12]
+            or "素材" not in arc
+            or fingerprint_of(arc) == fingerprint_of(hook)
+            or len(units) < SERIES_MIN_UNITS
+        ):
+            result.series_missed += 1
+            return
+        fingerprint = fingerprint_of(title)
+        if store.exists_by_any_fingerprint([fingerprint]):
+            result.duplicates += 1
+            return
+        tags = [str(t).strip() for t in (entry.get("tags") or []) if str(t).strip()][:4]
+        if "单元选集" not in tags and "系列网格" not in tags:
+            tags = (tags + ["单元选集"])[:4]
+        try:
+            store.create_topic(
+                vertical=vertical,
+                title=title,
+                title_fingerprint=fingerprint,
+                summary=hook,
+                heat_evidence=units,  # 原型出处 = N 个真实候选单元
+                research={},
+                source=str(proto.get("signal_type") or "corpus"),
+                stage="raw",
+                tags=tags,
+                arc=arc,
+            )
+            result.created += 1
+            result.series_created += 1
+            logger.info("系列组题成卡 title=%s units=%d", title[:40], len(units))
+        except Exception as exc:  # noqa: BLE001 - 唯一约束冲突/单卡失败不拖累整批
+            logger.info("系列组题落库跳过 fingerprint=%s: %s", fingerprint[:12], str(exc)[:120])
+            result.duplicates += 1
 
     def _create_raw_card(
         self, entry: Any, corpus: list[dict[str, Any]], result: IdeateResult
@@ -919,9 +1036,14 @@ class TopicCurator:
         arc = str(entry.get("arc") or "").strip()
         if not title or not hook or vertical not in VERTICALS:
             return
-        # arc 三段式（题眼/跟拍/弧线）：题眼是人群/行业/时代/现象级大主题，
-        # 缺题眼 = 单人物单事件的小事选题（撑不起一部片）；复读 hook 同判
-        if len(arc) < 12 or "题眼" not in arc[:12] or fingerprint_of(arc) == fingerprint_of(hook):
+        # arc 四段式（题眼/素材/呈现/弧线）：题眼=大主题（小事闸），素材=AIGC
+        # 射程凭证（跟拍依赖型闸——依赖真人实拍的选题砍）；复读 hook 同判
+        if (
+            len(arc) < 12
+            or "题眼" not in arc[:12]
+            or "素材" not in arc
+            or fingerprint_of(arc) == fingerprint_of(hook)
+        ):
             result.rejected += 1
             return
         fingerprint = fingerprint_of(title)
@@ -968,11 +1090,10 @@ class TopicCurator:
         if self.search is None:
             return []
         hot_title = pick.members[0]["title"]
-        plan = await self._plan_queries(
-            "plan",
-            {"title": hot_title, "theme": pick.theme, "reason": pick.reason},
-            RESEARCH_PLAN_MAX_QUERIES,
-        )
+        plan_payload: dict[str, Any] = {"title": hot_title, "theme": pick.theme, "reason": pick.reason}
+        if pick.arc:
+            plan_payload["arc"] = pick.arc  # 查询规划对着 arc 的题眼/素材主张去取证
+        plan = await self._plan_queries("plan", plan_payload, RESEARCH_PLAN_MAX_QUERIES)
         if not plan:
             return []
         log = await execute_queries(self.search, plan)
@@ -1066,6 +1187,8 @@ class TopicCurator:
             "priorContext": "",
             "evidencePack": _format_research_log(research_log, with_empty_hint=True),
         }
+        if pick.arc:
+            payload["arc"] = pick.arc
         if angle_options:
             payload["angleOptions"] = angle_options
         try:
@@ -1207,6 +1330,7 @@ class TopicCurator:
                 vertical=str(topic.get("vertical") or "history"),
                 theme=title,
                 reason="导演点名深挖：对生料选题做完整取证与结论",
+                arc=str(topic.get("arc") or ""),
             )
             research_log = await self._research_candidate(pick)
             angle_options = await self._plan_angles(pick, research_log)

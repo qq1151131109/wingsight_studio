@@ -97,7 +97,7 @@ async def main() -> None:
                 title = str(item.get("title") or "").strip().strip("《》")
                 hook = str(item.get("hook") or "").strip()
                 arc = str(item.get("arc") or "").strip()
-                if not title or not hook or len(arc) < 12 or "题眼" not in arc[:12]:
+                if not title or not hook or len(arc) < 12 or "题眼" not in arc[:12] or "素材" not in arc:
                     kept += 1  # 升维输出不合法保留原卡，宁缺毋滥不硬写
                     continue
                 fp = fingerprint_of(title)

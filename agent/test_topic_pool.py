@@ -31,6 +31,7 @@ entity_store.DB_PATH = _tmp / "test.db"
 entity_store.init_entities_db()
 os.environ["LANGFLOW_TOPIC_IDEATE_FLOW_ID"] = "f-ideate"
 os.environ["LANGFLOW_TOPIC_DIVERGE_FLOW_ID"] = "f-diverge"
+os.environ["LANGFLOW_TOPIC_SERIES_COMPOSE_FLOW_ID"] = "f-series"
 os.environ["LANGFLOW_TOPIC_TRIAGE_FLOW_ID"] = "f-triage"
 os.environ["LANGFLOW_TOPIC_PLAN_FLOW_ID"] = "f-plan"
 os.environ["LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID"] = "f-followup"
@@ -320,7 +321,7 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
                 "title": f"选题：{d['sketch']}",
                 "hook": f"钩子{j}",
                 "prototype": "原型概括",
-                "arc": f"题眼：{d['name']}背后的大主题；跟拍：相关当事人；弧线：从起点到现状",
+                "arc": f"题眼：{d['name']}背后的大主题；素材：档案与历史场景可生成；呈现：相关当事人；弧线：从起点到现状",
                 "vertical": vertical,
                 "tags": ["测试标签"],
                 "sourceIndex": j,
@@ -330,9 +331,36 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
         out.append({"title": "无推演卡", "hook": "一条钩子", "vertical": "history", "sourceIndex": 0})  # 缺 arc → 拒绝
         out.append({"title": "复读卡", "hook": "他守了它三十年，如今它要消失", "arc": "他守了它三十年，如今它要消失",
                     "vertical": "crime", "sourceIndex": 1})  # arc 复读 hook（无过程推演）→ 拒绝
+        # 集合型题眼 → 系列条目（组题：检索收集候选单元合成选集卡）
+        out.append({
+            "title": "冷案重启", "hook": "沉了二十年的案卷，正在被一双新眼睛翻开",
+            "prototype": "一桩陈年悬案重启侦查", "theme": "冷案重启",
+            "unitSpec": "近十年重启侦破并告破、有官方通报的陈年悬案",
+            "scale": "series",
+            "arc": "题眼：冷案重启如何靠新技术与新证人破局；素材：符合规格的告破悬案集合；呈现：每集一案；弧线：一桩冷案重启要跨过什么",
+            "vertical": "crime", "tags": ["悬案"], "sourceIndex": 1,
+        })
         return json.dumps(out, ensure_ascii=False)
+    if flow_id == "f-series":
+        assert "unitSpec" in payload and "candidates" in payload, "组题载荷应含单元规格与检索候选"
+        return json.dumps({
+            "title": "重启的悬案",
+            "hook": "二十年没破的案子，正在一个个被翻开",
+            "arc": "题眼：冷案重启如何靠新技术破局；素材：官方通报的告破悬案档案；呈现：每集一案；弧线：一桩冷案重启要跨过什么",
+            "vertical": "crime", "tags": ["悬案", "单元选集"],
+            "units": [
+                {"title": "白银案告破", "url": "https://e.com/case1", "snippet": "s1"},
+                {"title": "南大案重启", "url": "https://e.com/case2", "snippet": "s2"},
+                {"title": "某积案攻坚", "url": "https://e.com/case3", "snippet": "s3"},
+            ],
+        }, ensure_ascii=False)
     if flow_id == "f-plan":
-        assert set(payload) == {"title", "theme", "reason"}, "规划载荷字段"
+        assert {"title", "theme", "reason"} <= set(payload), "规划载荷字段（深挖带 arc 取证/组题带单元规格）"
+        if str(payload.get("reason", "")).startswith("系列组题"):
+            return json.dumps([
+                {"label": "候选单元", "query": "冷案重启 告破案例"},
+                {"label": "候选单元", "query": "冷案重启 名单"},
+            ], ensure_ascii=False)
         return json.dumps([{"label": "事件核实", "query": f"{payload['title']} 经过"}], ensure_ascii=False)
     if flow_id == "f-angle":
         assert set(payload) == {"title", "theme", "evidencePack"}, "角度载荷字段"
@@ -345,6 +373,8 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
         return json.dumps({"done": True})
     if flow_id == "f-verdict":
         assert "evidencePack" in payload, "结论载荷应含证据包"
+        if str(payload.get("reason", "")).startswith("导演点名深挖"):
+            assert payload.get("arc"), "深挖结论载荷应带生料卡的 arc（题眼/素材主张要核实）"
         if str(payload.get("reason", "")).startswith("观察卡复查"):
             assert "先前观察" in payload.get("priorContext", ""), "复查结论应带先前观察上下文"
             return json.dumps(RESCAN_VERDICT, ensure_ascii=False)
@@ -374,6 +404,8 @@ SIGNAL_TITLES = {
     f"案件档案 解密 {_Y}": "某历史案件档案解密移交地方",
     f"科学 重大发现 {_Y}": "某重大科学发现公布",
     f"中国科学院 重大成果 发布 {_Y}": "中科院发布年度重大成果",
+    "冷案重启 告破案例": "白银连环杀人案重启侦破后告破",
+    "冷案重启 名单": "历年重启侦查的陈年积案回顾",
 }
 
 
@@ -474,17 +506,21 @@ async def run_ideate() -> None:
     expect(result.collected == 10, f"10 条材料种子（含 science2）× 每查 1 结果应采到 10 条，实际 {result.collected}")
     expect(result.batches == 2, f"10 条线索按 5 条/批应跑 2 次发散：{result.batches}")
     expect(result.directions == 30, f"每条线索发散 3 方向应得 30 个方向：{result.directions}")
-    expect(result.created == 30, f"30 个方向各收敛一卡应产出 30 张生料卡：{result.created}")
+    expect(result.created == 31, f"30 张单体卡 + 1 张组题选集卡：{result.created}")
+    expect(result.series_created == 1, f"两个收敛批各发一个系列条目，首个组题成卡、第二个指纹撞车：{result.series_created}")
     # 拒绝口径：每个收敛批带 3 条被拒样本（缺 arc ×2 + 复读卡）× 2 批 = 6；
     # 垂类卡在 arc 闸之前就被非法垂类拦下，不计入
     expect(result.rejected == 6, f"缺 arc 与 arc 复读 hook 的条目应被成立性闸拦下：{result.rejected}")
-    expect(result.duplicates == 0, f"首轮无重复：{result.duplicates}")
+    expect(result.duplicates == 1, f"第二次组题同题应撞指纹去重：{result.duplicates}")
 
     cards = store.list_topics(status="candidate", stage="raw")
-    expect(len(cards) == 30, f"池内生料卡应 30 张：{len(cards)}")
-    expect(all(c["stage"] == "raw" and c["tags"] == ["测试标签"] for c in cards), "生料卡应带 stage/tags")
-    expect(all(len(c["arc"]) >= 12 and "题眼" in c["arc"][:12] for c in cards), "生料卡 arc 必须带题眼三段式（小事闸）")
-    expect(all(len(c["heatEvidence"]) == 1 and c["heatEvidence"][0]["url"] for c in cards), "生料卡应锚定真实原型出处")
+    expect(len(cards) == 31, f"池内生料卡应 31 张：{len(cards)}")
+    expect(all(c["stage"] == "raw" and ("测试标签" in c["tags"] or "单元选集" in c["tags"]) for c in cards), "生料卡应带 stage/tags（单体/选集两形）")
+    expect(all(len(c["arc"]) >= 12 and "题眼" in c["arc"][:12] and "素材" in c["arc"] for c in cards), "生料卡 arc 必须带题眼+素材四段式（小事闸+AIGC 射程闸）")
+    series = next(c for c in cards if "单元选集" in c["tags"])
+    expect(len(series["heatEvidence"]) == 3, f"选集卡原型出处应为 3 个候选单元：{len(series['heatEvidence'])}")
+    expect(all(u["url"] for u in series["heatEvidence"]), "候选单元必须带真实链接")
+    expect(all(len(c["heatEvidence"]) >= 1 and all(u["url"] for u in c["heatEvidence"]) for c in cards), "生料卡应锚定真实原型出处（选集卡=多个候选单元）")
     anchor = next(c for c in cards if "甲骨" in c["title"])
     expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指线索条目（经方向对象透传）")
     anchor_cards = [c for c in cards if "甲骨" in c["title"]]

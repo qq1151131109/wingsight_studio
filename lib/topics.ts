@@ -87,6 +87,10 @@ export interface TopicRefreshRun {
   directions?: number;
   batches?: number;
   created?: number;
+  /** 组题成功的选集卡张数（集合型题眼→检索收集候选单元→系列选题） */
+  seriesCreated?: number;
+  /** 组题失败/候选不足/超名额次数 */
+  seriesMissed?: number;
   duplicates?: number;
   /** 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题） */
   rejected?: number;

@@ -76,6 +76,7 @@ function lastRunSummary(run: TopicRefreshRun): string {
   if (typeof run.directions === "number" && run.directions > 0) parts.push(`方向 ${run.directions}`);
   if (typeof run.batches === "number") parts.push(`${run.batches} 批`);
   if (typeof run.created === "number") parts.push(`生料 +${run.created}`);
+  if (typeof run.seriesCreated === "number" && run.seriesCreated > 0) parts.push(`组系列 ${run.seriesCreated}`);
   if (typeof run.duplicates === "number" && run.duplicates > 0) parts.push(`去重 ${run.duplicates}`);
   if (typeof run.rejected === "number" && run.rejected > 0) parts.push(`拦下新闻稿式 ${run.rejected}`);
   if (run.rescanned) parts.push(`复查 ${run.rescanned}${run.rescanUpgraded ? `（升级 ${run.rescanUpgraded}）` : ""}`);

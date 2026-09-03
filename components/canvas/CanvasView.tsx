@@ -2113,7 +2113,7 @@ export default function CanvasView() {
             nodeStrokeColor="var(--color-hairline)"
           />
         ) : null}
-        <div className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
+        <div data-canvas-header className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
           <button
             type="button"
             data-tip="添加节点（Tab / 双击空白同）" aria-label="添加节点"

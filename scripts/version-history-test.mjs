@@ -110,8 +110,8 @@ try {
   await page.goto(`${BASE}/project/${pid}`);
   await page.locator('img[alt="镜头 02 图"]').first().waitFor({ state: "visible", timeout: 15000 });
 
-  // 悬浮卡面出角标操作条，点 V 徽标开弹窗
-  await page.locator('img[alt="镜头 02 图"]').first().hover();
+  // 点卡片选中 → 顶部悬浮工具条（角标操作条已上浮进工具条），点 V 开弹窗
+  await page.locator('img[alt="镜头 02 图"]').first().click();
   await page.locator('[aria-label^="版本历史"]').first().click();
   await page.getByText("版本历史 · 镜头 02 图").waitFor({ state: "visible", timeout: 5000 });
   await page.waitForTimeout(400);

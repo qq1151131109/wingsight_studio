@@ -218,7 +218,7 @@ await page.evaluate(() => {
 await page.waitForTimeout(600);
 {
   const box = await page.locator('[aria-label="生成其他机位视角"]').boundingBox();
-  check("A6-1 贴顶时工具条仍可见（顶边钳在 8px）", Boolean(box && box.y > 0 && box.y < 40), JSON.stringify(box));
+  check("A6-1 贴顶时工具条钳在应用头部下方", Boolean(box && box.y >= 40 && box.y <= 120), JSON.stringify(box));
 }
 await page.evaluate(() => {
   // 拉回正常位置：工具条回到卡片上方常规位
