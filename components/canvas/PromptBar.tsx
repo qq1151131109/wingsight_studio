@@ -639,6 +639,20 @@ export default function PromptBar({
           </button>
         </details>
       ) : null}
+      {/* 注入开盖（萧燕燕事故后的透明度补齐，全行业竞品都没做）：上次生成
+          实际注入的参考资产设定与全局画风（genShot.visualNotes 快照）。
+          参考图与设定文本打架（上传金袍图 vs 拆解素服文本）时，用户在这里
+          能直接看到两路输入，不再是无从排查的黑箱 */}
+      {kind === "image" && (self?.data.genShot?.visualNotes ?? "").trim() ? (
+        <details className="mb-1 rounded-md border border-hairline-soft bg-surface-1 px-1.5 py-1">
+          <summary className="cursor-pointer select-none text-[10px] text-text-3">
+            本次注入的设定与画风（上次生成 · 点开查看）
+          </summary>
+          <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
+            {self!.data.genShot!.visualNotes}
+          </p>
+        </details>
+      ) : null}
       {/* 底栏：左侧 = 生成参数（出图候选/模型、文本模型），右侧 = 辅助/收藏/发送
           （对标竞品 composer：模型左下、发送右下圆钮） */}
       <div className="mt-1 flex items-center gap-1">
