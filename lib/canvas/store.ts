@@ -1344,94 +1344,124 @@ export const NODE_META: Record<
   group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
 };
 
-/** 画布摘要（给 agent 的读通道，压缩到预算内） */
+/** 画布摘要（给 agent 的读通道，索引+按需拉取范式：头部计数/警告/版本恒在，
+ * 锚点卡置顶永不丢，节点多时超预算部分明示走 canvas_query——影策
+ * canvas-context 的 buildCanvasContext 同款思路，避免大画布丢行失明） */
 export function summarizeCanvas(
   nodes: WingNode[],
   edges: WingEdge[],
   selectedIds: string[],
   budget = 2000,
+  revision: number | null = null,
 ): string {
   if (nodes.length === 0) return "（画布为空）";
-  // 行构造（withBody=false 用于超预算降级：先全省正文再保留行）
-  const build = (withBody: boolean): string[] => {
-    const lines: string[] = [];
-    lines.push(`节点 ${nodes.length} 个，连线 ${edges.length} 条：`);
-    for (const n of nodes) {
-      const meta = NODE_META[n.data.nodeType];
-      // 空标题直接省略（"（无标题）"是零信息占位，还污染 @ 引用匹配的观感）
-      const title = (n.data.title ?? "").slice(0, 30);
-      const shotFields =
-        n.data.nodeType === "storyboard"
-          ? [
-              n.data.shotNumber ? `#${n.data.shotNumber}` : "",
-              n.data.shotSize ?? "",
-              n.data.cameraMove ?? "",
-              n.data.duration ?? "",
-            ].filter(Boolean)
-          : [];
-      const shot = shotFields.length > 0 ? `（${shotFields.join("·")}）` : "";
-      const kids =
-        n.data.nodeType === "group"
-          ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
-          : "";
-      // 分镜表带行数：空标题的分镜表行只剩一个类型标签，行数是它唯一的
-      // 内容信号（丢了行数 agent 分不清满表和空表）
-      const rowCount =
-        n.data.nodeType === "shotlist" && Array.isArray(n.data.rows)
-          ? `（${n.data.rows.length} 行）`
-          : "";
-      const body =
-        withBody && n.data.body ? ` “${n.data.body.slice(0, 24)}”` : "";
-      const sel = selectedIds.includes(n.id) ? " [选中]" : "";
-      // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
-      // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
-      const genNote = n.data.gen?.aspect ? `（画幅 ${n.data.gen.aspect}）` : "";
-      // 媒体标记 + URL：聊天出图工具的 reference_images 依赖从这里取
-      // 带图卡的 URL（缺失曾让该通道无输入可拿）；视频/音频同理标注
-      const media: string[] = [];
-      if (n.data.imageUrl) media.push(`图:${n.data.imageUrl}`);
-      if (n.data.videoUrl) media.push(`视频:${n.data.videoUrl}`);
-      if (n.data.audioUrl) media.push(`音频:${n.data.audioUrl}`);
-      const mediaTag = media.length > 0 ? ` ⟨${media.join(" ")}⟩` : "";
-      // 调研卡正文在 agent research_jobs 表（画布不存档），标记 id 供 LLM 用调研工具读
-      const researchNote =
-        n.data.nodeType === "research" && n.data.researchId
-          ? `（调研卷宗 ${n.data.researchId}）`
-          : "";
-      lines.push(
-        `- ${n.id} [${meta.label}] ${title}${genNote}${mediaTag}${researchNote}${shot}${rowCount}${kids}${body}${sel}`,
-      );
-    }
-    for (const e of edges) {
-      lines.push(`- 连线 ${e.source} → ${e.target}`);
-    }
-    return lines;
-  };
-  // 超预算降级：先全省正文（标题/媒体/连线保留），仍超才从尾部丢非选中
-  // 节点行（连线永远保留）——旧版硬切会把行切半、画布尾部对 LLM 失明
-  let lines = build(true);
-  if (lines.join("\n").length > budget) lines = build(false);
-  while (lines.join("\n").length > budget) {
-    // 从尾往前找第一条可丢行：连线行、分组聚合行（组行是子卡的唯一索引，
-    // 丢了整组对 LLM 失明）、剧本/分镜表行（叙事与分镜的唯一锚点，96 节点
-    // 画布上曾被挤掉导致 agent「看不到」分镜表跑去铺 27 张分镜卡）永不丢
-    let lastNodeIdx = -1;
-    for (let i = lines.length - 1; i >= 1; i--) {
-      const l = lines[i];
-      if (!l.startsWith("- ")) continue;
-      if (
-        l.startsWith("- 连线 ") ||
-        l.includes("[分组]") ||
-        l.includes("[剧本]") ||
-        l.includes("[分镜表]")
-      )
-        continue;
-      lastNodeIdx = i;
-      break;
-    }
-    if (lastNodeIdx < 0) break;
-    lines.splice(lastNodeIdx, 1);
+  // —— 头部：计数 + 类型分布 + 主动警告（任何规模恒定 ~200 字，永不丢）——
+  const typeCounts = new Map<string, number>();
+  for (const n of nodes) {
+    const label = NODE_META[n.data.nodeType]?.label ?? String(n.data.nodeType);
+    typeCounts.set(label, (typeCounts.get(label) ?? 0) + 1);
   }
+  const header: string[] = [
+    `节点 ${nodes.length} · 连线 ${edges.length} · 选中 ${selectedIds.length}` +
+      (revision != null ? ` · 版本 r${revision}` : ""),
+    `类型：${[...typeCounts.entries()].map(([k, v]) => `${k} ${v}`).join(" · ")}`,
+  ];
+  const warnings: string[] = [];
+  const errorNodes = nodes.filter((n) => n.data.status === "error");
+  if (errorNodes.length > 0)
+    warnings.push(
+      `生成失败 ${errorNodes.length}（${errorNodes
+        .slice(0, 3)
+        .map((n) => `${n.id}「${(n.data.title ?? "").slice(0, 10)}」`)
+        .join("、")}${errorNodes.length > 3 ? " 等" : ""}）`,
+    );
+  const loadingCount = nodes.filter((n) => n.data.status === "loading").length;
+  if (loadingCount > 0) warnings.push(`生成中 ${loadingCount}`);
+  if (warnings.length > 0) header.push(`⚠ ${warnings.join(" · ")}`);
+
+  // —— 锚点卡置顶：剧本/分镜表/调研是叙事与分镜的唯一入口，大画布丢行
+  // 曾让 agent「看不见」分镜表跑去铺 27 张分镜卡；置顶 + 选中优先
+  // （sort 稳定，同层保持原顺序）
+  const anchorTypes = new Set(["script", "shotlist", "research"]);
+  const rank = (n: WingNode) =>
+    anchorTypes.has(n.data.nodeType) ? 0 : selectedIds.includes(n.id) ? 1 : 2;
+  const ordered = [...nodes].sort((a, b) => rank(a) - rank(b));
+
+  // 行构造（withBody=false 用于超预算降级：先全省正文再保留行）
+  const nodeLine = (n: WingNode, withBody: boolean): string => {
+    const meta = NODE_META[n.data.nodeType];
+    // 空标题直接省略（"（无标题）"是零信息占位，还污染 @ 引用匹配的观感）
+    const title = (n.data.title ?? "").slice(0, 30);
+    const shotFields =
+      n.data.nodeType === "storyboard"
+        ? [
+            n.data.shotNumber ? `#${n.data.shotNumber}` : "",
+            n.data.shotSize ?? "",
+            n.data.cameraMove ?? "",
+            n.data.duration ?? "",
+          ].filter(Boolean)
+        : [];
+    const shot = shotFields.length > 0 ? `（${shotFields.join("·")}）` : "";
+    const kids =
+      n.data.nodeType === "group"
+        ? `（含 ${nodes.filter((c) => c.parentId === n.id).length} 卡${n.data.collapsed ? " · 已折叠" : ""}）`
+        : "";
+    // 分镜表带行数：空标题的分镜表行只剩一个类型标签，行数是它唯一的
+    // 内容信号（丢了行数 agent 分不清满表和空表）
+    const rowCount =
+      n.data.nodeType === "shotlist" && Array.isArray(n.data.rows)
+        ? `（${n.data.rows.length} 行）`
+        : "";
+    const body =
+      withBody && n.data.body ? ` “${n.data.body.slice(0, 24)}”` : "";
+    const sel = selectedIds.includes(n.id) ? " [选中]" : "";
+    // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
+    // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
+    const genNote = n.data.gen?.aspect ? `（画幅 ${n.data.gen.aspect}）` : "";
+    // 媒体标记 + URL：聊天出图工具的 reference_images 依赖从这里取
+    // 带图卡的 URL（缺失曾让该通道无输入可拿）；视频/音频同理标注
+    const media: string[] = [];
+    if (n.data.imageUrl) media.push(`图:${n.data.imageUrl}`);
+    if (n.data.videoUrl) media.push(`视频:${n.data.videoUrl}`);
+    if (n.data.audioUrl) media.push(`音频:${n.data.audioUrl}`);
+    const mediaTag = media.length > 0 ? ` ⟨${media.join(" ")}⟩` : "";
+    // 调研卡正文在 agent research_jobs 表（画布不存档），标记 id 供 LLM 用调研工具读
+    const researchNote =
+      n.data.nodeType === "research" && n.data.researchId
+        ? `（调研卷宗 ${n.data.researchId}）`
+        : "";
+    return `- ${n.id} [${meta.label}] ${title}${genNote}${mediaTag}${researchNote}${shot}${rowCount}${kids}${body}${sel}`;
+  };
+
+  // 连线列清单设上限：大画布连线行会吃光预算（旧版连线永不丢行，
+  // 96 节点画布 89 条连线曾把节点行全部挤掉）
+  const EDGE_LIST_CAP = 20;
+  const edgeLines = edges.slice(0, EDGE_LIST_CAP).map((e) => `- 连线 ${e.source} → ${e.target}`);
+  if (edges.length > EDGE_LIST_CAP)
+    edgeLines.push(`（其余 ${edges.length - EDGE_LIST_CAP} 条连线略——read_node 结果带节点邻接）`);
+
+  // —— 两档装配：预算内全量索引；超预算先降正文，仍超从尾部收（锚点
+  // 已置顶 + 头部恒在，丢的是普通卡且有明示 + 查询出口）——
+  const assemble = (withBody: boolean): { lines: string[]; dropped: number } => {
+    const nodeLines = ordered.map((n) => nodeLine(n, withBody));
+    let dropped = 0;
+    let take = nodeLines.length;
+    while (
+      take > 0 &&
+      [...header, ...nodeLines.slice(0, take), ...edgeLines].join("\n").length >
+        budget - 60 // 给尾部出口行留余量
+    ) {
+      take -= 1;
+      dropped = nodeLines.length - take;
+    }
+    const tail =
+      dropped > 0
+        ? [`（其余 ${dropped} 个节点未列出——canvas_query({query,types,resourceOnly}) 检索，不要猜 id）`]
+        : [];
+    return { lines: [...header, ...nodeLines.slice(0, take), ...tail, ...edgeLines], dropped };
+  };
+  let { lines } = assemble(true);
+  if (lines.join("\n").length > budget) lines = assemble(false).lines;
   let text = lines.join("\n");
   if (text.length > budget) text = text.slice(0, budget) + "\n…（已截断）";
   return text;

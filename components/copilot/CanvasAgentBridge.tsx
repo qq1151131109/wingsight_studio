@@ -14,6 +14,7 @@ import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import {
   applyOps,
   normalizeOps,
+  validateOps,
   type CanvasOp,
   type OpResult,
 } from "@/lib/canvas/ops";
@@ -514,6 +515,7 @@ type OpResultEx = OpResult & {
 export default function CanvasAgentBridge() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
+  const canvasRevision = useCanvasStore((s) => s.canvasRevision);
 
   // 画布摘要下发通道 = useCopilotReadable → RunAgentInput.context → 桥接层
   // （agent/.venv 补丁）注入为末尾 system/human 消息。
@@ -524,6 +526,8 @@ export default function CanvasAgentBridge() {
     nodes,
     edges,
     nodes.filter((n) => n.selected).map((n) => n.id),
+    2000,
+    canvasRevision,
   );
 
   useCopilotReadable({
@@ -564,9 +568,25 @@ export default function CanvasAgentBridge() {
         if (rowsText.length > 4000)
           rowsText = rowsText.slice(0, 4000) + "\n…（已截断）";
       }
+      // 邻接连线（影策 get_node 范式）：agent 由此确认连线是否真实存在，
+      // 不必为确认一个对象反复索要整张画布
+      const labelOf = (nid: string) => {
+        const n2 = useCanvasStore.getState().nodes.find((x) => x.id === nid);
+        return n2
+          ? `${nid} [${NODE_TYPE_LABEL[n2.data.nodeType] ?? n2.data.nodeType}]「${n2.data.title ?? ""}」`
+          : nid;
+      };
+      const rels = useCanvasStore
+        .getState()
+        .edges.filter((e) => e.source === id || e.target === id)
+        .slice(0, 12)
+        .map((e) =>
+          e.source === id ? `→ ${labelOf(e.target)}` : `← ${labelOf(e.source)}`,
+        );
+      const relText = rels.length > 0 ? `\n\n邻接连线：\n${rels.join("\n")}` : "\n\n邻接连线：（无）";
       return `【${NODE_TYPE_LABEL[d.nodeType] ?? d.nodeType}】${d.title ?? ""}\n\n${body}${
         (d.body ?? "").length > 6000 ? "\n…（已截断）" : ""
-      }${rowsText}`;
+      }${rowsText}${relText}`;
     },
     render: ({ status, args, result }) => {
       const id = String((args as { id?: unknown })?.id ?? "");
@@ -598,6 +618,120 @@ export default function CanvasAgentBridge() {
               定位到画布
             </button>
           ) : null}
+        </ToolCard>
+      );
+    },
+  });
+
+  // 检索画布节点（影策 canvas_find_nodes 范式）：摘要只列索引且大画布会
+  // 截断，「不知道节点 id / 摘要没列出 / 要找带媒体的卡」时用它，不猜 id
+  useCopilotAction({
+    name: "canvas_query",
+    description:
+      "检索画布节点，返回 id/类型/标题/状态/媒体URL 索引行。摘要没列出或不知道节点 id 时用（不要按 n_xxx 格式猜 id）。出图找参考图用 resourceOnly:true（返回带图/视频/音频卡及其 URL）。",
+    available: "remote",
+    parameters: [
+      { name: "query", type: "string", required: false, description: "标题/正文关键词（模糊匹配）" },
+      { name: "types", type: "string[]", required: false, description: "节点类型过滤，如 [\"character\",\"shotlist\"]" },
+      { name: "status", type: "string", required: false, description: "状态过滤：loading / error / ready" },
+      { name: "resourceOnly", type: "boolean", required: false, description: "只回带媒体的卡（图/视频/音频）" },
+    ],
+    handler: ({
+      query,
+      types,
+      status,
+      resourceOnly,
+    }: {
+      query?: string;
+      types?: string[];
+      status?: string;
+      resourceOnly?: boolean;
+    }) => {
+      const st = useCanvasStore.getState();
+      const q = (query ?? "").trim().toLowerCase();
+      const typeSet = Array.isArray(types) && types.length > 0 ? new Set(types.map(String)) : null;
+      const LIMIT = 50;
+      const hit = st.nodes.filter((n) => {
+        if (typeSet && !typeSet.has(String(n.data.nodeType))) return false;
+        if (status && String(n.data.status ?? "") !== status) return false;
+        const hasMedia = Boolean(n.data.imageUrl || n.data.videoUrl || n.data.audioUrl);
+        if (resourceOnly && !hasMedia) return false;
+        if (!q) return true;
+        return `${n.id} ${n.data.title ?? ""} ${n.data.body ?? ""}`
+          .toLowerCase()
+          .includes(q);
+      });
+      const lines = hit.slice(0, LIMIT).map((n) => {
+        const media: string[] = [];
+        if (n.data.imageUrl) media.push(`图:${n.data.imageUrl}`);
+        if (n.data.videoUrl) media.push(`视频:${n.data.videoUrl}`);
+        if (n.data.audioUrl) media.push(`音频:${n.data.audioUrl}`);
+        const statusNote = n.data.status && n.data.status !== "ready" ? ` ${n.data.status}` : "";
+        const rowCount =
+          n.data.nodeType === "shotlist" && Array.isArray(n.data.rows)
+            ? `（${n.data.rows.length} 行）`
+            : "";
+        const sel = n.selected ? " [选中]" : "";
+        return `- ${n.id} [${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}]「${n.data.title ?? ""}」${rowCount}${statusNote}${media.length ? ` ⟨${media.join(" ")}⟩` : ""}${sel}`;
+      });
+      return [
+        `命中 ${hit.length} 个节点${hit.length > LIMIT ? `（仅列前 ${LIMIT} 个）` : ""}：`,
+        ...lines,
+        hit.length === 0 ? "（无命中——放宽 query/types 或不带条件全列）" : "",
+        "详情（正文全文/分镜行/邻接连线）用 read_node。",
+      ]
+        .filter(Boolean)
+        .join("\n");
+    },
+    render: ({ status, args }) => {
+      const q = String((args as { query?: unknown })?.query ?? "");
+      const title = q ? `检索「${q}」` : "检索画布节点";
+      if (status !== "complete")
+        return <RunningRow icon={<Wrench />} title={`正在${title}`} />;
+      return (
+        <ToolCard icon={<Wrench />} title={title} ok>
+          {null}
+        </ToolCard>
+      );
+    },
+  });
+
+  // 干跑校验（影策 canvas_validate_ops 范式）：复杂批量先推演后应用，
+  // 错误不落画布。与 canvas_ops 同参（ops 数组），只读不写
+  useCopilotAction({
+    name: "canvas_validate_ops",
+    description:
+      "干跑校验一批画布操作（与 canvas_ops 的 ops 参数同构），返回 issues 不落画布。复杂批量（≥10 项或含删除/分组/连线新建节点）先用它校验，无 error 再用 canvas_ops 应用。",
+    available: "remote",
+    parameters: [
+      {
+        name: "ops",
+        type: "object[]",
+        required: true,
+        description: "画布操作数组（与 canvas_ops 相同）",
+      },
+    ],
+    handler: ({ ops }: { ops?: unknown }) => {
+      const raw =
+        typeof ops === "string" ? safeParse(ops) : Array.isArray(ops) ? ops : ops && typeof ops === "object" ? ops : [];
+      return JSON.stringify(validateOps(raw));
+    },
+    render: ({ status, result }) => {
+      if (status !== "complete")
+        return <RunningRow icon={<Wrench />} title="正在校验画布操作" />;
+      const r = safeParse(String(result ?? "{}")) as {
+        ok?: boolean;
+        issues?: { severity: string; message: string }[];
+        operationCount?: number;
+      };
+      return (
+        <ToolCard
+          icon={<Wrench />}
+          title={`校验 ${r.operationCount ?? 0} 项操作`}
+          ok={Boolean(r.ok)}
+          detail={(r.issues ?? []).map((i) => `${i.severity === "error" ? "✗" : "⚠"} ${i.message}`).join("\n") || "全部通过"}
+        >
+          {null}
         </ToolCard>
       );
     },
@@ -949,6 +1083,7 @@ export default function CanvasAgentBridge() {
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
+      "复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，无 error 再应用。" +
       "可以在一批里执行多个操作。",
     available: "remote",
     parameters: [

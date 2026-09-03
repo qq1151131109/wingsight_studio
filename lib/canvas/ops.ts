@@ -142,6 +142,136 @@ export interface OpResult {
   errors: string[];
 }
 
+export interface OpIssue {
+  index: number;
+  severity: "error" | "warning";
+  message: string;
+}
+
+/** 干跑校验（canvas_validate_ops 前端工具用；影策 validateCanvasOps 范式）：
+ * 对着当前画布状态顺序推演整批 ops——后面的 delete 会正确移除前面 add 的
+ * 占位节点、connect 查重、update 校验目标存在——返回 issues 不落画布。
+ * 顺序敏感：与 applyOps 同序执行，同批内 add_node 带 id 的占位符可被
+ * 后续 connect/update 引用（占位符即真实 id）。 */
+export function validateOps(rawOps: unknown): {
+  ok: boolean;
+  issues: OpIssue[];
+  operationCount: number;
+} {
+  const issues: OpIssue[] = [];
+  const normErrors: string[] = [];
+  const ops = normalizeOps(rawOps, normErrors);
+  if (normErrors.length > 0)
+    issues.push({ index: -1, severity: "error", message: normErrors.join("；") });
+
+  const { nodes, edges } = useCanvasStore.getState();
+  const liveIds = new Set(nodes.map((n) => n.id));
+  const edgeKeys = new Set(edges.map((e) => `${e.source}\0${e.target}`));
+  const assetTitles = new Set(
+    nodes
+      .filter((n) =>
+        ["character", "scene", "prop", "costume"].includes(String(n.data.nodeType)),
+      )
+      .map((n) => (n.data.title ?? "").trim()),
+  );
+  const checkRowsAssets = (
+    rows: { assets?: string[] }[] | undefined,
+    index: number,
+  ) => {
+    if (!Array.isArray(rows)) return;
+    for (const name of rows.flatMap((r) => r.assets ?? []).filter(Boolean)) {
+      if (!assetTitles.has(String(name).trim()))
+        issues.push({
+          index,
+          severity: "warning",
+          message: `行引用资产「${String(name)}」在画布上无同名资产卡（仅靠行文本全名兜底匹配）`,
+        });
+    }
+  };
+
+  ops.forEach((op, index) => {
+    switch (op.op) {
+      case "add_node": {
+        if (!VALID_NODE_TYPES.includes(op.nodeType))
+          issues.push({
+            index,
+            severity: "error",
+            message: `add_node: nodeType 必须是 ${VALID_NODE_TYPES.join(" / ")}，收到 "${String(op.nodeType)}"`,
+          });
+        if (op.id) {
+          if (liveIds.has(op.id))
+            issues.push({ index, severity: "error", message: `add_node: 节点 ${op.id} 已存在` });
+          liveIds.add(op.id);
+        }
+        checkRowsAssets(op.rows, index);
+        break;
+      }
+      case "update_node": {
+        if (!liveIds.has(op.id))
+          issues.push({
+            index,
+            severity: "error",
+            message: `update_node: 节点 ${op.id} 不存在（引用同批新增节点要用 add_node 的 id 占位符）`,
+          });
+        checkRowsAssets(op.rows, index);
+        break;
+      }
+      case "delete_nodes": {
+        if (!Array.isArray(op.ids) || op.ids.length === 0)
+          issues.push({ index, severity: "error", message: "delete_nodes: ids 不能为空" });
+        for (const id of op.ids ?? []) {
+          if (!liveIds.delete(id))
+            issues.push({ index, severity: "error", message: `delete_nodes: 节点 ${id} 不存在` });
+        }
+        break;
+      }
+      case "connect_nodes": {
+        if (!liveIds.has(op.fromId))
+          issues.push({
+            index,
+            severity: "error",
+            message: `connect_nodes: ${op.fromId} 不存在（add_node 带 id 占位符可同批引用）`,
+          });
+        if (!liveIds.has(op.toId))
+          issues.push({
+            index,
+            severity: "error",
+            message: `connect_nodes: ${op.toId} 不存在（add_node 带 id 占位符可同批引用）`,
+          });
+        if (op.fromId === op.toId)
+          issues.push({ index, severity: "error", message: "connect_nodes: 不能连接节点自身" });
+        const key = `${op.fromId}\0${op.toId}`;
+        if (edgeKeys.has(key))
+          issues.push({ index, severity: "error", message: `connect_nodes: ${op.fromId} → ${op.toId} 连线已存在` });
+        edgeKeys.add(key);
+        break;
+      }
+      case "group_nodes": {
+        if (!Array.isArray(op.ids) || op.ids.length < 2)
+          issues.push({ index, severity: "error", message: "group_nodes: 至少需要 2 个节点" });
+        for (const id of op.ids ?? [])
+          if (!liveIds.has(id))
+            issues.push({ index, severity: "error", message: `group_nodes: 节点 ${id} 不存在` });
+        break;
+      }
+      case "set_viewport": {
+        if (
+          typeof op.x !== "number" ||
+          typeof op.y !== "number" ||
+          !Number.isFinite(op.x + op.y)
+        )
+          issues.push({ index, severity: "error", message: "set_viewport: x/y 必须是数字" });
+        break;
+      }
+    }
+  });
+  return {
+    ok: !issues.some((i) => i.severity === "error"),
+    issues,
+    operationCount: ops.length,
+  };
+}
+
 const VALID_NODE_TYPES = Object.keys(NODE_META) as WingNodeType[];
 
 /** 行内 assets 资产名 → 画布资产卡 id（精确标题匹配；对不上忽略——
@@ -233,15 +363,18 @@ export function normalizeOps(
   });
 }
 
-/** 校验并逐条应用；返回执行报告（handler 返回给 agent，render 卡片也用它） */
+/** 校验并逐条应用；返回执行报告（handler 返回给 agent，render 卡片也用它）。
+ * 注意：zustand 的 state 快照在循环外抓一次，同批前一条 add_node 插入的
+ * 节点在快照里看不到——每条 op 必须实时取 state（同批「建卡即连线」
+ * 曾因旧快照把真实存在的占位节点误报成不存在） */
 export function applyOps(rawOps: unknown): OpResult {
   const errors: string[] = [];
   const ops = normalizeOps(rawOps, errors);
-  const store = useCanvasStore.getState();
   let applied = 0;
   const createdIds: string[] = [];
 
   for (const op of ops) {
+    const live = useCanvasStore.getState();
     try {
       switch (op.op) {
         case "add_node": {
@@ -263,7 +396,7 @@ export function applyOps(rawOps: unknown): OpResult {
           const pos = op.position ?? autoPosition();
           // 批量建卡级联入场（对标影策 45ms 错峰；CSS 变量经节点 style 继承到卡片）
           const stagger = Math.min(createdIds.length, 12) * 50;
-          const id = store.addNode({
+          const id = live.addNode({
             id: op.id,
             position: pos,
             // agent 直接建空分组时给默认尺寸，否则零尺寸不可见
@@ -316,12 +449,12 @@ export function applyOps(rawOps: unknown): OpResult {
           break;
         }
         case "update_node": {
-          const exists = store.nodes.some((n) => n.id === op.id);
+          const exists = live.nodes.some((n) => n.id === op.id);
           if (!exists) {
             errors.push(`update_node: 节点 ${op.id} 不存在`);
             break;
           }
-          store.updateNodeData(op.id, {
+          live.updateNodeData(op.id, {
             ...(op.title !== undefined ? { title: op.title.slice(0, 80) } : {}),
             ...(op.body !== undefined ? { body: op.body.slice(0, 8000) } : {}),
             ...(op.status !== undefined ? { status: op.status } : {}),
@@ -345,7 +478,7 @@ export function applyOps(rawOps: unknown): OpResult {
               ? {
                   rows: (() => {
                     const rows = [
-                      ...(store.nodes.find((n) => n.id === op.id)?.data.rows ?? []),
+                      ...(live.nodes.find((n) => n.id === op.id)?.data.rows ?? []),
                     ];
                     const i = rows.findIndex((r) => r.rid === op.row!.rid);
                     const patch = Object.fromEntries(
@@ -386,29 +519,29 @@ export function applyOps(rawOps: unknown): OpResult {
             break;
           }
           const known = op.ids.filter((id) =>
-            store.nodes.some((n) => n.id === id),
+            live.nodes.some((n) => n.id === id),
           );
           if (known.length === 0) {
             errors.push(`delete_nodes: 节点 ${op.ids.join(",")} 均不存在`);
             break;
           }
-          store.deleteNodes(known);
+          live.deleteNodes(known);
           applied += 1;
           break;
         }
         case "connect_nodes": {
-          const has = (id: string) => store.nodes.some((n) => n.id === id);
+          const has = (id: string) => live.nodes.some((n) => n.id === id);
           if (!has(op.fromId) || !has(op.toId)) {
             errors.push(
               `connect_nodes: ${op.fromId} 或 ${op.toId} 不存在（引用同批新建的节点时，add_node 要带 id 字段同值占位）`,
             );
             break;
           }
-          const dup = store.edges.some(
+          const dup = live.edges.some(
             (e) => e.source === op.fromId && e.target === op.toId,
           );
           if (!dup) {
-            store.connect({ source: op.fromId, target: op.toId });
+            live.connect({ source: op.fromId, target: op.toId });
           }
           applied += 1;
           break;
@@ -422,13 +555,13 @@ export function applyOps(rawOps: unknown): OpResult {
             errors.push("set_viewport: x/y 必须是数字");
             break;
           }
-          store.setViewport({
+          live.setViewport({
             x: op.x,
             y: op.y,
             zoom:
               typeof op.zoom === "number" && op.zoom > 0
                 ? Math.min(Math.max(op.zoom, 0.2), 2)
-                : store.viewport.zoom,
+                : live.viewport.zoom,
           });
           applied += 1;
           break;
@@ -439,13 +572,13 @@ export function applyOps(rawOps: unknown): OpResult {
             break;
           }
           const known = op.ids.filter((id) =>
-            store.nodes.some((n) => n.id === id),
+            live.nodes.some((n) => n.id === id),
           );
           if (known.length < 2) {
             errors.push("group_nodes: 至少需要 2 个存在的节点");
             break;
           }
-          const gid = store.groupNodes(known, op.title?.slice(0, 40));
+          const gid = live.groupNodes(known, op.title?.slice(0, 40));
           if (gid) {
             createdIds.push(gid);
             applied += 1;

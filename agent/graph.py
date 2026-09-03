@@ -472,7 +472,7 @@ backend_tool_names = {t.name for t in backend_tools}
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
 # read_node：系统提示两处指示模型用它在摘要截断时取卡片全文，必须在册；
 # propose_plan / update_plan：计划先行（多步任务先确认后执行、逐步打勾）
-FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "read_node", "propose_plan", "update_plan"}
+FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "canvas_query", "canvas_validate_ops", "read_node", "propose_plan", "update_plan"}
 
 
 # ---------- 多模态附件（图片/视频随消息上传） ----------
@@ -670,7 +670,9 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 {canvas_summary}
 
 ## 操作画布
-调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项：
+「画布当前状态」是**索引**：节点多时只列一部分（尾部有明示），其余用 canvas_query 检索（query/types/resourceOnly 过滤，返回 id/类型/标题/媒体URL），
+详情（正文全文/分镜行/邻接连线）用 read_node——**任何时候都不要按 n_xxx 格式猜测或拼造节点 id**（时间戳段不可推算，猜必错）。
+写操作调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项：
 - {{"op":"add_node","nodeType":"note|script|character|image|video|audio|compose|storyboard|shotlist","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,lighting,sound,dialogue,assets:[资产名]}}] 行数组）
 - {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
 - {{"op":"update_node","id":"分镜表id","row":{{"rid":"行id","imageUrl":"url"}}}}  更新分镜表的单行（镜头级出图回填）
@@ -678,6 +680,7 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 - {{"op":"connect_nodes","fromId":"节点id","toId":"节点id"}}  连线（方向：from → to）
 - {{"op":"group_nodes","ids":["节点id",...],"title":"分组名"}}  把多张卡收进一个分组框（如整场戏的分镜归拢）
 - {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
+复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，返回 issues 不落画布，无 error 再用 canvas_ops 应用。
 
 audio（音频）卡：配音 / 音效 / BGM，音频源由用户在卡片上上传（audioUrl），你只负责建卡与连线。
 compose（合成）卡：把多张视频卡按顺序连线到它，用户点卡片上的「合成成片」按钮由服务端 ffmpeg 拼接——
@@ -692,7 +695,7 @@ cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s�
   add_node nodeType=shotlist 带 rows 新建。整表分镜**不要为每个镜头铺独立 storyboard 卡**。
 - 单镜头画面卡 → storyboard 卡（字段见上），按顺序连线（镜号从 01 递增）。
 
-节点 id 形如 n_xxx_x，在「画布当前状态」里查到，**不要按格式猜测或拼造**（时间戳段不可推算，猜必错）。
+节点 id 形如 n_xxx_x，从「画布当前状态」索引或 canvas_query 结果里取。
 新建的卡要在同批或后续连线/更新时，给 add_node 带 id 字段自拟占位符（如 "SB_1"），后续
 connect_nodes / update_node 直接引用同值即可；没带占位符就必须等工具结果返回的真实 id 再引用。
 
