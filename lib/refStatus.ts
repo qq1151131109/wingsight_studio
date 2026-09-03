@@ -53,6 +53,9 @@ export const useRefStatusStore = create<RefStatusState>((set, get) => ({
             _loadedAt: Date.now(),
           });
         }
+      } catch {
+        // 服务重启/网络瞬断时静默：徽标保持旧值，下次 force 刷新自愈。
+        // 不 catch 会变成未处理 rejection 炸到控制台（每张资产卡挂载都触发）
       } finally {
         set({ _inflight: null });
       }
