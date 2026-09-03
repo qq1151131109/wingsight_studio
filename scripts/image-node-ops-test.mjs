@@ -344,6 +344,41 @@ const dl = await dlPromise;
 check("F1 宫格导出触发下载", Boolean(dl), dl?.suggestedFilename() ?? "");
 check("F2 下载文件名正确", (dl?.suggestedFilename() ?? "").includes("宫格导出"), dl?.suggestedFilename() ?? "");
 
+// ---------- G 双击聚焦（open-ai-canvas focusCanvasImageNode 范式） ----------
+// 前置：zoom 保持 1.0（lod 正常渲染 img），平移视口让卡片偏到角落
+await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  st.setViewport({ x: 1800, y: 900, zoom: 1 });
+  st.selectNodes([]);
+});
+await page.waitForTimeout(300);
+const img1 = nodeOf("测试底图").locator("img").first();
+await img1.dblclick({ timeout: 5000 });
+await page.waitForTimeout(900); // fitView duration 420ms + 余量
+{
+  const vp = await page.evaluate(() => window.__wsCanvasStore.getState().viewport);
+  check(
+    "G1 双击图片 → 视口聚焦（zoom 钳在 0.78–1.25）",
+    vp.zoom >= 0.75 && vp.zoom <= 1.3,
+    `zoom=${vp.zoom.toFixed(2)}`,
+  );
+  const card = await nodeOf("测试底图").boundingBox();
+  const vw = page.viewportSize();
+  const cx = card ? card.x + card.width / 2 : 0;
+  check(
+    "G2 卡片居中于视口",
+    Boolean(card && Math.abs(cx - vw.width * 0.5) < vw.width * 0.18),
+    `卡片中心 x=${Math.round(cx)} 视口中心=${Math.round(vw.width * 0.5)}`,
+  );
+}
+// 单击图片不再弹灯箱（灯箱走角落 ⌕ 按钮，竞品共识：预览是显式动作）
+await img1.click({ timeout: 5000 });
+await page.waitForTimeout(400);
+check(
+  "G3 单击图片不弹大图",
+  (await page.evaluate(() => !document.querySelector(".fixed.inset-0.z-50"))) === true,
+);
+
 await browser.close();
 const fails = results.filter((r) => !r.ok).length;
 console.log(`\n${results.length - fails}/${results.length} 通过`);

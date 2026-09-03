@@ -14,6 +14,7 @@ import {
   NodeResizer,
   NodeToolbar,
   Position,
+  useReactFlow,
   useViewport,
   type NodeProps,
 } from "@xyflow/react";
@@ -346,6 +347,21 @@ function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
       detail: { nodeId, tool },
     }),
   );
+}
+
+/** 双击聚焦（open-ai-canvas focusCanvasImageNode 范式）：视口平滑居中到
+ *  该卡，缩放钳制 0.78–1.25（跟当前档位走，不猛跳） */
+function focusCardView(
+  rf: { fitView: (o: Record<string, unknown>) => Promise<boolean> | void },
+  id: string,
+) {
+  void rf.fitView({
+    nodes: [{ id }],
+    duration: 420,
+    minZoom: 0.78,
+    maxZoom: 1.25,
+    padding: 0.3,
+  });
 }
 
 /** 悬浮工具条按钮（选中节点上方浮现的常用操作，libtv 范式；
@@ -1878,6 +1894,7 @@ const ACT_BTN =
 
 function AssetCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
+  const rf = useReactFlow();
   const update = makeUpdater(id);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const kind = (
@@ -2068,17 +2085,12 @@ function AssetCard({ data, id, selected }: NodeProps) {
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
           <div
-            role="button"
-            tabIndex={0}
-            className="nodrag group relative h-full w-full cursor-zoom-in"
-            onClick={(e) => {
+            className="nodrag group relative h-full w-full"
+            onDoubleClick={(e) => {
               e.stopPropagation();
-              setZoom(true);
+              focusCardView(rf, id);
             }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") setZoom(true);
-            }}
-            title="点击放大"
+            title="双击：视口聚焦本卡；右上角 ⌕ 看大图"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -2132,6 +2144,18 @@ function AssetCard({ data, id, selected }: NodeProps) {
                 >
                   <Download className="h-3.5 w-3.5" />
                 </a>
+                <button
+                  type="button"
+                  data-tip="查看大图（标注重绘/九宫格/版本在此操作）" aria-label="查看大图"
+                  className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                  data-track="card.open-lightbox"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setZoom(true);
+                  }}
+                >
+                  <ZoomIn className="h-3.5 w-3.5" />
+                </button>
               </CornerActions>
             ) : null}
           </div>
@@ -2441,6 +2465,7 @@ async function splitImageToGrid(nodeId: string, url: string, title: string) {
 /** 图片卡：占位（上传 / 输入条生成）/ loading 进度 / error 重试 / ready（放大 + 重生成 + 候选切换 + 版本历史） */
 function ImageCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
+  const rf = useReactFlow();
   const update = makeUpdater(id);
   // 放大查看：进入时快照画布全部图片（可翻页）。本卡的候选/版本一并入列
   // 并带 meta——灯箱上下文动作（标注重绘/九宫格/设为主图/恢复版本）只对本卡
@@ -2582,14 +2607,12 @@ function ImageCard({ data, id, selected }: NodeProps) {
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
           <div
-            role="button"
-            tabIndex={0}
-            className="nodrag group relative h-full w-full cursor-zoom-in"
-            onClick={(e) => {
+            className="nodrag group relative h-full w-full"
+            onDoubleClick={(e) => {
               e.stopPropagation();
-              openZoom();
+              focusCardView(rf, id);
             }}
-            title="点击放大（可翻页）"
+            title="双击：视口聚焦本卡；右上角 ⌕ 看大图"
           >
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
@@ -2681,9 +2704,18 @@ function ImageCard({ data, id, selected }: NodeProps) {
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </button>
-              <span className="rounded-md bg-black/40 p-1 text-white">
+              <button
+                type="button"
+                data-tip="查看大图（标注重绘/九宫格/版本在此操作）" aria-label="查看大图"
+                className="nodrag rounded-md bg-black/40 p-1 text-white hover:bg-black/60"
+                data-track="card.open-lightbox"
+  onClick={(e) => {
+                  e.stopPropagation();
+                  openZoom();
+                }}
+              >
                 <ZoomIn className="h-3.5 w-3.5" />
-              </span>
+              </button>
             </CornerActions>
             ) : null}
           </div>
