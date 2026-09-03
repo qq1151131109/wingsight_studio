@@ -1444,13 +1444,16 @@ function TextCard({
   selected,
   editorial,
   footer,
+  extraTools,
 }: {
   data: WingNodeData;
   id: string;
   selected: boolean;
   editorial?: boolean;
-  /** 卡底附加操作条（剧本卡的拆解/分镜按钮用），渲染在正文之下 */
+  /** 卡底附加操作条（剧本卡的字数/导出用），渲染在正文之下 */
   footer?: React.ReactNode;
+  /** 卡专属工具（上浮到悬浮工具条，剧本卡的管线动作用） */
+  extraTools?: React.ReactNode;
 }) {
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
   const [forceEdit, setForceEdit] = useState(false);
@@ -1563,7 +1566,7 @@ function TextCard({
     );
   };
   return (
-    <CardShell id={id} data={data} selected={selected}>
+    <CardShell id={id} data={data} selected={selected} extraTools={extraTools}>
       {lod === "full" ? (
         <>
           <div className="flex min-h-0 flex-1 flex-col">
@@ -1775,12 +1778,70 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     else exportTextFile(title, text, format);
   };
 
+  // 管线动作上浮到悬浮工具条（图片/资产卡同范式），footer 只留 字数+导出
+  const scriptTools = (
+    <>
+      <ToolBtn
+        title="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好"
+        label={decomposing ? "拆解中…" : "拆解资产"}
+        disabled={empty || decomposing}
+        onClick={() => decompose()}
+      >
+        <Combine className="h-4 w-4" />
+      </ToolBtn>
+      {researchCount > 0 ? (
+        <ToolBtn
+          title="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图"
+          label={
+            researching || refJob.batchId
+              ? refJob.running && refJob.job
+                ? `调研中 ${refJob.job.done}/${refJob.job.total}`
+                : "调研中…"
+              : `调研参考图·${researchCount}`
+          }
+          disabled={empty || researching || !!refJob.batchId}
+          onClick={() => void researchRefs()}
+        >
+          <Search className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      {missingAssetCount > 0 ? (
+        <ToolBtn
+          title="为本卡拆解出的缺设定图资产卡批量出图（自动带上已采纳的参考卡，画风闸内）"
+          label={fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
+          disabled={empty || fillingAssets}
+          onClick={() => void fillAssets()}
+        >
+          <ImageUp className="h-4 w-4" />
+        </ToolBtn>
+      ) : null}
+      <ToolBtn
+        title="AI 审查剧本：合规（敏感内容）/ 一致性（内部矛盾）/ 事实核查（联网取证）→ 问题清单，可定位/忽略/一键改写"
+        label={reviewJob.running ? "审查中…" : reviewOpen !== null ? `审查·${reviewOpen}` : "审查"}
+        disabled={empty}
+        onClick={() => setShowReview(true)}
+      >
+        <ScanSearch className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
+        label="拆分镜表"
+        active
+        disabled={empty}
+        onClick={() => genShotlist()}
+      >
+        <Film className="h-4 w-4" />
+      </ToolBtn>
+    </>
+  );
+
   return (
     <TextCard
       data={d}
       id={id}
       selected={selected}
       editorial
+      extraTools={scriptTools}
       footer={
         <>
           <div className="ws-detail nodrag nowheel mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
@@ -1793,78 +1854,6 @@ function ScriptCard({ data, id, selected }: NodeProps) {
             </span>
             <span className="flex-1" />
             <ExportMenuButton onExport={doExport} disabled={empty} track="script" />
-            <button
-              type="button"
-              disabled={empty || decomposing}
-              data-tip="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具 → 自动分组建卡在本卡正下方（只建卡不出图）"
-              className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              data-track="script.decompose"
-  onClick={(e) => {
-                e.stopPropagation();
-                decompose();
-              }}
-            >
-              {decomposing ? "拆解中…" : "拆解资产"}
-            </button>
-            {researchCount > 0 ? (
-              <button
-                type="button"
-                disabled={empty || researching || !!refJob.batchId}
-                data-tip="为缺参考的资产批量搜网络考据图（AI 出词→Google 搜索（Serper 号池）→模型终选），完成后逐资产勾选采纳；真实类题材建议先调研再补图" aria-label="批量调研参考图"
-                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                data-track="card.batch-research"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  void researchRefs();
-                }}
-              >
-                {researching || refJob.batchId
-                  ? refJob.running && refJob.job
-                    ? `调研中 ${refJob.job.done}/${refJob.job.total}`
-                    : "调研中…"
-                  : `调研参考图·${researchCount}`}
-              </button>
-            ) : null}
-            {missingAssetCount > 0 ? (
-              <button
-                type="button"
-                disabled={empty || fillingAssets}
-                data-tip="为本卡拆解出的缺设定图资产卡批量出图（自动带上已采纳的参考卡，画风闸内）" aria-label="为本卡拆解出的缺设定图资产卡批量出图"
-                className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                data-track="asset.fill-images"
-  onClick={(e) => {
-                  e.stopPropagation();
-                  void fillAssets();
-                }}
-              >
-                {fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              disabled={empty}
-              data-tip="AI 审查剧本：合规（敏感内容）/ 一致性（内部矛盾）/ 事实核查（联网取证）→ 问题清单，可定位/忽略/一键改写" aria-label="剧本审查"
-              className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowReview(true);
-              }}
-            >
-              {reviewJob.running ? "审查中…" : reviewOpen !== null ? `审查·${reviewOpen}` : "审查"}
-            </button>
-            <button
-              type="button"
-              disabled={empty}
-              data-tip="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）" aria-label="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
-              className="nodrag flex shrink-0 items-center gap-0.5 rounded border border-accent bg-accent-dim px-2 py-0.5 font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
-              onClick={(e) => {
-                e.stopPropagation();
-                genShotlist();
-              }}
-            >
-              <Film className="h-3 w-3" />
-              拆分镜表
-            </button>
           </div>
           {decomposeMsg ? (
             <p className="ws-detail mt-1 text-[10px] text-text-3">
@@ -5217,8 +5206,42 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     }
   };
 
+  // 管线动作上浮到悬浮工具条（图片/资产卡同范式），footer 只留 行选择+参数+导出
+  const shotTools = (
+    <>
+      <ToolBtn
+        title="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好"
+        label={decomposing ? "拆解中…" : "拆解资产"}
+        disabled={decomposing || !scriptSource}
+        onClick={() => void decompose()}
+      >
+        <Combine className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="勾选行批量出图：每镜一张图片卡，自动摆到本卡右侧并连线（直连出图，不经聊天）。消耗出图额度；无参考行会先确认"
+        label={imgGenerating ? "出图中…" : `出图·${selectedGenRows.length} 镜`}
+        disabled={imgGenerating || selectedGenRows.length === 0}
+        onClick={() =>
+          void genShotImages(
+            selectedGenRows.map((row) => ({ row, seq: rows.indexOf(row) })),
+          )
+        }
+      >
+        <Sparkles className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
+        label="成片"
+        disabled={videoSources.length < 2}
+        onClick={() => void composeShots()}
+      >
+        <Combine className="h-4 w-4" />
+      </ToolBtn>
+    </>
+  );
+
   return (
-    <CardShell id={id} data={d} selected={selected}>
+    <CardShell id={id} data={d} selected={selected} extraTools={shotTools}>
       {/* 深缩放（micro/nano）只留标题+统计概览：行编辑器是全画布最重的
           DOM（每行= chips×4 + Editable×3 + 缩略图 + 行操作×5），拉远看
           全图的平移/卸载成本主要就在这里 */}
@@ -5634,19 +5657,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             全选
           </label>
           <span className="mx-1 h-4 w-px bg-hairline" />
-          <button
-            type="button"
-            disabled={decomposing || !scriptSource}
-            data-tip="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）。出分镜图前建议先调研参考图再补资产图，一致性最好" aria-label="用拆解技能从剧本提取角色/场景/道具/服饰 → 自动分组建卡（只建卡不出图）"
-            className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-            data-track="script.decompose"
-  onClick={(e) => {
-              e.stopPropagation();
-              void decompose();
-            }}
-          >
-            {decomposing ? "拆解中…" : "拆解资产"}
-          </button>
             {researchCount > 0 ? (
               <button
                 type="button"
@@ -5708,20 +5718,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
               补缺图·{missingRows.length}
             </button>
           ) : null}
-          <button
-            type="button"
-            disabled={videoSources.length < 2}
-            data-tip="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）" aria-label="把与本卡连线的镜头视频按画布从左到右拼接成片：自动建/复用成片卡、依序连线并合成（顺序可在成片卡里微调）"
-            className="nodrag shrink-0 rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-            data-track="compose.one-click"
-  onClick={(e) => {
-              e.stopPropagation();
-              void composeShots();
-            }}
-          >
-            <Combine className="mr-0.5 inline h-3 w-3 align-[-1px]" />
-            成片
-          </button>
         </span>
       </div>
       </>

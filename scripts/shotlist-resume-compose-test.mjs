@@ -269,6 +269,12 @@ await page.goto(`${BASE}/project/${pid}`);
 await page.waitForTimeout(1500);
 await page.evaluate(() => window.__wsSetViewport?.({ x: 0, y: 0, zoom: 0.5 }));
 await page.waitForTimeout(1500);
+// 成片钮已上浮悬浮工具条：选中分镜表卡后可见
+await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  st.selectNodes([st.nodes.find((n) => n.data.nodeType === "shotlist").id]);
+});
+await page.waitForTimeout(400);
 
 const composeBtn = page.getByRole("button", { name: /成片/ }).first();
 const disabled = await composeBtn.isDisabled().catch(() => true);

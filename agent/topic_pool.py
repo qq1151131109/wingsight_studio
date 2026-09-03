@@ -240,6 +240,8 @@ SERIES_MIN_UNITS = 3
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
 # 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
 IDEATE_CORPUS_KEY = "topic_pool_ideate_corpus"
+# 六源采集的通道级散账（每通道完成即落账，重启只补缺失通道）
+CORPUS_PARTIALS_KEY = "topic_pool_corpus_partials"
 IDEATE_SEEN_CAP = 4000
 
 # 已深挖层（导演点名才跑）：取证/verdict/市场实查的全流程，见 deep_dive_one。
@@ -723,6 +725,57 @@ class TopicCurator:
         )
         return material + anniversary + validated + benchmark + zhihu + wiki
 
+    # 六源的可续采集：每通道完成即落账——外部看护 ~20 分钟重启一次服务，
+    # 采集又是最贵的阶段（冷启动可超一个重启窗），不落账会陷入"采集中被杀
+    # →续跑从零再采"的死循环；通道名 → collector 方法名
+    _CORPUS_CHANNELS: tuple[tuple[str, str], ...] = (
+        ("material", "collect_material_window"),
+        ("anniversary", "collect_anniversaries"),
+        ("validated", "collect_validated_content"),
+        ("benchmark", "collect_benchmarks"),
+        ("zhihu", "collect_zhihu_discussions"),
+        ("wiki", "collect_wiki_corpus"),
+    )
+
+    def _load_corpus_partials(self) -> dict[str, list[dict[str, Any]]]:
+        raw = store.get_setting(CORPUS_PARTIALS_KEY)
+        if not raw:
+            return {}
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        if not isinstance(data, dict) or data.get("day") != date.today().isoformat():
+            return {}
+        channels = data.get("channels")
+        return {k: v for k, v in (channels or {}).items() if isinstance(v, list)} if isinstance(channels, dict) else {}
+
+    def _save_corpus_partials(self, partials: dict[str, list[dict[str, Any]]]) -> None:
+        store.set_setting(
+            CORPUS_PARTIALS_KEY,
+            json.dumps({"day": date.today().isoformat(), "channels": partials}, ensure_ascii=False),
+        )
+
+    async def collect_signals_resumable(self) -> list[dict[str, Any]]:
+        """可续版六源采集：每个通道完成即落账（不等整批），重启只补缺失通道。"""
+
+        async def _one(name: str, coro) -> None:
+            try:
+                res = await coro()
+            except Exception as exc:  # noqa: BLE001 - 单通道失败按当日空计，不无限重试
+                logger.warning("选题语料通道 %s 采集失败（当日按空计）: %s", name, str(exc)[:160])
+                res = []
+            partials = self._load_corpus_partials()  # 重读最新（并发通道各写各的键）
+            partials[name] = res
+            self._save_corpus_partials(partials)
+
+        partials = self._load_corpus_partials()
+        pending = [(name, getattr(self, meth)) for name, meth in self._CORPUS_CHANNELS if name not in partials]
+        if pending:
+            await asyncio.gather(*(_one(name, coro) for name, coro in pending))
+        store.set_setting(CORPUS_PARTIALS_KEY, "")  # 全通道齐：清散账
+        return [item for items in partials.values() for item in items]
+
     # --- 主流程：批量创意生成（生料层） ----------------------------------------
 
     async def run(self) -> IdeateResult:
@@ -732,7 +785,7 @@ class TopicCurator:
         # 待收敛的方向都不丢），不再重新采集——断点续跑让进度在任意重启节奏下累积
         clues, directions = self._load_day_state()
         if clues is None:
-            signals = await self.collect_signals()
+            signals = await self.collect_signals_resumable()
             if not signals:
                 result.error = "语料采集为零条（全部通道失败或无结果）"
                 return result
