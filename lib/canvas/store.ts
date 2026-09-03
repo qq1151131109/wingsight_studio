@@ -104,6 +104,9 @@ export interface WingNodeData {
    *  flow 把 短指令+设定文本 扩写成完整提示词（novanova KEEP/OPTIMIZE
    *  范式：完整描述/改图指令 keep 原样） */
   composeOpt?: boolean;
+  /** 资产卡：文字考据简报（批量调研文路产物，视觉细节/时代特征/常见误用，
+   *  每条带来源域名）。喂「AI 写设定」与出图设定的证据材料，用户可清空 */
+  researchBrief?: string;
   /** image 卡：最近一次智能编排合成后的最终提示词（回显可追溯，可载入
    *  输入框修改后重发） */
   composedPrompt?: string;
@@ -344,11 +347,13 @@ export function absolutePosition(
 /** 估算卡片占位（打组算包围盒用；与渲染宽度近似即可） */
 export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   note: { w: 280, h: 170 },
-  script: { w: 352, h: 260 },
-  character: { w: 256, h: 300 },
-  scene: { w: 320, h: 240 },
-  prop: { w: 256, h: 240 },
-  costume: { w: 256, h: 240 },
+  script: { w: 560, h: 420 },
+  // 四种资产卡统一尺寸（用户要求规格一致；内容含考据简报折叠块，352 高
+  // = 标题18+按钮52+简报26+正文96+内边距16+图片区≥120 的最坏组合留位）
+  character: { w: 288, h: 352 },
+  scene: { w: 288, h: 352 },
+  prop: { w: 288, h: 352 },
+  costume: { w: 288, h: 352 },
   image: { w: 256, h: 260 },
   video: { w: 320, h: 300 },
   audio: { w: 280, h: 190 },

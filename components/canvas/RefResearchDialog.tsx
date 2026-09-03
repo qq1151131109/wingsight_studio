@@ -39,6 +39,7 @@ export default function RefResearchDialog({
   const [adopting, setAdopting] = useState(false);
   const [channelErrors, setChannelErrors] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
+  const [brief, setBrief] = useState("");
   const [err, setErr] = useState("");
 
   const pid = projectId ?? "";
@@ -79,6 +80,7 @@ export default function RefResearchDialog({
       const job = await runRefResearch(pid, nodeId, manual, asset);
       setCandidates(job.candidates);
       setNote(job.note ?? "");
+      setBrief(job.researchBrief ?? "");
       // 推荐候选预勾选（采纳权在用户：可增删后一键采纳）
       setSelected(
         new Set(job.candidates.filter((c) => c.recommended).map((c) => c.id)),
@@ -226,6 +228,16 @@ export default function RefResearchDialog({
             {note}
           </p>
         ) : null}
+        {(brief || String(node?.data.researchBrief ?? "")).trim() ? (
+          <details className="mt-2 shrink-0 rounded border border-hairline bg-surface-2/60">
+            <summary className="cursor-pointer select-none px-1.5 py-1 text-[10px] text-text-3 hover:text-text-2">
+              考据简报（AI 出词调研附带的文字考据，已同步到资产卡）
+            </summary>
+            <p className="max-h-32 overflow-auto whitespace-pre-wrap px-1.5 pb-1.5 text-[10px] leading-relaxed text-text-3">
+              {brief || String(node?.data.researchBrief ?? "")}
+            </p>
+          </details>
+        ) : null}
         {Object.entries(channelErrors).length ? (
           <div className="mt-2 space-y-0.5">
             {Object.entries(channelErrors).map(([channel, msg]) => (
@@ -272,7 +284,7 @@ export default function RefResearchDialog({
                     <img
                       src={assetThumbUrl(c.assetUrl)}
                       alt={c.title}
-                      className="h-28 w-full bg-surface-2 object-cover"
+                      className="h-28 w-full bg-surface-2 object-contain"
                       loading="lazy"
                     />
                     {isAdopted ? (

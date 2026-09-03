@@ -22,14 +22,23 @@ import httpx
 
 _API = "https://zh.wikipedia.org/w/api.php"
 _UA = "Wingsight/1.0 (documentary research)"
-# 垂类 → 候选类别（不带 Category: 前缀；不存在的类别静默跳过，量级靠多备几类）
+# 垂类 → 候选类别（不带 Category: 前缀；不存在的类别静默跳过，量级靠多备几类。
+# 类别名经 allcategories 前缀发现核实过；空类别自动跳过）
+# zh dump 的类目名简繁混存：候选类别同时给简/繁两种写法，缺的自动跳过
 WIKI_CATEGORIES: dict[str, tuple[str, ...]] = {
-    "history": ("中国世界遗产", "中国考古学文化", "中国古代制度", "中国历代都城"),
+    "history": ("中国世界遗产", "中國世界遺產", "中国考古学文化", "中國考古學文化", "中国古代制度", "中國古代制度", "中国石窟"),
     "crime": ("中华人民共和国案件",),
-    "science": ("中国科学院院士",),
+    "science": ("中国科学院院士", "中國科學院院士", "中国科学家", "中國科學家", "中国发明家", "中國發明家"),
+    "food": ("菜系", "小吃", "食材", "中国茶", "中國茶"),
+    "nature": ("中国山脉", "中国河流", "中国自然保护区", "中國自然保護區", "中国自然保护区"),
+    "music": ("中国音乐人", "中國音樂人", "中国戏曲", "中國戲曲", "中国音乐史", "中國音樂史", "中国美术", "中國美術", "中国书画家", "中國書畫家", "中国演员", "中國演員"),
+    "finance": ("中国企业家", "中國企業家", "中国经济人物", "中國經濟人物", "中国经济史", "中國經濟史"),
+    "travel": ("中国旅游景点", "中國旅遊景點"),
+    "military": ("中国战争", "中國戰爭", "中国军事人物", "中國軍事人物"),
 }
-# 单轮喂给生成层的语料条目上限（生成按批切，条数由 topic_pool 侧批大小定）
-CORPUS_PER_RUN_CAP = 240
+# 单类别单日切片上限（类别成员经子类展开后可达数百，切片+按天轮转保证
+# 同日多轮刷新各喂新料；全部耗尽后次日换片）
+CORPUS_PER_CATEGORY_CAP = 120
 # 子类展开层数：1（年代/学部子类才是成员主体；两层会拖长请求链）
 SUBCAT_EXPAND = True
 
@@ -101,21 +110,46 @@ def day_slice(category: str, titles: list[str], cap: int, today: date | None = N
     return shuffled[:cap]
 
 
-async def collect_corpus(per_category_cap: int = 120) -> list[dict[str, Any]]:
+async def collect_corpus(per_category_cap: int = CORPUS_PER_CATEGORY_CAP) -> list[dict[str, Any]]:
     """全垂类语料信号条目（与其他信号同形，signal_type=corpus）。
 
-    条目只有标题没有摘要（类别成员 API 不带正文）——生成 flow 靠标题
-    发掘选题，原型出处链接指向维基条目页。
+    优先走本地离线库（wikidump：官方 dump 导入，零网络零限流、全量成员）；
+    离线库不可用时回退 MediaWiki API（单类切片限流，180s 总闸由调用方控）。
+    条目只有标题没有摘要（类别成员不带正文）——生成 flow 靠标题发掘选题，
+    原型出处链接指向维基条目页。
     """
     fetched_at = datetime.now(timezone.utc).isoformat()
     signals: list[dict[str, Any]] = []
+    import wikidump
+
+    offline = wikidump.is_available()
+    if offline:
+        print("  维基语料：离线库模式")
+    else:
+        print("  维基语料：API 模式（离线库未建，uv run python wikidump.py build）")
     async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), headers={"User-Agent": _UA}) as client:
         for vertical, categories in WIKI_CATEGORIES.items():
             for category in categories:
-                titles = await collect_category(client, category)
+                if offline:
+                    # 离线库：直属成员 + 两层子类展开（零请求成本，量级从几十到几千；
+                    # 轮转交给调用方的当日消费去重）
+                    titles = set(wikidump.category_members(category))
+                    for sub in wikidump.category_subcategories(category)[:20]:
+                        if sub == category:
+                            continue
+                        titles |= set(wikidump.category_members(sub))
+                        for sub2 in wikidump.category_subcategories(sub)[:10]:
+                            if sub2 != sub:
+                                titles |= set(wikidump.category_members(sub2))
+                    titles = sorted(titles)
+                else:
+                    titles = await collect_category(client, category)
                 if not titles:
                     continue
-                for title in day_slice(category, titles, per_category_cap):
+                # 离线库全量成员零请求成本，交给调用方的当日消费去重做轮转；
+                # API 模式请求有成本，才需要按天切片限流
+                sliced = titles if offline else day_slice(category, titles, per_category_cap)
+                for title in sliced:
                     signals.append(
                         {
                             "title": title,

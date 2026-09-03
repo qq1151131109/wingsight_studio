@@ -293,7 +293,7 @@ RESCAN_VERDICT = {
 }
 
 
-async def fake_flow_runner(flow_id: str, input_value: str) -> str:
+async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
     payload = json.loads(input_value)
     if flow_id == "f-ideate":
         assert "corpus" in payload and "verticals" in payload, "生成载荷应含语料与垂类清单"
@@ -466,9 +466,9 @@ async def run_ideate() -> None:
     expect("甲骨" in anchor["heatEvidence"][0]["title"], "原型出处应回指语料条目")
     expect(anchor["summary"].startswith("钩子"), "生料卡摘要应为钩子")
 
-    # 幂等：原样重跑全被指纹去重，不产生重复卡
+    # 幂等：原样重跑，当日已喂语料全部被消费指纹拦下 → 轮空不重喂
     again = await curator.run()
-    expect(again.created == 0 and again.duplicates == 10, f"重跑应全去重：{again}")
+    expect(again.created == 0 and again.error.startswith("当日语料已全部喂过"), f"重跑应轮空：{again}")
 
     print("生料生成管线 ✓")
 
@@ -536,7 +536,7 @@ print("verdict 规则 ✓")
 async def run_call_flow_retry() -> None:
     calls = {"n": 0}
 
-    async def flaky(flow_id: str, input_value: str) -> str:
+    async def flaky(flow_id: str, input_value: str, tweaks=None) -> str:
         calls["n"] += 1
         if calls["n"] == 1:
             return '坏输出：他说"这不算 JSON"就完了'  # 未转义引号类坏输出
@@ -546,7 +546,7 @@ async def run_call_flow_retry() -> None:
     parsed = await curator._call_flow("verdict", {"x": 1})
     expect(parsed == [{"ok": True}] and calls["n"] == 2, f"坏输出应重试一次后成功：calls={calls['n']}")
 
-    async def always_bad(flow_id: str, input_value: str) -> str:
+    async def always_bad(flow_id: str, input_value: str, tweaks=None) -> str:
         calls["n"] += 1
         return "始终不是 JSON"
 
@@ -558,7 +558,7 @@ async def run_call_flow_retry() -> None:
     except RuntimeError as exc:
         expect("两次解析失败" in str(exc) and calls["n"] == 2, f"应恰好尝试两次后报错：{exc}")
 
-    async def engine_error(flow_id: str, input_value: str) -> str:
+    async def engine_error(flow_id: str, input_value: str, tweaks=None) -> str:
         calls["n"] += 1
         return "（引擎错误：flow 不存在）"
 

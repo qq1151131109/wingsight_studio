@@ -302,7 +302,14 @@ async function directImagegen(
           ? {
               compose: true,
               instruction,
-              setting: String(node.data.body ?? ""),
+              // 设定文本 + 考据简报（编排扩写的证据材料；用户关编排时原样
+              // 直传不注入——那是明确的"别加工"）
+              setting: [
+                String(node.data.body ?? "").trim(),
+                String(node.data.researchBrief ?? "").trim(),
+              ]
+                .filter(Boolean)
+                .join("\n\n【考据简报】\n"),
             }
           : {}),
       })),

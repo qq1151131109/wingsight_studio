@@ -80,9 +80,140 @@ VERTICAL_SPECS: dict[str, VerticalSpec] = {
             "中国科学院 重大成果 发布 {year}",
         ),
     ),
+    "food": VerticalSpec(
+        id="food", label="美食", color="var(--color-warm)",
+        scope="饮食文化：菜系、小吃、茶酒、食材与味觉记忆（核心驱动是味道背后的人与地方）",
+        material_seeds=(
+            "美食纪录片 出圈 {year}",
+            "地方菜系 非遗 技艺 {year}",
+            "老字号 兴衰 {year}",
+            "食材 起源 考据",
+        ),
+    ),
+    "nature": VerticalSpec(
+        id="nature", label="自然", color="var(--color-good)",
+        scope="自然生态、野生动物、荒野地理与气候（核心驱动是生命与地球；风格化科普影像，不做伪实拍）",
+        material_seeds=(
+            "野生动物 保护 突破 {year}",
+            "生态修复 成果 {year}",
+            "自然保护地 新设立 {year}",
+            "物种 新发现 {year}",
+        ),
+    ),
+    "music": VerticalSpec(
+        id="music", label="音乐艺术", color="var(--color-cool)",
+        scope="音乐、美术、戏曲、设计与艺术家命运（核心驱动是作品与创作者）",
+        material_seeds=(
+            "音乐纪录片 出圈 {year}",
+            "艺术家 回顾展 {year}",
+            "非遗传承人 技艺 {year}",
+            "戏曲剧种 保护 {year}",
+        ),
+    ),
+    "finance": VerticalSpec(
+        id="finance", label="财经", color="var(--color-cool)",
+        scope="商业史、公司兴衰、资本事件与经济变迁（核心驱动是钱与人的决策）",
+        material_seeds=(
+            "商业史 案例 复盘 {year}",
+            "公司 兴衰 破产 {year}",
+            "经济数据 发布 解读 {year}",
+            "老品牌 消失 调查 {year}",
+        ),
+    ),
+    "travel": VerticalSpec(
+        id="travel", label="旅行地理", color="var(--color-warm)",
+        scope="地理、路线、行走与地方志（核心驱动是空间与在地的故事）",
+        material_seeds=(
+            "地理发现 考察 {year}",
+            "古道 路线 考证 {year}",
+            "目的地 走红 调查 {year}",
+        ),
+    ),
+    "kids": VerticalSpec(
+        id="kids", label="儿童教育", color="var(--color-warm)",
+        scope="儿童视角、科普启蒙与教育议题（核心驱动是成长与认知；动画/科普形态）",
+        material_seeds=(
+            "儿童 科普 出圈 {year}",
+            "教育 议题 纪录 {year}",
+            "青少年 成长 记录 {year}",
+        ),
+    ),
+    "military": VerticalSpec(
+        id="military", label="军事战争", color="var(--color-danger)",
+        scope="战争史、战役、军人记忆与国防科技（核心驱动是档案与人的命运；档案修复+解说形态）",
+        material_seeds=(
+            "战争档案 解密 公开 {year}",
+            "战役 纪念 新考证 {year}",
+            "老兵 口述 抢救 {year}",
+            "军工 记忆 公开 {year}",
+        ),
+    ),
 }
 VERTICALS: tuple[str, ...] = tuple(VERTICAL_SPECS)
 VERTICAL_LABELS: dict[str, str] = {k: v.label for k, v in VERTICAL_SPECS.items()}
+
+# --- 种子矩阵：主题词 × 角度 展开成大规模搜索种子（语料放量的主杠杆） ---
+# 每垂类 15-20 个有纪实含金量的主题词（具名人物/事件/地域/物种）× 通用角度，
+# 组合出几百个种子；每轮按轮转游标取样 SEEDS_PER_RUN_CAP 条，跨轮覆盖全集。
+SEED_MATRIX: dict[str, tuple[list[str], tuple[str, ...]]] = {
+    "history": (
+        ["秦始皇", "汉武帝", "武则天", "成吉思汗", "康熙帝", "郑和", "玄奘", "张骞", "苏东坡", "王安石",
+         "岳飞", "李清照", "郑成功", "林则徐", "三星堆", "敦煌莫高窟", "兵马俑", "大运河", "长城", "丝绸之路"],
+        ("考古新发现", "未解之谜", "文物传奇", "档案解密", "最新研究"),
+    ),
+    "crime": (
+        ["白银连环杀人案", "南大碎尸案", "呼格吉勒图案", "聂树斌案", "张玉环案", "劳荣枝案", "白宝山案", "佟励刚案",
+         "悍匪周克华", "跨国电信诈骗", "湄公河大案", "灭门悬案", "越狱追捕", "贪官外逃", "缉毒卧底", "法医手记"],
+        ("告破细节", "悬案重启", "真凶落网", "冤案平反", "侦破技术"),
+    ),
+    "humanity": (
+        ["外卖骑手", "农民工", "乡村教师", "大山里的女孩", "留守儿童", "高龄农民工", "北漂", "县城青年",
+         "罕见病家庭", "临终关怀", "殡葬师", "残障人就业", "代驾司机", "夜班护士", "乡村医生", "独立书店"],
+        ("人生切片", "命运转折", "田野调查", "口述实录", "生存现状"),
+    ),
+    "science": (
+        ["嫦娥探月", "天问火星", "中国天眼", "量子计算", "深海勇士", "人造太阳", "脑机接口", "北斗导航",
+         "中国空间站", "基因编辑", "可控核聚变", "冰川消融", "恐龙化石", "古DNA", "大科学装置"],
+        ("攻关历程", "重大突破", "幕后团队", "未解难题", "最新成果"),
+    ),
+    "food": (
+        ["川菜", "粤菜", "鲁菜", "淮扬菜", "陕西面食", "兰州牛肉面", "火锅", "烧烤", "早点铺", "夜市小吃",
+         "茶叶", "白酒酿造", "酱油酿造", "豆腐", "火腿", "宫廷菜"],
+        ("技艺传承", "老字号兴衰", "风土溯源", "匠人故事", "出圈现象"),
+    ),
+    "nature": (
+        ["大熊猫", "雪豹", "滇金丝猴", "朱鹮", "藏羚羊", "长江江豚", "候鸟迁徙", "珊瑚礁", "青藏高原",
+         "三江源", "红树林", "普氏野马", "东北虎", "亚洲象北迁", "可可西里", "深海生物"],
+        ("保护历程", "重返野外", "栖息地揭秘", "追踪记录", "濒危反转"),
+    ),
+    "music": (
+        ["摇滚乐队", "民谣歌手", "戏曲名角", "交响乐团", "民族乐器", "说唱厂牌", "古琴", "钢琴家",
+         "美声歌唱家", "DJ 电子乐", "民歌声腔", "音乐节"],
+        ("生存现状", "爆红背后", "传承人故事", "江湖往事", "时代记忆"),
+    ),
+    "finance": (
+        ["老字号", "上市公司暴雷", "县级财政", "义乌小商品", "深圳制造", "温州商人", "晋商票号", "房地产周期",
+         "直播电商", "新能源车企", "芯片产业", "县城生意"],
+        ("兴衰复盘", "暴雷调查", "财富故事", "产业迁徙", "生死线"),
+    ),
+    "travel": (
+        ["茶马古道", "丝绸之路沿线", "黄河沿线", "长江沿线", "大运河沿线", "边境小城", "沙漠绿洲", "火山岛",
+         "徽州古村", "川西线", "国道318"],
+        ("路线重走", "在地故事", "消失中的风景", "冷门目的地", "地方志"),
+    ),
+    "kids": (
+        ["乡村幼儿园", "特殊儿童", "儿童科普", "少年体校", "玩具设计", "儿童读物", "儿童医院成长记"],
+        ("成长记录", "启蒙方式", "教育实验", "天才与困境"),
+    ),
+    "military": (
+        ["两弹一星", "航母建造", "抗战老兵", "志愿军工兵", "三线军工厂", "边境反击战", "导弹试验", "大阅兵背后",
+         "军马场", "功勋飞机", "潜艇部队", "边防哨所"],
+        ("档案解密", "老兵口述", "工程幕后", "首次公开", "历史还原"),
+    ),
+}
+# 每轮取样的种子条数上限（≈160 次搜索请求，10 结果/条 → ~1600 语料信号）
+SEEDS_PER_RUN_CAP = 160
+_SEED_ROTATE_KEY = "topic_pool_seed_rotate"
 
 
 def verticals_payload() -> list[dict[str, str]]:
@@ -93,10 +224,13 @@ def verticals_payload() -> list[dict[str, str]]:
 # 单批喂给生成 flow 的语料条数（约 1 次长上下文调用产 8-12 个选题；批越大
 # 模型输出越长，实测 70 条语料产 30 题会超 agent 侧 300s 超时——别调回去）
 IDEATE_BATCH_SIZE = 40
-# 单轮刷新最多跑的批数（成本硬上界：≤12 次 LLM 调用，零检索成本）
-IDEATE_BATCHES_CAP = 12
+# 单轮刷新最多跑的批数（成本硬上界：≤24 次 LLM 调用，零检索成本）
+IDEATE_BATCHES_CAP = 24
 # 每条语料在单批内允许产出的选题上限（防单条刷屏；跨批同语料由指纹去重兜底）
 IDEATE_ENTRIES_PER_BATCH = 14
+# 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
+IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
+IDEATE_SEEN_CAP = 4000
 
 # 已深挖层（导演点名才跑）：取证/verdict/市场实查的全流程，见 deep_dive_one。
 # 观察卡复查：每轮刷新尾部顺带取最久未扫的几张薄卡做缺口导向小预算复查。
@@ -154,6 +288,12 @@ ZHIHU_DISCUSSION_SEEDS: dict[str, tuple[str, ...]] = {
     "crime": ("悬案 真相", "冤案 平反", "刑侦 细节"),
     "humanity": ("普通人的故事", "小城 生活", "职业 真实经历"),
     "science": ("科普 颠覆认知", "宇宙 未解之谜", "人体 冷知识"),
+    "food": ("美食 纪录", "地方小吃", "中华料理"),
+    "nature": ("动物 纪录片", "野生动物 保护", "自然 奇观"),
+    "music": ("音乐 纪录片", "乐队 故事", "民族音乐"),
+    "finance": ("商业史", "公司 兴衰", "经济 冷知识"),
+    "travel": ("旅行 纪录片", "小城 旅行", "地理 冷知识"),
+    "military": ("战争 史", "军事 历史", "老兵 故事"),
 }
 # 高赞阈值：低于此赞同数的条目不算"已验证兴趣"（噪声多）
 ZHIHU_MIN_VOTES = 100
@@ -332,9 +472,16 @@ class TopicCurator:
         入围线索因单次坏输出被整条丢弃。
         """
         assert self.flow_runner is not None
+        # 全链统一目录默认文本模型（选题 flows 出厂是 glm-5.3-flash，勿依赖）；
+        # 键 LanguageModelComponent 由 run_flow_blocking 前缀解析成真实节点 id
+        from models import DEFAULT_TEXT_MODEL_ID, text_model_tweaks
+
+        tweaks = {"LanguageModelComponent": text_model_tweaks(DEFAULT_TEXT_MODEL_ID)}
         last_error: ValueError | None = None
         for attempt in (1, 2):
-            text = await self.flow_runner(self._flow_id(key), json.dumps(payload, ensure_ascii=False))
+            text = await self.flow_runner(
+                self._flow_id(key), json.dumps(payload, ensure_ascii=False), tweaks=tweaks
+            )
             if text.startswith("（"):
                 # skills.run_flow_blocking 的错误以全角括号包裹；正常 LLM 输出不会
                 raise RuntimeError(f"选题 {key} flow 调用失败: {text[:200]}")
@@ -348,13 +495,26 @@ class TopicCurator:
     # --- 采集：五源信号矩阵（材料事件 / 周年 / 已验证内容 / 对标片单） ---------
 
     async def collect_material_window(self) -> list[dict[str, Any]]:
-        """兼容旧测试面：材料事件采集（信号类型 material，按垂类注册表种子）。"""
-        seeds = {
-            vid: tuple(q.format(year=_year_anchor()) for q in spec.material_seeds)
+        """材料事件采集（信号类型 material）：注册表种子 + 种子矩阵轮转取样。"""
+        seeds: dict[str, list[str]] = {
+            vid: list(q.format(year=_year_anchor()) for q in spec.material_seeds)
             for vid, spec in VERTICAL_SPECS.items()
             if spec.material_seeds
         }
-        return await self._collect_seed_queries(seeds, signal_type="material")
+        # 种子矩阵轮转取样：主题词×角度的几百个种子，每轮取一段新组合
+        # （游标存 app_settings，跨轮推进；组合全集耗尽后回绕，指纹去重兜底）
+        matrix: list[tuple[str, str]] = []
+        for vid, (terms, angles) in SEED_MATRIX.items():
+            for term in terms:
+                for angle in angles:
+                    matrix.append((vid, f"{term} {angle}"))
+        cursor = int(store.get_setting(_SEED_ROTATE_KEY) or 0) % max(len(matrix), 1)
+        picked = [matrix[(cursor + i) % len(matrix)] for i in range(min(SEEDS_PER_RUN_CAP, len(matrix)))]
+        store.set_setting(_SEED_ROTATE_KEY, str((cursor + len(picked)) % max(len(matrix), 1)))
+        for vid, query in picked:
+            seeds.setdefault(vid, []).append(query.format(year=_year_anchor()) if "{year}" in query else query)
+        flattened = {vid: tuple(queries) for vid, queries in seeds.items()}
+        return await self._collect_seed_queries(flattened, signal_type="material")
 
     async def _collect_seed_queries(
         self, seeds: dict[str | None, tuple[str, ...]], signal_type: str
@@ -520,11 +680,18 @@ class TopicCurator:
         if cached is not None:
             return cached
         try:
-            signals = await wikicategory.collect_corpus()
+            # 总闸超时：维基不可达时（网络波动/被墙）不能拖死整轮刷新，
+            # 180s 拿不到就放弃本轮语料，让搜索信号先撑住生成
+            signals = await asyncio.wait_for(wikicategory.collect_corpus(), timeout=180.0)
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning("维基语料采集超时（180s），本轮跳过维基语料")
+            signals = []
         except Exception as exc:  # noqa: BLE001 - 语料源失败不拖累其他信号
             logger.warning("维基语料采集失败: %s", str(exc)[:200])
             signals = []
-        settings_store.set_setting(wikicategory.CACHE_KEY, wikicategory.build_day_cache(signals))
+        # 空结果不写当日缓存：一次网络抖动不应毒化整天（下一轮刷新会重试）
+        if signals:
+            settings_store.set_setting(wikicategory.CACHE_KEY, wikicategory.build_day_cache(signals))
         return signals
 
     async def collect_signals(self) -> list[dict[str, Any]]:
@@ -544,16 +711,44 @@ class TopicCurator:
     async def run(self) -> IdeateResult:
         result = IdeateResult()
         items = await self.collect_signals()
-        result.collected = len(items)
         if not items:
             result.error = "语料采集为零条（全部通道失败或无结果）"
             return result
+        # 当日已喂过的语料不再进批：同日多轮刷新各喂新料，直到当日语料池耗尽
+        seen = self._load_ideate_seen()
+        items = [i for i in items if fingerprint_of(i["title"]) not in seen]
+        result.collected = len(items)
+        if not items:
+            result.error = "当日语料已全部喂过（次日换片续喂），本轮无新料"
+            return result
         # 洗牌混垂类：语料按来源聚集，不洗牌会让单批垂类单一
         random.shuffle(items)
-        await self.ideate(items, result)
+        await self.ideate(items, result, seen)
         return result
 
-    async def ideate(self, items: list[dict[str, Any]], result: IdeateResult) -> None:
+    def _load_ideate_seen(self) -> set[str]:
+        """当日已喂语料指纹（按天存 app_settings；跨日自动重置）。"""
+        raw = store.get_setting(IDEATE_SEEN_KEY)
+        if not raw:
+            return set()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return set()
+        if not isinstance(data, dict) or data.get("day") != date.today().isoformat():
+            return set()
+        return {str(x) for x in data.get("fps") or []}
+
+    def _save_ideate_seen(self, fps: set[str]) -> None:
+        store.set_setting(
+            IDEATE_SEEN_KEY,
+            json.dumps(
+                {"day": date.today().isoformat(), "fps": sorted(fps)[:IDEATE_SEEN_CAP]},
+                ensure_ascii=False,
+            ),
+        )
+
+    async def ideate(self, items: list[dict[str, Any]], result: IdeateResult, seen: set[str]) -> None:
         """语料分批喂生成 flow，产出的创意选题以生料卡落库（指纹幂等）。"""
         batches = [
             items[i : i + IDEATE_BATCH_SIZE]
@@ -561,6 +756,8 @@ class TopicCurator:
         ][:IDEATE_BATCHES_CAP]
         result.batches = len(batches)
         for batch in batches:
+            seen.update(fingerprint_of(i["title"]) for i in batch)
+            self._save_ideate_seen(seen)  # 每批落账：中断不重喂
             listing = [
                 {
                     "index": idx,

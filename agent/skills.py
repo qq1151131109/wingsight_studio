@@ -147,7 +147,7 @@ async def start_storyboard_gen_job(
                 tweaks={
                     "LanguageModelComponent": {
                         "temperature": 0.4,
-                        **models.text_model_tweaks(model),
+                        **models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID),
                     }
                 },
                 timeout=900,
@@ -201,6 +201,62 @@ MAX_RESULT_CHARS = 1500
 # ---------- 通用：阻塞式调用 ----------
 
 
+class _TweakKeyError(Exception):
+    """tweaks 逻辑键在 flow 里解析不出唯一节点（零个或多个命中）。"""
+
+
+async def _resolve_tweak_keys(
+    flow_id: str, tweaks: Dict[str, Any], headers: Dict[str, str]
+) -> Dict[str, Any]:
+    """把逻辑组件键解析成真实节点 id（langflow 只按节点 id / display_name
+    精确匹配 tweaks 键，其他一律静默丢弃）。
+
+    业务代码统一用组件名做键（如 LanguageModelComponent），实际节点 id 带
+    随机后缀（LanguageModelComponent-nFbmO）、display_name 是 UI 文案
+    （Language Model），直接透传曾让所有文本模型/温度注入静默空转。规则：
+    键命中节点 id 或 display_name → 原样透传；否则按「id 以 键+'-' 开头」
+    唯一前缀匹配；零个或多个命中都报错，绝不静默丢弃（铁律）。
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{LANGFLOW_URL}/api/v1/flows/{flow_id}", headers=headers
+        )
+    if resp.status_code >= 400:
+        raise _TweakKeyError(
+            f"读取 flow 节点失败（{resp.status_code}）：{resp.text[:160]}"
+        )
+    nodes = ((resp.json().get("data") or {}).get("nodes")) or []
+    ids = {n.get("id") for n in nodes if n.get("id")}
+    names = {
+        n.get("data", {}).get("node", {}).get("display_name")
+        for n in nodes
+        if n.get("data", {}).get("node", {}).get("display_name")
+    }
+    resolved: Dict[str, Any] = {}
+    for key, value in tweaks.items():
+        if not isinstance(value, dict):
+            # 标量 tweak 是 langflow 原生的「应用到全部节点」语义，不是节点键，原样透传
+            resolved[key] = value
+            continue
+        if key in ids or key in names:
+            resolved[key] = value
+            continue
+        hits = sorted(k for k in ids if k.startswith(f"{key}-"))
+        if len(hits) == 1:
+            resolved[hits[0]] = value
+        elif not hits:
+            raise _TweakKeyError(
+                f"tweaks 键 {key!r} 在 flow {flow_id} 里没有匹配节点"
+                "（id 或 display_name 精确、id 前缀均未命中）"
+            )
+        else:
+            raise _TweakKeyError(
+                f"tweaks 键 {key!r} 在 flow {flow_id} 里命中多个节点：{hits}，"
+                "请改用完整节点 id"
+            )
+    return resolved
+
+
 async def run_flow_blocking(
     flow_id: str,
     input_value: str = "",
@@ -209,12 +265,19 @@ async def run_flow_blocking(
 ) -> str:
     """阻塞式跑一个 flow，返回末端输出组件的消息文本。
 
+    tweaks 键支持逻辑组件名（见 _resolve_tweak_keys），解析失败明报不静默。
     timeout：整链等待上限（秒）。分镜表生成实测可到 13 分钟+（大剧本 + 慢模型），
     长流程调用方必须显式放宽，否则 httpx 超时被下面的守卫包装成"连不上"误导人。
     """
     headers = {"Content-Type": "application/json"}
     if LANGFLOW_API_KEY:
         headers["x-api-key"] = LANGFLOW_API_KEY
+
+    if tweaks:
+        try:
+            tweaks = await _resolve_tweak_keys(flow_id, tweaks, headers)
+        except _TweakKeyError as exc:
+            return f"（tweaks 解析失败：{exc}）"
 
     payload: Dict[str, Any] = {
         "input_value": input_value,
@@ -724,7 +787,7 @@ async def _decompose_one_type(
         tweaks={
             "LanguageModelComponent": {
                 "temperature": 0.1,
-                **models.text_model_tweaks(model),
+                **models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID),
             }
         },
     )
@@ -786,7 +849,7 @@ async def _decompose_legacy(
         tweaks={
             "LanguageModelComponent": {
                 "temperature": 0.1,
-                **models.text_model_tweaks(model),
+                **models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID),
             }
         },
     )
@@ -1129,7 +1192,7 @@ async def compose_instruction(
         f"【全局画风】{style.strip() or '（未设定）'}"
     )
     tweaks = (
-        {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
+        {"LanguageModelComponent": models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID)}
     )
     raw = await run_flow_blocking(
         COMPOSE_FLOW_ID, input_value=input_value, tweaks=tweaks
@@ -1534,7 +1597,7 @@ async def start_prompt_optimize_job(
         context = " ".join(str(context_notes or "")[:1200].split())
         input_value = f"【上下文设定】\n{context or '（无）'}\n\n【当前提示词】\n{text}"
         tweaks = (
-            {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
+            {"LanguageModelComponent": models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID)}
         )
     elif mode == "reversal":
         if not PROMPT_OPTIMIZE_IMAGE_FLOW_ID:
@@ -1641,6 +1704,7 @@ async def start_style_reverse_job(image_urls: Optional[List[str]]) -> str:
 # ── 资产参考图调研 flow 调用（planner 文本链 + 终选视觉链）──────────────────────
 
 REF_PLAN_FLOW_ID = os.environ.get("LANGFLOW_REF_PLAN_FLOW_ID", "")
+REF_BRIEF_FLOW_ID = os.environ.get("LANGFLOW_REF_BRIEF_FLOW_ID", "")
 REF_SELECT_FLOW_ID = os.environ.get("LANGFLOW_REF_SELECT_FLOW_ID", "")
 
 
@@ -1685,13 +1749,46 @@ async def run_ref_plan_flow(
             out = _parse_flow_json(raw, "搜索词规划")
             queries = [str(q).strip() for q in (out.get("queries") or []) if str(q).strip()][:5]
             if queries:
-                return {"queries": queries, "enough": bool(out.get("enough"))}
+                text_queries = [
+                    str(q).strip() for q in (out.get("text_queries") or []) if str(q).strip()
+                ][:3]
+                return {"queries": queries, "text_queries": text_queries, "enough": bool(out.get("enough"))}
             last_error = RuntimeError(f"搜索词规划未产出有效关键词（原文：{raw[:100]}）")
         except Exception as exc:  # noqa: BLE001
             last_error = exc
         if attempt < 2:
             await asyncio.sleep(1.5)
     raise last_error  # type: ignore[misc]
+
+
+async def run_ref_brief_flow(asset: Dict[str, Any], pages: List[Dict[str, Any]]) -> str:
+    """文字考据提纯：资产设定+网页正文 → 考据简报（视觉细节/时代特征/常见
+    误用，每条带来源域名）。flow 见 agent/flows/ref-research-brief.json。
+    调用方（imgresearch 文路）负责查询词生成与页面抓取的上限控制；这里只
+    做一次 LLM 提纯，失败抛错由调用方记软失败（不拦搜图）。"""
+    if not REF_BRIEF_FLOW_ID:
+        raise RuntimeError(
+            "未配置 LANGFLOW_REF_BRIEF_FLOW_ID（flow 见 agent/flows/ref-research-brief.json）"
+        )
+    payload = {"asset": asset, "pages": pages}
+    # 拍平成单行（plan 同款防坑：tweaks 传输会把 \n 反转义成裸换行）
+    input_value = " ".join(str(json.dumps(payload, ensure_ascii=False)).split())
+    raw = await run_flow_blocking(
+        REF_BRIEF_FLOW_ID,
+        input_value=input_value,
+        tweaks={
+            "LanguageModelComponent": models.text_model_tweaks(
+                models.DEFAULT_TEXT_MODEL_ID
+            )
+        },
+        timeout=120,
+    )
+    if raw.startswith("（"):
+        raise RuntimeError(raw.strip("（）")[:200])
+    text = raw.strip()
+    if not text:
+        raise RuntimeError("考据提纯返回空文本")
+    return text[:1200]
 
 
 async def run_ref_select_flow(
@@ -1721,10 +1818,11 @@ async def run_ref_select_flow(
         # 字段拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，组件里
         # json.loads 报 Invalid control character（imagegen/画风反推同款防坑；
         # 批量资产的 description 是多行正文，不拍平终选必炸）
+        # 所有字符串字段统一拍平（tweaks 传输会把 \n 反转义成裸换行，载荷里
+        # 任何多行字段都会炸组件的 json.loads——research_brief 注入时踩过）
         flat_asset = {
-            **asset,
-            "name": " ".join(str(asset.get("name") or "").split()),
-            "description": " ".join(str(asset.get("description") or "").split()),
+            k: " ".join(str(v).split()) if isinstance(v, str) else v
+            for k, v in asset.items()
         }
         flat_batch = [
             {**c, "title": " ".join(str(c.get("title") or "").split())}
@@ -1803,7 +1901,7 @@ async def start_text_rewrite_job(
         f"【参考上下文】\n{context or '（无）'}"
     )
     tweaks = (
-        {"LanguageModelComponent": models.text_model_tweaks(model)} if model else None
+        {"LanguageModelComponent": models.text_model_tweaks(model or models.DEFAULT_TEXT_MODEL_ID)}
     )
 
     job_id = uuid.uuid4().hex[:12]

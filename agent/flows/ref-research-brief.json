@@ -1,12 +1,13 @@
 {
-  "name": "选题批量生成",
-  "description": "生料选题层：语料批次 → 批量创意选题条目（标题/钩子/原型/垂类/标签）。纯创意生成，不做取证核实。",
+  "name": "ref-research-brief",
+  "description": "参考图调研·文字考据提纯：资产设定+网页正文 → 结构化考据简报（视觉细节/时代特征/常见误用，带来源域名）。",
+  "icon": null,
   "icon_bg_color": null,
   "gradient": null,
   "data": {
     "nodes": [
       {
-        "id": "LanguageModelComponent-nFbmO",
+        "id": "LanguageModelComponent-brief",
         "type": "genericNode",
         "position": {
           "x": 647.0736304730875,
@@ -14,7 +15,7 @@
         },
         "selected": false,
         "data": {
-          "id": "LanguageModelComponent-nFbmO",
+          "id": "LanguageModelComponent-compose",
           "type": "LanguageModelComponent",
           "node": {
             "template": {
@@ -431,7 +432,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "system_message",
-                "value": "你是纪录片选题库的策划编辑。用户消息是 JSON 载荷：{\"corpus\": [{\"index\": 语料序号, \"title\": 条目标题, \"source\": 来源渠道, \"snippet\": 摘要或空}], \"verticals\": [{\"id\": 垂类id, \"label\": 垂类名, \"scope\": 垂类边界}]}。\n请从语料中批量发掘纪录片选题，输出 JSON 数组（不输出任何其他文字），每项：\n{\"title\": 片名式选题标题, \"hook\": 一句情绪钩子, \"prototype\": 一句话原型概括, \"vertical\": 垂类id, \"tags\": [\"索引标签\"], \"sourceIndex\": 语料序号}\n\n硬纪律：\n- 每个选题必须锚定语料里的真实条目：sourceIndex 指向它，prototype 只概括语料可见的事实，不编造语料外的事实\n- 同一语料条目最多产 2 个选题（取不同角度）；语料不足时宁可少产，不硬凑\n- hook 直接给张力事实或反差，学爆款句式：「开局双杀，22年无人能解」「一口锅，撬动一个菜系」「写了一辈子思乡的诗人，故乡却在国境线之外」——第一句就是钩子，不用抒情比喻铺垫\n- 优先选语料中有具名人物、具体地点、具体年代的条目——具名度=选题的可信度与可拍性\n- 形态意识：若条目天然是「一个场域/一类职业群像」「一桩大案档案」「一件物」「一条路线」「一个年代切片」，在 tags 里加对应形态词（场域/群像/档案/单物/路线/切片）\n- title 片名式（可用书名号），别与语料原标题雷同：原标题是原型，标题是作品\n- vertical 只能用 verticals 里给定的 id；单批内垂类尽量分散\n- tags 给 2-3 个索引词：时代/地域/题材类型（如 汉代、西北、悬案、大国工程）\n- 本批产出 8-12 个选题；语料条目少时按量减产，不硬凑\n",
+                "value": "你是影视美术考据助理。输入是【资产】JSON（name/type/description）与【网页正文】列表（title/url/text）。你从正文中提纯与该资产视觉设定直接相关的考据简报，供美术设定与 AI 生图提示词使用。\n\n要求：\n- 只提炼正文里有依据的信息，不编造；正文之间冲突时写「存疑：A 说…，B 说…」不替用户拍板\n- 分三节输出（纯文本，短行）：\n  【视觉细节】造型/材质/色彩/结构等可直接指导画面的要点（3-6 条）\n  【时代与语境】年代、地域、身份对应的特征，防穿越/张冠李戴（1-3 条）\n  【常见误用】影视或图像里对该资产的典型错误表现（0-3 条，没有就不写这节）\n- 每条末尾括号标注来源域名，如（baike.baidu.com）\n- 总长 400 字以内；正文与资产无关的信息直接丢弃；正文全部无关时只输出「未找到有效考据」",
                 "display_name": "System Message",
                 "advanced": false,
                 "api_editable": false,
@@ -467,7 +468,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "temperature",
-                "value": 0.8,
+                "value": 0.3,
                 "display_name": "Temperature",
                 "advanced": false,
                 "api_editable": false,
@@ -570,7 +571,7 @@
               }
             },
             "tool_mode": false,
-            "last_updated": "2026-08-31T13:55:18.983Z"
+            "last_updated": "2026-08-28T09:07:47.032Z"
           },
           "showNode": true,
           "selected_output": "text_output"
@@ -582,7 +583,7 @@
         }
       },
       {
-        "id": "ChatInput-71dEa",
+        "id": "ChatInput-brief",
         "type": "genericNode",
         "position": {
           "x": 245.94165065317816,
@@ -873,7 +874,7 @@
           },
           "showNode": false,
           "type": "ChatInput",
-          "id": "ChatInput-71dEa"
+          "id": "ChatInput-compose"
         },
         "selected": false,
         "dragging": false,
@@ -883,7 +884,7 @@
         }
       },
       {
-        "id": "ChatOutput-GQv6P",
+        "id": "ChatOutput-brief",
         "type": "genericNode",
         "position": {
           "x": 1160.356961324414,
@@ -1181,7 +1182,7 @@
           },
           "showNode": false,
           "type": "ChatOutput",
-          "id": "ChatOutput-GQv6P"
+          "id": "ChatOutput-compose"
         },
         "selected": false,
         "dragging": false,
@@ -1193,14 +1194,14 @@
     ],
     "edges": [
       {
-        "source": "ChatInput-71dEa",
-        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-71dEaœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "LanguageModelComponent-nFbmO",
-        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-nFbmOœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "source": "ChatInput-brief",
+        "sourceHandle": "{œdataTypeœ:œChatInputœ,œidœ:œChatInput-briefœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "LanguageModelComponent-brief",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-briefœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
         "data": {
           "targetHandle": {
             "fieldName": "input_value",
-            "id": "LanguageModelComponent-nFbmO",
+            "id": "LanguageModelComponent-compose",
             "inputTypes": [
               "Message"
             ],
@@ -1208,27 +1209,27 @@
           },
           "sourceHandle": {
             "dataType": "ChatInput",
-            "id": "ChatInput-71dEa",
+            "id": "ChatInput-compose",
             "name": "message",
             "output_types": [
               "Message"
             ]
           }
         },
-        "id": "xy-edge__ChatInput-71dEa{œdataTypeœ:œChatInputœ,œidœ:œChatInput-71dEaœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-LanguageModelComponent-nFbmO{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-nFbmOœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
+        "id": "xy-edge__ChatInput-compose{œdataTypeœ:œChatInputœ,œidœ:œChatInput-composeœ,œnameœ:œmessageœ,œoutput_typesœ:[œMessageœ]}-LanguageModelComponent-compose{œfieldNameœ:œinput_valueœ,œidœ:œLanguageModelComponent-composeœ,œinputTypesœ:[œMessageœ],œtypeœ:œstrœ}",
         "selected": false,
         "animated": false,
         "className": ""
       },
       {
-        "source": "LanguageModelComponent-nFbmO",
-        "sourceHandle": "{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-nFbmOœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}",
-        "target": "ChatOutput-GQv6P",
-        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-GQv6Pœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
+        "source": "LanguageModelComponent-brief",
+        "sourceHandle": "{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-briefœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}",
+        "target": "ChatOutput-brief",
+        "targetHandle": "{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-briefœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
         "data": {
           "targetHandle": {
             "fieldName": "input_value",
-            "id": "ChatOutput-GQv6P",
+            "id": "ChatOutput-compose",
             "inputTypes": [
               "Data",
               "JSON",
@@ -1240,27 +1241,27 @@
           },
           "sourceHandle": {
             "dataType": "LanguageModelComponent",
-            "id": "LanguageModelComponent-nFbmO",
+            "id": "LanguageModelComponent-compose",
             "name": "text_output",
             "output_types": [
               "Message"
             ]
           }
         },
-        "id": "xy-edge__LanguageModelComponent-nFbmO{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-nFbmOœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-GQv6P{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-GQv6Pœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
+        "id": "xy-edge__LanguageModelComponent-compose{œdataTypeœ:œLanguageModelComponentœ,œidœ:œLanguageModelComponent-composeœ,œnameœ:œtext_outputœ,œoutput_typesœ:[œMessageœ]}-ChatOutput-compose{œfieldNameœ:œinput_valueœ,œidœ:œChatOutput-composeœ,œinputTypesœ:[œDataœ,œJSONœ,œDataFrameœ,œTableœ,œMessageœ],œtypeœ:œotherœ}",
         "selected": false,
         "animated": false,
         "className": ""
       }
     ],
     "viewport": {
-      "x": 326.2546709848074,
-      "y": 21.912400231581955,
-      "zoom": 0.8667870323128959
+      "x": -161.5002262163336,
+      "y": -72.64137289871104,
+      "zoom": 0.7149827279753261
     }
   },
   "is_component": false,
-  "updated_at": "2026-09-01T03:16:47+00:00",
+  "updated_at": "2026-09-01T03:06:25+00:00",
   "webhook": false,
   "endpoint_name": null,
   "tags": null,
@@ -1272,8 +1273,7 @@
   "flow_type": "workflow",
   "a2a_enabled": false,
   "a2a_card_overrides": null,
-  "id": "bd264700-177e-4d68-9d11-3de0bb4d8bb5",
-  "user_id": "f2777938-222e-4fc3-9357-d619e84f1638",
+  "id": "223a67a1-2be8-41d7-ba5f-081e15170088",
   "folder_id": "3ec9bd9f-6554-49e3-8a89-75f79332008f",
   "workspace_id": null,
   "name_key": null

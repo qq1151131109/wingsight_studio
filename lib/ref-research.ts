@@ -30,6 +30,8 @@ export interface RefResearchJob {
   /** LLM 终选的取舍说明 */
   note: string;
   candidates: RefCandidate[];
+  /** 文字考据简报（AI 出词模式才有；已同步落资产卡 data.researchBrief） */
+  researchBrief?: string;
 }
 
 /** 资产上下文（AI 生成搜索词与终选的判断依据）。 */
@@ -144,6 +146,8 @@ export interface BatchRefItem {
   name: string;
   status: "pending" | "running" | "done" | "error";
   error: string;
+  /** 文字考据简报（done 且文路成功时有值；落资产卡 data.researchBrief） */
+  brief?: string;
 }
 
 export interface BatchRefJob {

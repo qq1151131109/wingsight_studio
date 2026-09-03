@@ -52,12 +52,12 @@ _MAX_LOG_ENTRIES = 200
 _FLOW_KEYS = {"plan": "LANGFLOW_RESEARCH_PLAN_FLOW_ID", "extract": "LANGFLOW_RESEARCH_EXTRACT_FLOW_ID",
               "eval": "LANGFLOW_RESEARCH_EVAL_FLOW_ID", "dossier": "LANGFLOW_RESEARCH_DOSSIER_FLOW_ID"}
 _FLOW_TIMEOUTS = {"plan": 300, "extract": 240, "eval": 240, "dossier": 600}
-# 高频轻量环节（开题/提纯/评估，单次调用几十次）用快模型压延迟；
-# 卷宗撰写保留 flow 出厂模型（质量优先）。models.text_model_tweaks 同时注
-# model_name+provider（通道路由，组件名注入不烧节点 id）。
-# 注意：本部署 DeepSeek 平台 BASE_URL 实指智谱 coding 网关，deepseek 系
-# 模型名会 1214 modelCode 不存在——快模型用 BigModel 官方的 glm-5.3-flash
-FAST_MODEL_ID = "glm-5.3-flash"
+# 全链统一目录默认 gpt-5.6-luna（DMX 平台，见 models.TEXT_MODELS）：
+# 高频轻量环节（开题/提纯/评估，单次调用几十次）和卷宗撰写都用它，
+# FAST_MODEL_ID 保留名字方便以后单独给轻量环节换快模型。
+# 历史注：快模型曾用 BigModel 官方 glm-5.3-flash（本部署 DeepSeek 平台
+# BASE_URL 实指智谱 coding 网关，deepseek 系模型名会 1214 modelCode 不存在）。
+FAST_MODEL_ID = "gpt-5.6-luna"
 
 # 来源分类学（导演逐内容点索要出处的分类，extract flow 按它归档）
 SOURCE_CATEGORIES = ("一手史料", "学术", "可靠媒体", "自媒体", "百科辞书", "其他")
@@ -278,10 +278,18 @@ async def _call_flow(key: str, payload: dict[str, Any]) -> Any:
     import skills
     from models import text_model_tweaks
 
+    # plan/extract/eval 走快模型，dossier（卷宗撰写）走目录默认——统一
+    # 键 LanguageModelComponent 由 run_flow_blocking 前缀解析成真实节点 id
+    from models import DEFAULT_TEXT_MODEL_ID, text_model_tweaks
+
     flow_id = os.environ.get(_FLOW_KEYS[key], "").strip()
     if not flow_id:
         raise RuntimeError(f"未配置 {_FLOW_KEYS[key]}（调研 {key} flow）")
-    tweaks = text_model_tweaks(FAST_MODEL_ID) if key in ("plan", "extract", "eval") else None
+    tweaks = {
+        "LanguageModelComponent": text_model_tweaks(
+            FAST_MODEL_ID if key in ("plan", "extract", "eval") else DEFAULT_TEXT_MODEL_ID
+        )
+    }
     last_error: ValueError | None = None
     for attempt in (1, 2):
         text = await skills.run_flow_blocking(

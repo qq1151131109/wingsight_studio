@@ -167,6 +167,8 @@ body {
     border-radius: 0.75rem;
     box-shadow: 0 1px 3px oklch(0 0 0 / 0.06);
     transition: border-color 150ms, box-shadow 150ms;
+    /* 内容（简报块/正文/状态行）超出卡高一律裁剪在卡框内，不许溢出到邻卡 */
+    overflow: hidden;
     /* both：延迟入场（--ws-stagger）前保持隐藏 */
     animation: ws-card-in 220ms ease-out both;
     animation-delay: var(--ws-stagger, 0ms);
@@ -565,11 +567,46 @@ cpk-web-inspector {
     max-width: 88%;
 }
 
-/* 助手消息：无底气泡的编辑排版，留出 hover 操作栏空间 */
+/* 助手消息：半透纸面气泡（对应用户气泡的视觉分量，长文不再糊在侧栏底上），
+   左上收口与用户气泡镜像 */
 .copilotKitMessage.copilotKitAssistantMessage {
+    background-color: color-mix(in oklab, var(--color-surface-2) 72%, transparent);
+    border: 1px solid var(--color-hairline);
+    border-radius: 4px 14px 14px 14px;
+    padding: 10px 14px;
     font-size: 0.875rem;
     line-height: 1.7;
-    padding-right: 4px;
+    max-width: 96%;
+}
+
+/* 助手正文里的 markdown 分隔线：细 hairline、收紧边距——模型输出的 --- 在
+   无容器排版下曾被误读成 UI 断裂 */
+.copilotKitAssistantMessage hr,
+.copilotKitAssistantMessage .copilotKitMarkdownElement hr {
+    border: none;
+    border-top: 1px solid var(--color-hairline);
+    margin: 0.6em 0;
+}
+
+/* 消息悬浮操作栏：紧凑胶囊 + 悬停浮现（stock 常驻散排在文本下方） */
+.copilotKitMessageControls {
+    gap: 2px;
+    padding: 2px;
+    margin-top: 6px;
+    background-color: var(--color-surface-1);
+    border: 1px solid var(--color-hairline);
+    border-radius: 8px;
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+.copilotKitMessage:hover .copilotKitMessageControls {
+    opacity: 1;
+}
+.copilotKitMessageControlButton {
+    color: var(--color-text-4);
+}
+.copilotKitMessageControlButton:hover {
+    color: var(--color-text);
 }
 
 /* 消息区左右留白与节奏 */

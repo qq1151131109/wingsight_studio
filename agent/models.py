@@ -178,8 +178,8 @@ TEXT_MODELS: List[Dict[str, Any]] = [
 def text_model_tweaks(model_id: Optional[str]) -> Dict[str, Any]:
     """文本模型覆盖 tweaks：同时注 model_name 与 provider（通道路由）。
 
-    空 id → {}（flow 用自己保存的出厂模型）；未带 provider 的历史条目
-    → 只注 model_name（回落 flow 全局通道）。"""
+    键用逻辑组件名 LanguageModelComponent，由 run_flow_blocking 解析成
+    真实节点 id（直接透传会静默空转）。空 id → {}（调用方应先落目录默认）。"""
     if not model_id:
         return {}
     entry = find_text_model(model_id)
@@ -201,9 +201,10 @@ def find_text_model(model_id: str) -> Optional[Dict[str, Any]]:
 def resolve_text_model(raw: Any) -> Optional[str]:
     """校验调用方传来的文本模型（字符串，可空）。
 
-    空/缺省 → None（不注入，flow 用自己保存的模型）；合法 → 模型 id
-    （tweaks 的 model_name 直接可用）；不合法 → ValueError 端点转 400
-    中文报错，绝不静默回退（与出图同一铁律）。
+    空/缺省 → None（调用方一律以 `or DEFAULT_TEXT_MODEL_ID` 落到目录默认
+    gpt-5.6-luna 再注入——全站 LLM 默认模型，flow 出厂值不再参与）；
+    合法 → 模型 id（tweaks 的 model_name 直接可用）；不合法 → ValueError
+    端点转 400 中文报错，绝不静默回退（与出图同一铁律）。
     """
     model = str(raw or "").strip()
     if not model:

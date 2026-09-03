@@ -399,6 +399,17 @@ function useBatchRefJob(nodeId: string) {
               batchId,
               j.items.filter((it) => it.status === "running").map((it) => it.nodeId),
             );
+          // 考据简报落卡：条目完成即写 data.researchBrief（幂等：相同内容不重写；
+          // 与采纳解耦——不采纳参考图，考据也供「AI 写设定」与出图设定使用）
+          const st = useCanvasStore.getState();
+          for (const it of j.items) {
+            if (it.status !== "done" || !it.brief) continue;
+            const cur = st.nodes.find((n) => n.id === it.nodeId)?.data
+              .researchBrief;
+            if (cur !== it.brief) {
+              st.updateNodeData(it.nodeId, { researchBrief: it.brief });
+            }
+          }
           if (j.status !== "running") {
             useRefStatusStore.getState().clearRunning(batchId);
             // 候选落库了：强制刷新汇总，资产卡亮「N 张候选待选」
@@ -1571,11 +1582,6 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               {decomposeMsg}
             </p>
           ) : null}
-          {refJob.running && refJob.job?.current ? (
-            <p className="ws-detail mt-1 text-[10px] text-text-3">
-              正在调研：{refJob.job.current}
-            </p>
-          ) : null}
           {researchMsg ? (
             <p className="ws-detail mt-1 text-[10px] text-text-3">
               {researchMsg}
@@ -1643,6 +1649,10 @@ const ASSET_WRITE_HINT: Record<keyof typeof ASSET_BODY_PH, string> = {
   costume: "形制、材质、配色、工艺与纹样",
 };
 
+/** 资产卡动作条按钮：单行四联（出图/参考/考据/撰写），窄卡等宽不换行 */
+const ACT_BTN =
+  "nodrag flex min-w-0 flex-1 items-center justify-center gap-0.5 rounded-md border border-hairline px-1 py-1 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text disabled:cursor-not-allowed disabled:opacity-40";
+
 function AssetCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const update = makeUpdater(id);
@@ -1664,6 +1674,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [writing, setWriting] = useState(false);
   const [writePreview, setWritePreview] = useState<string | null>(null);
   const [writeMsg, setWriteMsg] = useState("");
+  // 考据简报默认收成动作条上的「考据」按钮，点开才占卡面高度
+  const [briefOpen, setBriefOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const lod = useLod();
   // 参考图调研状态（状态总线）：批量调研进行中亮「调研中」，有已调研未采纳
@@ -1718,10 +1730,18 @@ function AssetCard({ data, id, selected }: NodeProps) {
         st.nodes.find((n) => n.data.nodeType === "script");
       const script = String((src?.data.body as string) ?? "").trim();
       const style = st.projectStyle.trim();
+      // 考据简报是设定的事实依据（视觉细节/时代特征/常见误用，带来源）：
+      // 有就喂给撰写，设定不再纯靠模型记忆猜
+      const brief = String(d.researchBrief ?? "").trim();
       const result = await rewriteText({
         instruction: `你是影视美术设定师。为${NODE_META[kind].label}「${title}」写设定，覆盖：${ASSET_WRITE_HINT[kind]}。80 字内白描直给，不要客套与解释。${style ? `全局画风：${style}。` : ""}`,
         body: "",
-        context: script ? `剧情背景（节选）：\n${script.slice(0, 600)}` : "",
+        context: [
+          script ? `剧情背景（节选）：\n${script.slice(0, 600)}` : "",
+          brief ? `考据简报（事实依据，与剧情冲突时以剧情为准）：\n${brief.slice(0, CONTEXT_BODY_LIMIT)}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
         model: String(d.textModel ?? "").trim() || undefined,
       });
       if (!String(d.body ?? "").trim()) update({ body: result });
@@ -1815,7 +1835,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
   return (
     <CardShell id={id} data={d} selected={selected} aspect={Boolean(d.imageUrl)}>
       <div
-        className={`mt-1.5 flex min-h-40 w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
+        className={`mt-1.5 flex min-h-[120px] w-full flex-1 items-center justify-center overflow-hidden rounded-md border border-hairline-soft bg-surface-2 ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -1907,55 +1927,75 @@ function AssetCard({ data, id, selected }: NodeProps) {
           />
         )}
       </div>
-      {lod === "full" && !d.imageUrl && d.status !== "loading" ? (
-        <button
-          type="button"
-          disabled={imgJob}
-          data-tip={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`} aria-label={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`}
-          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-accent bg-accent-dim px-2 py-1 text-[10px] font-medium text-text transition-colors hover:bg-accent-soft disabled:opacity-40"
-          onClick={(e) => {
-            e.stopPropagation();
-            void genLook();
-          }}
-        >
-          <Sparkles className="h-3 w-3" />
-          {imgJob ? "生成中…" : "AI 出图（按设定正文）"}
-        </button>
-      ) : null}
-      {lod === "full" && refRunning ? (
-        <p className="ws-detail mt-1.5 flex items-center gap-1 text-[10px] text-accent">
-          <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
-          参考图调研中…
-        </p>
-      ) : null}
-      {lod === "full" && !refRunning && refPending > 0 ? (
-        <button
-          type="button"
-          data-tip={`有 ${refPending} 张已调研未采纳的参考候选，点击挑选（AI 推荐★已预选）`} aria-label="参考候选待选"
-          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-accent-soft bg-accent-dim/60 px-2 py-1 text-[10px] font-medium text-text transition-colors hover:bg-accent-soft"
-          onClick={(e) => {
-            e.stopPropagation();
-            setResearchOpen(true);
-          }}
-        >
-          <Search className="h-3 w-3" />
-          {refPending} 张参考候选待选
-        </button>
-      ) : null}
-      {lod === "full" ? (
-        <button
-          type="button"
-          data-tip="搜网络参考图（Google 经 Serper 号池），采纳后自动建参考卡连线，出图时进参考序列" aria-label="找参考图"
-          className="nodrag mt-1.5 flex items-center justify-center gap-1 rounded-md border border-hairline px-2 py-1 text-[10px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
-          data-track="asset.find-refs"
-  onClick={(e) => {
-            e.stopPropagation();
-            setResearchOpen(true);
-          }}
-        >
-          <Search className="h-3 w-3" />
-          找参考图
-        </button>
+      {lod === "full" && d.status !== "loading" ? (
+        <div className="mt-1.5 flex gap-1">
+          {!d.imageUrl ? (
+            <button
+              type="button"
+              disabled={imgJob}
+              data-tip={`按设定正文 AI 出${imgLabel}（直连出图，不经聊天）。需先在底部坞「画风」选项目画风`} aria-label={`按设定正文 AI 出${imgLabel}`}
+              className={`${ACT_BTN} border-accent bg-accent-dim font-medium text-text`}
+              data-track="asset.gen"
+              onClick={(e) => {
+                e.stopPropagation();
+                void genLook();
+              }}
+            >
+              <Sparkles className="h-3 w-3" />
+              {imgJob ? "生成中" : "出图"}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-tip={refRunning ? "参考图调研中…" : `搜网络参考图${refPending ? `（${refPending} 张候选待挑选）` : ""}，采纳后自动建参考卡连线，出图时进参考序列`} aria-label="找参考图"
+            className={`${ACT_BTN} ${refPending > 0 ? "border-accent-soft bg-accent-dim/60 font-medium text-text" : ""}`}
+            data-track="asset.find-refs"
+            onClick={(e) => {
+              e.stopPropagation();
+              setResearchOpen(true);
+            }}
+          >
+            {refRunning ? (
+              <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
+            ) : (
+              <Search className="h-3 w-3" />
+            )}
+            参考
+            {refPending > 0 ? <span className="text-accent">{refPending}</span> : null}
+          </button>
+          {(d.researchBrief ?? "").trim() ? (
+            <button
+              type="button"
+              data-tip="展开/收起考据简报（调研的文字依据，AI 写设定与出图自动参考）" aria-label="考据简报"
+              className={`${ACT_BTN} ${briefOpen ? "border-accent-soft text-text" : ""}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                setBriefOpen((v) => !v);
+              }}
+            >
+              <BookOpen className="h-3 w-3" />
+              考据
+            </button>
+          ) : null}
+          <button
+            type="button"
+            disabled={writing}
+            data-tip="AI 按资产名与剧情背景补全设定（考据简报作事实依据）；已有设定时先预览再采用" aria-label="AI 写设定"
+            className={ACT_BTN}
+            data-track="asset.write"
+            onClick={(e) => {
+              e.stopPropagation();
+              void writeSetting();
+            }}
+          >
+            {writing ? (
+              <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
+            ) : (
+              <Sparkles className="h-3 w-3" />
+            )}
+            {writing ? "撰写中" : "撰写"}
+          </button>
+        </div>
       ) : null}
       {lod === "full" && styleHint ? (
         <p className="ws-detail mt-1 text-[10px] text-warn">{styleHint}</p>
@@ -1995,22 +2035,6 @@ function AssetCard({ data, id, selected }: NodeProps) {
           </div>
         ) : (
           <>
-            <div className="ws-detail mt-1.5 flex items-center justify-between gap-1">
-              <span className="text-[9px] text-text-4">设定</span>
-              <button
-                type="button"
-                disabled={writing}
-                data-tip="AI 按资产名与剧情背景补全设定（按类型模板：外形/材质/氛围…）；已有设定时先预览再采用" aria-label="AI 写设定"
-                className="nodrag flex items-center gap-0.5 rounded px-1 py-0.5 text-[9px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  void writeSetting();
-                }}
-              >
-                <Sparkles className="h-3 w-3" />
-                {writing ? "撰写中…" : "AI 写设定"}
-              </button>
-            </div>
             <Editable
               value={d.body ?? ""}
               onSave={(body, opts) => update({ body }, opts)}
@@ -2019,6 +2043,13 @@ function AssetCard({ data, id, selected }: NodeProps) {
               placeholder={ASSET_BODY_PH[kind]}
               className="ws-detail mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
             />
+            {briefOpen && (d.researchBrief ?? "").trim() ? (
+              <div className="ws-detail mt-1 rounded border border-hairline bg-surface-2/60 p-1.5">
+                <p className="max-h-20 overflow-auto whitespace-pre-wrap text-[10px] leading-relaxed text-text-3">
+                  {d.researchBrief}
+                </p>
+              </div>
+            ) : null}
             {writeMsg ? (
               <p className="ws-detail mt-1 text-[10px] text-danger">{writeMsg}</p>
             ) : null}
@@ -5137,11 +5168,6 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       ) : null}
       {decomposeMsg ? (
         <p className="ws-detail mt-1 text-[10px] text-text-3">{decomposeMsg}</p>
-      ) : null}
-      {refJob.running && refJob.job?.current ? (
-        <p className="ws-detail mt-1 text-[10px] text-text-3">
-          正在调研：{refJob.job.current}
-        </p>
       ) : null}
       {researchMsg ? (
         <p className="ws-detail mt-1 text-[10px] text-text-3">{researchMsg}</p>

@@ -174,6 +174,7 @@ FLOWS = {
     "shotlist-generate.json": "LANGFLOW_SHOTLIST_FLOW_ID",
     "text-write.json": "LANGFLOW_TEXTWRITE_FLOW_ID",
     "instruction-compose.json": "LANGFLOW_COMPOSE_FLOW_ID",
+    "ref-research-brief.json": "LANGFLOW_REF_BRIEF_FLOW_ID",
     "topic-triage.json": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "topic-research-plan.json": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
     "topic-research-followup.json": "LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID",

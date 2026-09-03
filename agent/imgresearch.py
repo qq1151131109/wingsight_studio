@@ -372,7 +372,9 @@ async def search_serper_web(query: str, num: int = 6) -> list[dict[str, Any]]:
         headers = {"X-API-KEY": entry["api_key"], "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=_DOWNLOAD_TIMEOUT) as client:
             resp = await client.post(_SERPER_SEARCH_ENDPOINT, headers=headers, json=body)
-        if resp.status_code in (401, 403):
+        if resp.status_code in (401, 403) or (
+            resp.status_code == 400 and "credit" in resp.text.lower()
+        ):
             _mark_serper_exhausted(entry["id"])
             last_error = ValueError(
                 f"Serper key {entry['api_key'][:6]}… 已作废（HTTP {resp.status_code}：无效或额度耗尽）"
@@ -477,6 +479,7 @@ def start_research_job(
         "errors": {},
         "error": "",
         "note": "",
+        "researchBrief": "",
     }
     task = asyncio.create_task(
         _run_research(job_id, project_id, node_id, queries, asset or {})
@@ -488,12 +491,63 @@ def start_research_job(
 # ---------- 批量调研（拆解链后对多个资产并发调研） ----------
 
 BATCH_JOBS: dict[str, dict[str, Any]] = {}
-# 100 路并发（serper 号池按 key 轮转承接 QPS；单 key 会被 429 打满，
-# 多 key 号池线性分摊——号池见 serper_keys 表/管理后台）
-BATCH_CONCURRENCY = 100
+# 20 路并发（serper 号池按 key 轮转承接 QPS；单 key 会被 429 打满）。
+# 上限也是 langflow 内存闸门：每路资产调研会同时打 plan+select flow，
+# langflow 每次 run 都整图重建（图还要进内存缓存），并发不封顶时
+# RSS 会被瞬时尖峰顶穿（2026-09-02 曾膨胀到 10.4GB 拖垮全机）
+BATCH_CONCURRENCY = 20
 # 跨任务全局下载并发：100 路调研的候选下载共享同一信号量（Google 图源
 # 域名分散，32 并发安全；过高会撞原站防盗链）
 _GLOBAL_DOWNLOAD_SEM = asyncio.Semaphore(32)
+
+
+# ---------- 文字考据（fork-join 文路：与图路并行，终选汇合） ----------
+
+# 文路规模闸门：查询/页面/正文长度上限（research.fetch_page_text 另有 8MB/20s 硬闸）
+_MAX_TEXT_QUERIES = 3
+_MAX_PAGES = 4
+_PAGE_TEXT_CHARS = 5000
+_BRIEF_WAIT_S = 150  # 文路整体死线（与图路下载 110s 死线并行，不拖后腿）
+
+
+async def _run_text_research(
+    asset: dict[str, Any], queries: list[str], errors: dict[str, str]
+) -> str:
+    """文字考据：web 搜索 → 抓正文 → LLM 提纯成考据简报。
+
+    任何一步失败都抛错由调用方记软失败（errors["考据"]），绝不影响图路。
+    简报供两处消费：select 终选带简报挑图（纠错配错年代）、落卡喂写设定
+    与出图设定。"""
+    import research
+    import skills
+
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for q in queries[:_MAX_TEXT_QUERIES]:
+        try:
+            results = await search_serper_web(q, num=4)
+        except Exception as exc:  # noqa: BLE001 单查询失败跳过
+            # httpx 超时的 str(exc) 常为空串，补类名防出现「考据搜索：」空信息
+            errors.setdefault("考据搜索", (str(exc) or type(exc).__name__)[:100])
+            continue
+        for r in results:
+            url = str(r.get("url") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            merged.append({"title": str(r.get("title") or "")[:80], "url": url})
+    if not merged:
+        raise RuntimeError("网页搜索无结果")
+    pages: list[dict[str, Any]] = []
+    for item in merged[:_MAX_PAGES]:
+        try:
+            text = await research.fetch_page_text(item["url"])
+            pages.append({**item, "text": text[:_PAGE_TEXT_CHARS]})
+        except Exception as exc:  # noqa: BLE001 单页失败跳过，不入简报
+            errors.setdefault("考据抓页", f"{item['title']}：{str(exc)[:80]}")
+    if not pages:
+        raise RuntimeError("网页正文全部抓取失败（疑似反爬）")
+    return await skills.run_ref_brief_flow(asset, pages)
 
 
 def start_batch_research(
@@ -568,7 +622,11 @@ async def _run_batch(
                     soft = "；".join(
                         f"{k}：{v}" for k, v in (job.get("errors") or {}).items()
                     )
-                    batch["items"][i].update(status="done", error=soft[:160])
+                    batch["items"][i].update(
+                        status="done",
+                        error=soft[:160],
+                        brief=str(job.get("researchBrief") or "")[:1200],
+                    )
             except Exception as exc:  # noqa: BLE001 单资产失败不中断整批
                 batch["items"][i].update(status="error", error=str(exc)[:160])
         batch["done"] += 1
@@ -610,14 +668,36 @@ async def _run_research(
         return
     errors: dict[str, str] = {}
     merged: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    # 跨轮次去重：已采纳的候选（连着参考卡）永久占坑，重搜不得重复入库；
+    # 未采纳旧行在新结果落库前统一清掉（重跑=旧考古层作废）
+    with _conn() as _c:
+        seen: set[str] = {
+            _dedupe_key(r[0])
+            for r in _c.execute(
+                "SELECT source_url FROM ref_candidates"
+                " WHERE project_id=? AND node_id=? AND adopted=1",
+                (project_id, node_id),
+            )
+        }
     rounds: list[dict[str, Any]] = []
     manual = bool(queries)
     try:
+        text_task: asyncio.Task | None = None
         for round_num in range(1, MAX_RESEARCH_ROUNDS + 1):
             if round_num == 1:
-                # 首轮：手填词直用；AI 模式由 planner 出词
-                round_queries = queries if manual else (await skills.run_ref_plan_flow(asset, []))["queries"]
+                # 首轮：手填词直用；AI 模式由 planner 出词（同时出文字考据词，
+                # fork：文路后台开跑与图路搜索下载并行；手填词是用户亲自掌舵
+                # 搜图，不跑文路）
+                if manual:
+                    round_queries = queries
+                else:
+                    plan = await skills.run_ref_plan_flow(asset, [])
+                    round_queries = plan["queries"]
+                    text_queries = list(plan.get("text_queries") or [])
+                    if text_queries:
+                        text_task = asyncio.create_task(
+                            _run_text_research(asset, text_queries, errors)
+                        )
             else:
                 plan = await skills.run_ref_plan_flow(asset, rounds)
                 if plan["enough"]:
@@ -670,10 +750,30 @@ async def _run_research(
             raise RuntimeError(
                 "候选图全部下载失败（疑似外链防盗链）；" + "；".join(f"{k}：{v}" for k, v in errors.items())
             )
+        # 重跑语义：新结果落库前清掉该资产旧未采纳候选（错配/低质的旧考古层
+        # 不与新结果混存）；已采纳行保留。若新任务失败，走到这里之前已失败，
+        # 旧候选不受影响
+        with _conn() as _c:
+            _c.execute(
+                "DELETE FROM ref_candidates WHERE project_id=? AND node_id=? AND adopted=0",
+                (project_id, node_id),
+            )
         _insert_candidates(project_id, node_id, rows)
-        # LLM 终选（失败只记 errors，不影响候选展示与人工采纳）
+        # join：收文路考据简报（超时/失败记软错误，不拦终选与采纳）
+        brief = ""
+        if text_task is not None:
+            try:
+                brief = str(await asyncio.wait_for(text_task, timeout=_BRIEF_WAIT_S))
+            except Exception as exc:  # noqa: BLE001 文路软失败明报
+                text_task.cancel()
+                errors["考据"] = str(exc)[:160]
+        if brief:
+            job["researchBrief"] = brief
+        # LLM 终选（失败只记 errors，不影响候选展示与人工采纳）；带考据简报
+        # 挑图——文字考据纠正选图（错年代/错形制的候选降权）
         try:
-            selection = await skills.run_ref_select_flow(asset, _select_payload(rows))
+            select_asset = ({**asset, "research_brief": brief} if brief else asset)
+            selection = await skills.run_ref_select_flow(select_asset, _select_payload(rows))
             _apply_recommendation(project_id, node_id, rows, selection)
             job["note"] = selection.get("note") or ""
         except Exception as exc:  # noqa: BLE001

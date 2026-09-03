@@ -44,6 +44,7 @@ export default function RefReviewDialog({
         selected: Set<string>;
         loading: boolean;
         error: string;
+        brief: string;
       }
     >
   >(new Map());
@@ -68,6 +69,7 @@ export default function RefReviewDialog({
             loading: false,
             // 批量条目软失败（如终选失败：候选在但无推荐预选）照显警示
             error: item.error || "",
+            brief: item.brief || "",
           });
         } catch (exc) {
           next.set(item.nodeId, {
@@ -77,6 +79,7 @@ export default function RefReviewDialog({
             selected: new Set(),
             loading: false,
             error: exc instanceof Error ? exc.message : "候选加载失败",
+            brief: item.brief || "",
           });
         }
       }
@@ -114,6 +117,7 @@ export default function RefReviewDialog({
           candidates,
           selected: new Set(candidates.filter((c) => c.recommended).map((c) => c.id)),
           loading: false,
+          brief: job.researchBrief || prev.get(nodeId)!.brief,
         }),
       );
       // 候选落库：刷新资产卡「N 张待选」徽标
@@ -256,6 +260,16 @@ export default function RefReviewDialog({
                 {row.error ? (
                   <p className="mt-1 text-[11px] text-danger">{row.error}</p>
                 ) : null}
+                {row.brief ? (
+                  <details className="mt-1.5 rounded border border-hairline bg-surface-2/60">
+                    <summary className="cursor-pointer select-none px-1.5 py-1 text-[10px] text-text-3 hover:text-text-2">
+                      考据简报（本次调研的文字依据，已同步到资产卡）
+                    </summary>
+                    <p className="max-h-32 overflow-auto whitespace-pre-wrap px-1.5 pb-1.5 text-[10px] leading-relaxed text-text-3">
+                      {row.brief}
+                    </p>
+                  </details>
+                ) : null}
                 {row.candidates.length === 0 && !row.loading ? (
                   <p className="mt-2 text-[11px] text-text-4">
                     没有候选（可点「重搜」换角度再来）
@@ -284,7 +298,7 @@ export default function RefReviewDialog({
                           <img
                             src={assetThumbUrl(c.assetUrl)}
                             alt={c.title}
-                            className="h-16 w-full bg-surface-2 object-cover"
+                            className="h-16 w-full bg-surface-2 object-contain"
                             loading="lazy"
                           />
                           {c.recommended ? (

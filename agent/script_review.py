@@ -331,7 +331,11 @@ async def _call_flow(key: str, payload: dict[str, Any], model: str) -> Any:
     flow_id = os.environ.get(env_key, "").strip()
     if not flow_id:
         raise RuntimeError(f"未配置 {env_key}（剧本审查 {key} flow）")
-    tweaks = models.text_model_tweaks(model) if model else None
+    tweaks = {
+        "LanguageModelComponent": models.text_model_tweaks(
+            model or models.DEFAULT_TEXT_MODEL_ID
+        )
+    }
     last_error: ValueError | None = None
     for attempt in (1, 2):
         text = await skills.run_flow_blocking(
