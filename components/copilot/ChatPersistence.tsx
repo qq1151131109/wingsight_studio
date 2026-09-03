@@ -112,7 +112,11 @@ export default function ChatPersistence() {
       return;
     }
     const key = keyOf(projectId, threadId);
-    if (hydratedKeyRef.current === key) return;
+    if (hydratedKeyRef.current === key) {
+      if (process.env.NODE_ENV !== "production") console.log("[persist] hydrate skip (already):", key);
+      return;
+    }
+    if (process.env.NODE_ENV !== "production") console.log("[persist] hydrate enter:", key);
     let cancelled = false;
 
     // 新建会话（null）：直接清空界面，等首条消息保存时落库
@@ -147,7 +151,9 @@ export default function ChatPersistence() {
             return;
           }
           const latest = threads[0]?.id ?? null;
-          hydratedKeyRef.current = keyOf(projectId, latest);
+          // 只选择线程、不在此处标记"已水合"：setThreadId 触发的水合重跑会
+          // 真正 loadChatMessages（曾因这里抢先标记导致重跑被 skip，历史永不
+          // 上屏、新消息排到空数组头部造成顺序错乱）
           lastSavedRef.current = "";
           setThreadId(latest);
           if (latest === null) {
@@ -156,6 +162,7 @@ export default function ChatPersistence() {
           return;
         }
         const history = await loadChatMessages(projectId, threadId);
+        if (process.env.NODE_ENV !== "production") console.log("[persist] history loaded:", threadId, history?.length ?? "null");
         if (cancelled || useCanvasStore.getState().projectId !== projectId)
           return;
         if (history === null) {
