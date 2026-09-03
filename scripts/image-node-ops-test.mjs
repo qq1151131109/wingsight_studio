@@ -234,6 +234,20 @@ await page.waitForTimeout(600);
     `toolbar.y=${box?.y} card.top=${card?.y}`,
   );
 }
+// ---------- A7 任意缩放档都可见（zoom<0.5 曾被 tiny 守卫藏掉——用户"看不到入口"根因） ----------
+for (const z of [0.45, 0.3]) {
+  await page.evaluate((zz) => {
+    window.__wsCanvasStore.getState().setViewport({ x: 500, y: 400, zoom: zz });
+  }, z);
+  await page.waitForTimeout(500);
+  check(
+    `A7 zoom=${z} 时工具条仍可见`,
+    (await page.locator('[aria-label="多视角…"]').count()) > 0,
+  );
+}
+await page.evaluate(() => {
+  window.__wsCanvasStore.getState().setViewport({ x: 500, y: 400, zoom: 0.8 });
+});
 
 await openMenu("测试角色");
 check("A3 角色卡菜单含三视图", (await page.locator("text=三视图…").count()) > 0);

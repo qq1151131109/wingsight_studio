@@ -774,9 +774,11 @@ function CardShell({
         handleClassName="ws-resize-handle"
         lineClassName="ws-resize-line"
       />
-      {/* 悬浮工具条（libtv 范式）：选中即在卡上方浮现常用操作，更多动作在右键菜单。
+      {/* 悬浮工具条（libtv 范式）：选中即在卡上方浮现常用操作。
+          不做 tiny（缩放）隐藏——工具条是屏幕空间固定尺寸，任意缩放都
+          可读（zoom<0.5 时藏掉曾让用户"看不到入口"，竞品也是全档显示）。
           offset 36：越过卡外标题行，不压住标题 */}
-      <NodeToolbar isVisible={selected && !tiny} position={Position.Top} offset={tbOffset}>
+      <NodeToolbar isVisible={selected} position={Position.Top} offset={tbOffset}>
         <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-0.5 shadow-md">
           {(isAsset || data.nodeType === "image") && data.imageUrl ? (
             <>
