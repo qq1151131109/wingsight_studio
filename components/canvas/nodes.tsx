@@ -350,18 +350,32 @@ function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
   );
 }
 
-/** 双击聚焦（open-ai-canvas focusCanvasImageNode 范式的修正版）：视口平滑
- *  居中到该卡。只钳上限 1.25（小卡不炸屏）——大卡（手动拉大的/长图）要
- *  缩到完整可见，设缩放下限会撑满整屏（用户反馈"放得过于大了"） */
+/** 双击聚焦：视口平滑居中到该卡，**统一观感尺寸**——不论卡片本身多大
+ *  （小设定图卡/手动拉大的卡/长图），聚焦后都占画布可视区的 ~60%（短边
+ *  约束），用户反馈"有的聚焦完还是很小，难道不该统一尺寸"。做法=按卡
+ *  片实测尺寸算目标 zoom，再以 min=max=zoom 的 fitView 强制该档居中
+ *  （fitView 自身的 maxZoom 只会钳大不会放大，小卡会留在原档）。 */
 function focusCardView(
   rf: { fitView: (o: Record<string, unknown>) => Promise<boolean> | void },
   id: string,
 ) {
+  const st = useCanvasStore.getState();
+  const n = st.nodes.find((x) => x.id === id);
+  const w = n?.measured?.width ?? Number(n?.style?.width) ?? 320;
+  const h = n?.measured?.height ?? Number(n?.style?.height) ?? 400;
+  const rect = document.querySelector(".react-flow")?.getBoundingClientRect();
+  const vw = rect?.width || window.innerWidth;
+  const vh = rect?.height || window.innerHeight;
+  const zoom = Math.min(
+    6,
+    Math.max(0.2, Math.min((vw * 0.62) / w, (vh * 0.62) / h)),
+  );
   void rf.fitView({
     nodes: [{ id }],
     duration: 420,
-    maxZoom: 1.25,
-    padding: 0.3,
+    minZoom: zoom,
+    maxZoom: zoom,
+    padding: 0,
   });
 }
 

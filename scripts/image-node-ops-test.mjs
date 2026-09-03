@@ -372,24 +372,30 @@ await page.waitForTimeout(900); // fitView duration 420ms + 余量
 {
   const vp = await page.evaluate(() => window.__wsCanvasStore.getState().viewport);
   check(
-    "G1 双击图片 → 视口聚焦（zoom ≤1.25，大卡可缩到完整可见）",
-    vp.zoom >= 0.3 && vp.zoom <= 1.3,
+    "G1 双击图片 → 视口聚焦（统一观感尺寸，zoom 有界 0.2–6）",
+    vp.zoom >= 0.2 && vp.zoom <= 6,
     `zoom=${vp.zoom.toFixed(2)}`,
   );
   const card = await nodeOf("测试底图").boundingBox();
   const vw = page.viewportSize();
+  const vh = page.viewportSize();
   const cx = card ? card.x + card.width / 2 : 0;
   check(
     "G2 卡片居中于视口",
     Boolean(card && Math.abs(cx - vw.width * 0.5) < vw.width * 0.18),
     `卡片中心 x=${Math.round(cx)} 视口中心=${Math.round(vw.width * 0.5)}`,
   );
+  check(
+    "G3 卡片统一观感尺寸（占视口高 ~62%±25%）",
+    Boolean(card && Math.abs(card.height / vh.height - 0.62) < 0.16),
+    `占比=${card ? (card.height / vh.height).toFixed(2) : "?"}`,
+  );
 }
 // 单击图片不再弹灯箱（灯箱走角落 ⌕ 按钮，竞品共识：预览是显式动作）
 await img1.click({ timeout: 5000 });
 await page.waitForTimeout(400);
 check(
-  "G3 单击图片不弹大图",
+  "G4 单击图片不弹大图",
   (await page.evaluate(() => !document.querySelector(".fixed.inset-0.z-50"))) === true,
 );
 
