@@ -213,6 +213,9 @@ interface CanvasState {
    *  的生效配置；服务端按 agent/models.py 目录校验，非法组合 400 */
   imagegen: ImagegenParams;
   projectName: string;
+  /** 画布乐观锁版本（服务端 canvases.revision）：装载时从服务端读入，
+   *  每次成功保存后更新；保存请求原样带回做 CAS，409 = 别处先写过 */
+  canvasRevision: number | null;
   /** 初始装载完成前不同步到服务端 */
   hydrated: boolean;
   setProjectStyle: (style: string) => void;
@@ -542,6 +545,7 @@ export const useCanvasStore = create<CanvasState>()(
       projectStyle: "",
       imagegen: IMAGEGEN_DEFAULT,
       projectName: "",
+      canvasRevision: null,
       hydrated: false,
       canUndoNow: false,
       canRedoNow: false,
@@ -566,6 +570,9 @@ export const useCanvasStore = create<CanvasState>()(
           hydrated: false,
           projectStyle: "",
           imagegen: IMAGEGEN_DEFAULT,
+          // 切项目清锁版本：新项目的 revision 由装载路径写入，防止旧值
+          // 被首次保存携带造成假冲突
+          canvasRevision: null,
         }),
 
       replaceCanvas: (nodes, edges, viewport) => {

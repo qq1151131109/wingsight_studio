@@ -59,6 +59,8 @@ export async function loadCanvas(
   edges: unknown[];
   viewport: unknown;
   meta?: { visualStyle?: string };
+  /** 服务端乐观锁版本（成功保存 +1；保存时原样带回做 CAS） */
+  revision?: number;
 } | null> {
   const r = await apiFetch(`${BASE}/${pid}/canvas`);
   if (r.status === 404) return { nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 } };
@@ -66,7 +68,10 @@ export async function loadCanvas(
   return r.json();
 }
 
-/** 保存 = 整画布 last-write-wins 覆盖（竞品通行的静默语义，无版本检查） */
+/** 保存画布。带 revision 时服务端做乐观锁（CAS）：版本不一致返回
+ *  {ok:false, conflict:true}——另一窗口/agent 先写过，调用方应拉最新
+ *  状态合并后重试，不再无版本检查地整包覆盖（双开页面旧快照踩掉新出图
+ *  结果的萧燕燕事故）。revision 缺省 = 无版本覆盖（旧语义，仅迁移路径用） */
 export async function saveCanvas(
   pid: string,
   state: {
@@ -75,15 +80,27 @@ export async function saveCanvas(
     viewport: unknown;
     meta?: { visualStyle?: string };
   },
-): Promise<{ ok: boolean }> {
+  revision?: number,
+): Promise<{ ok: boolean; revision?: number; conflict?: boolean }> {
   const r = await apiFetch(`${BASE}/${pid}/canvas`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(state),
+    body: JSON.stringify(
+      revision != null ? { ...state, revision } : state,
+    ),
   });
+  if (r.status === 409) {
+    const body = (await r.json().catch(() => null)) as {
+      revision?: number;
+    } | null;
+    return { ok: false, conflict: true, revision: body?.revision };
+  }
   if (!r.ok) return { ok: false };
-  const data = (await r.json().catch(() => null)) as { ok?: boolean } | null;
-  return { ok: data?.ok !== false };
+  const data = (await r.json().catch(() => null)) as {
+    ok?: boolean;
+    revision?: number;
+  } | null;
+  return { ok: data?.ok !== false, revision: data?.revision };
 }
 
 /** 上传媒体/文档附件（粘贴/拖拽/选择共用），返回同源可访问的 URL；失败返回 null
