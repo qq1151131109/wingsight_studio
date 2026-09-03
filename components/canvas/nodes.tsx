@@ -626,7 +626,7 @@ function CardShell({
   // 视口用 xyflow 的 useViewport（与 DOM transform 同 commit 更新）+ 双
   // rAF 确保量到的是新位置（单 rAF 会量到旧 transform，钳制反方向出错）
   const rfViewport = useViewport();
-  const [tbOffset, setTbOffset] = useState(28);
+  const [tbOffset, setTbOffset] = useState(12);
   useEffect(() => {
     if (!selected) return;
     let raf2 = 0;
@@ -634,7 +634,9 @@ function CardShell({
       raf2 = requestAnimationFrame(() => {
         const el = rootRef.current;
         if (!el) return;
-        setTbOffset(Math.min(28, el.getBoundingClientRect().top - 54));
+        // 贴顶时 offset 允许为负：工具条下滑压住标题行、贴住图片容器上缘
+        // （用户反馈：悬在半空像被应用头部吞掉，要"离图片容器更近"）
+        setTbOffset(Math.min(12, el.getBoundingClientRect().top - 54));
       });
     });
     return () => {
@@ -786,7 +788,7 @@ function CardShell({
       {/* 悬浮工具条（libtv 范式）：选中即在卡上方浮现常用操作。
           不做 tiny（缩放）隐藏——工具条是屏幕空间固定尺寸，任意缩放都
           可读（zoom<0.5 时藏掉曾让用户"看不到入口"，竞品也是全档显示）。
-          offset 28：越过 24px 卡外标题行，贴近不压字；按钮 36px 高图标+文字
+          offset 12：贴着标题行上缘；贴顶钳制时压住标题行贴住图片容器；按钮 36px 高图标+文字
           （对标 Lovart 系工具条观感） */}
       <NodeToolbar isVisible={selected} position={Position.Top} offset={tbOffset}>
         <div className="flex items-center gap-1 rounded-xl border border-hairline bg-surface-1 p-1 shadow-lg">
