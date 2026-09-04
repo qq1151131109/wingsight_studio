@@ -253,52 +253,12 @@ def list_skills() -> list:
     return skills.list_skills_payload()
 
 
-# 能做什么：用户语言的能力卡（聊天「助手能力」面板第一分区）。与工具
-# docstring 不同层——这里写给用户看（发现性），不写给模型
-CAPABILITY_ACTIONS = [
-    {
-        "title": "剧本拆解建卡",
-        "desc": "把剧本拆成角色 / 场景 / 道具资产卡，逐张连回剧本，等确认后再出图",
-        "example": "把画布上的剧本拆解成资产卡",
-    },
-    {
-        "title": "整表分镜",
-        "desc": "从剧本生成结构化分镜表（景别 / 运镜 / 时长 / 光影 / 音效），写回画布已有的分镜表卡",
-        "example": "把剧本拆成 20 镜的标准分镜表",
-    },
-    {
-        "title": "批量设定图",
-        "desc": "为资产卡批量出设定图；可带参考图保持形象一致，历史题材自动走考据检索",
-        "example": "给「郑成功」生成一张设定图，参考已出的定妆照",
-    },
-    {
-        "title": "参考图调研",
-        "desc": "联网搜历史画像 / 博物馆实物照片，模型看图终选后进资产卡「找参考图」面板",
-        "example": "给明制盔甲找几张博物馆实物参考图",
-    },
-    {
-        "title": "深度调研",
-        "desc": "选题论证 / 史实核查 / 人物深挖，产出带来源引用的调研卷宗卡",
-        "example": "深度调研郑成功收复台湾的后勤补给问题",
-    },
-    {
-        "title": "剧本审查",
-        "desc": "合规 / 一致性 / 事实核查三维度审查，发现定位到剧本原文，可逐条应用建议",
-        "example": "审查当前剧本的事实性问题",
-    },
-    {
-        "title": "画布批量编辑",
-        "desc": "批量建卡 / 连线 / 分组 / 整理，复杂批量先干跑校验再应用，删除前征求确认",
-        "example": "把所有角色卡收进一个分组",
-    },
-]
-
-
 @app.get("/capabilities")
 def api_capabilities(user: auth.CurrentUser):
-    """助手能力清单（聊天「助手能力」面板数据源）：能做什么（用户语言）+
-    生成技能（Langflow 注册表，/ 直达）+ 方法手册（SKILL.md 全文可展开）。"""
-    manuals = []
+    """技能清单（聊天「技能」面板数据源，Claude Code 式单一列表）：
+    手册类（agent/skills 的 SKILL.md，助手执行对应任务时自动使用，全文可看）
+    + 指令类（Langflow 注册表，输入条打 / 直达，点击插入调用模板）。"""
+    skills_list = []
     for m in graph.SKILL_META:
         try:
             body = (graph.SKILLS_DIR / m["name"] / "SKILL.md").read_text(
@@ -306,14 +266,25 @@ def api_capabilities(user: auth.CurrentUser):
             )
         except OSError:
             body = ""
-        manuals.append(
-            {"name": m["name"], "description": m["description"], "body": body}
+        skills_list.append(
+            {
+                "name": m["name"],
+                "description": m["description"],
+                "kind": "manual",
+                "body": body,
+            }
         )
-    return {
-        "actions": CAPABILITY_ACTIONS,
-        "flows": skills.list_skills_payload(),
-        "manuals": manuals,
-    }
+    for f in skills.list_skills_payload():
+        skills_list.append(
+            {
+                "name": str(f.get("name") or ""),
+                "description": str(f.get("description") or ""),
+                "kind": "flow",
+                "body": "",
+                "params": f.get("params") or [],
+            }
+        )
+    return {"skills": skills_list}
 
 
 # ---------- 项目与画布持久化（前端经 /agent-service/projects/* 访问）----------

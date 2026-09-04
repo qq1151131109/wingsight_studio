@@ -180,8 +180,8 @@ export default function ChatSidebarHeader() {
       <div className="ml-auto flex items-center gap-0.5">
         <button
           type="button"
-          data-tip="助手会什么" aria-label="助手能力"
-          data-track="chat.capabilities"
+          data-tip="技能" aria-label="技能"
+          data-track="chat.skills"
           onClick={() =>
             window.dispatchEvent(new CustomEvent(OPEN_CAPABILITIES_EVENT))
           }

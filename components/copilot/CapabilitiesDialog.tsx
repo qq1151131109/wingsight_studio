@@ -1,16 +1,16 @@
 "use client";
 
 /**
- * 助手能力面板（发现性入口）：聊天 header「能力」按钮或 OPEN_CAPABILITIES_EVENT
- * 呼出，OverlayModal portal（画布内裸 fixed 会被 viewport transform 劫持）。
- * 三分区（数据来自 GET /agent-service/capabilities，打开时现拉）：
- *   能做什么 —— 用户语言能力卡，点示例句插入输入条（CHAT_INSERT_TEXT_EVENT）
- *   生成技能 —— Langflow 注册表（输入条打 / 同源），点击插入调用模板
- *   方法手册 —— agent/skills 的 SKILL.md，展开看全文（助手执行对应任务时读它）
+ * 技能面板（Claude Code 式单一列表）：聊天 header「技能」按钮或
+ * OPEN_CAPABILITIES_EVENT 呼出，OverlayModal portal。
+ * 每项 = 名称 + 一行描述 + 点开看内容：
+ *   手册类（agent/skills 的 SKILL.md）——助手执行对应任务时自动使用
+ *   指令类（Langflow 技能）——输入条打 / 直达，展开内有「插入输入条」
+ * 数据来自 GET /agent-service/capabilities（打开时现拉，手册即时更新）。
  */
 
 import { useEffect, useState } from "react";
-import { BookOpen, ChevronDown, Sparkles, Wand2, X } from "lucide-react";
+import { BookOpen, ChevronDown, Sparkles, Wand2, X, Zap } from "lucide-react";
 import OverlayModal from "@/components/canvas/OverlayModal";
 import { apiFetch } from "@/lib/auth";
 import {
@@ -18,21 +18,25 @@ import {
   OPEN_CAPABILITIES_EVENT,
 } from "@/lib/canvas/events";
 
-type Action = { title: string; desc: string; example: string };
-type Flow = { name: string; description?: string; params?: { name: string; desc?: string }[] };
-type Manual = { name: string; description: string; body: string };
+type Skill = {
+  name: string;
+  description: string;
+  kind: "manual" | "flow";
+  body: string;
+  params?: { name: string; desc?: string }[];
+};
 
-const insertToChat = (text: string) => {
-  window.dispatchEvent(
-    new CustomEvent(CHAT_INSERT_TEXT_EVENT, { detail: { text } }),
-  );
+const KIND_META: Record<
+  Skill["kind"],
+  { label: string; icon: typeof BookOpen; cls: string }
+> = {
+  manual: { label: "手册", icon: BookOpen, cls: "text-text-4" },
+  flow: { label: "指令", icon: Zap, cls: "text-accent" },
 };
 
 export default function CapabilitiesDialog() {
   const [open, setOpen] = useState(false);
-  const [actions, setActions] = useState<Action[]>([]);
-  const [flows, setFlows] = useState<Flow[]>([]);
-  const [manuals, setManuals] = useState<Manual[]>([]);
+  const [list, setList] = useState<Skill[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -53,15 +57,8 @@ export default function CapabilitiesDialog() {
       try {
         const r = await apiFetch("/agent-service/capabilities");
         if (!r.ok) throw new Error(String(r.status));
-        const data = (await r.json()) as {
-          actions: Action[];
-          flows: Flow[];
-          manuals: Manual[];
-        };
-        if (!alive) return;
-        setActions(data.actions ?? []);
-        setFlows(data.flows ?? []);
-        setManuals(data.manuals ?? []);
+        const data = (await r.json()) as { skills: Skill[] };
+        if (alive) setList(data.skills ?? []);
       } catch {
         if (alive) setFailed(true);
       }
@@ -82,24 +79,19 @@ export default function CapabilitiesDialog() {
 
   if (!open) return null;
 
-  const pick = (text: string) => {
-    insertToChat(text);
-    setOpen(false);
-  };
-
   return (
     <OverlayModal
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
       onClick={() => setOpen(false)}
     >
       <div
-        className="flex max-h-[82vh] w-full max-w-2xl flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl"
+        className="flex max-h-[82vh] w-full max-w-xl flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-hairline px-4 py-3">
           <Sparkles className="h-4 w-4 text-accent" />
-          <h2 className="text-sm font-medium">助手能力</h2>
-          <p className="ml-2 text-xs text-text-4">点示例句直接填入输入条</p>
+          <h2 className="text-sm font-medium">技能</h2>
+          <span className="text-xs text-text-4">{list.length} 项</span>
           <button
             type="button"
             aria-label="关闭" data-tip="关闭"
@@ -110,109 +102,105 @@ export default function CapabilitiesDialog() {
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-4 overflow-auto px-4 py-3">
+        <div className="min-h-0 flex-1 overflow-auto px-3 py-2.5">
           {failed ? (
             <p className="py-8 text-center text-xs text-text-4">
-              能力清单拉取失败（agent 服务可能未启动）
+              技能清单拉取失败（agent 服务可能未启动）
             </p>
+          ) : list.length === 0 ? (
+            <p className="py-8 text-center text-xs text-text-4">加载中…</p>
           ) : (
-            <>
-              <section>
-                <h3 className="mb-2 text-[10px] font-medium uppercase tracking-wide text-text-4">
-                  能做什么
-                </h3>
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {actions.map((a) => (
-                    <div
-                      key={a.title}
-                      className="group rounded-lg border border-hairline bg-surface-2/50 p-2.5"
+            <div className="space-y-1.5">
+              {list.map((s) => {
+                const meta = KIND_META[s.kind];
+                const Icon = meta.icon;
+                const isOpen = expanded === s.name;
+                return (
+                  <div
+                    key={`${s.kind}:${s.name}`}
+                    className="rounded-lg border border-hairline bg-surface-2/50"
+                  >
+                    <button
+                      type="button"
+                      className="flex w-full items-center gap-2.5 px-2.5 py-2 text-left"
+                      onClick={() => setExpanded(isOpen ? null : s.name)}
                     >
-                      <p className="text-xs font-medium text-text">{a.title}</p>
-                      <p className="mt-1 text-[11px] leading-relaxed text-text-3">
-                        {a.desc}
-                      </p>
-                      <button
-                        type="button"
-                        className="mt-2 inline-flex max-w-full items-center gap-1 rounded-md border border-hairline bg-surface-1 px-2 py-1 text-left text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
-                        onClick={() => pick(a.example)}
-                      >
-                        <Wand2 className="h-3 w-3 shrink-0 text-accent" />
-                        <span className="truncate">{a.example}</span>
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              {flows.length > 0 ? (
-                <section>
-                  <h3 className="mb-2 text-[10px] font-medium uppercase tracking-wide text-text-4">
-                    生成技能 · 输入条打 / 直达
-                  </h3>
-                  <div className="space-y-1.5">
-                    {flows.map((f) => (
-                      <button
-                        key={f.name}
-                        type="button"
-                        className="flex w-full items-center gap-2 rounded-lg border border-hairline bg-surface-2/50 px-2.5 py-2 text-left transition-colors hover:border-accent-soft"
-                        onClick={() => pick(`调用技能「${f.name}」处理：`)}
-                      >
-                        <span className="rounded bg-accent/10 px-1.5 py-0.5 text-[10px] text-accent">
-                          /{f.name}
+                      <Icon className={`h-4 w-4 shrink-0 ${meta.cls}`} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-medium text-text">
+                            {s.name}
+                          </span>
+                          <span className="shrink-0 rounded bg-surface-1 px-1 py-px text-[10px] text-text-4">
+                            {meta.label}
+                          </span>
                         </span>
-                        <span className="min-w-0 flex-1 truncate text-[11px] text-text-3">
-                          {f.description}
+                        <span className="mt-0.5 block truncate text-[11px] text-text-3">
+                          {s.description}
                         </span>
-                      </button>
-                    ))}
+                      </span>
+                      <ChevronDown
+                        className={`h-3.5 w-3.5 shrink-0 text-text-4 transition-transform ${
+                          isOpen ? "rotate-180" : ""
+                        }`}
+                      />
+                    </button>
+                    {isOpen ? (
+                      <div className="border-t border-hairline px-3 py-2.5">
+                        {s.kind === "manual" && s.body ? (
+                          <pre className="max-h-72 overflow-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-text-2">
+                            {s.body}
+                          </pre>
+                        ) : null}
+                        {s.kind === "flow" ? (
+                          <div className="space-y-2">
+                            {(s.params ?? []).length > 0 ? (
+                              <ul className="space-y-1 text-[11px] text-text-3">
+                                {(s.params ?? []).map((p) => (
+                                  <li key={p.name}>
+                                    <span className="font-mono text-text-2">
+                                      {p.name}
+                                    </span>
+                                    ：{p.desc}
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="text-[11px] text-text-3">
+                                {s.description}
+                              </p>
+                            )}
+                            <button
+                              type="button"
+                              className="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 px-2.5 py-1.5 text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+                              onClick={() => {
+                                window.dispatchEvent(
+                                  new CustomEvent(CHAT_INSERT_TEXT_EVENT, {
+                                    detail: {
+                                      text: `调用技能「${s.name}」处理：`,
+                                    },
+                                  }),
+                                );
+                                setOpen(false);
+                              }}
+                            >
+                              <Wand2 className="h-3 w-3 text-accent" />
+                              插入输入条
+                            </button>
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
-                </section>
-              ) : null}
-
-              <section>
-                <h3 className="mb-2 text-[10px] font-medium uppercase tracking-wide text-text-4">
-                  方法手册 · 助手执行任务时遵循的操作知识
-                </h3>
-                <div className="space-y-1.5">
-                  {manuals.map((m) => (
-                    <div
-                      key={m.name}
-                      className="rounded-lg border border-hairline bg-surface-2/50"
-                    >
-                      <button
-                        type="button"
-                        className="flex w-full items-center gap-2 px-2.5 py-2 text-left"
-                        onClick={() =>
-                          setExpanded(expanded === m.name ? null : m.name)
-                        }
-                      >
-                        <BookOpen className="h-3.5 w-3.5 shrink-0 text-text-4" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-xs text-text">
-                            {m.name}
-                          </span>
-                          <span className="block truncate text-[11px] text-text-3">
-                            {m.description}
-                          </span>
-                        </span>
-                        <ChevronDown
-                          className={`h-3.5 w-3.5 shrink-0 text-text-4 transition-transform ${
-                            expanded === m.name ? "rotate-180" : ""
-                          }`}
-                        />
-                      </button>
-                      {expanded === m.name && m.body ? (
-                        <pre className="max-h-72 overflow-auto whitespace-pre-wrap border-t border-hairline px-3 py-2.5 font-mono text-[11px] leading-relaxed text-text-2">
-                          {m.body}
-                        </pre>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            </>
+                );
+              })}
+            </div>
           )}
         </div>
+
+        <p className="border-t border-hairline px-4 py-2.5 text-[11px] leading-relaxed text-text-4">
+          手册类技能由助手执行对应任务时自动使用；指令类技能也可在输入条打 / 直达。
+        </p>
       </div>
     </OverlayModal>
   );
