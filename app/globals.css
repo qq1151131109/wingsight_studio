@@ -625,23 +625,23 @@ aside.copilotKitSidebar[aria-hidden="true"] {
     position: fixed;
     top: 0;
     bottom: 0;
-    right: calc(var(--ws-chat-w, var(--sidebar-width, 420px)) - 3px);
-    width: 6px;
+    right: calc(var(--ws-chat-w, var(--sidebar-width, 420px)) - 5px);
+    width: 10px;
     z-index: 1201;
     cursor: col-resize;
     background: transparent;
     touch-action: none;
 }
 .ws-chat-resizer:hover,
-.ws-chat-resizer.dragging {
+html.ws-chat-dragging .ws-chat-resizer {
     background: var(--color-accent-soft);
 }
-.ws-chat-resizer.dragging::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    /* 拖动中拦截整屏 hover/选中，画布不响应 */
-    cursor: col-resize;
+/* 拖拽态挂 html（Sidebar.tsS endDrag 任何收尾路径都复位）：整屏统一光标
+   + 禁选中，替代曾用 ::after 全屏遮罩的写法 */
+html.ws-chat-dragging,
+html.ws-chat-dragging * {
+    cursor: col-resize !important;
+    user-select: none !important;
 }
 body:not(:has(aside.copilotKitSidebar[aria-hidden="false"])) .ws-chat-resizer {
     display: none;

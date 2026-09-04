@@ -51,6 +51,12 @@ await context.addInitScript(
   ["wingsight_studio_token", TOKEN],
 );
 const page = await context.newPage();
+// 预设侧栏宽度存值：拖拽监听曾在「有存值」分支被早退跳过（刷新后拖不动
+// 的事故场景），回归必须带着存值冷启动测
+await context.addInitScript(
+  ([k, v]) => window.localStorage.setItem(k, v),
+  ["wingsight_sidebar_width", "460px"],
+);
 const consoleErrors = [];
 page.on("console", (m) => {
   if (m.type() === "error") consoleErrors.push(m.text().slice(0, 160));

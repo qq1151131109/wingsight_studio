@@ -118,21 +118,28 @@ export default function ThemedSidebar() {
 
   // 侧栏内缘拖拽调宽：改 --ws-chat-w（globals.css 骨架优先读它、以 v2 自带的
   // --sidebar-width 兜底——v2 把该变量设在 aside 元素上，root 同名会被遮蔽），
-  // localStorage 记忆；命令式 DOM 操作不走 React 状态
+  // localStorage 记忆；命令式 DOM 操作不走 React 状态。
+  // move/up 挂 window：指针捕获万一丢失（浏览器差异/中断）拖拽也不死 mid-way，
+  // 且 dragging 态放在 html 上，任何收尾路径（up/cancel/blur）都能复位
   const resizerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const saved = window.localStorage.getItem(WS_WIDTH_KEY);
+    const timers: number[] = [];
     if (saved) {
       document.documentElement.style.setProperty("--ws-chat-w", saved);
-      // 侧栏常驻 DOM（关闭仅 aria-hidden），稍等首帧后还原内联宽度
-      const t = window.setTimeout(() => {
-        (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)
-          ?.style.setProperty("width", saved, "important");
-      }, 400);
-      return () => window.clearTimeout(t);
+      // 侧栏常驻 DOM（关闭仅 aria-hidden），稍等首帧后还原内联宽度。
+      // 注意：还原分支绝不早退——曾因 return 跳过下面的监听器挂载，
+      // 「刷新后有存值 → 拖拽永久失灵」就是这个坑
+      timers.push(
+        window.setTimeout(() => {
+          (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)
+            ?.style.setProperty("width", saved, "important");
+        }, 400),
+      );
     }
     const el = resizerRef.current;
-    if (!el) return;
+    const cleanupRestore = () => timers.forEach((t) => window.clearTimeout(t));
+    if (!el) return cleanupRestore;
     const clamp = (w: number) =>
       Math.min(Math.max(w, 340), Math.min(760, window.innerWidth * 0.95));
     // v2 经 adopted stylesheet 打的 !important 宽度规则会吃掉任何文档层
@@ -145,33 +152,49 @@ export default function ThemedSidebar() {
         ?.style.setProperty("width", px, "important");
     };
     let dragging = false;
-    const onDown = (e: PointerEvent) => {
+    const startDrag = () => {
       dragging = true;
-      el.classList.add("dragging");
-      el.setPointerCapture(e.pointerId);
-      apply(clamp(window.innerWidth - e.clientX));
+      document.documentElement.classList.add("ws-chat-dragging");
     };
-    const onMove = (e: PointerEvent) => {
-      if (dragging) apply(clamp(window.innerWidth - e.clientX));
-    };
-    const onUp = (e: PointerEvent) => {
+    const endDrag = (e: PointerEvent) => {
       if (!dragging) return;
       dragging = false;
-      el.classList.remove("dragging");
-      el.releasePointerCapture(e.pointerId);
+      document.documentElement.classList.remove("ws-chat-dragging");
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* 未捕获时忽略 */
+      }
       const w = clamp(window.innerWidth - e.clientX);
       apply(w);
       window.localStorage.setItem(WS_WIDTH_KEY, `${Math.round(w)}px`);
     };
+    const onDown = (e: PointerEvent) => {
+      startDrag();
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* 捕获失败也照常拖：window 级 move/up 兜底 */
+      }
+      apply(clamp(window.innerWidth - e.clientX));
+    };
+    const onMove = (e: PointerEvent) => {
+      if (!dragging) return;
+      e.preventDefault();
+      apply(clamp(window.innerWidth - e.clientX));
+    };
     el.addEventListener("pointerdown", onDown);
-    el.addEventListener("pointermove", onMove);
-    el.addEventListener("pointerup", onUp);
-    el.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", endDrag);
+    window.addEventListener("pointercancel", endDrag);
+    window.addEventListener("blur", endDrag as EventListener);
     return () => {
+      if (typeof cleanupRestore === "function") cleanupRestore();
       el.removeEventListener("pointerdown", onDown);
-      el.removeEventListener("pointermove", onMove);
-      el.removeEventListener("pointerup", onUp);
-      el.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", endDrag);
+      window.removeEventListener("pointercancel", endDrag);
+      window.removeEventListener("blur", endDrag as EventListener);
     };
   }, []);
 
