@@ -236,7 +236,11 @@ interface CanvasState {
     viewport: Viewport,
   ) => void;
   setNodes: (nodes: WingNode[]) => void;
-  addNode: (node: Omit<WingNode, "id"> & { id?: string }) => string;
+  /** history:"skip" = 不进撤销快照（批量建卡由调用方 commit 一次包住整批） */
+  addNode: (
+    node: Omit<WingNode, "id"> & { id?: string },
+    opts?: { history?: "commit" | "skip" },
+  ) => string;
   updateNodeData: (id: string, patch: Partial<WingNodeData>, opts?: NodeDataUpdateOpts) => void;
   /** 媒体比例自适应（useMediaFitHeight 专用）：一次原子写 fittedFor + 卡高，
    *  不入撤销栈——自适应是视觉归位不是用户操作，入栈会把「撤销生成」截断成
@@ -708,11 +712,11 @@ export const useCanvasStore = create<CanvasState>()(
         return newNodes.map((n) => n.id);
       },
 
-      addNode: (node) => {
+      addNode: (node, opts) => {
         const id = node.id ?? genNodeId();
         // React Flow 靠 node.type 选自定义渲染器；调用方只给 data.nodeType 时自动推导
         const type = node.type ?? node.data?.nodeType ?? "note";
-        get().commitHistory();
+        if (opts?.history !== "skip") get().commitHistory();
         set((state) => ({
           // 幂等防御：同 id 已存在（ops 重放/同批双发）不重复插入——
           // React key 冲突会让整棵渲染树错乱，宁可不加

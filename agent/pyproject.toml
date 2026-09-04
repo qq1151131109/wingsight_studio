@@ -13,4 +13,5 @@ dependencies = [
     "pyjwt>=2.8",
     "pwdlib[argon2]>=0.2",
     "python-multipart>=0.0.9",
+    "openpyxl>=3.1.5",
 ]

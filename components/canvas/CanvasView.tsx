@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   MiniMap,
   ReactFlow,
@@ -94,6 +101,7 @@ import ServiceBanner from "./ServiceBanner";
 import OutlinePanel from "./OutlinePanel";
 import DirectorPanel from "./DirectorPanel";
 import ImageToolDialogs from "./ImageToolDialogs";
+import ImportStoryboardDialog from "./ImportStoryboardDialog";
 import CanvasSettings from "./CanvasSettings";
 
 /** 离线指示：断网时顶部常驻小条（保存走 saveState "offline" 文案，这里补全局感知） */
@@ -1376,8 +1384,6 @@ function SelBtn({
 
 function SelectionToolbar() {
   const nodes = useCanvasStore((s) => s.nodes);
-  // 订阅视口：平移缩放后重算锚点（画布坐标 → 容器坐标 = vp + flow*zoom）
-  const vp = useCanvasStore((s) => s.viewport);
   const [alignOpen, setAlignOpen] = useState(false);
   // 多选等比缩放（轻量版：宽度与水平间距等比；高度只在卡上已显式设置时跟随）
   const scaleRef = useRef<{
@@ -1387,26 +1393,49 @@ function SelectionToolbar() {
     anchor: { x: number; y: number };
   } | null>(null);
   const sel = nodes.filter((n) => n.selected);
-  if (sel.length < 2) return null;
   const ids = sel.map((n) => n.id);
-  const boxes = selectionBoxes(nodes, ids);
-  const minX = Math.min(...boxes.map((b) => b.x));
-  const maxX = Math.max(...boxes.map((b) => b.x + b.w));
-  const minY = Math.min(...boxes.map((b) => b.y));
-  const maxY = Math.max(...boxes.map((b) => b.y + b.h));
-  const anchor = {
-    x: vp.x + ((minX + maxX) / 2) * vp.zoom,
-    y: vp.y + minY * vp.zoom,
-  };
-  const seCorner = { x: vp.x + maxX * vp.zoom, y: vp.y + maxY * vp.zoom };
+  const boxes = sel.length >= 2 ? selectionBoxes(nodes, ids) : [];
+  const minX = boxes.length ? Math.min(...boxes.map((b) => b.x)) : 0;
+  const maxX = boxes.length ? Math.max(...boxes.map((b) => b.x + b.w)) : 0;
+  const minY = boxes.length ? Math.min(...boxes.map((b) => b.y)) : 0;
+  const maxY = boxes.length ? Math.max(...boxes.map((b) => b.y + b.h)) : 0;
+  // 位置直写（NodeInputPanel 同款跟手方案）：拖画布平移/缩放时 xyflow 直写
+  // 视口 DOM、手势结束才落 useCanvasStore.viewport——订阅自家 store 会全程
+  // 不动、松手瞬跳；订阅 xyflow 内部 store（每帧更新）同帧跟随
+  const rfStore = useStoreApi();
+  const barRef = useRef<HTMLDivElement>(null);
+  const cornerRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (sel.length < 2) return;
+    const write = () => {
+      const [tx, ty, zoom] = rfStore.getState().transform;
+      if (barRef.current) {
+        barRef.current.style.left = `${tx + ((minX + maxX) / 2) * zoom}px`;
+        barRef.current.style.top = `${ty + minY * zoom - 10}px`;
+      }
+      if (cornerRef.current) {
+        cornerRef.current.style.left = `${tx + maxX * zoom - 6}px`;
+        cornerRef.current.style.top = `${ty + maxY * zoom - 6}px`;
+      }
+    };
+    write();
+    const unsubNodes = useCanvasStore.subscribe(write);
+    const unsubRf = rfStore.subscribe(write);
+    return () => {
+      unsubNodes();
+      unsubRf();
+    };
+  }, [sel.length, minX, maxX, minY, maxY, rfStore]);
+  if (sel.length < 2) return null;
 
   const onScaleStart = (e: React.PointerEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
     useCanvasStore.getState().commitHistory();
+    const zoom = rfStore.getState().transform[2];
     scaleRef.current = {
       startX: e.clientX,
-      baseW: (maxX - minX) * vp.zoom,
+      baseW: (maxX - minX) * zoom,
       boxes: selectionBoxes(useCanvasStore.getState().nodes, ids),
       anchor: { x: minX, y: minY },
     };
@@ -1439,8 +1468,8 @@ function SelectionToolbar() {
   return (
     <>
       <div
+        ref={barRef}
         className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
-        style={{ left: anchor.x, top: anchor.y - 10 }}
       >
         <span className="px-1.5 text-[10px] text-text-4">已选 {sel.length}</span>
         <SelBtn onClick={() => useCanvasStore.getState().copySelection()}>复制</SelBtn>
@@ -1477,9 +1506,9 @@ function SelectionToolbar() {
       </div>
       {/* 选区右下角：等比缩放手柄 */}
       <div
+        ref={cornerRef}
         title="拖动等比缩放选中卡片"
         className="absolute z-10 h-3 w-3 cursor-nwse-resize rounded-sm border-[1.5px] border-accent bg-surface-1 shadow-sm"
-        style={{ left: seCorner.x - 6, top: seCorner.y - 6 }}
         onPointerDown={onScaleStart}
         onPointerMove={onScaleMove}
         onPointerUp={() => {
@@ -1820,6 +1849,8 @@ export default function CanvasView() {
 
   // 素材库 / 提示词库 / 大纲面板（底部坞 / 右键空白 打开，三者互斥）
   const [trayOpen, setTrayOpen] = useState(false);
+  // 分镜表批量导入向导（右键空白菜单进入）
+  const [importOpen, setImportOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
   // ⌘K 呼出画布导航（⌘K 命令面板范式，open-ai-canvas canvas-node-search 同款
@@ -2214,6 +2245,7 @@ export default function CanvasView() {
         <AssetAutoRecorder />
       </ReactFlow>
       {trayOpen ? <AssetTray onClose={() => setTrayOpen(false)} /> : null}
+      {importOpen ? <ImportStoryboardDialog onClose={() => setImportOpen(false)} /> : null}
       {promptsOpen ? <PromptLibraryPanel onClose={() => setPromptsOpen(false)} /> : null}
       {outlineOpen ? <OutlinePanel onClose={() => setOutlineOpen(false)} /> : null}
       <ImageToolDialogs />
@@ -2311,6 +2343,13 @@ export default function CanvasView() {
                   label="素材库…"
                   onClick={() => {
                     setTrayOpen(true);
+                    closeCtx();
+                  }}
+                />
+                <CtxItem
+                  label="导入分镜表…"
+                  onClick={() => {
+                    setImportOpen(true);
                     closeCtx();
                   }}
                 />

@@ -172,12 +172,12 @@ import { useDismissOnOutside } from "@/lib/useDismiss";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 import SplitGridDialog from "./SplitGridDialog";
+import FrameExtractDialog from "./FrameExtractDialog";
 import RefResearchDialog from "./RefResearchDialog";
 import RefReviewDialog from "./RefReviewDialog";
 import ScriptReviewDialog from "./ScriptReviewDialog";
 import ImageReviewDialog from "./ImageReviewDialog";
 import {
-  cancelArtReview,
   dismissArtReviewFinding,
   getArtReview,
   isArtReviewTerminal,
@@ -426,6 +426,7 @@ const MULTI_TOOLS: {
   { tool: "prevFrame", label: "回溯前帧", hint: "导致本画面的前一瞬", icon: Rewind },
   { tool: "grade", label: "光影校正", hint: "只做电影调色 pass", icon: Contrast },
   { tool: "outpaint", label: "扩图", hint: "延展画面边界补全环境", icon: Maximize2 },
+  { tool: "emotion", label: "情绪", hint: "25 档情绪矩阵调表情", icon: Drama },
 ];
 
 /** 双击聚焦：视口平滑居中到该卡，**统一观感尺寸**——不论卡片本身多大
@@ -3729,6 +3730,8 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [zoom, setZoom] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [frames, setFrames] = useState<{ t: number; data: string }[]>([]);
+  // 抽帧建卡弹窗（拖进度标记→原生分辨率捕获→图片卡成排+连线）
+  const [frameOpen, setFrameOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [extracting, setExtracting] = useState(false);
   // 媒体比例自适应：视频元数据到位按自然比例贴满媒体区
@@ -3858,6 +3861,13 @@ function VideoCard({ data, id, selected }: NodeProps) {
           <History className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
+      <ToolBtn
+        title="抽帧建卡：拖进度标记画面，原生分辨率建图片卡"
+        disabled={!d.videoUrl || frameOpen}
+        onClick={() => setFrameOpen(true)}
+      >
+        <Film className="h-4 w-4" />
+      </ToolBtn>
       <ToolBtn
         title={analyzing ? "抽帧上传中…" : "AI 拉片：抽帧分析镜头语言"}
         disabled={analyzing}
@@ -4002,6 +4012,14 @@ function VideoCard({ data, id, selected }: NodeProps) {
       ) : null}
       {zoom && d.videoUrl ? (
         <VideoLightbox src={d.videoUrl} onClose={() => setZoom(false)} />
+      ) : null}
+      {frameOpen && d.videoUrl ? (
+        <FrameExtractDialog
+          nodeId={id}
+          url={d.videoUrl}
+          title={String(d.title ?? "")}
+          onClose={() => setFrameOpen(false)}
+        />
       ) : null}
       {historyOpen ? (
         <VersionHistoryModal nodeId={id} data={d} onClose={() => setHistoryOpen(false)} />

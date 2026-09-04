@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
@@ -47,6 +47,7 @@ import research  # noqa: E402
 import research_routes  # noqa: E402
 import image_review  # noqa: E402
 import image_review_routes  # noqa: E402
+import tabular_import  # noqa: E402
 import script_review  # noqa: E402
 import script_review_routes  # noqa: E402
 import serper_routes  # noqa: E402
@@ -573,6 +574,17 @@ def api_compose(pid: str, req: dict, user: auth.CurrentUser):
     except Exception as exc:  # ffmpeg 失败等
         return Response(status_code=500, content=str(exc), media_type="text/plain")
     return {"url": url}
+
+
+@app.post("/import/tabular")
+async def api_import_tabular(file: UploadFile, user: auth.CurrentUser):
+    """分镜/提示词表格解析：xlsx/csv/txt → 统一行结构（前端列映射后批量建卡）。"""
+    _ = user
+    raw = await file.read()
+    try:
+        return tabular_import.parse_tabular(file.filename or "", raw)
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
 
 
 @app.post("/video/extract-audio")

@@ -29,9 +29,33 @@ export type TemplateTool = Extract<
   | "prevFrame"
   | "grade"
   | "outpaint"
+  | "emotion"
 >;
 
 type Preset = { label: string; sentence: string };
+
+/** 情绪矩阵 25 预设（open-ai-canvas canvas-emotion.ts 忠实移植）：
+ *  行=唤醒度 +2→-2（上高下低），列=亲密度 +2→-2（右近左远） */
+const EMOTION_LABELS = [
+  ["欣喜若狂", "兴高采烈", "惊喜", "震惊", "惊恐"],
+  ["开怀", "期待", "专注", "警觉", "紧张"],
+  ["温柔", "浅然莞尔", "中性克制", "隐忍", "疏离"],
+  ["安心", "释然", "疲惫", "失落", "悲伤"],
+  ["满足", "平静", "冷淡", "隐忍心伤", "绝望"],
+] as const;
+const EMOTION_PROMPTS = [
+  ["自然、明亮的露齿笑，嘴角对称上扬，脸颊自然抬起，眼角有轻微笑纹", "明显喜悦，笑意饱满", "意外惊喜，眼睛睁大并自然张嘴", "明显震惊，眉毛抬起，嘴部微张", "强烈惊恐，双眼睁大，面部紧绷"],
+  ["自然开怀，眼角带笑", "期待而兴奋，表情明亮", "高度专注，目光坚定", "保持警觉，眉眼略微收紧", "紧张不安，嘴唇轻抿"],
+  ["温柔亲近，轻微微笑", "克制而自然的浅笑", "完全中性、克制、放松", "压住情绪，表情略显僵硬", "疏离冷静，减少面部情绪"],
+  ["安心放松，柔和闭合嘴角", "如释重负，眉眼放松", "明显疲惫，眼睑下垂", "情绪低落，嘴角轻微下垂", "悲伤，内眉抬起，嘴角下垂"],
+  ["安静满足，轻微闭口笑", "平静松弛，呼吸感自然", "冷淡克制，目光平直", "强忍心伤，嘴唇压紧，眼神黯淡", "深度绝望，眉眼下沉，面部失去张力"],
+] as const;
+const EMOTION_PRESETS: Preset[] = EMOTION_LABELS.flatMap((row, r) =>
+  row.map((label, c) => ({
+    label,
+    sentence: EMOTION_PROMPTS[r][c],
+  })),
+);
 
 /** 滑块组型（人物质感）：每维 3 档，档位带中文 prompt 片段
  *  （open-ai-canvas canvas-portrait-texture.ts 范式） */
@@ -150,6 +174,10 @@ const TOOLS: Record<
     title: "人物质感",
     hint: "精修人像质感：融合/光影/皮肤/纹理/锐度 五维各自选档",
   },
+  emotion: {
+    title: "情绪",
+    hint: "5×5 亲密度×唤醒度情绪矩阵：点选目标情绪，保持人物与画面完全不变，只调面部表情",
+  },
   panorama: {
     title: "全景环视",
     hint: "生成 2:1 球形全景环境图，完成自动进入 720° 拖拽环视（卡面「720° 环视」按钮随时重开）",
@@ -214,6 +242,11 @@ function buildPrompt(
   } else if (tool === "outpaint") {
     // 方向模板整体在 preset.sentence（等比/横向/纵向三选一）
     parts.push(preset.sentence);
+  } else if (tool === "emotion") {
+    parts.push(
+      "保持人物身份、五官、发型、服装、姿势、构图与画面其余部分完全不变，只调整人物面部表情至——" +
+        preset.sentence,
+    );
   }
   if (srcText) parts.push(`参考画面内容：${srcText}`);
   if (extra.trim()) parts.push(extra.trim());
@@ -328,7 +361,9 @@ export default function ImageTemplateDialog({
           ? "全景"
           : tool === "outpaint"
             ? `扩图·${preset?.label ?? ""}`
-            : (preset?.label ?? cfg.title);
+            : tool === "emotion"
+              ? `情绪·${preset?.label ?? ""}`
+              : (preset?.label ?? cfg.title);
     const newId = st.addNode({
       position: { x: abs.x + nw + 80, y: abs.y },
       data: {
@@ -411,6 +446,36 @@ export default function ImageTemplateDialog({
                 {p.label}
               </button>
             ))}
+          </div>
+        ) : tool === "emotion" ? (
+          <div className="flex flex-col items-center gap-1.5">
+            <div className="flex w-full items-center justify-between px-1 text-[10px] text-text-4">
+              <span>← 亲密 · 情绪浓</span>
+              <span>亲密度 × 唤醒度</span>
+              <span>疏离 · 冷漠 →</span>
+            </div>
+            <div className="grid w-full grid-cols-5 gap-1">
+              {EMOTION_PRESETS.map((p, i) => (
+                <button
+                  key={p.label}
+                  type="button"
+                  className={`rounded-md border px-1 py-2 text-[11px] leading-tight transition-colors ${
+                    i === pick
+                      ? "border-accent bg-accent-dim text-text"
+                      : "border-hairline text-text-2 hover:border-accent-soft hover:text-text"
+                  }`}
+                  onClick={() => setPick(i)}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+            <p className="text-[10px] text-text-4">
+              上排情绪更激烈、下排更平缓；左列亲密、右列疏离。当前：
+              <span className="ml-0.5 font-medium text-text">
+                {EMOTION_PRESETS[pick]?.label}
+              </span>
+            </p>
           </div>
         ) : tool === "panorama" ? (
           <div className="rounded-md border border-hairline bg-surface-2/60 p-2.5 text-xs leading-relaxed text-text-2">

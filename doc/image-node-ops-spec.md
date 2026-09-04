@@ -342,3 +342,27 @@ ai-moive-studio/AIGCCanvasFlow/Storyboard-Copilot/OpenLovart），与本仓已�
   必传（DMX 401）。
 回归 90/90；E2E 真跑评审（四合院全景图 → 2 条 medium findings，维度聚合
 与 dismiss 计数正确）。
+
+回归 90/90；E2E 真跑评审（四合院全景图 → 2 条 medium findings，维度聚合
+与 dismiss 计数正确）。
+
+## 11. 第七波：情绪矩阵 / 视频抽帧 / 表格批量导入（2026-09-04）
+
+竞品扫描第二批落地三件（合并分镜大图导出经查已存在——宫格导出含
+镜号+描述烘焙，划掉）：
+
+- **情绪矩阵**（open-ai-canvas canvas-emotion.ts 25 预设忠实移植）：多功能
+  第八项「情绪」，弹窗内 5×5 亲密度×唤醒度矩阵点选（左亲密右疏离、上激烈
+  下平缓），保持人物/画面完全不变只调面部表情；纯模板管线
+- **视频抽帧建卡**（open-ai-canvas canvas-video-frame 简化）：VideoCard
+  「抽帧建卡」→ FrameExtractDialog 拖进度标记 ≤8 处（缩略预览可删）→ 确认
+  后逐帧 seek+canvas 原生分辨率捕获 → uploadAsset → 视频卡右侧成排建图片
+  卡并连线（整批 flash）；纯前端无 LLM
+- **表格批量导入**（open-storyboard PromptImportDialog 简化）：右键空白
+  「导入分镜表…」→ agent `POST /import/tabular`（openpyxl 解析 xlsx 第一
+  sheet，csv/txt 按 utf-8→gb18030 兜底解码，≤200 行 ≤10MB）→ 前端列映射
+  （标题列/提示词列，单列自动整行作提示词）→ 预览 → 批量建图片卡（视口
+  中心 3 列网格）；addNode 增 history:"skip" 选项，整批一次撤销快照
+
+回归：image-node-ops 88/90——G2/G3（双击聚焦居中/尺寸）为并行会话工具条
+全平铺改动引起的回归（stash 验证与本波无关，其 DIAG 探针在测），随其修复。

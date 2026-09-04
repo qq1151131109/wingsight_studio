@@ -143,6 +143,8 @@ export type ImageToolDetail = {
     | "grade"
     // 扩图（open-storyboard outpainting 方向三预设，模板管线同上）
     | "outpaint"
+    // 情绪矩阵（open-ai-canvas canvas-emotion 25 预设，模板管线同上）
+    | "emotion"
     // 标注批注（viedeo ImageEditorModal 简化移植）：箭头/文字/画笔烘焙新图卡
     | "annotate";
 };
