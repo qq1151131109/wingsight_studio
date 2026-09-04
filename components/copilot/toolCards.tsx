@@ -2,7 +2,7 @@
 
 /**
  * 聊天流的结构化工具卡（open-ai-canvas AgentToolCard / AgentPendingToolCard 范式）：
- *  - BackendToolCards：给 6 个 LangGraph 后端工具注册 render-only 的同名 action，
+ *  - BackendToolCards：给 7 个 LangGraph 后端工具注册 render-only 的同名 action，
  *    框架按工具名匹配 render（useRenderToolCall）即拦截 stock 灰盒——调用从
  *    "隐形/灰盒" 变成 带状态与结果摘要的卡片，长文本进 <details> 折叠
  *  - ApprovalCard：canvas_ops 破坏性操作的审批卡内联进聊天流（不再弹原生
@@ -169,6 +169,29 @@ function resultImageUrls(text: string): string[] {
 // ---------- 后端工具注册（render-only：不设 handler，不参与前端执行） ----------
 
 export default function BackendToolCards() {
+  useCopilotAction({
+    name: "read_skill",
+    // render-only：disabled=不转发给模型/不参与前端执行，只拦聊天里的调用渲染
+    available: "disabled",
+    render: ({ status, args, result }) => {
+      const name = String((args as { name?: unknown })?.name ?? "");
+      if (status !== "complete")
+        return (
+          <RunningRow
+            icon={<ListChecks />}
+            title={name ? `正在读取技能手册「${name}」` : "正在读取技能手册"}
+          />
+        );
+      return (
+        <ToolCard
+          icon={<ListChecks />}
+          title={name ? `已读取技能手册「${name}」` : "已读取技能手册"}
+          detail={typeof result === "string" ? result.slice(0, 400) : undefined}
+        />
+      );
+    },
+  });
+
   useCopilotAction({
     name: "generate_asset_images",
     // render-only：disabled=不转发给模型/不参与前端执行，只拦聊天里的调用渲染

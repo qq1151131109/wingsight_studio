@@ -771,7 +771,8 @@ connect_nodes / update_node 直接引用同值即可；没带占位符就必须�
 
 ## 技能手册（按需加载）
 {skill_catalog}
-目录只是索引：执行对应任务前先调 read_skill(名称) 读手册全文再动手。
+目录只是索引：执行对应任务前先调 read_skill(名称) 读手册全文再动手；
+用户点名某技能（如「按技能「N」的规则处理」）时同样先 read_skill(N) 再执行。
 
 ## 设定图与考据
 真实历史/史料题材出设定图前先 read_skill("asset-aware-generation")——考据检索、一致性参考
