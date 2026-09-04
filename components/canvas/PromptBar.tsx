@@ -7,12 +7,20 @@
  * chip 落在正文光标处，提交时带图引用自动编号 图1..图N，正文与引用同源、
  * 无「上方一排 chip、正文手写图一图二」的脱节。连线引用（上游连进来的卡）
  * 仍以 chip 亮在上方，不可删（移除=画布断线）。
- * 拖画布媒体到面板上 = 快捷 @ 引用（ADD_REF_EVENT，nodes.tsx 的 mediaDragProps 发出）。
+ * 拖卡片媒体区抓手到面板上 = 快捷 @ 引用（ADD_REF_EVENT，nodes.tsx 的
+ * MediaDragGrip 发出——图片本体不承担拖拽，拖图=移动整卡）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, Loader2, Sparkles, Star } from "lucide-react";
-import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import {
+  NODE_META,
+  NODE_FOOTPRINT,
+  absolutePosition,
+  findFreePosition,
+  useCanvasStore,
+  type WingNode,
+} from "@/lib/canvas/store";
 import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import MentionInput, {
@@ -102,6 +110,10 @@ export type GenerateDetail = {
   /** 按设定重新生成：忽略全部参考（含本卡原图/连线），用 卡上标题+设定文本
    *  纯文生图全新渲染（novanova 分镜资产重生成范式，做减法立即可见） */
   noRefs?: boolean;
+  /** 派生改图（novanova/open-ai-canvas 范式）：无生成谱系的有图卡（上传图）
+   *  提交不在本卡原位覆盖，事件已在源卡右侧建好连线的新空卡上发出；此字段
+   *  = 源卡 id，桥接层把源图当「改图锚点」（EDIT 最小模板契约） */
+  editOf?: string;
 };
 
 const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
@@ -189,6 +201,16 @@ export default function PromptBar({
   const { models: imageModels } = useImageModels();
   // 本卡生效的出图参数（卡片级覆盖 > 项目级）：容量计数按此模型口径
   const cardGen = saneGen(self?.data.gen);
+  // 派生改图（novanova/open-ai-canvas 范式，7/8 竞品共识）：无生成谱系的
+  // 有图图片卡（上传图/素材库图，genShot/genPrompt 皆无）提交不在本卡原位
+  // 覆盖——右侧建新图卡+连线，本图作改图锚点；已生成的卡（有谱系）保持
+  // 原位+版本档案（锚定控制/快照重跑整套语义），以谱系为界互不越界
+  const deriveEdit =
+    kind === "image" &&
+    self?.data.nodeType === "image" &&
+    Boolean(self.data.imageUrl) &&
+    !self.data.genShot &&
+    !(String(self.data.genPrompt ?? "").trim());
 
   // 连线即引用（open-ai-canvas「已连接素材」/ novanova「mention 来自连线」）：
   // 上游连进来的卡本来就参与生成（桥接层 upstreamLines 注入），这里如实亮出
@@ -230,7 +252,11 @@ export default function PromptBar({
               selfRefOff
                 ? undefined
                 : ((self?.data.imageUrl as string | undefined) ?? undefined),
-            connectedIds: connectedRefs.map((r) => r.id),
+            // 派生改图的参考 = @ 引用 + 本图（本卡连线不随迁新卡）——口径
+            // 永远按实际发送算；谱系卡原位生成时连线照常参与
+            connectedIds: deriveEdit
+              ? []
+              : connectedRefs.map((r) => r.id),
           })
         : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps -- self 的变化由 nodes 依赖承载
@@ -338,6 +364,59 @@ export default function PromptBar({
     return () => window.removeEventListener(TEXTWRITE_PREFILL_EVENT, onPrefill);
   }, [nodeId, kind]);
 
+  /** 派生改图落卡：右侧避让找位建新图卡（标题取提示词开头，可引用可检索）
+   *  + 连线本卡；对新卡而非源卡发事件（对源卡发是原位生成会覆盖上传图）。
+   *  @ 引用随迁（桥接层会落成连线），卡级 gen 覆盖（模型/画幅）一并继承；
+   *  noRefs（按设定重掷）派生时不连线，纯文生图新卡 */
+  const deriveAndGenerate = (o: {
+    prompt: string;
+    display: string;
+    empty: boolean;
+    refIds: string[];
+    noRefs?: boolean;
+  }) => {
+    const st = useCanvasStore.getState();
+    const src = st.nodes.find((n) => n.id === nodeId);
+    if (!src) return;
+    const abs = absolutePosition(st.nodes, src);
+    const nw = src.measured?.width ?? NODE_FOOTPRINT.image.w;
+    const desc =
+      (o.empty ? "" : o.prompt) ||
+      `${src.data.title ?? ""} ${(src.data.body ?? "").trim()}`.trim();
+    const newId = st.addNode({
+      position: findFreePosition(
+        st.nodes,
+        { x: abs.x + nw + 80, y: abs.y },
+        NODE_FOOTPRINT.image,
+      ),
+      data: {
+        nodeType: "image",
+        title:
+          o.display.trim().slice(0, 20) || `${src.data.title || "图片"} · 衍生`,
+        body: "",
+        ...(src.data.gen ? { gen: src.data.gen } : {}),
+      },
+    });
+    if (!o.noRefs && !selfRefOff) st.connect({ source: nodeId, target: newId });
+    st.flashNodes([newId]);
+    window.dispatchEvent(
+      new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
+        detail: {
+          nodeId: newId,
+          kind: "image",
+          prompt: desc,
+          refIds: o.noRefs ? [] : o.refIds,
+          ...(count > 1 ? { count } : {}),
+          ...(o.noRefs
+            ? { selfRefOff: true, noRefs: true }
+            : selfRefOff
+              ? { selfRefOff: true }
+              : { editOf: nodeId }),
+        },
+      }),
+    );
+  };
+
   const submit = () => {
     const r = edRef.current?.read();
     if (!r) return;
@@ -366,6 +445,16 @@ export default function PromptBar({
     }
     if (kind === "text") {
       void runTextRewrite(r.prompt);
+      return;
+    }
+    // 无谱系有图卡（上传图）：提交 = 派生改图——本卡不动，右侧新卡承接结果
+    if (deriveEdit) {
+      deriveAndGenerate({
+        prompt: r.prompt,
+        display: r.display,
+        empty: r.empty,
+        refIds: r.mentionIds,
+      });
       return;
     }
     window.dispatchEvent(
@@ -445,7 +534,11 @@ export default function PromptBar({
           {selfImageChip ? (
             <span
               className="inline-flex items-center gap-1 rounded border border-solid border-accent-soft bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
-              title="本卡当前图自动作为参考参与本次生成（图生图）；在正文 @ 本卡可指定它的编号位置"
+              title={
+                deriveEdit
+                  ? "提交将派生连线新卡：本图作为改图参考（图生图，原图不动）；在正文 @ 本卡可指定它的编号位置"
+                  : "本卡当前图自动作为参考参与本次生成（图生图）；在正文 @ 本卡可指定它的编号位置"
+              }
             >
               <RefThumb node={self as WingNode} />
               <span className="pr-0.5 text-accent">本卡原图</span>
@@ -454,7 +547,15 @@ export default function PromptBar({
               ) : null}
               <button
                 type="button"
-                data-tip={selfRefOff ? "载回：本卡原图重新并入参考" : "移除：本次不锚定本卡原图（纯文生图/仅外部参考）"} aria-label={selfRefOff ? "载回本卡原图" : "移除本卡原图参考"}
+                data-tip={
+                  deriveEdit
+                    ? selfRefOff
+                      ? "载回：派生卡重新带上本图作参考"
+                      : "移除：派生卡不带本图（纯文生图/仅 @ 引用）"
+                    : selfRefOff
+                      ? "载回：本卡原图重新并入参考"
+                      : "移除：本次不锚定本卡原图（纯文生图/仅外部参考）"
+                } aria-label={selfRefOff ? "载回本卡原图" : "移除本卡原图参考"}
                 className="px-0.5 text-text-4 transition-colors hover:text-text"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -546,6 +647,17 @@ export default function PromptBar({
               className="ml-auto inline-flex shrink-0 items-center gap-0.5 self-center rounded border border-dashed border-hairline bg-surface-1 px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:border-accent hover:text-text"
               onClick={(e) => {
                 e.stopPropagation();
+                // 无谱系卡（上传图）不在本卡原位覆盖——同样派生新卡，纯文生图
+                if (deriveEdit) {
+                  deriveAndGenerate({
+                    prompt: "",
+                    display: "",
+                    empty: true,
+                    refIds: [],
+                    noRefs: true,
+                  });
+                  return;
+                }
                 window.dispatchEvent(
                   new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
                     detail: { nodeId, kind, prompt: "", refIds: [], selfRefOff: true, noRefs: true },
@@ -604,7 +716,12 @@ export default function PromptBar({
           ref={edRef}
           nodeId={nodeId}
           connectedIds={connectedRefs.map((r) => r.id)}
-          placeholder={placeholder ?? KIND_PLACEHOLDER[kind]}
+          placeholder={
+            placeholder ??
+            (deriveEdit
+              ? "输入想把它改成什么：生成连线新卡，本图自动作参考、原图不动"
+              : KIND_PLACEHOLDER[kind])
+          }
           initialText={draft || undefined}
           minHeight={floating ? 96 : 44}
           maxHeight={floating ? 260 : 120}
@@ -681,6 +798,14 @@ export default function PromptBar({
               ))}
               {/* 模式标签（Storyboard-Copilot modeLabel 范式）：提交前就
                   知道这次会不会被参考图锚定 */}
+              {deriveEdit && !selfRefOff ? (
+                <span
+                  className="shrink-0 whitespace-nowrap rounded px-1 py-1 text-[11px] text-text-4"
+                  data-tip="派生改图：提交生成连线的新卡，以本图为改图锚点（保留构图只改要改的），本卡原图不动"
+                >
+                  派生改图
+                </span>
+              ) : (
               <span
                 className="shrink-0 whitespace-nowrap rounded px-1 py-1 text-[11px] text-text-4"
                 data-tip={
@@ -697,6 +822,7 @@ export default function PromptBar({
                     : "参考生成"
                   : "文生图"}
               </span>
+              )}
               {/* 参考图容量计数（open-ai-canvas 按模型预算范式）：按本卡生效
                   模型的 max_references 实时显示。口径 = buildRefSequence 的
                   实际发送序列（@ 引用带图卡 + 本卡原图 + 连线带图卡，按图

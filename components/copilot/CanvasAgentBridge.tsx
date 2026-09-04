@@ -71,6 +71,9 @@ async function directImagegen(
     selfRefOff?: boolean;
     /** 按设定重新生成：忽略全部参考，用 卡上标题+设定文本 纯文生图 */
     noRefs?: boolean;
+    /** 派生改图：源卡 id（无谱系上传图）。事件目标已是右侧连线的新空卡，
+     *  源图充当「本卡原图」角色（改图锚点 + EDIT 最小模板契约） */
+    editOf?: string;
   },
 ) {
   const st = useCanvasStore.getState();
@@ -118,10 +121,17 @@ async function directImagegen(
         .map((e) => st.nodes.find((n) => n.id === e.source))
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .filter((n) => n.data.imageUrl);
+  // 派生改图：editOf=源卡（无谱系上传图）。其原图充当「本卡原图」角色——
+  // 改图锚点 + EDIT 最小模板；参考序列的 self 条目挂源卡（selfId=源卡），
+  // 图N 编号契约与 visualNotes 才能报出源卡标题；与连线通道按 URL 去重
+  const editSrc = opts.editOf
+    ? st.nodes.find((n) => n.id === opts.editOf)
+    : undefined;
   const selfImageUrl =
     opts.noRefs || opts.selfRefOff
       ? undefined
-      : (node.data.imageUrl as string | undefined);
+      : ((node.data.imageUrl as string | undefined) ??
+        (editSrc?.data.imageUrl as string | undefined));
   const selfMentioned = validRefIds.includes(nodeId);
   // 参考序列单一事实源（lib/canvas/refSequence）：@ 引用 → 本卡原图（未 @
   // 自己时作图生图锚点，孝庄太后项目踩坑）→ 上游连线卡，带图才收、按图
@@ -129,7 +139,7 @@ async function directImagegen(
   const { entries: refEntries, urls: referenceImages } = buildRefSequence({
     mentionIds: validRefIds,
     nodes: st.nodes,
-    selfId: nodeId,
+    selfId: editSrc ? editSrc.id : nodeId,
     selfImageUrl,
     connectedIds: opts.noRefs
       ? []
@@ -213,7 +223,9 @@ async function directImagegen(
     !fromShotlist &&
     !isLook &&
     Boolean(selfImageUrl) &&
-    (selfMentioned || (mentionedImgs.length === 0 && connectedNodes.length === 0));
+    (Boolean(editSrc) ||
+      selfMentioned ||
+      (mentionedImgs.length === 0 && connectedNodes.length === 0));
   const sceneKeyword = /(场景|空镜|环境)/.test(
     `${node.data.title ?? ""} ${opts.prompt}`,
   );
@@ -240,7 +252,9 @@ async function directImagegen(
     name: String(n.data.title || "无题"),
   });
   const referenceLabels = refEntries.map((e) =>
-    e.kind === "self" ? { type: "image", name: "本卡原图" } : refLabelOf(e.node),
+    e.kind === "self"
+      ? { type: "image", name: editSrc ? "原图" : "本卡原图" }
+      : refLabelOf(e.node),
   );
   // 手动 @ 引用落成连线（viedeo-workflow「mention=边」范式）：生成后面板
   // chips 持续可见，不随本会话的输入框状态消失（已删卡的引用不落边）
@@ -816,14 +830,14 @@ export default function CanvasAgentBridge() {
   // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
   useEffect(() => {
     const onGenerate = (e: Event) => {
-      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs } = (e as CustomEvent<GenerateDetail>)
+      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs, editOf } = (e as CustomEvent<GenerateDetail>)
         .detail;
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       // 出图=确定性任务，直连 imagegen flow（不经聊天 LLM，不刷聊天屏）
       if (kind === "image") {
-        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs });
+        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs, editOf });
         return;
       }
       // 连线即数据流：目标卡的入边上游自动进生成上下文（@ 手动引用过的不重复）

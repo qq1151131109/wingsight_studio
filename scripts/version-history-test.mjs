@@ -110,8 +110,9 @@ try {
   await page.goto(`${BASE}/project/${pid}`);
   await page.locator('img[alt="镜头 02 图"]').first().waitFor({ state: "visible", timeout: 15000 });
 
-  // 点卡片选中 → 顶部悬浮工具条（角标操作条已上浮进工具条），点 V 开弹窗
-  await page.locator('img[alt="镜头 02 图"]').first().click();
+  // 点卡片选中 → 顶部悬浮工具条（角标操作条已上浮进工具条），点 V 开弹窗。
+  // 图片本体 pointer-events-none（拖图=移卡），点击落容器 div
+  await page.locator('div[title="双击：视口聚焦本卡"]').first().click();
   await page.locator('[aria-label^="版本历史"]').first().click();
   await page.getByText("版本历史 · 镜头 02 图").waitFor({ state: "visible", timeout: 5000 });
   await page.waitForTimeout(400);
@@ -195,7 +196,7 @@ try {
   check("genPrompt 随回滚切换", (store?.prompt ?? "").startsWith("V2 提示"), store?.prompt);
 
   // 7. 重开：点预览进灯箱，Esc 先关灯箱（弹窗保留），再 Esc 关弹窗
-  await page.locator('img[alt="镜头 02 图"]').first().hover();
+  await page.locator('div[title="双击：视口聚焦本卡"]').first().hover();
   await page.locator('[aria-label^="版本历史"]').first().click();
   await page.getByText("版本历史 · 镜头 02 图").waitFor({ state: "visible", timeout: 5000 });
   await page.locator(".max-w-5xl .bg-black img").first().click();

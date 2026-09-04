@@ -247,18 +247,34 @@ const PLUS_MENU_TYPES: WingNodeType[] = [
   "shotlist",
 ];
 
-/** 拖拽媒体=设为生成引用（NodeInputPanel/PromptBar 接收，见 ADD_REF_EVENT） */
-export function mediaDragProps(nodeId: string) {
-  return {
-    draggable: true,
-    onDragStart: (e: React.DragEvent) => {
-      e.dataTransfer.setData(
-        "application/x-ws-node-ref",
-        JSON.stringify({ nodeId }),
-      );
-      e.dataTransfer.effectAllowed = "copy";
-    },
-  };
+/** 图片区拖拽引用抓手（viedeo-workflow Drag-to-Chat Handle 范式）：图片本体
+ *  pointer-events-none 不再承担拖拽/点击——拖图片任意处=移动整卡（竞品
+ *  五家共识，曾因 HTML5 拖拽+nodrag 整个屏蔽节点拖动）；「拖出去当引用」
+ *  收拢到这个 hover 浮现的小抓手，双载荷同时喂 PromptBar（x-ws-node-ref）
+ *  与聊天输入（x-wingsight-node）。pointerdown 拦截防误触节点拖动 */
+function MediaDragGrip({ nodeId, title }: { nodeId: string; title?: string }) {
+  return (
+    <span
+      draggable
+      className="nodrag absolute right-1.5 top-1.5 z-10 grid h-6 w-6 cursor-grab place-items-center rounded-full border border-hairline bg-surface-1/90 text-text-3 opacity-0 shadow-sm transition-opacity hover:text-text active:cursor-grabbing group-hover:opacity-100"
+      data-tip="拖到输入条/聊天框引用此卡" aria-label="拖到输入条/聊天框引用本卡"
+      onPointerDown={(e) => e.stopPropagation()}
+      onDragStart={(e) => {
+        e.dataTransfer.setData(
+          "application/x-ws-node-ref",
+          JSON.stringify({ nodeId }),
+        );
+        e.dataTransfer.setData(
+          "application/x-wingsight-node",
+          JSON.stringify({ id: nodeId, title: title ?? "" }),
+        );
+        e.dataTransfer.setData("text/plain", title || nodeId);
+        e.dataTransfer.effectAllowed = "copy";
+      }}
+    >
+      <GripVertical className="h-3.5 w-3.5" />
+    </span>
+  );
 }
 
 /** 节点信息弹窗（对标 novanova 的 info/JSON 双视图）：id 复制、媒体溯源、原始数据。
@@ -2283,7 +2299,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
           <div
-            className="nodrag group relative h-full w-full"
+            className="group relative h-full w-full"
             onDoubleClick={(e) => {
               e.stopPropagation();
               focusCardView(rf, id);
@@ -2295,9 +2311,10 @@ function AssetCard({ data, id, selected }: NodeProps) {
               src={displaySrc}
               alt={d.title}
               decoding="async"
-              className="ws-media-in h-full w-full object-contain"
-              {...mediaDragProps(id)}
+              draggable={false}
+              className="ws-media-in pointer-events-none h-full w-full object-contain"
             />
+            <MediaDragGrip nodeId={id} title={String(d.title ?? "")} />
           </div>
         ) : (
           <MediaEmpty
@@ -2759,7 +2776,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
           <div
-            className="nodrag group relative h-full w-full"
+            className="group relative h-full w-full"
             onDoubleClick={(e) => {
               e.stopPropagation();
               focusCardView(rf, id);
@@ -2771,9 +2788,10 @@ function ImageCard({ data, id, selected }: NodeProps) {
               src={displaySrc}
               alt={d.title}
               decoding="async"
-              className="ws-media-in h-full w-full object-contain"
-              {...mediaDragProps(id)}
+              draggable={false}
+              className="ws-media-in pointer-events-none h-full w-full object-contain"
             />
+            <MediaDragGrip nodeId={id} title={String(d.title ?? "")} />
           </div>
         ) : (
           <MediaEmpty

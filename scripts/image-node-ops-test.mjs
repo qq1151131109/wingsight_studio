@@ -366,7 +366,8 @@ await page.evaluate(() => {
   st.selectNodes([]);
 });
 await page.waitForTimeout(300);
-const img1 = nodeOf("测试底图").locator("img").first();
+// 图片本体 pointer-events-none（拖图=移卡，I 组），双击/单击落在容器上
+const img1 = nodeOf("测试底图").locator('div[title="双击：视口聚焦本卡"]').first();
 await img1.dblclick({ timeout: 5000 });
 await page.waitForTimeout(900); // fitView duration 420ms + 余量
 {
@@ -484,6 +485,43 @@ const hCard = nodeOf("备忘");
   );
   await page.screenshot({ path: "/tmp/e2e-h5-lowzoom.png" });
   await page.mouse.click(200, 800); // 关菜单
+}
+{
+  // ---------- I 图片区拖动=移动整卡（viedeo 范式：图片本体 pointer-events-none，
+  // 引用拖拽收拢到悬浮抓手——曾因 HTML5 拖拽+nodrag 整个屏蔽节点拖动） ----------
+  await page.evaluate(() => {
+    const st = window.__wsCanvasStore.getState();
+    st.selectNodes([]);
+    st.setViewport({ x: 40, y: 140, zoom: 1 });
+  });
+  await page.waitForTimeout(500);
+  const iCard = nodeOf("测试底图");
+  const imgEl = iCard.locator("img").first();
+  check(
+    "I1 图片 pointer-events=none（点击/拖拽穿透到节点层）",
+    (await imgEl.evaluate((el) => getComputedStyle(el).pointerEvents)) === "none",
+  );
+  check(
+    "I2 图片区悬浮引用抓手（双载荷：输入条/聊天）",
+    (await iCard.locator('[aria-label^="拖到输入条/聊天框"]').count()) === 1,
+  );
+  const cb = await iCard.boundingBox();
+  const before = await page.evaluate(
+    () => window.__wsCanvasStore.getState().nodes.find((n) => n.id === "img1").position,
+  );
+  await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(cb.x + cb.width / 2 + 160, cb.y + cb.height / 2 + 120, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(500);
+  const after = await page.evaluate(
+    () => window.__wsCanvasStore.getState().nodes.find((n) => n.id === "img1").position,
+  );
+  check(
+    "I3 拖图片区域移动整卡",
+    after.x > before.x + 100 && after.y > before.y + 80,
+    `(${Math.round(before.x)},${Math.round(before.y)})→(${Math.round(after.x)},${Math.round(after.y)})`,
+  );
 }
 {
   // 拖拽连线仍可用（connectOnClick 关闭只影响点击语义，拖拽走 mousedown）

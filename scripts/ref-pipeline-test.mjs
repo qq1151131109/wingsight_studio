@@ -74,10 +74,13 @@ const nodes = [
   // 连线参考两张（新约定空名 + 可辨认的正文）
   img("refF", { body: "女主设定图", imageUrl: svg("F", "#8a4a4a") }),
   img("refM", { body: "男主设定图", imageUrl: svg("M", "#4a5a8a") }),
-  // 咖啡馆事故复刻：带图 + 两条连线 + 人物剧情提示词
-  img("shot", { imageUrl: svg("C", "#3f5a3f"), body: "现代都市年轻女性，独立清醒，冷白灯光与霓虹夜景。" }),
-  // 改图卡：带图、无连线
-  img("editCard", { imageUrl: svg("E", "#6a5a3f") }),
+  // 咖啡馆事故复刻：带图 + 两条连线 + 人物剧情提示词（genPrompt=已生成谱系卡，
+  // 提交走原位+版本档案，不进上传图派生分支）
+  img("shot", { imageUrl: svg("C", "#3f5a3f"), body: "现代都市年轻女性，独立清醒，冷白灯光与霓虹夜景。", genPrompt: "旧图快照" }),
+  // 改图卡：带图、无连线（谱系卡，原位改图语义）
+  img("editCard", { imageUrl: svg("E", "#6a5a3f"), genPrompt: "旧图快照" }),
+  // 上传图：带图、无生成谱系（genShot/genPrompt 皆无）——提交应派生新卡
+  img("upCard", { title: "上传图", imageUrl: svg("U", "#5a4a6a") }),
   // 场景关键词卡：无图无线
   { id: "sceneCard", type: "image", position: pos(), data: { nodeType: "image", title: "山城夜景场景" } },
   // 角色卡参考的剧照卡
@@ -340,6 +343,58 @@ try {
   await page.waitForTimeout(300);
   const emptyHint = await page.getByText(/没有匹配/).count();
   check("空态指引", emptyHint >= 1);
+
+  // 13. 上传图（无谱系）派生改图：提交 → 右侧连线新卡承接，EDIT 最小模板 +
+  //     原图唯一参考，源图不动（novanova/open-ai-canvas 范式）
+  const n13 = await page.evaluate(() => window.__wsCanvasStore.getState().nodes.length);
+  await select("upCard");
+  check(
+    "模式标签=派生改图",
+    (await page.locator('span[data-tip^="派生改图：提交生成连线的新卡"]').count()) === 1,
+  );
+  await typePrompt("把背景换成雨夜霓虹");
+  await submit();
+  const d13 = await page.evaluate(() => {
+    const st = window.__wsCanvasStore.getState();
+    const up = st.nodes.find((n) => n.id === "upCard");
+    const child = st.edges
+      .filter((e) => e.source === "upCard")
+      .map((e) => st.nodes.find((n) => n.id === e.target))
+      .find(Boolean);
+    return {
+      n: st.nodes.length,
+      upImg: up?.data.imageUrl,
+      upStatus: up?.data.status,
+      upVersions: (up?.data.versions ?? []).length,
+      childId: child?.id,
+      childTitle: child?.data.title,
+    };
+  });
+  const s13 = lastPayload?.shots?.[0];
+  check(
+    "派生新卡+连线（标题取提示词）",
+    d13.n === n13 + 1 && Boolean(d13.childId) && String(d13.childTitle ?? "").includes("雨夜霓虹"),
+    JSON.stringify({ n: d13.n, child: d13.childTitle }),
+  );
+  check(
+    "源图不动（ready、无版本归档）",
+    d13.upStatus === "ready" && d13.upVersions === 0 && Boolean(d13.upImg),
+    `${d13.upStatus} v=${d13.upVersions}`,
+  );
+  check(
+    "载荷=EDIT 最小模板 + 原图唯一参考",
+    typeof s13?.promptTemplate === "string" &&
+      s13.promptTemplate.includes("{description}") &&
+      (s13?.referenceImages ?? []).length === 1 &&
+      s13?.referenceImages?.[0] === d13.upImg &&
+      s13?.referenceLabels?.[0]?.name === "原图",
+    `refs=${s13?.referenceImages?.length} label=${s13?.referenceLabels?.[0]?.name} tpl=${Boolean(s13?.promptTemplate)}`,
+  );
+  check(
+    "编号契约报源卡名（图1=《上传图》）",
+    String(s13?.description ?? "").includes("图1=《上传图》"),
+    String(s13?.description ?? "").slice(0, 60),
+  );
 } catch (e) {
   console.error("执行中断：", e.message);
 } finally {

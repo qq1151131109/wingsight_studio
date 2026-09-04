@@ -84,7 +84,9 @@ await save(
       id: "n_tgt",
       type: "image",
       position: { x: 320, y: 0 },
-      data: { nodeType: "image", title: "目标卡", status: "ready", imageUrl: pngRed },
+      // genPrompt=已生成谱系卡：本测的补出/取消/refIds 持久化是原位语义
+      //（上传图派生分支由 ref-pipeline §13 覆盖）
+      data: { nodeType: "image", title: "目标卡", status: "ready", imageUrl: pngRed, genPrompt: "旧图快照" },
     },
     // 7 张角色卡 + 1 张场景卡：复现旧版「全局排序截 6 条」把非角色类型
     // 和本卡自己挤出候选的拥挤场景
