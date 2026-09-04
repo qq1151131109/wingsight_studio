@@ -304,7 +304,7 @@ export function NodeInfoModal({
   const refs = Array.isArray(d.refIds) ? (d.refIds as string[]) : [];
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
       onClick={onClose}
     >
       <div
@@ -1509,7 +1509,7 @@ function ExportMenuButton({
         ? createPortal(
             <span
               ref={menuRef}
-              className="nodrag nowheel fixed z-50 flex w-32 flex-col rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
+              className="nodrag nowheel fixed z-[1250] flex w-32 flex-col rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
               // 菜单右下角锚在按钮右上角上方：贴按钮向上展开，顶边钳在视口内
               style={{
                 left: Math.max(140, anchor.right),
@@ -3041,7 +3041,7 @@ function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
     decodeURIComponent(src.split("?")[0].split("/").pop() ?? "") || "视频";
   return (
     <OverlayModal
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/80 p-8"
       onClick={onClose}
     >
       <video
@@ -5843,7 +5843,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       {mention
         ? createPortal(
             <div
-              className="nodrag nowheel fixed z-50 max-h-52 w-64 overflow-auto rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
+              className="nodrag nowheel fixed z-[1250] max-h-52 w-64 overflow-auto rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
               style={{ left: mention.rect.left, top: mention.rect.bottom + 4 }}
             >
               <p className="px-1.5 py-0.5 text-[9px] text-text-4">引用资产卡</p>

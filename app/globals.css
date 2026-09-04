@@ -592,6 +592,16 @@ cpk-web-inspector {
     display: none !important;
 }
 
+/* ── z 序档位表（全站浮层照档入座，勿再散写 magic number）────────────
+   画布/页面内容  auto——.react-flow 根自带层叠上下文，画布内浮层（PromptBar
+                  参数弹层、@ 候选等）z 再高也压不过侧栏，overlay 布局的已知取舍
+   1200  聊天侧栏 aside.copilotKitSidebar（1201 = 拖宽条 .ws-chat-resizer）
+   1250  锚定浮层：portal 到 body 的菜单 / @ 候选 / 来源悬停卡 / Toast
+   1300  全屏模态：OverlayModal 系与 CanvasView 顶层弹窗（灯箱/裁剪/审查/卷宗…）
+   1400  确认框 / 全局错误（叠在模态之上）
+   9999  悬停提示 .ws-tip-bubble（恒顶）
+   ────────────────────────────────────────────────────────────────── */
+
 /* 侧栏骨架自给：Turbopack 与包内 Tailwind 工具类（cpk:）层叠次序不稳，
    关键定位不依赖它们——直接钉死右缘全高（与 v2 出厂观感一致） */
 /* 特异性带 [data-copilotkit][data-copilot-sidebar]：v2 经 adopted stylesheet

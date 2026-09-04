@@ -53,7 +53,7 @@ export function RefChip({
       </button>
       {pos && source
         ? createPortal(
-            <span className="pointer-events-none fixed z-50 block w-64 -translate-x-1/2 -translate-y-full rounded-lg border border-hairline bg-surface-1 p-2 text-left shadow-xl">
+            <span className="pointer-events-none fixed z-[1250] block w-64 -translate-x-1/2 -translate-y-full rounded-lg border border-hairline bg-surface-1 p-2 text-left shadow-xl">
               <span className="line-clamp-2 block text-[10px] font-medium text-text">
                 {source.title}
               </span>

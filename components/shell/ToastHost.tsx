@@ -25,7 +25,7 @@ export default function ToastHost() {
 
   if (!mounted) return null;
   return createPortal(
-    <div className="pointer-events-none fixed bottom-6 left-1/2 z-[90] flex -translate-x-1/2 flex-col items-center gap-2">
+    <div className="pointer-events-none fixed bottom-6 left-1/2 z-[1250] flex -translate-x-1/2 flex-col items-center gap-2">
       {items.map((t) => (
         <p
           key={t.id}

@@ -397,7 +397,7 @@ await img1.click({ timeout: 5000 });
 await page.waitForTimeout(400);
 check(
   "G4 单击图片不弹大图",
-  (await page.evaluate(() => !document.querySelector(".fixed.inset-0.z-50"))) === true,
+  (await page.evaluate(() => !document.querySelector(".fixed.inset-0.z-\\[1300\\]"))) === true,
 );
 
 // ---------- H 加号手柄（建上下游卡） ----------
