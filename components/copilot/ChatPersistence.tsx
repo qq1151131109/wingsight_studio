@@ -178,8 +178,11 @@ export default function ChatPersistence() {
           hydratedKeyRef.current = key;
           return;
         }
-        if (JSON.stringify(messagesRef.current) !== before) {
-          // 同上：不覆盖用户已输入的内容，但放行后续保存
+        const current = messagesRef.current;
+        if (JSON.stringify(current) !== before && current.length > 0) {
+          // 同上：不覆盖用户已输入的内容（非空=真有新输入），但放行后续保存。
+          // 空态变化（v2 切线程时会自行清场 agent.messages）不在此列——
+          // 曾把清场误判成用户输入，切会话水合被中止、界面停在空列表
           hydratedKeyRef.current = key;
           return;
         }
