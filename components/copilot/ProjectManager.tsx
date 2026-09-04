@@ -277,7 +277,9 @@ async function activateProject(p: ProjectMeta) {
         clean.removedEdges ||
         clean.fixedParents ||
         clean.fixedShotRefs ||
-        clean.strippedTitles
+        clean.strippedTitles ||
+        clean.fixedResearchIds ||
+        clean.upsizedResearch
       ) {
         console.warn(
           `[canvas] 装载消毒：剥离 ${clean.removedNodes} 个坏节点 / ${clean.removedEdges} 条坏连线 / ${clean.fixedParents} 个孤儿分组引用` +
@@ -289,6 +291,12 @@ async function activateProject(p: ProjectMeta) {
               : "") +
             (clean.strippedTitles
               ? `；剥掉 ${clean.strippedTitles} 张存量卡的占位标题`
+              : "") +
+            (clean.fixedResearchIds
+              ? `；为 ${clean.fixedResearchIds} 张存量调研卡回填 researchId`
+              : "") +
+            (clean.upsizedResearch
+              ? `；${clean.upsizedResearch} 张调研卡升文档尺寸`
               : ""),
         );
       }

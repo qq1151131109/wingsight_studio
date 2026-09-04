@@ -25,6 +25,10 @@ export interface SanitizeResult {
   fixedShotRefs: number;
   /** 存量占位标题剥成空名的卡数（hint 默认标题/hex 文件名） */
   strippedTitles: number;
+  /** 存量调研卡从正文回填 researchId 的卡数（agent 曾把任务 id 写进正文） */
+  fixedResearchIds: number;
+  /** 存量调研卡升文档尺寸的卡数（旧默认 320×220 → 卷宗上卡后的 480×560） */
+  upsizedResearch: number;
 }
 
 /** 旧版建卡/agent 兜底把 NODE_META.hint 占位文案存成真标题（罪案实录 9 张卡
@@ -326,6 +330,35 @@ export function sanitizeCanvas(
     cleanNodes.unshift(groupNode);
   }
 
+  // 存量调研卡回填 researchId（2026-09-04 白骨精事故：agent 建调研卡把任务 id
+  // 写进正文而没填 data.researchId——卡面轮询/卷宗按钮只认字段，卡成死卡：
+  // 进度永远「…」、卷宗按钮点击无效。从正文「深度调研任务：{id}」回填；
+  // 回填后不再命中，装载幂等。字段缺失且正文无 id 的卡不动（新建路径已堵死）
+  let fixedResearchIds = 0;
+  for (const n of cleanNodes) {
+    if (n.data.nodeType !== "research" || n.data.researchId) continue;
+    const m = /深度调研任务[：:]\s*([0-9a-f]{12})/.exec(
+      String(n.data.body ?? ""),
+    );
+    if (!m) continue;
+    n.data.researchId = m[1];
+    fixedResearchIds += 1;
+  }
+
+  // 存量调研卡升文档尺寸（2026-09-04 卷宗全文上卡）：旧默认 320×220 精确
+  // 匹配才升 480×560——用户手调过的尺寸不动。升后不再命中，装载幂等
+  let upsizedResearch = 0;
+  for (const n of cleanNodes) {
+    if (
+      n.data.nodeType === "research" &&
+      n.style?.width === 320 &&
+      n.style?.height === 220
+    ) {
+      n.style = { ...n.style, width: 480, height: 560 };
+      upsizedResearch += 1;
+    }
+  }
+
   // 存量占位标题清洗：hint 默认标题/hex 文件名 → 空名（幂等，二次装载为 0）
   let strippedTitles = 0;
   for (const n of cleanNodes) {
@@ -349,5 +382,7 @@ export function sanitizeCanvas(
     migratedLooks,
     fixedShotRefs,
     strippedTitles,
+    fixedResearchIds,
+    upsizedResearch,
   };
 }

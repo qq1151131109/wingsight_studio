@@ -102,7 +102,15 @@ export async function getResearch(
   jobId: string,
 ): Promise<ResearchJob> {
   const res = await apiFetch(`/agent-service/projects/${projectId}/research/${jobId}`);
-  if (!res.ok) throw new Error((await res.text()) || `查询失败（${res.status}）`);
+  if (!res.ok) {
+    // 挂上 HTTP status：调用方区分「任务不存在(404)」与网络闪断——
+    // 前者要停轮询明报（存量 researchId 指向已删任务），后者继续重试
+    const err = new Error(
+      (await res.text()) || `查询失败（${res.status}）`,
+    ) as Error & { status?: number };
+    err.status = res.status;
+    throw err;
+  }
   return res.json();
 }
 

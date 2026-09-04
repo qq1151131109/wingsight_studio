@@ -20,7 +20,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import {
-  BookOpen,
+  AlertTriangle,
   Brush,
   Camera,
   Check,
@@ -90,9 +90,12 @@ import {
   RESEARCH_STAGE_LABEL,
   RESEARCH_STATUS_LABEL,
   type ResearchJob,
+  type ResearchSource,
   getResearch,
+  listResearchSources,
   startResearch,
 } from "@/lib/research";
+import { Cite } from "./ResearchCite";
 import ResearchReader from "./ResearchReader";
 import {
   ASSET_TYPES,
@@ -112,10 +115,13 @@ import {
   FRAME_ANALYSIS_EVENT,
   IMAGE_TOOL_EVENT,
   NODE_INFO_EVENT,
+  OPEN_RESEARCH_READER_EVENT,
   OPEN_STYLE_EVENT,
+  RESEARCH_TERMINAL_EVENT,
   type FocusEditDetail,
   type ImageToolDetail,
   type NodeInfoDetail,
+  type OpenResearchReaderDetail,
 } from "@/lib/canvas/events";
 import { toggleFreeResize } from "@/lib/canvas/imageTools";
 import {
@@ -5892,18 +5898,27 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   );
 }
 
-/** 调研卡：深度调研任务的画布锚点。卡面是任务实况的只读视图（进度/卷宗摘要/
- * 计数），真相在 agent research_jobs 表，凭 researchId 轮询；读卷宗进
- * ResearchReader（「看图干活进大图」同哲学——卡是句柄，长文进灯箱） */
+/** 调研卡：文档型卡——卷宗全文直接在卡面上（用户拍板：不折叠、不藏弹窗），
+ *  任务头（状态行）常驻 + 正文区滚动；S 编号引用悬停可验来源（ResearchCite，
+ *  portal 弹层）。ResearchReader 降级为可选「全屏读」（复制/导出/补研在里
+ *  面）。任务实况的真相在 agent research_jobs 表，凭 researchId 轮询 */
 function ResearchCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const projectId = useCanvasStore((s) => s.projectId);
   const [job, setJob] = useState<ResearchJob | null>(null);
+  const [sources, setSources] = useState<ResearchSource[]>([]);
+  const [missing, setMissing] = useState(false);
   const [readerOpen, setReaderOpen] = useState(false);
   const researchId = d.researchId ?? "";
   const lod = useLod();
+  // 终态判定只认「本会话观察到 running/planning → 终态」的翻转：
+  // 装载时任务早已终态（用户晚来）不通知，防每次刷新都弹
+  const prevStatusRef = useRef<string | null>(null);
+  // 来源底账只在卷宗出现后拉一次（补研重写卷宗会换引用，按对象身份重拉）
+  const dossierRef = useRef<ResearchJob["dossier"]>(null);
 
-  // 轮询：运行中 4s，终态后停（首次终态多取一次即止）
+  // 轮询：运行中 4s，终态后停（首次终态多取一次即止）；404（任务不存在，
+  // 如存量 researchId 指向已删任务）停轮询明报，不无限重试
   useEffect(() => {
     if (!projectId || !researchId) return;
     let dead = false;
@@ -5912,12 +5927,39 @@ function ResearchCard({ data, id, selected }: NodeProps) {
       try {
         const j = await getResearch(projectId, researchId);
         if (dead) return;
+        setMissing(false);
         setJob(j);
+        const prev = prevStatusRef.current;
+        prevStatusRef.current = j.status;
+        if (
+          prev &&
+          (prev === "running" || prev === "planning") &&
+          ["done", "error", "interrupted", "stopped"].includes(j.status)
+        ) {
+          window.dispatchEvent(
+            new CustomEvent(RESEARCH_TERMINAL_EVENT, {
+              detail: {
+                nodeId: id,
+                jobId: researchId,
+                title: String(d.title ?? ""),
+                status: j.status,
+                error: j.error ?? "",
+                sourcesCount: j.sourcesCount,
+                findingsCount: j.findingsCount,
+              },
+            }),
+          );
+        }
         if (j.status === "running" || j.status === "planning") {
           timer = window.setTimeout(() => void tick(), 4000);
         }
-      } catch {
-        if (!dead) timer = window.setTimeout(() => void tick(), 8000);
+      } catch (exc) {
+        if (dead) return;
+        if ((exc as { status?: number }).status === 404) {
+          setMissing(true);
+          return;
+        }
+        timer = window.setTimeout(() => void tick(), 8000);
       }
     };
     void tick();
@@ -5925,20 +5967,44 @@ function ResearchCard({ data, id, selected }: NodeProps) {
       dead = true;
       if (timer) clearTimeout(timer);
     };
-  }, [projectId, researchId]);
+  }, [projectId, researchId, id, d.title]);
+
+  // 卷宗就位 → 拉来源底账（S 编号引用悬停卡要按 sid 找来源）
+  useEffect(() => {
+    if (!projectId || !researchId || !job?.dossier) return;
+    if (dossierRef.current === job.dossier) return;
+    dossierRef.current = job.dossier;
+    listResearchSources(projectId, researchId)
+      .then(setSources)
+      .catch(() => {
+        /* 悬停卡退化成 data-tip，不阻塞卷宗阅读 */
+      });
+  }, [projectId, researchId, job?.dossier]);
+
+  // 外部请求打开本卡卷宗（通知浮条「查看卷宗」动作 → 运镜定位 + 开阅读器）
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const detail = (e as CustomEvent<OpenResearchReaderDetail>).detail;
+      if (detail?.nodeId === id) setReaderOpen(true);
+    };
+    window.addEventListener(OPEN_RESEARCH_READER_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_RESEARCH_READER_EVENT, onOpen);
+  }, [id]);
 
   if (!d || typeof d.nodeType !== "string") return null;
-  const status = job?.status;
+  const status = missing ? "error" : job?.status;
+  const dossier = job?.dossier ?? null;
+  const logTail = job ? job.log.slice(-4) : [];
   return (
     <CardShell id={id} data={d} selected={selected}>
       {lod === "full" ? (
         <>
-          {/* 状态行 */}
-          <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+          {/* 任务头：状态 + 计数 + 全屏读（复制/导出/补研在阅读器） */}
+          <div className="flex items-center gap-1.5 text-[10px]">
             {status ? (
               <>
                 <span
-                  className={`inline-flex h-1.5 w-1.5 rounded-full ${
+                  className={`inline-flex h-1.5 w-1.5 shrink-0 rounded-full ${
                     status === "running" ? "animate-pulse" : ""
                   }`}
                   style={{
@@ -5952,7 +6018,7 @@ function ResearchCard({ data, id, selected }: NodeProps) {
                             : "var(--color-warn)",
                   }}
                 />
-                <span className="text-text-3">
+                <span className="min-w-0 truncate text-text-3">
                   {RESEARCH_STATUS_LABEL[status]}
                   {status === "running" && job?.stage
                     ? ` · ${RESEARCH_STAGE_LABEL[job.stage] || job.stage}（第 ${job.roundsDone}/${job.roundsTotal} 轮）`
@@ -5960,54 +6026,246 @@ function ResearchCard({ data, id, selected }: NodeProps) {
                   {job?.depth ? ` · ${RESEARCH_DEPTH_LABEL[job.depth]}` : ""}
                 </span>
                 {job ? (
-                  <span className="ml-auto tabular-nums text-text-4">
+                  <span className="ml-auto shrink-0 tabular-nums text-text-4">
                     源 {job.sourcesCount} · 事实 {job.findingsCount}
                   </span>
                 ) : null}
+                <button
+                  type="button"
+                  className="nodrag shrink-0 rounded p-0.5 text-text-4 transition-colors hover:bg-surface-2 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                  data-tip={missing ? "任务不存在，卷宗不可用" : "全屏阅读（复制 / 导出 / 补研）"}
+                  aria-label="打开调研卷宗"
+                  disabled={missing}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (projectId && researchId && !missing) setReaderOpen(true);
+                  }}
+                >
+                  <Maximize2 className="h-3 w-3" />
+                </button>
               </>
             ) : (
               <span className="text-text-4">…</span>
             )}
           </div>
-          {/* 卷宗摘要 / 开题方向 / 错误 */}
-          {job?.dossier ? (
-            <p className="ws-detail mt-1.5 line-clamp-4 text-[10px] leading-relaxed text-text-3">
-              <span className="font-medium text-text">{job.dossier.headline}</span>
-              {"　"}
-              {job.dossier.summary}
-            </p>
-          ) : status === "error" || status === "interrupted" ? (
-            <p className="ws-detail mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-danger">
-              {job?.error || "已中断（可补研续跑）"}
-            </p>
-          ) : status === "planning" && job?.plan ? (
-            <p className="ws-detail mt-1.5 line-clamp-2 text-[10px] leading-relaxed text-text-3">
-              开题：{job.plan.viewingQuestion}（{job.plan.directions.length} 个方向待确认）
-            </p>
-          ) : null}
-          {/* 动作 */}
-          <div className="mt-1.5 flex items-center gap-1">
-            <button
-              type="button"
-              className="nodrag flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-accent transition-colors hover:bg-surface-2"
-              data-tip="打开调研卷宗" aria-label="打开调研卷宗"
-              onClick={(e) => {
-                e.stopPropagation();
-                if (projectId && researchId) setReaderOpen(true);
-              }}
-            >
-              <BookOpen className="h-3 w-3" />
-              卷宗
-            </button>
+          {/* 正文：卷宗全文 / 运行中实况 / 错误——卡内滚动（滚到边界放行画布平移） */}
+          <div className="nodrag nowheel mt-1.5 min-h-0 flex-1 overflow-y-auto pr-1">
+            {!status ? (
+              <p className="ws-detail text-[10px] text-text-4">连接任务中…</p>
+            ) : missing ? (
+              <p className="ws-detail text-[10px] leading-relaxed text-danger">
+                调研任务不存在（researchId 指向的任务已不在本项目中）
+              </p>
+            ) : dossier ? (
+              <div className="ws-detail text-[11px] leading-relaxed">
+                <p className="font-editorial text-[13px] font-semibold leading-snug text-text">
+                  {dossier.headline}
+                </p>
+                <p className="mt-1 text-text-2">{dossier.summary}</p>
+                {dossier.narrativeSpine.length ? (
+                  <section className="mt-3">
+                    <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-4">
+                      叙事脊（讲法建议，非场序）
+                    </h4>
+                    <ol className="mt-1.5 space-y-1.5">
+                      {dossier.narrativeSpine.map((s, i) => (
+                        <li key={i} className="flex gap-1.5">
+                          <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-accent/15 text-[9px] font-semibold tabular-nums text-accent">
+                            {i + 1}
+                          </span>
+                          <span className="text-text-2">
+                            <span className="font-medium text-text">{s.step}</span>
+                            {s.detail ? ` — ${s.detail}` : ""}
+                            <Cite refs={s.refs} sources={sources} />
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  </section>
+                ) : null}
+                {dossier.establishedFacts.length ? (
+                  <section className="mt-3">
+                    <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-4">
+                      已证实事实边界
+                    </h4>
+                    <ul className="mt-1.5 space-y-1">
+                      {dossier.establishedFacts.map((f, i) => (
+                        <li key={i} className="flex gap-1.5 text-text-2">
+                          <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-good" />
+                          <span>
+                            {f.text}
+                            <Cite refs={f.refs} sources={sources} />
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+                {dossier.controversies.length ? (
+                  <section className="mt-3">
+                    <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-4">
+                      真实争议（双版本对质，不定论）
+                    </h4>
+                    <div className="mt-1.5 space-y-2">
+                      {dossier.controversies.map((c, i) => (
+                        <div
+                          key={i}
+                          className="rounded-lg border border-hairline bg-surface-2/40 p-2"
+                        >
+                          <p className="text-[11px] font-medium text-text">{c.title}</p>
+                          <ul className="mt-1 space-y-1">
+                            {c.versions.map((v, j) => (
+                              <li key={j} className="flex gap-1.5 text-text-2">
+                                <span className="shrink-0 rounded bg-surface-2 px-1 text-[9px] text-text-4">
+                                  版本{j + 1}
+                                </span>
+                                <span>
+                                  {v.text}
+                                  <Cite refs={v.refs} sources={sources} />
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {dossier.risks.length ? (
+                  <section className="mt-3">
+                    <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-4">
+                      风险与待核实
+                    </h4>
+                    <ul className="mt-1.5 space-y-1">
+                      {dossier.risks.map((r, i) => (
+                        <li key={i} className="flex gap-1.5 text-text-2">
+                          <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-warn" />
+                          <span>
+                            {r.text}
+                            <Cite refs={r.refs} sources={sources} />
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+                {dossier.materialClusters.length ? (
+                  <section className="mt-3">
+                    <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-4">
+                      材料簇（可入片的细节/场景/引语）
+                    </h4>
+                    <div className="mt-1.5 space-y-2">
+                      {dossier.materialClusters.map((m, i) => (
+                        <div key={i} className="rounded-lg border border-hairline p-2">
+                          <p className="text-[11px] font-medium text-text">{m.title}</p>
+                          <ul className="mt-1 space-y-1">
+                            {m.points.map((p, j) => (
+                              <li key={j} className="text-text-2">
+                                {p.text}
+                                <Cite refs={p.refs} sources={sources} />
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ) : null}
+                {sources.length ? (
+                  <section className="mt-3">
+                    <h4 className="text-[10px] font-semibold uppercase tracking-wider text-text-4">
+                      来源底账
+                    </h4>
+                    <ul className="mt-1.5 space-y-1">
+                      {sources.map((s) => (
+                        <li key={s.sid} className="flex items-start gap-1.5">
+                          <span className="mt-px shrink-0 rounded border border-hairline bg-surface-2 px-1 text-[9px] font-medium tabular-nums text-text-3">
+                            {s.sid}
+                          </span>
+                          <a
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="min-w-0 flex-1 truncate text-[10px] text-text hover:text-accent hover:underline"
+                            title={s.title}
+                          >
+                            {s.title}
+                          </a>
+                          <span className="shrink-0 text-[9px] text-text-4">
+                            {s.category}
+                            {s.round === 99 ? " · 补研" : ""}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+              </div>
+            ) : status === "error" || status === "interrupted" || status === "stopped" ? (
+              <div className="ws-detail text-[10px] leading-relaxed">
+                <p className="text-danger">
+                  {status === "error"
+                    ? job?.error || "调研失败"
+                    : status === "interrupted"
+                      ? "已中断（已收集证据保留，可补研续跑）"
+                      : "已取消"}
+                </p>
+                {logTail.length ? (
+                  <ol className="mt-2 space-y-1">
+                    {logTail.map((l, i) => (
+                      <li key={i} className="flex gap-1.5 text-text-4">
+                        <span className="shrink-0 tabular-nums">{l.t.slice(11, 16)}</span>
+                        <span>{l.text}</span>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
+            ) : (
+              /* planning / running：开题 + 实时日志尾部——调研过程可见，不是黑盒等结果 */
+              <div className="ws-detail text-[10px] leading-relaxed">
+                {job?.plan ? (
+                  <p className="text-text-2">
+                    <span className="font-medium text-text">观看问题：</span>
+                    {job.plan.viewingQuestion}
+                  </p>
+                ) : null}
+                {status === "running" ? (
+                  <p className="mt-1 text-text-4">卷宗撰写中，完成后自动出现在这里</p>
+                ) : null}
+                {logTail.length ? (
+                  <ol className="mt-2 space-y-1">
+                    {logTail.map((l, i) => (
+                      <li key={i} className="flex gap-1.5">
+                        <span className="shrink-0 tabular-nums text-text-4">
+                          {l.t.slice(11, 16)}
+                        </span>
+                        <span
+                          className={
+                            l.kind === "error"
+                              ? "text-danger"
+                              : l.kind === "dossier" || l.kind === "plan"
+                                ? "font-medium text-text"
+                                : "text-text-3"
+                          }
+                        >
+                          {l.text}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </div>
+            )}
           </div>
-          {readerOpen && projectId && researchId ? (
-            <ResearchReader
-              projectId={projectId}
-              researchId={researchId}
-              onClose={() => setReaderOpen(false)}
-            />
-          ) : null}
         </>
+      ) : null}
+      {readerOpen && projectId && researchId ? (
+        <ResearchReader
+          projectId={projectId}
+          researchId={researchId}
+          onClose={() => setReaderOpen(false)}
+        />
       ) : null}
     </CardShell>
   );

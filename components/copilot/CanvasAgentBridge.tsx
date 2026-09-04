@@ -1176,7 +1176,7 @@ export default function CanvasAgentBridge() {
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝），取值与形状：每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|image|video|audio|compose|storyboard|shotlist",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl；shotlist 可带 rows 行数组；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
+      '{op:"add_node",nodeType:"note|script|character|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl；shotlist 可带 rows 行数组；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
       '{op:"update_node",id,title,body}（分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +

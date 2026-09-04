@@ -365,7 +365,8 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   compose: { w: 320, h: 280 },
   storyboard: { w: 320, h: 220 },
   shotlist: { w: 560, h: 420 },
-  research: { w: 320, h: 220 },
+  // 文档型卡（2026-09-04）：卷宗全文直接上卡（不折叠），任务头常驻 + 正文滚动
+  research: { w: 480, h: 560 },
   group: { w: 480, h: 360 },
 };
 

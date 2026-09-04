@@ -48,6 +48,9 @@ export type AddNodeOp = {
     assets?: string[];
     imageUrl?: string;
   }[];
+  /** research 卡：深度调研任务 id（start_deep_research 返回的 jobId）。
+   *  卡面进度轮询与「卷宗」按钮只认这个字段——写进正文不算，缺了卡是死卡 */
+  researchId?: string;
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长（建卡时可直接带上） */
   shotNumber?: string;
   shotSize?: string;
@@ -96,6 +99,8 @@ export type UpdateNodeOp = {
     assets?: string[];
     imageUrl?: string;
   }[];
+  /** research 卡：深度调研任务 id（补挂/修正用；建卡时必须带） */
+  researchId?: string;
   /** storyboard 卡：镜号 / 景别 / 运镜 / 时长 / 台词 */
   shotNumber?: string;
   shotSize?: string;
@@ -205,6 +210,16 @@ export function validateOps(rawOps: unknown): {
             index,
             severity: "error",
             message: `add_node: nodeType 必须是 ${VALID_NODE_TYPES.join(" / ")}，收到 "${String(op.nodeType)}"`,
+          });
+        if (
+          op.nodeType === "research" &&
+          !String(op.researchId ?? "").trim()
+        )
+          issues.push({
+            index,
+            severity: "error",
+            message:
+              "add_node: 调研卡必须带 researchId（start_deep_research/confirm_research_plan 返回的 jobId）——卡面进度与「卷宗」按钮只认这个字段，写进正文不算",
           });
         if (op.id) {
           if (liveIds.has(op.id))
@@ -432,6 +447,17 @@ export function applyOps(rawOps: unknown): OpResult {
             errors.push(`add_node: 节点 ${op.id} 已存在`);
             break;
           }
+          // 调研卡硬闸（白骨精事故：id 写进正文、字段空缺 → 卡成死卡，
+          // 40 来源 103 事实的卷宗在库里用户却什么都看不到）
+          if (
+            op.nodeType === "research" &&
+            !String(op.researchId ?? "").trim()
+          ) {
+            errors.push(
+              "add_node: 调研卡必须带 researchId（jobId 字段，不是正文文本）——缺了它卡面不显示进度、卷宗按钮无效，本 op 未应用",
+            );
+            break;
+          }
           // rows 截断守卫：全空行 = 参数被截断的残骸，整 op 拒绝明报
           // （静默落半截表曾让 8 镜分镜只写入 3 行 + 1 行空壳）
           let rowsField: ShotRow[] | null = null;
@@ -477,6 +503,9 @@ export function applyOps(rawOps: unknown): OpResult {
                 : {}),
               ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
               ...(rowsField ? { rows: rowsField } : {}),
+              ...(op.researchId !== undefined
+                ? { researchId: op.researchId.slice(0, 40) }
+                : {}),
               ...(op.shotNumber !== undefined
                 ? { shotNumber: op.shotNumber.slice(0, 8) }
                 : {}),
@@ -534,6 +563,9 @@ export function applyOps(rawOps: unknown): OpResult {
               : {}),
             ...(op.locked !== undefined ? { locked: Boolean(op.locked) } : {}),
             ...(rowsField ? { rows: rowsField } : {}),
+            ...(op.researchId !== undefined
+              ? { researchId: op.researchId.slice(0, 40) }
+              : {}),
             ...(op.row && typeof op.row.rid === "string"
               ? {
                   rows: (() => {
