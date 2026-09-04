@@ -2091,6 +2091,10 @@ export default function CanvasView() {
         panOnScroll
         panOnScrollSpeed={1}
         zoomOnDoubleClick={false}
+        // 手柄点击归加号菜单（nodes.tsx 按位移区分点击/拖拽），连线只认
+        // 拖拽。默认 connectOnClick=true 会让点加号在开菜单的同时悄悄进入
+        // "点击连线"流程（再点别卡手柄凭空出线），还冒泡选中卡片弹工具条
+        connectOnClick={false}
         snapToGrid={snapEnabled}
         snapGrid={[16, 16]}
         onlyRenderVisibleElements

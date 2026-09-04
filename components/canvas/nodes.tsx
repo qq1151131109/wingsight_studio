@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import {
   Handle,
@@ -381,16 +382,22 @@ function focusCardView(
 
 /** 卡面图片双档显示（竞品五家都是节点直载原图，靠浏览器缩放；我们保留
  *  512 缩略图档省内存，双击聚焦放大后自动换原图——按卡片在屏幕上的实际
- *  渲染尺寸（flow 宽 × zoom × DPR）超过缩略图容量即切换，带回滞防抖动） */
+ *  渲染尺寸（flow 宽 × zoom × DPR）超过缩略图容量即切换，带回滞防抖动。
+ *  回滞在渲染期直接调整自身状态（React adjust-state-during-render 范式，
+ *  effect 里 setState 会被 React Compiler 打回）；DPR 经
+ *  useSyncExternalStore 读客户端值，SSR/水合安全 */
+const dprSubscribe = () => () => undefined;
 function useDisplaySrc(id: string, imageUrl: string | undefined): string | undefined {
   const { zoom } = useViewport();
   const flowW = useCanvasStore((s) => s.nodes.find((n) => n.id === id)?.measured?.width);
+  const dpr = useSyncExternalStore(
+    dprSubscribe,
+    () => Math.min(window.devicePixelRatio || 1, 2),
+    () => 1,
+  );
+  const onScreen = (flowW ?? 288) * zoom * dpr;
   const [hires, setHires] = useState(false);
-  useEffect(() => {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const onScreen = (flowW ?? 288) * zoom * dpr;
-    setHires((prev) => (prev ? onScreen > 430 : onScreen > 540));
-  }, [zoom, flowW]);
+  if (hires ? onScreen <= 430 : onScreen > 540) setHires(onScreen > 540);
   if (!imageUrl) return undefined;
   return hires ? imageUrl : assetThumbUrl(imageUrl);
 }
@@ -750,6 +757,14 @@ function CardShell({
     });
   };
 
+  // 加号手柄屏幕空间恒定尺寸：加号浮层/建卡菜单在节点子树内，随画布缩放
+  // 变形——低缩放档 22px 圆钮缩成 ~5px、96px 菜单缩成 ~24px，不可读不可点
+  // （曾被 LOD 整档藏掉，"画布上没有加号"事故）。按 1/zoom 反向补偿（钳
+  // 4×），只改视觉尺寸不动元素中心——连线端点取锚点中心，不受影响。
+  // 命中半径经根节点 --ws-hit 变量交给锚点伪元素放大：伪元素不改锚点盒
+  // 尺寸，不触发 xyflow 手柄重测量，缩放手势零开销
+  const handleScale = Math.min(4, Math.max(1, 1 / rfViewport.zoom));
+
   const handleStyle = (side: "left" | "right"): React.CSSProperties => {
     const { p, sx, sy } = magnet[side];
     // 只作用于 .ws-plus 视觉浮层；连线锚点（Handle）是静态定位，绝不参与
@@ -757,8 +772,8 @@ function CardShell({
     return {
       transform:
         side === "left"
-          ? `translate(calc(-100% - 6px + ${sx}px), calc(-50% + ${sy}px)) scale(${1 + 0.4 * p})`
-          : `translate(calc(100% + 6px + ${sx}px), calc(-50% + ${sy}px)) scale(${1 + 0.4 * p})`,
+          ? `translate(calc(-100% - 6px + ${sx}px), calc(-50% + ${sy}px)) scale(${handleScale * (1 + 0.4 * p)})`
+          : `translate(calc(100% + 6px + ${sx}px), calc(-50% + ${sy}px)) scale(${handleScale * (1 + 0.4 * p)})`,
       // 光标越近光圈越大（磁性吸附的视觉反馈）
       boxShadow:
         p > 0.5
@@ -782,33 +797,48 @@ function CardShell({
 
   const menu = (side: "left" | "right") =>
     plusMenu === side ? (
+      // 挂根节点（.ws-card overflow:hidden 会把卡外缘的菜单整个裁掉）；
+      // top 与加号锚点同式 calc(50% + 12px)（根高含标题行，+12px 补偿）。
+      // 内层按 handleScale 反向缩放：菜单在节点子树内随画布缩放变形，
+      // 低缩放档 96px 缩成 ~24px 不可读——补偿后任意档位屏幕尺寸恒定
       <div
-        className={`absolute top-1/2 z-20 flex w-24 -translate-y-1/2 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg ${
-          side === "right" ? "left-full ml-3" : "right-full mr-3"
-        }`}
+        className={`absolute top-[calc(50%+12px)] z-20 -translate-y-1/2 ${side === "right" ? "left-full" : "right-full"}`}
+        style={
+          side === "right"
+            ? { marginLeft: 12 * handleScale }
+            : { marginRight: 12 * handleScale }
+        }
       >
-        <p className="px-2 py-0.5 text-[10px] text-text-4">
-          {side === "right" ? "建下游卡" : "建上游卡"}
-        </p>
-        {PLUS_MENU_TYPES.map((t) => {
-          const Icon = TYPE_ICONS[t];
-          return (
-            <button
-              key={t}
-              type="button"
-              className="nodrag nowheel flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-              onClick={(e) => {
-                e.stopPropagation();
-                setPlusMenu(null);
-                if (side === "right") createConnectedNode(id, t);
-                else createUpstreamNode(id, t);
-              }}
-            >
-              {Icon ? <Icon className="h-3 w-3" /> : null}
-              {NODE_META[t].label}
-            </button>
-          );
-        })}
+        <div
+          className="flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+          style={{
+            scale: handleScale,
+            transformOrigin: side === "right" ? "left center" : "right center",
+          }}
+        >
+          <p className="px-2 py-0.5 text-[10px] text-text-4">
+            {side === "right" ? "建下游卡" : "建上游卡"}
+          </p>
+          {PLUS_MENU_TYPES.map((t) => {
+            const Icon = TYPE_ICONS[t];
+            return (
+              <button
+                key={t}
+                type="button"
+                className="nodrag nowheel flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPlusMenu(null);
+                  if (side === "right") createConnectedNode(id, t);
+                  else createUpstreamNode(id, t);
+                }}
+              >
+                {Icon ? <Icon className="h-3 w-3" /> : null}
+                {NODE_META[t].label}
+              </button>
+            );
+          })}
+        </div>
       </div>
     ) : null;
 
@@ -824,6 +854,7 @@ function CardShell({
         });
         setPlusMenu(null);
       }}
+      style={{ "--ws-hit": `${-10 * handleScale}px` } as React.CSSProperties}
     >
       {/* 尺寸来自创建时的默认宽度（store.withDefaultWidth），用户可拖角缩放 */}
       <NodeResizer
@@ -940,6 +971,9 @@ function CardShell({
         position={Position.Left}
         onPointerDown={onHandlePointerDown}
         onPointerUp={onHandlePointerUp("left")}
+        // 点击语义=开建卡菜单：拦掉冒泡，不让它顺手选中卡片——选中会弹
+        // 顶部工具条，贴顶/低缩放档工具条钳制下移后正好盖住加号与菜单
+        onClick={(e) => e.stopPropagation()}
         title="建上游卡 / 拖拽连线"
       />
       <span className="ws-plus left-0" style={handleStyle("left")}>
@@ -950,11 +984,14 @@ function CardShell({
         position={Position.Right}
         onPointerDown={onHandlePointerDown}
         onPointerUp={onHandlePointerUp("right")}
+        onClick={(e) => e.stopPropagation()}
         title="建下游卡 / 拖拽连线"
       />
       <span className="ws-plus right-0" style={handleStyle("right")}>
         <Plus className="h-3 w-3" />
       </span>
+      {menu("left")}
+      {menu("right")}
       {/* 标题行在卡外上方（libtv 范式）：类型图标（按类型着色）+ 可编辑标题 */}
       <div className="mb-1 flex h-5 items-center gap-1.5 px-0.5" title={meta.label}>
         {TypeIcon ? (
@@ -1033,8 +1070,6 @@ function CardShell({
           </span>
         ) : null}
         {children}
-        {menu("left")}
-        {menu("right")}
       </div>
     </div>
   );

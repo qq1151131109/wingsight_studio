@@ -191,10 +191,9 @@ body {
     outline-offset: 3px;
 }
 
-/* LOD：低缩放（<0.5）只留标题，降噪 */
+/* LOD：低缩放（<0.5）只留标题，降噪。加号手柄不参与 LOD——它是屏幕空间
+   恒定尺寸的交互件（nodes.tsx 按 1/zoom 反向补偿），任意缩放档都可读可点 */
 .ws-node.is-tiny .ws-detail { display: none; }
-.ws-node.is-tiny .react-flow__handle,
-.ws-node.is-tiny .ws-plus { opacity: 0 !important; }
 
 /* 连线锚点（不可见）：固定在卡缘、零动效。xyflow 用 getBoundingClientRect
    快照手柄位置算连线端点——锚点一旦参与动画/外移，线就够不着卡片。
@@ -210,7 +209,9 @@ body {
 .ws-node .react-flow__handle::before {
     content: "";
     position: absolute;
-    inset: -10px;
+    /* 命中半径随画布缩放补偿（根节点 --ws-hit，nodes.tsx handleScale 派生）：
+       伪元素不改锚点盒尺寸，不触发 xyflow 手柄重测量，连线端点不受影响 */
+    inset: var(--ws-hit, -10px);
     border-radius: 9999px;
 }
 .ws-node .react-flow__handle-left {
@@ -226,7 +227,8 @@ body {
 }
 
 /* + 圆钮（纯视觉浮层，pointer-events:none）：悬停节点时浮现，完全悬在
-   卡外 6px；磁性追踪/放大由内联 transform 驱动（只动皮，不动锚点） */
+   卡外 6px；磁性追踪/放大由内联 transform 驱动（只动皮，不动锚点），
+   内含 1/zoom 反向补偿——屏幕恒定尺寸，低缩放档照样可读 */
 .ws-plus {
     position: absolute;
     top: calc(50% + 12px);

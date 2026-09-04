@@ -399,6 +399,113 @@ check(
   (await page.evaluate(() => !document.querySelector(".fixed.inset-0.z-50"))) === true,
 );
 
+// ---------- H 加号手柄（建上下游卡） ----------
+// 曾双重坏死：① zoom<0.5 被 LOD 藏掉（96 节点总览时"画布上没有加号"）
+// ② 菜单挂在 .ws-card 内被 overflow:hidden 整个裁掉（9adec014e 引入裁剪
+// 误伤）——菜单进 DOM 但不可见。修复：菜单挂根节点 + 浮层/菜单/命中半径
+// 按 1/zoom 反向补偿（屏幕恒定尺寸，任意缩放档可读可点）
+await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  st.selectNodes([]);
+  st.setViewport({ x: 60, y: 120, zoom: 1 });
+});
+await page.waitForTimeout(400);
+const hCard = nodeOf("备忘");
+{
+  // 悬停显现 + 点右加号弹「建下游卡」菜单（可见、在屏内）
+  const cb = await hCard.boundingBox();
+  await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2, { steps: 3 });
+  await page.waitForTimeout(300);
+  const rightPlus = hCard.locator(".ws-plus").nth(1);
+  const pb = await rightPlus.boundingBox();
+  check(
+    "H1 zoom=1 悬停浮现加号（opacity=1）",
+    (await rightPlus.evaluate((el) => Number(getComputedStyle(el).opacity))) > 0.9,
+  );
+  await page.mouse.click(pb.x + pb.width / 2, pb.y + pb.height / 2);
+  await page.waitForTimeout(400);
+  const menuLabel = page.locator("text=建下游卡").first();
+  const mb = await menuLabel.boundingBox();
+  check(
+    "H2 点加号弹建卡菜单且在屏内可见（不被卡裁剪）",
+    Boolean(mb && mb.x >= 0 && mb.y >= 0 && (await menuLabel.isVisible())),
+    JSON.stringify(mb && { x: Math.round(mb.x), y: Math.round(mb.y) }),
+  );
+  check(
+    "H2b 点加号不选中卡片（工具条不弹，低缩放贴顶时工具条会盖住加号）",
+    (await page.evaluate(() => !window.__wsCanvasStore.getState().nodes.find((n) => n.id === "note1")?.selected)) &&
+      (await page.locator(".react-flow__node-toolbar").count()) === 0,
+  );
+  await page.screenshot({ path: "/tmp/e2e-h2-menu.png" });
+  // 点「文本」建下游卡：新卡 + 连线
+  const before = await page.evaluate(() => {
+    const s = window.__wsCanvasStore.getState();
+    return { n: s.nodes.length, e: s.edges.length };
+  });
+  await page.getByRole("button", { name: "文本", exact: true }).last().click();
+  await page.waitForTimeout(800);
+  const after = await page.evaluate(() => {
+    const s = window.__wsCanvasStore.getState();
+    return {
+      n: s.nodes.length,
+      e: s.edges.length,
+      linked: s.edges.some((x) => x.source === "note1"),
+    };
+  });
+  check("H3 菜单建下游卡（新卡+连线）", after.n === before.n + 1 && after.e === before.e + 1 && after.linked, JSON.stringify({ before, after }));
+}
+{
+  // 低缩放档（0.3）：加号可见且屏幕尺寸 ~22px（未补偿会是 ~7px）、菜单可读。
+  // 先取消选中：H3 建的新卡被自动选中，其贴顶钳制的工具条在低缩放档会
+  // 盖住 note1 右侧加号（复现过点击落在工具条按钮上）
+  await page.evaluate(() => {
+    const st = window.__wsCanvasStore.getState();
+    st.selectNodes([]);
+    st.setViewport({ x: 60, y: 60, zoom: 0.3 });
+  });
+  await page.waitForTimeout(500);
+  const cb = await hCard.boundingBox();
+  await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2, { steps: 3 });
+  await page.waitForTimeout(300);
+  const rightPlus = hCard.locator(".ws-plus").nth(1);
+  const pb = await rightPlus.boundingBox();
+  check(
+    "H4 zoom=0.3 加号仍显现且屏幕尺寸可读（≥16px）",
+    Boolean(pb && pb.width >= 16 && (await rightPlus.evaluate((el) => Number(getComputedStyle(el).opacity))) > 0.9),
+    pb ? `w=${pb.width.toFixed(0)}` : "no box",
+  );
+  await page.mouse.click(pb.x + pb.width / 2, pb.y + pb.height / 2);
+  await page.waitForTimeout(400);
+  const mb = await page.locator("text=建下游卡").first().boundingBox();
+  check(
+    "H5 zoom=0.3 菜单反缩放补偿后可读（宽 ≥60px）",
+    Boolean(mb && mb.width >= 60 && (await page.locator("text=建下游卡").first().isVisible())),
+    mb ? `w=${mb.width.toFixed(0)}` : "no menu",
+  );
+  await page.screenshot({ path: "/tmp/e2e-h5-lowzoom.png" });
+  await page.mouse.click(200, 800); // 关菜单
+}
+{
+  // 拖拽连线仍可用（connectOnClick 关闭只影响点击语义，拖拽走 mousedown）
+  await page.evaluate(() => {
+    window.__wsCanvasStore.getState().setViewport({ x: 60, y: 120, zoom: 0.6 });
+  });
+  await page.waitForTimeout(500);
+  const src = await nodeOf("备忘").boundingBox();
+  const dst = await nodeOf("测试角色").boundingBox();
+  const e0 = await page.evaluate(() => window.__wsCanvasStore.getState().edges.length);
+  await page.mouse.move(src.x + src.width + 4, src.y + src.height / 2 + 4);
+  await page.mouse.down();
+  // 落点对准目标卡左缘手柄（卡中心距手柄太远，超出 connectionRadius）
+  await page.mouse.move(dst.x - 4, dst.y + dst.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(600);
+  const linked = await page.evaluate(() =>
+    window.__wsCanvasStore.getState().edges.some((e) => e.source === "note1" && e.target === "ch1"),
+  );
+  check("H6 拖拽加号到目标卡连线（connectOnClick 关闭不误伤拖拽）", linked, `edges+${(await page.evaluate(() => window.__wsCanvasStore.getState().edges.length)) - e0}`);
+}
+
 await browser.close();
 const fails = results.filter((r) => !r.ok).length;
 console.log(`\n${results.length - fails}/${results.length} 通过`);
