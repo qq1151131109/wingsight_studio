@@ -13,7 +13,7 @@
  *  - 主题：v2 的 shadcn 式语义变量在 globals.css 里整体映射到米黄纸感 token
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CopilotSidebar,
   useConfigureSuggestions,
@@ -24,10 +24,12 @@ import {
   type CopilotChatSuggestionView,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
-import { Sparkles } from "lucide-react";
+import { MessageSquare, Sparkles } from "lucide-react";
 import ChatInput from "./ChatInput";
 import CapabilitiesDialog from "./CapabilitiesDialog";
 import { useChatSession } from "@/lib/chat/session";
+import { useCanvasStore } from "@/lib/canvas/store";
+import { listChatThreads } from "@/lib/projects";
 import ChatSidebarHeader from "./ThreadsBar";
 
 /** slot 槽位支持整组件替换（运行时 renderSlot 认任意函数组件），但 d.ts 要求
@@ -67,7 +69,75 @@ const SUGGESTIONS = [
   },
 ];
 
-/** 空态建议：v2 建议槽位替换（对话开始后隐藏，依据 = session hasMessages） */
+/** 空态最近会话：新会话的空白时刻是"想找回旧会话"的高发点，把最近 5 条
+ * 直接亮在这里（发现性入口），header 下拉保留为对话中的效率入口 */
+function RecentThreads() {
+  const hasMessages = useChatSession((s) => s.hasMessages);
+  const projectId = useCanvasStore((s) => s.projectId);
+  const setThreadId = useChatSession((s) => s.setThreadId);
+  const [threads, setThreads] = useState<{ id: string; title?: string; updated_at: string; message_count: number }[] | null>(null);
+
+  useEffect(() => {
+    if (!projectId || hasMessages) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const list = await listChatThreads(projectId);
+        if (alive) setThreads(list.slice(0, 5));
+      } catch {
+        /* 服务离线：区块不出现即可 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [projectId, hasMessages]);
+
+  if (hasMessages || !threads || threads.length === 0) return null;
+  return (
+    <div className="px-1 pt-3">
+      <p className="mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-text-4">
+        继续最近的会话
+      </p>
+      <div className="space-y-1">
+        {threads.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            data-track="chat.recentThread"
+            onClick={() => setThreadId(t.id)}
+            className="flex w-full items-center gap-2 rounded-lg border border-hairline bg-surface-2/60 px-2.5 py-2 text-left transition-colors hover:border-accent-soft hover:bg-surface-1"
+          >
+            <MessageSquare className="h-3.5 w-3.5 shrink-0 text-text-4" />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-xs text-text">
+                {t.title || "未命名会话"}
+              </span>
+              <span className="block text-[10px] text-text-4">
+                {formatRelative(t.updated_at)} · {t.message_count} 条
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 相对时间（ThreadsBar 同款规则的轻量版） */
+function formatRelative(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const min = 60_000;
+  if (diff < min) return "刚刚";
+  if (diff < 60 * min) return `${Math.floor(diff / min)} 分钟前`;
+  if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))} 小时前`;
+  return d.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+}
+
+/** 空态建议：v2 建议槽位替换（对话开始后隐藏，依据 = session hasMessages）；
+ * 顶部先渲染最近会话（发现性），下面才是建议词 */
 function EmptyStateSuggestions({
   suggestions,
   onSelectSuggestion,
@@ -78,18 +148,21 @@ function EmptyStateSuggestions({
   const hasMessages = useChatSession((s) => s.hasMessages);
   if (hasMessages || suggestions.length === 0) return null;
   return (
-    <div className="grid grid-cols-2 gap-1.5 px-1 pt-2">
-      {suggestions.map((s) => (
-        <button
-          key={s.title}
-          type="button"
-          data-tip={s.message} aria-label={s.message}
-          onClick={() => onSelectSuggestion?.(s)}
-          className="rounded-lg border border-hairline bg-surface-2 px-2.5 py-2 text-left text-xs leading-snug text-text-2 transition-colors hover:border-accent-soft hover:bg-surface-1 hover:text-text"
-        >
-          {s.title}
-        </button>
-      ))}
+    <div className="pb-1">
+      <RecentThreads />
+      <div className="grid grid-cols-2 gap-1.5 px-1 pt-2">
+        {suggestions.map((s) => (
+          <button
+            key={s.title}
+            type="button"
+            data-tip={s.message} aria-label={s.message}
+            onClick={() => onSelectSuggestion?.(s)}
+            className="rounded-lg border border-hairline bg-surface-2 px-2.5 py-2 text-left text-xs leading-snug text-text-2 transition-colors hover:border-accent-soft hover:bg-surface-1 hover:text-text"
+          >
+            {s.title}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
