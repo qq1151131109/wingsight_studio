@@ -898,11 +898,15 @@ function BottomDock({
           : null;
   return (
     <>
-      <div className="absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm">
+      {/* 全宽居中容器：底坞若自身 absolute left-1/2 定位，宽度会被钳在
+          「左缘→父容器右缘」= 画布一半，侧栏打开时挤压按钮把文字摞成竖排
+          （写实截图事故）；交由外层居中后底坞按内容自适应，装不下才滚动 */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center px-3">
+      <div className="pointer-events-auto flex max-w-full items-center gap-0.5 overflow-x-auto whitespace-nowrap rounded-lg border border-hairline bg-surface-1 p-1 shadow-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <button
         type="button"
         data-tip="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布" aria-label="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布"
-        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenAssets}
         data-track="dock.assets"
       >
@@ -912,7 +916,7 @@ function BottomDock({
       <button
         type="button"
         data-tip="提示词常用语：选中卡片后点选，自动追加进生成输入框" aria-label="提示词常用语：选中卡片后点选，自动追加进生成输入框"
-        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenPrompts}
         data-track="dock.prompts"
       >
@@ -922,21 +926,21 @@ function BottomDock({
       <button
         type="button"
         data-tip="画布导航（按类型列出全部卡片，点击运镜定位）" aria-label="画布导航（按类型列出全部卡片，点击运镜定位）"
-        className="flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={onOpenOutline}
         data-track="dock.outline"
       >
         <ListTree className="h-4 w-4" />
         导航
       </button>
-      <span className="mx-0.5 h-5 w-px bg-hairline" />
+      <span className="mx-0.5 h-5 w-px shrink-0 bg-hairline" />
       {/* 项目画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
           一处设定，注入所有出图与分镜生成；预设库移植自 juben 风格模板 */}
-      <div className="relative">
+      <div className="relative shrink-0">
         <button
           type="button"
           data-tip="项目画风（全局视觉风格：注入所有出图与分镜生成）" aria-label="项目画风（全局视觉风格：注入所有出图与分镜生成）"
-          className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
+          className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
             projectStyle ? "text-accent" : "text-text-2 hover:text-text"
           } ${stylePanel ? "bg-surface-2 text-text" : ""}`}
           onClick={() => setStylePanel((v) => !v)}
@@ -954,7 +958,7 @@ function BottomDock({
       <button
         type="button"
         data-tip={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，点击修改）`} aria-label={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，点击修改）`}
-        className={`flex h-8 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
+        className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
           imagegenPanel ? "bg-surface-2 text-text" : ""
         }`}
         onClick={() => setImagegenPanel((v) => !v)}
@@ -967,21 +971,21 @@ function BottomDock({
           · {imagegen.resolution}
         </span>
       </button>
-      <span className="mx-0.5 h-5 w-px bg-hairline" />
+      <span className="mx-0.5 h-5 w-px shrink-0 bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()} data-track="dock.undo">
         <Undo2 className="h-4 w-4" />
       </DockBtn>
       <DockBtn disabled={!canRedo} title="重做（⇧⌘Z）" onClick={() => useCanvasStore.getState().redo()} data-track="dock.redo">
         <Redo2 className="h-4 w-4" />
       </DockBtn>
-      <span className="mx-0.5 h-5 w-px bg-hairline" />
+      <span className="mx-0.5 h-5 w-px shrink-0 bg-hairline" />
       <DockBtn title="缩小（⌘-）" onClick={() => void zoomOut({ duration: 150 })} data-track="dock.zoom-out">
         <ZoomOut className="h-4 w-4" />
       </DockBtn>
       <button
         type="button"
         data-tip="点击复位 100%（⇧⌘0）" aria-label="点击复位 100%（⇧⌘0）"
-        className="min-w-11 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className="min-w-11 shrink-0 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
         onClick={() => void zoomTo(1, { duration: 250 })}
         data-track="dock.zoom-reset"
       >
@@ -1002,9 +1006,9 @@ function BottomDock({
       </DockBtn>
       {saveLabel ? (
         <>
-          <span className="mx-0.5 h-5 w-px bg-hairline" />
+          <span className="mx-0.5 h-5 w-px shrink-0 bg-hairline" />
           <span
-            className={`px-1.5 text-[10px] ${
+            className={`shrink-0 px-1.5 text-[10px] ${
               saveState === "offline" ? "text-danger" : "text-good"
             }`}
           >
@@ -1012,6 +1016,7 @@ function BottomDock({
           </span>
         </>
       ) : null}
+      </div>
       </div>
       {stylePanel ? (
         <OverlayModal
@@ -1130,7 +1135,7 @@ function DockBtn({
       {...rest}
       data-tip={title} aria-label={title}
       disabled={disabled}
-      className="flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
       onClick={onClick}
     >
       {children}

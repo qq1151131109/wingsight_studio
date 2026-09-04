@@ -784,6 +784,7 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 .copilotKitSidebar .copilotKitInputControls {
     display: flex;
     align-items: center;
+    justify-content: space-between; /* 附件居左 / 发送居右 */
     gap: 4px;
 }
 .copilotKitSidebar .copilotKitInputControlButton {
@@ -795,7 +796,28 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     transition: background-color 0.15s ease;
 }
 .copilotKitSidebar .copilotKitInputControlButton:hover {
+    /* 输入框本体是 surface-2，hover 同色无反馈，落更深一档 */
+    background-color: var(--color-surface-0);
+}
+/* 发送/停止：实心 accent 圆钮（唯一主动作，与左侧幽灵按钮拉开主次） */
+.copilotKitSidebar .copilotKitInputSendButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 30px;
+    height: 30px;
+    border-radius: 9999px;
+    background-color: var(--color-accent);
+    color: #fff;
+    transition: background-color 0.15s ease, opacity 0.15s ease;
+}
+.copilotKitSidebar .copilotKitInputSendButton:not(:disabled):hover {
+    background-color: color-mix(in oklab, var(--color-accent) 86%, #000);
+}
+.copilotKitSidebar .copilotKitInputSendButton:disabled {
     background-color: var(--color-surface-2);
+    color: var(--color-text-4);
+    cursor: default;
 }
 
 /* ---------- 常驻编辑输入框自适应（Editable always） ----------

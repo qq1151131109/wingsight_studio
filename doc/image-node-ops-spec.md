@@ -170,13 +170,14 @@
 带蒙版实测一次才有结论，动工前先探。seedream 系 edit 通道无显式画布扩展
 参数。
 
-**P3-3 全景图**：**seedream-4-5 实测 2:1 通过**（2816×1408 请求 → 输出严格
-2:1，2026-09-03 探针）。像素边界：seedream-4-5 最小 3,686,400px → 2:1 最小
-2720×1360；seedream-5-pro 响应通道上限 4,194,304px → 2:1 最大 2880×1440
-（4:1 全景超限，只能 2:1）。gpt-image-2 的 size 是固定枚举，2:1 未见支持。
-落地时：DEFAULT_ASPECTS 加 "2:1"（seedream 系条目），场景卡「环视」动作 +
-panoramaPrompt 职责化模板 + 本地归一化（open-storyboard panoramaPrompt.ts /
-panoramaNormalize.ts 范式）；three.js 查看器是纯前端新依赖，评估包体后再定。
+**P3-3 全景图**：详细设计已补档 → [image-panorama-spec.md](image-panorama-spec.md)
+（2026-09-04）。要点：v1 只做球形 2:1（探针矩阵先行，4:1 等探通再扩）；不抄竞品
+本地归一化/smartBase（我们显式 2:1 请求即严格输出）；photo-sphere-viewer ~106KB
+懒加载做灯箱环视；复用 IMAGE_TOOL_EVENT + GENERATE_EVENT 管线，新卡钉
+`gen.aspect="2:1"` + `panorama` 标记。原探针结论：seedream-4-5 实测 2:1 通过
+（2816×1408 → 严格 2:1，2026-09-03）；像素边界：seedream-4-5 最小 3,686,400px
+→ 2:1 最小 2720×1360；seedream-5-pro 响应通道上限 4,194,304px → 2:1 最大
+2880×1440（4:1 全景超限，只能 2:1）。gpt-image-2 的 size 是固定枚举，2:1 未见支持。
 
 以上动工前各补详细 spec，本档只占位。
 

@@ -202,29 +202,31 @@ export default function ChatSidebarHeader() {
       ref={wrapRef}
       className="copilotKitHeader relative flex w-full flex-col gap-1.5"
     >
-      <div className="relative flex w-full items-center">
+      <div className="relative flex w-full items-center gap-1.5">
       <RunErrorBanner />
-      {/* 当前会话标题（juben SessionSelector 范式）：常驻可点，点击开历史面板
-          快速切换；运行中亮黄点 */}
-      <button
-        type="button"
-        onClick={togglePanel}
-        data-tip="全部会话（搜索/重命名）" aria-label="全部会话"
-        data-track="chat.threadSwitcher"
-        className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-      >
-        {isLoading ? (
-          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn" />
-        ) : null}
-        <span className="truncate text-[13px] font-medium">
-          {threadId
-            ? (threads ?? []).find((t) => t.id === threadId)?.title || "当前会话"
-            : "Wingsight 助手"}
-        </span>
-        <History className="h-3.5 w-3.5 shrink-0 text-text-4" />
-      </button>
+      {/* 当前会话标题（纯标签）：历史切换收进右侧 History 按钮——原来时钟
+          粘在标题尾巴上，看着像排版事故；运行中亮黄点 */}
+      {isLoading ? (
+        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn" />
+      ) : null}
+      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[0.01em]">
+        {threadId
+          ? (threads ?? []).find((t) => t.id === threadId)?.title || "当前会话"
+          : "Wingsight 助手"}
+      </span>
 
-      <div className="ml-auto flex items-center gap-0.5">
+      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+        <button
+          type="button"
+          data-tip="全部会话（搜索/重命名）" aria-label="全部会话（搜索/重命名）"
+          data-track="chat.threadSwitcher"
+          onClick={togglePanel}
+          className={`rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${
+            panelOpen ? "bg-surface-2 text-text" : ""
+          }`}
+        >
+          <History className="h-4 w-4" />
+        </button>
         <button
           type="button"
           data-tip="技能" aria-label="技能"
@@ -247,8 +249,10 @@ export default function ChatSidebarHeader() {
       </div>
       </div>
 
-      {/* 页签条（浏览器 tab 范式）：最近会话常驻可见，点击切换 / × 关闭 / + 新建 */}
-      <div className="flex items-end gap-0.5 overflow-x-auto pb-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {/* 页签条（浏览器 tab 范式）：最近会话常驻可见，点击切换 / × 关闭 / + 新建。
+          font-sans/font-normal 显式断开头部继承的衬线粗体——编辑风字体落在
+          11px 页签上就是一排歪扭小标题 */}
+      <div className="flex items-end gap-0.5 overflow-x-auto pb-px font-sans font-normal [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {threadId === null || !((threads ?? []).some((t) => t.id === threadId)) ? (
           <span
             className="flex shrink-0 items-center gap-1 rounded-t-md border-b-2 border-accent bg-surface-2/60 px-2 py-1 text-[11px] text-text"
@@ -294,7 +298,7 @@ export default function ChatSidebarHeader() {
                   onDoubleClick={() =>
                     setRenaming({ id: t.id, value: t.title || "" })
                   }
-                  className="max-w-28 truncate"
+                  className="max-w-24 truncate"
                   title={t.title || "未命名会话（双击重命名）"}
                 >
                   {t.title || "未命名会话"}

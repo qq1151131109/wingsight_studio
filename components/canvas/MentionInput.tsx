@@ -430,6 +430,12 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
     hiRef.current?.scrollIntoView({ block: "nearest" });
   }, [hiClamped, tab]);
 
+  // 活动页签滚入可视区（组多时页签行横向滚动，←→ 切换要能看见切到哪了）
+  const tabRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    tabRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [tab]);
+
   /** 弹层键盘导航（编辑器与搜索框共用）：←→ 切组、↑↓ 组内循环、Enter
    *  拾取。返回 true 表示已消费 */
   const handleNavKey = (e: React.KeyboardEvent): boolean => {
@@ -680,44 +686,53 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         dangerouslySetInnerHTML={{ __html: initHtml }}
       />
       {trigger && visibleGroups.length > 0 ? (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+        <div
+          className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+          // 键盘导航挂在弹层根（捕获阶段）：焦点无论落在搜索框/页签/候选项
+          // 上都能导航——此前只挂编辑器与搜索框，点过页签后方向键全部落空
+          onKeyDownCapture={(e) => {
+            if (handleNavKey(e)) {
+              e.stopPropagation();
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              if (searchQ) {
+                setSearchQ("");
+                setHi(0);
+              } else {
+                setTrigger(null);
+                edRef.current?.focus();
+              }
+            }
+          }}
+        >
           {/* 组内搜索（open-ai-canvas mention 菜单分区+搜索范式）：过滤标题
-              与正文；↑↓/Enter 与编辑器内同一套导航 */}
+              与正文；↑↓/Enter 由根节点统一接管 */}
           <input
             value={searchQ}
             onChange={(e) => {
               setSearchQ(e.target.value);
               setHi(0);
             }}
-            onKeyDown={(e) => {
-              if (handleNavKey(e)) return;
-              if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                if (searchQ) {
-                  setSearchQ("");
-                  setHi(0);
-                } else {
-                  setTrigger(null);
-                  edRef.current?.focus();
-                }
-              }
-            }}
             placeholder="搜索卡片（标题/正文）…"
             className="mb-1 w-full rounded-md border border-hairline bg-surface-2/60 px-2 py-1 text-xs text-text outline-none focus:border-accent placeholder:text-text-4"
           />
           {visibleGroups.length > 1 ? (
-            <div className="mb-1 flex gap-0.5 overflow-x-auto border-b border-hairline-soft pb-1">
+            <div className="mb-1 flex gap-0.5 overflow-x-auto border-b border-hairline-soft pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {visibleGroups.map((g, gi) => (
                 <button
                   key={g.key}
                   type="button"
+                  ref={gi === tab ? tabRef : undefined}
                   data-tip="左右方向键快速切换分组" aria-label={`分组 ${g.label}`}
                   className={`shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
                     gi === tab
                       ? "bg-accent-dim text-text"
                       : "text-text-3 hover:bg-surface-2 hover:text-text"
                   }`}
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={(e) => {
                     e.stopPropagation();
                     setTabIdx(gi);
@@ -729,7 +744,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
               ))}
             </div>
           ) : null}
-          <div className="max-h-44 overflow-y-auto">
+          <div className="h-44 overflow-y-auto">
             {curNodes.length === 0 ? (
               <p className="px-2 py-2 text-[10px] leading-relaxed text-text-4">
                 没有匹配「{searchQ}」的卡

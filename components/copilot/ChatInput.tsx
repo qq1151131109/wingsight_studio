@@ -654,7 +654,9 @@ export default function ChatInput({
           />
         </div>
 
-        <div className="copilotKitInputControls mt-1.5 self-end">
+        {/* 附件居左 / 发送居右（ChatGPT·Claude 共识布局）：发送是唯一主动作，
+            实心 accent 圆钮与左侧幽灵按钮拉开主次 */}
+        <div className="copilotKitInputControls mt-1.5">
           <button
             type="button"
             className="copilotKitInputControlButton"
@@ -666,7 +668,7 @@ export default function ChatInput({
           {inProgress ? (
             <button
               type="button"
-              className="copilotKitInputControlButton"
+              className="copilotKitInputSendButton"
               data-tip="停止生成" aria-label="停止生成"
               onClick={() => {
                 // 停止要真停：客户端 abort 之外，把在途后端工具（出图/拆解/技能）
@@ -675,12 +677,12 @@ export default function ChatInput({
                 onStop?.();
               }}
             >
-              <Square className="h-3 w-3 fill-current motion-safe:animate-pulse" />
+              <Square className="h-3 w-3 fill-current" />
             </button>
           ) : (
             <button
               type="button"
-              className="copilotKitInputControlButton"
+              className="copilotKitInputSendButton"
               data-tip={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"} aria-label={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"}
               disabled={!canSend || uploading}
               onClick={() => void submit()}
