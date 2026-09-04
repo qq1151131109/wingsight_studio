@@ -122,6 +122,10 @@ await api(`/projects/${pid}/canvas`, {
         data: { nodeType: "character", title: "测试角色", body: "考古学家", imageUrl: SRC_URL, status: "ready" },
       },
       {
+        id: "sc1", type: "scene", position: { x: 860, y: 420 },
+        data: { nodeType: "scene", title: "测试场景", body: "黄昏的码头仓库", imageUrl: SRC_URL, status: "ready" },
+      },
+      {
         id: "note1", type: "note", position: { x: 1400, y: 0 },
         data: { nodeType: "note", title: "备忘", body: "文本卡不该有图片段" },
       },
@@ -177,7 +181,7 @@ async function openMenu(title) {
 
 // ---------- A 菜单段 ----------
 await openMenu("测试底图");
-for (const item of ["下载图片", "复制图片", "复制出图提示词", "裁剪…", "多视角…", "打光…", "人物质感…"]) {
+for (const item of ["下载图片", "复制图片", "复制出图提示词", "裁剪…", "多视角…", "全景环视…", "打光…", "人物质感…"]) {
   check(`A1 图片卡菜单含「${item}」`, (await page.locator(`text=${item}`).count()) > 0);
 }
 check(
@@ -191,7 +195,7 @@ await page.mouse.click(400, 600); // 关菜单
 // 经 store 选中（点卡会被媒体区 zoom/工具条拦指针，选区才是唯一变量）
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["img1"]));
 await page.locator('[aria-label="生成其他机位视角"]').waitFor({ timeout: 5000 });
-for (const t of ["裁剪画面比例", "生成其他机位视角", "替换画面光效", "人物质感精修", "解除比例锁定，任意拉伸"]) {
+for (const t of ["裁剪画面比例", "生成其他机位视角", "生成 2:1 球形全景环境图", "替换画面光效", "人物质感精修", "解除比例锁定，任意拉伸"]) {
   check(`A5-1 图片卡顶部条含「${t}」`, (await page.locator(`[aria-label^="${t}"]`).count()) > 0);
 }
 check(
@@ -201,6 +205,10 @@ check(
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["ch1"]));
 await page.locator('[aria-label^="生成三视图"]').waitFor({ timeout: 5000 });
 check("A5-3 角色卡顶部条含三视图", (await page.locator('[aria-label^="生成三视图"]').count()) > 0);
+check(
+  "A5-5 角色卡顶部条不含环视（仅场景/图片卡）",
+  (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) === 0,
+);
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["note1"]));
 await page.waitForTimeout(400);
 check(
@@ -544,7 +552,64 @@ const hCard = nodeOf("备忘");
   check("H6 拖拽加号到目标卡连线（connectOnClick 关闭不误伤拖拽）", linked, `edges+${(await page.evaluate(() => window.__wsCanvasStore.getState().edges.length)) - e0}`);
 }
 
+// ---------- P 全景环视（doc/image-panorama-spec.md）----------
+// 可见性：场景卡有环视（角色卡无已在 A5-5 验过）
+await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["sc1"]));
+await page.locator('[aria-label^="生成 2:1 球形全景"]').waitFor({ timeout: 5000 });
+check("P1 场景卡顶部条含环视", (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) > 0);
+// 弹窗预校验：项目默认模型 gpt-image-2-03 不支持 2:1 → 应明示「已预置 seedream」
+await page.locator('[aria-label^="生成 2:1 球形全景"]').click();
+await page.locator("text=全景环视").first().waitFor({ timeout: 4000 });
+check("P2 弹窗明示预置 2:1 可用模型", (await page.locator("text=已预置").count()) > 0);
+const postsBeforePano = genPosts.length;
+await page.getByRole("button", { name: /生成全景环视卡/ }).click();
+await page.waitForTimeout(4000);
+const stateP = await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  const n = st.nodes.filter((x) => x.data.title?.includes("· 全景")).pop();
+  return {
+    id: n?.id ?? "",
+    type: n?.data.nodeType ?? "",
+    panorama: Boolean(n?.data.panorama),
+    gen: n?.data.gen ?? null,
+    status: n?.data.status ?? "",
+    img: n?.data.imageUrl ?? "",
+    linked: st.edges.some((e) => e.source === "sc1" && e.target === n?.id),
+  };
+});
+check("P3 新卡全景标记（panorama=true，nodeType=image）", stateP.panorama && stateP.type === "image", JSON.stringify({ t: stateP.type, p: stateP.panorama }));
+check(
+  "P4 新卡 gen 钉 2:1 + seedream 模型",
+  stateP.gen?.aspect === "2:1" && String(stateP.gen?.model ?? "").includes("seedream"),
+  JSON.stringify(stateP.gen),
+);
+check("P5 源卡连线到新卡", stateP.linked);
+const panoShot = genPosts[postsBeforePano]?.shots?.[0];
+const panoInstr = panoShot?.instruction ?? panoShot?.prompt ?? "";
+check(
+  "P6 载荷含等距柱状投影模板句",
+  panoInstr.includes("等距柱状投影") && panoInstr.includes("2比1"),
+  panoInstr.slice(0, 60),
+);
+check("P7 载荷画幅 2:1（卡 gen 生效进请求）", panoShot?.aspect === "2:1", String(panoShot?.aspect));
+check("P8 rid 指新卡（非源卡）", Boolean(panoShot?.rid?.startsWith(`${stateP.id}#`)), panoShot?.rid);
+check("P9 出图完成（ready）", stateP.status === "ready" && Boolean(stateP.img), stateP.status);
+// 灯箱环视：选中全景卡 → 工具条 ⌕ 开灯箱 → 「环视」→ PSV 挂载（懒加载
+// 首次编译 chunk 慢，宽限 90s）→ 退出回普通灯箱
+await page.evaluate((pid) => window.__wsCanvasStore.getState().selectNodes([pid]), stateP.id);
+await page.locator('[aria-label^="查看大图"]').first().click();
+await page.locator('[aria-label="环视（720° 拖拽查看）"]').waitFor({ timeout: 8000 });
+await page.locator('[aria-label="环视（720° 拖拽查看）"]').click();
+await page.locator(".psv-container").first().waitFor({ timeout: 90000 });
+check("P10 灯箱环视挂载 PSV 查看器", (await page.locator(".psv-container").count()) > 0);
+await page.locator('[aria-label="退出环视"]').click();
+await page.waitForTimeout(400);
+check("P11 退出环视回普通灯箱", (await page.locator(".psv-container").count()) === 0);
+await page.keyboard.press("Escape");
+
 await browser.close();
+// 自清理测试项目（历史版本不自删，曾积累 60 个 e2e-imgops-* 垃圾项目）
+await api(`/projects/${pid}`, { method: "DELETE" });
 const fails = results.filter((r) => !r.ok).length;
 console.log(`\n${results.length - fails}/${results.length} 通过`);
 process.exit(fails ? 1 : 0);

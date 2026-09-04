@@ -170,11 +170,11 @@
 带蒙版实测一次才有结论，动工前先探。seedream 系 edit 通道无显式画布扩展
 参数。
 
-**P3-3 全景图**：详细设计已补档 → [image-panorama-spec.md](image-panorama-spec.md)
-（2026-09-04）。要点：v1 只做球形 2:1（探针矩阵先行，4:1 等探通再扩）；不抄竞品
-本地归一化/smartBase（我们显式 2:1 请求即严格输出）；photo-sphere-viewer ~106KB
-懒加载做灯箱环视；复用 IMAGE_TOOL_EVENT + GENERATE_EVENT 管线，新卡钉
-`gen.aspect="2:1"` + `panorama` 标记。原探针结论：seedream-4-5 实测 2:1 通过
+**P3-3 全景图**：详细设计 → [image-panorama-spec.md](image-panorama-spec.md)
+（2026-09-04，**当日全量落地 v1 球形 2:1，回归 68/68**）。探针矩阵 6 组全绿
+（seedream 三模型全档严格 2:1 输出）；PSV ~106KB 懒加载灯箱环视；IMAGE_TOOL_EVENT
++ GENERATE_EVENT 管线复用，新卡钉 `gen.aspect="2:1"` + `panorama` 标记。圆柱 4:1
+与本地归一化/smartBase 不做（通道显式 2:1 即严格输出，无需掰比例）。原探针结论：seedream-4-5 实测 2:1 通过
 （2816×1408 → 严格 2:1，2026-09-03）；像素边界：seedream-4-5 最小 3,686,400px
 → 2:1 最小 2720×1360；seedream-5-pro 响应通道上限 4,194,304px → 2:1 最大
 2880×1440（4:1 全景超限，只能 2:1）。gpt-image-2 的 size 是固定枚举，2:1 未见支持。

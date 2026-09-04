@@ -119,10 +119,18 @@ export type MaskRedrawDetail = {
 
 /** 图片节点操作（doc/image-node-ops-spec.md）：右键菜单 → 全局单例弹窗
  *  （ImageToolDialogs 挂 CanvasView，任何卡类型都能触发，弹窗自读 store）。
- *  裁剪=原位替换+旧图入版本档；模板四件=建空卡+连线后对新卡 GENERATE_EVENT */
+ *  裁剪=原位替换+旧图入版本档；模板四件=建空卡+连线后对新卡 GENERATE_EVENT；
+ *  环视=全景模板同管线，新卡另钉 gen.aspect="2:1"+panorama 标记（见
+ *  doc/image-panorama-spec.md） */
 export const IMAGE_TOOL_EVENT = "wingsight:image-tool";
 
 export type ImageToolDetail = {
   nodeId: string;
-  tool: "crop" | "multiview" | "turnaround" | "lighting" | "texture";
+  tool:
+    | "crop"
+    | "multiview"
+    | "turnaround"
+    | "lighting"
+    | "texture"
+    | "panorama";
 };

@@ -43,7 +43,7 @@ node scripts/asset-create-test.mjs              # 手动建资产卡（空名聚
 node scripts/shotlist-resume-compose-test.mjs   # 分镜表断点恢复/补缺图/一键成片（自建测试项目+mock，不出真实图）
 node scripts/script-review-test.mjs             # 剧本审查三维度回归（真跑 flow+Serper，需 agent+langflow 在跑，约 1 分钟）
 node scripts/card-export-test.mjs               # 文本类卡导出回归（txt/md/docx；docx 解包断言横版表格/表头重复）
-node scripts/image-node-ops-test.mjs            # 图片节点操作层回归（右键图片段/裁剪原位替换+版本+撤销/模板四件建卡连线+画风闸/自由缩放/宫格导出/加号手柄菜单-反缩放-拖拽连线；mock 出图，裁剪走真上传）
+node scripts/image-node-ops-test.mjs            # 图片节点操作层回归（右键图片段/裁剪原位替换+版本+撤销/模板四件建卡连线+画风闸/自由缩放/宫格导出/加号手柄菜单-反缩放-拖拽连线/全景环视 2:1 出卡+PSV 灯箱环视；mock 出图，裁剪走真上传；68 断言自删项目）
 python agent/auth-smoke-test.py                 # 认证冒烟
 ./scripts/setup-langflow.sh                     # langflow 环境重建/首个部署（装 venv → 起 7860 → 导 flows → flow id 回写 .env.local）
 ./scripts/update-flow.sh <flows/xx.json>        # flow 内容更新回写实例（setup 按名字幂等跳过，改 flow 后用它 PATCH）

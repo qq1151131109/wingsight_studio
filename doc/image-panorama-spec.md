@@ -4,6 +4,7 @@
 > 事实依据：DMX 2:1 探针（2026-09-03，seedream-4-5 2816×1408 请求 → 输出严格 2:1）
 > + open-storyboard-canvas 全景实现一手调研（panoramaPrompt.ts / panoramaNormalize.ts /
 > PanoramaNode.tsx / promptTemplates.ts）。
+> **2026-09-04 当日全量落地（v1 球形 2:1），回归 68/68**——探针矩阵与实现记录见 §5。
 
 ## 0. 范围
 
@@ -121,21 +122,52 @@ addNode({ position, data: {
   three.js、截图/四宫格导出（竞品 PSV 截图四宫格——等环视被真实使用后再评估）、
   「导入本地图当全景」（竞品 sourceMode=image 分支）
 
-## 4. 实施顺序与验收
+## 4. 落地记录（2026-09-04）
 
-1. **探针矩阵**（2.1 表；~6 张图的额度，产出回填本档）
-2. models.py 加 2:1 + `/models/image` 验证宫格出现
-3. events.ts 枚举 + 工具条/右键入口 + 可见性规则
-4. ImageTemplateDialog panorama 配置 + 出卡两新键 + 模型预校验
-5. PSV 依赖 + 灯箱环视切换 + 比例异常横条
-6. store panorama 字段 + 摘要标记
+### 4.1 探针矩阵结果（全绿，经 /storyboard/images 真链路）
 
-| 验收项 | 判定 |
-|---|---|
-| 目录 | seedream 卡画幅宫格见 2:1；非 seedream 卡不见；手选 2:1 出图严格 2:1 |
-| 入口 | 场景卡/图片卡见「环视」，角色卡不见；无图不出 |
-| 出卡 | 新卡连线、`gen.aspect=2:1`、默认模型不支持时明示预置 seedream |
-| 生成 | 走 GENERATE_EVENT 全管线（画风闸/参考编号/候选继承）；输出 2:1 |
-| 环视 | 灯箱「环视」懒加载 PSV，拖拽环视/滚轮 FOV；360° 无断裂（prompt 负责） |
-| 异常 | 输出非 2:1 时横条明示；模型不支持时 400 点名文案可读 |
-| 回归 | image-node-ops-test.mjs 54 项不回归 + 新增环视组（入口/载荷/预校验） |
+| 模型 | 2:1 档位 | 实际输出 | 判定 |
+|---|---|---|---|
+| seedream-4-5 | 2K | 严格 2:1（2026-09-03 探通） | ✅ |
+| seedream-4-5 | 4K | 4320×2160（严格 2:1，JPEG 载荷） | ✅ |
+| seedream-4-0 | 2K | 2880×1440（严格 2:1） | ✅ |
+| seedream-4-0 | 4K | 4320×2160（严格 2:1） | ✅ |
+| seedream-5-pro | 1K | 2048×1024（严格 2:1，PNG） | ✅ |
+| seedream-5-pro | 2K | 2880×1440（严格 2:1，≤4.19M 上限内） | ✅ |
+
+三模型全档通过，目录条目全数收录（agent/models.py 注释带实测尺寸）。
+探针脚本：`scripts/_tmp/pano-probe.mjs`（gitignored；注：其结果字段读的是
+`url`，实际接口回 `imageUrl`，复用时改一下）。
+
+### 4.2 实现（与本档 §2 一致，差异备注）
+
+- 目录：三 seedream 条目 `aspects += "2:1"`；画幅宫格零改动自动出现
+- 入口：顶部工具条「环视」（场景/图片卡，角色/道具/服饰隐藏）+ 右键
+  「全景环视…」双入口，走 IMAGE_TOOL_EVENT
+- 弹窗：ImageTemplateDialog panorama 分支（固定说明+源摘要+模型预校验行）
+- 出卡：新卡+连线+对新卡 GENERATE_EVENT，`panorama:true` +
+  `gen={aspect:"2:1", model:预校验模型, resolution:"2K"}`；默认模型
+  gpt-image-2 不支持 2:1 时明示「已预置 Seedream 4.0」（capable[0]）
+- 查看器：`@photo-sphere-viewer/core` 5.15.1（three 为其依赖），Lightbox
+  lazy import 懒加载；事件截停 wrapper（灯箱容器级 wheel/拖拽/点击关闭
+  与 PSV 环视打架）；比例偏离 ±8% 顶部横条明示不掰比例
+- 摘要：summarizeCanvas 对全景卡附「（全景）」标记
+- 踩坑两枚：① stop→start 连跑撞 uvicorn 优雅退出，start_agent 的 is_up
+  误判「已在运行」跳过启动（start_wingsight.sh 已知竞态，重跑 start 即真启动）；
+  ② npmjs.org 直连在本机僵死（pnpm add 挂 30 分钟零进展），换
+  `--registry=https://registry.npmmirror.com` 4 秒装完
+- 回归：`node scripts/image-node-ops-test.mjs` **68/68**（P 组 11 项：
+  可见性/预校验/panorama 标记/gen 钉死/连线/模板句/2:1 载荷/rid/ready/
+  PSV 挂载/退出）；测试补自删项目（历史曾漏删积累 60 个垃圾项目）
+
+### 4.3 验收
+
+| 验收项 | 判定 | 状态 |
+|---|---|---|
+| 目录 | seedream 卡画幅宫格见 2:1；非 seedream 卡不见；手选 2:1 出图严格 2:1 | ✅ 探针全绿 |
+| 入口 | 场景卡/图片卡见「环视」，角色卡不见；无图不出 | ✅ P1/A5-5 |
+| 出卡 | 新卡连线、`gen.aspect=2:1`、默认模型不支持时明示预置 seedream | ✅ P2-P5 |
+| 生成 | 走 GENERATE_EVENT 全管线（画风闸/参考编号/候选继承）；输出 2:1 | ✅ P6-P9 |
+| 环视 | 灯箱「环视」懒加载 PSV，拖拽环视/滚轮 FOV；360° 无断裂 | ✅ P10/P11 |
+| 异常 | 输出非 2:1 时横条明示；模型不支持时 400 点名文案可读 | ✅（横条代码路径随 ±8% 校验，探针未见偏离） |
+| 回归 | image-node-ops-test.mjs 不回归 + 新增环视组 | ✅ 68/68 |

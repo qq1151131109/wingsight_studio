@@ -40,6 +40,7 @@ import {
   Sparkles,
   Sun,
   Grid3X3,
+  Globe2,
   History,
   Image as ImageIcon,
   ImagePlus,
@@ -930,6 +931,16 @@ function CardShell({
               >
                 <Camera className="h-4 w-4" />
               </ToolBtn>
+              {data.nodeType === "scene" || data.nodeType === "image" ? (
+                <ToolBtn
+                  title="生成 2:1 球形全景环境图（720° 环视，新卡可拖拽环视查看）"
+                  label="环视"
+                  disabled={data.status === "loading"}
+                  onClick={() => dispatchImageTool(id, "panorama")}
+                >
+                  <Globe2 className="h-4 w-4" />
+                </ToolBtn>
+              ) : null}
               {data.nodeType === "character" ? (
                 <ToolBtn
                   title="生成三视图设定表"
@@ -2315,7 +2326,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       extraTools={assetTools}
     >
       <div
-        className={`flex min-h-[120px] w-full flex-1 items-center justify-center overflow-hidden ${
+        className={`flex min-h-[84px] w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
@@ -2360,7 +2371,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       {lod === "full" ? (
         writePreview ? (
           <div className="ws-detail mx-1.5 mb-1.5 rounded border border-accent-soft bg-surface-2 p-1.5">
-            <p className="max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2">
+            <p className="max-h-14 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2">
               {writePreview}
             </p>
             <div className="mt-1 flex gap-1">
@@ -2419,7 +2430,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
                   multiline
                   always
                   placeholder={ASSET_BODY_PH[kind]}
-                  className="ws-detail mx-1.5 mb-1 mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+                  className="ws-detail mx-1.5 mb-1 mt-1 max-h-20 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
                 />
                 {!((d.body as string) ?? "").trim() ? null : (
                   <button
@@ -2925,6 +2936,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           index={zoom}
           onIndex={setZoom}
           onClose={() => setZoom(null)}
+          panorama={Boolean(d.panorama)}
           actions={(item, api) => {
             const meta = item.meta as
               | {

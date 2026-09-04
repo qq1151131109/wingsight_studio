@@ -10,16 +10,17 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Camera, Loader2, Sparkles, Sun, Wand2, X } from "lucide-react";
+import { Camera, Globe2, Loader2, Sparkles, Sun, Wand2, X } from "lucide-react";
 import OverlayModal from "./OverlayModal";
 import { useCanvasStore, absolutePosition, NODE_FOOTPRINT, type WingNodeData } from "@/lib/canvas/store";
 import { CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
+import { findModelOption, loadImageModels, type ImageModelOption } from "@/lib/imagegen";
 import type { ImageToolDetail } from "@/lib/canvas/events";
 
 export type TemplateTool = Extract<
   ImageToolDetail["tool"],
-  "multiview" | "turnaround" | "lighting" | "texture"
+  "multiview" | "turnaround" | "lighting" | "texture" | "panorama"
 >;
 
 type Preset = { label: string; sentence: string };
@@ -119,7 +120,20 @@ const TOOLS: Record<
     title: "人物质感",
     hint: "精修人像质感：融合/光影/皮肤/纹理/锐度 五维各自选档",
   },
+  panorama: {
+    title: "全景环视",
+    hint: "生成 2:1 球形全景环境图（720° 环视），新卡在灯箱里可拖拽环视查看",
+  },
 };
+
+/** 全景职责化模板（open-storyboard promptTemplates 直译适配，
+ *  doc/image-panorama-spec.md §2.3）：几何约束 + 负面约束一段成文 */
+const PANO_PROMPT =
+  "最终图片必须是等距柱状投影的完整球形全景图，比例2比1，宽度是高度的2倍，" +
+  "只输出一张连续画面。水平视角覆盖完整360度，垂直视角覆盖从天空到地面的" +
+  "完整180度，观看者位于场景中心，可以环视整个环境，地平线位于画面垂直中心" +
+  "附近，左右边缘必须自然无缝衔接。画面中不要出现摄影师、相机、三脚架等" +
+  "拍摄设备；不要分屏拼贴、多宫格、画中画；不要文字、水印、边框或明显接缝。";
 
 function buildPrompt(
   tool: TemplateTool,
@@ -138,6 +152,8 @@ function buildPrompt(
     );
   } else if (tool === "lighting") {
     parts.push(`保持画面内容与构图不变，光效改为${preset.sentence}`);
+  } else if (tool === "panorama") {
+    parts.push(PANO_PROMPT);
   }
   if (srcText) parts.push(`参考画面内容：${srcText}`);
   if (extra.trim()) parts.push(extra.trim());
@@ -181,6 +197,41 @@ export default function ImageTemplateDialog({
   const [extra, setExtra] = useState("");
   const [busy, setBusy] = useState(false);
 
+  // 全景模型预校验（doc/image-panorama-spec.md §2.4）：2:1 画幅只有 seedream
+  // 系支持——项目默认模型可用则跟随；否则明示「已预置 X」钉到目录里第一个
+  // 可用模型（明示不静默换）；目录一个都没有则禁用确认
+  const imagegen = useCanvasStore((s) => s.imagegen);
+  const [catalog, setCatalog] = useState<ImageModelOption[] | null>(null);
+  useEffect(() => {
+    if (tool !== "panorama") return;
+    let cancelled = false;
+    loadImageModels()
+      .then((ms) => {
+        if (!cancelled) setCatalog(ms);
+      })
+      .catch(() => {
+        if (!cancelled) setCatalog([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tool]);
+  const panoGen = useMemo(() => {
+    if (tool !== "panorama" || !catalog?.length) return null;
+    const capable = catalog.filter((m) => (m.aspects ?? []).includes("2:1"));
+    if (!capable.length) return null;
+    const chosen = capable.find((m) => m.id === imagegen.model) ?? capable[0];
+    const resolution = chosen.resolutions.includes("2K")
+      ? "2K"
+      : chosen.default_resolution;
+    return {
+      model: chosen.id,
+      resolution,
+      label: chosen.label,
+      overridden: chosen.id !== imagegen.model,
+    };
+  }, [tool, catalog, imagegen.model]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !busy) onClose();
@@ -196,6 +247,8 @@ export default function ImageTemplateDialog({
 
   const confirm = () => {
     if (busy || !node || !d?.imageUrl) return;
+    // 全景必须已有可用模型（目录无 2:1 条目时禁用，不发任务）
+    if (tool === "panorama" && !panoGen) return;
     setBusy(true);
     const st = useCanvasStore.getState();
     const abs = absolutePosition(st.nodes, node);
@@ -205,13 +258,31 @@ export default function ImageTemplateDialog({
       tool === "texture"
         ? buildTexturePrompt(texPicks, extra, srcText)
         : buildPrompt(tool, preset!, extra, srcText);
-    const suffix = tool === "texture" ? "质感" : (preset?.label ?? "");
+    const suffix =
+      tool === "texture"
+        ? "质感"
+        : tool === "panorama"
+          ? "全景"
+          : (preset?.label ?? "");
     const newId = st.addNode({
       position: { x: abs.x + nw + 80, y: abs.y },
       data: {
         nodeType: "image",
         title: `${d.title || "图片"} · ${suffix}`,
         body: prompt,
+        // 全景两新键（doc/image-panorama-spec.md §2.4）：panorama 标记挂灯箱
+        // 环视查看器；gen 显式钉 2:1 + 预校验模型——不继承项目默认（默认模型
+        // 可能不支持 2:1，且 gen.aspect 显式值防 resolveAutoAspect 吸附参考比例）
+        ...(tool === "panorama" && panoGen
+          ? {
+              panorama: true,
+              gen: {
+                model: panoGen.model,
+                resolution: panoGen.resolution,
+                aspect: "2:1",
+              },
+            }
+          : {}),
       },
     });
     st.connect({ source: nodeId, target: newId });
@@ -233,7 +304,9 @@ export default function ImageTemplateDialog({
         ? Sparkles
         : tool === "texture"
           ? Wand2
-          : Camera;
+          : tool === "panorama"
+            ? Globe2
+            : Camera;
 
   const chipCls = (on: boolean) =>
     `rounded-md border px-2.5 py-1 text-xs transition-colors ${
@@ -281,6 +354,43 @@ export default function ImageTemplateDialog({
                 {p.label}
               </button>
             ))}
+          </div>
+        ) : tool === "panorama" ? (
+          <div className="rounded-md border border-hairline bg-surface-2/60 p-2.5 text-xs leading-relaxed text-text-2">
+            <p>
+              以《{d?.title || "未命名"}》为场景参考，补全四周环境、天空与
+              地面，输出左右边缘无缝衔接的 2:1 球形全景图。
+            </p>
+            {srcText ? (
+              <p className="mt-1 text-[11px] text-text-4">
+                参考内容：{srcText.slice(0, 120)}
+                {srcText.length > 120 ? "…" : ""}
+              </p>
+            ) : null}
+            <p className="mt-1.5 text-[11px]">
+              {catalog === null ? (
+                <span className="text-text-4">正在核对支持 2:1 画幅的模型…</span>
+              ) : panoGen ? (
+                panoGen.overridden ? (
+                  <span className="text-text-3">
+                    已预置 {panoGen.label}（当前默认模型
+                    {` ${
+                      findModelOption(imagegen.model, catalog)?.label ??
+                      imagegen.model
+                    } `}
+                    不支持 2:1 全景）
+                  </span>
+                ) : (
+                  <span className="text-text-4">
+                    按当前默认模型 {panoGen.label} 生成（2:1 · {panoGen.resolution}）
+                  </span>
+                )
+              ) : (
+                <span className="text-danger">
+                  模型目录暂无支持 2:1 画幅的模型（需 seedream 系），无法生成全景
+                </span>
+              )}
+            </p>
           </div>
         ) : tool === "texture" ? (
           <div className="space-y-1.5">
@@ -334,7 +444,7 @@ export default function ImageTemplateDialog({
               type="button"
               className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-surface-1 transition-opacity hover:opacity-90 disabled:opacity-50"
               data-track={`image.${tool}`}
-              disabled={busy}
+              disabled={busy || (tool === "panorama" && !panoGen)}
               onClick={confirm}
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}

@@ -128,6 +128,9 @@ export interface WingNodeData {
    *  跟随项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
    *  分镜表卡可各自指定；生成本卡图片的入口全部读它。aspect 空=自动 */
   gen?: { model: string; resolution: string; aspect?: string };
+  /** 全景卡标记（环视动作产物）：2:1 球形全景，灯箱出「环视」进 PSV 查看器。
+   *  gen.aspect 恒 "2:1"（seedream 系通道，见 doc/image-panorama-spec.md） */
+  panorama?: boolean;
   /** image 卡：考据参考图（参考图调研面板采纳落卡）。出图职责段按
    *  「锁定形制/材质/年代特征」渲染，而非「保留构图」的改图语义 */
   refSource?: "research";
@@ -1419,6 +1422,8 @@ export function summarizeCanvas(
     // 卡上自定画幅（出图面板写的 data.gen.aspect）：聊天重出设定图时
     // LLM 据此在出图工具里带上同款 aspect，不静默丢回类型默认幅面
     const genNote = n.data.gen?.aspect ? `（画幅 ${n.data.gen.aspect}）` : "";
+    // 全景卡标记：agent 可知该图是 2:1 环视全景（描述/重出时保持幅面）
+    const panoNote = n.data.panorama ? "（全景）" : "";
     // 媒体标记 + URL：聊天出图工具的 reference_images 依赖从这里取
     // 带图卡的 URL（缺失曾让该通道无输入可拿）；视频/音频同理标注
     const media: string[] = [];
@@ -1431,7 +1436,7 @@ export function summarizeCanvas(
       n.data.nodeType === "research" && n.data.researchId
         ? `（调研卷宗 ${n.data.researchId}）`
         : "";
-    return `- ${n.id} [${meta.label}] ${title}${genNote}${mediaTag}${researchNote}${shot}${rowCount}${kids}${body}${sel}`;
+    return `- ${n.id} [${meta.label}] ${title}${genNote}${panoNote}${mediaTag}${researchNote}${shot}${rowCount}${kids}${body}${sel}`;
   };
 
   // 连线列清单设上限：大画布连线行会吃光预算（旧版连线永不丢行，

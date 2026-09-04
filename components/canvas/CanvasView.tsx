@@ -2422,6 +2422,23 @@ export default function CanvasView() {
                               closeCtx();
                             }}
                           />
+                          {type === "scene" || type === "image" ? (
+                            <CtxItem
+                              label="全景环视…"
+                              disabled={node?.data.status === "loading"}
+                              onClick={() => {
+                                window.dispatchEvent(
+                                  new CustomEvent(IMAGE_TOOL_EVENT, {
+                                    detail: {
+                                      nodeId: ctxMenu.id,
+                                      tool: "panorama",
+                                    },
+                                  }),
+                                );
+                                closeCtx();
+                              }}
+                            />
+                          ) : null}
                           {type === "character" ? (
                             <CtxItem
                               label="三视图…"

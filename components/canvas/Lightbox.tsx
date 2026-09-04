@@ -3,12 +3,14 @@
 /** 全屏图片灯箱：滚轮/双指缩放、拖拽平移、左右翻页、Esc 关闭；
  *  底部操作条：下载 / 复制图片 / 复制链接 / 新标签打开（对标竞品
  *  novanova 详情弹窗、juben FileViewer）。图片卡放大与 PromptBar
- *  引用 chip 预览共用。 */
-import { useCallback, useEffect, useRef, useState } from "react";
+ *  引用 chip 预览共用。panorama=true 的会话（全景卡打开）多一枚「环视」
+ *  钮：图片区换装 photo-sphere-viewer 球形查看（懒加载，PanoramaViewer）。 */
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import {
   Copy,
   Download,
   ExternalLink,
+  Globe2,
   Link2,
   Loader2,
   X,
@@ -19,6 +21,9 @@ import {
   copyImageUrl,
   downloadMedia,
 } from "@/lib/download";
+
+// 全景查看器懒加载：photo-sphere-viewer（~106KB + three）只在首次点「环视」时进包
+const PanoramaViewer = lazy(() => import("./PanoramaViewer"));
 
 export type LightboxImage = { src: string; title?: string; meta?: unknown };
 
@@ -31,6 +36,7 @@ export function Lightbox({
   onIndex,
   onClose,
   actions,
+  panorama = false,
 }: {
   images: LightboxImage[];
   index: number;
@@ -40,6 +46,8 @@ export function Lightbox({
     item: LightboxImage,
     api: { close: () => void },
   ) => React.ReactNode;
+  /** 全景会话（全景卡打开）：工具区多「环视」钮，图片区可换装球形查看器 */
+  panorama?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -56,6 +64,10 @@ export function Lightbox({
   const [dims, setDims] = useState<{ w: number; h: number } | null>(null);
   const [flash, setFlash] = useState("");
   const [busy, setBusy] = useState("");
+  // 环视模式（换装球形查看器）：记录启用时的 index 派生开关——翻页自动退出
+  // （翻到的下一张可能是普通图），无需 effect 复位
+  const [panoAt, setPanoAt] = useState<number | null>(null);
+  const pano = panoAt === index;
 
   const applyTransform = useCallback(() => {
     const img = imageRef.current;
@@ -187,7 +199,8 @@ export function Lightbox({
       clearInterval(t);
     };
   }, [onClose, go, index, images.length, displayScale]);
-  // 切换图片时复位视图（index 由父组件控制，翻页动作统一走 go）
+  // 切换图片时复位视图（index 由父组件控制，翻页动作统一走 go）；
+  // 环视退出由 panoAt===index 派生自然发生，无需在此复位
   useEffect(() => {
     resetView();
     movedRef.current = false;
@@ -237,37 +250,61 @@ export function Lightbox({
         movedRef.current = false;
       }}
     >
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        ref={imageRef}
-        src={cur?.src}
-        alt={cur?.title}
-        onLoad={() => {
-          const img = imageRef.current;
-          if (!img?.naturalWidth || !img.offsetWidth || !img.offsetHeight) return;
-          setDims({ w: img.naturalWidth, h: img.naturalHeight });
-          const ratio = img.naturalWidth / img.naturalHeight;
-          const boxRatio = img.offsetWidth / img.offsetHeight;
-          cssScaleRef.current =
-            (ratio > boxRatio ? img.offsetWidth : img.offsetHeight * ratio) /
-            img.naturalWidth;
-          resetView();
-        }}
-        onMouseDown={(e) => {
-          if (e.button !== 0 || !pointOnImage(e.clientX, e.clientY)) return;
-          e.preventDefault();
-          setDragging(true);
-          dragStartRef.current = {
-            x: e.clientX - imgPosRef.current.x,
-            y: e.clientY - imgPosRef.current.y,
-          };
-        }}
-        className={`max-h-full max-w-full rounded-lg object-contain shadow-2xl will-change-transform ${
-          dragging ? "cursor-grabbing" : "cursor-grab"
-        }`}
-        onClick={(e) => e.stopPropagation()}
-        draggable={false}
-      />
+      {pano && panorama ? (
+        // 环视模式：图片区换装 PSV 球形查看器。事件全截停——灯箱容器级
+        // wheel 缩放/拖拽/点击关闭会跟查看器的环视拖拽打架（click 冒泡会
+        // 误关灯箱）
+        <div
+          className="h-[82vh] w-[86vw]"
+          onClick={(e) => e.stopPropagation()}
+          onDoubleClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+          onWheel={(e) => e.stopPropagation()}
+        >
+          <Suspense
+            fallback={
+              <div className="grid h-full w-full place-items-center text-sm text-white/70">
+                全景查看器加载中…
+              </div>
+            }
+          >
+            <PanoramaViewer src={cur?.src ?? ""} />
+          </Suspense>
+        </div>
+      ) : (
+        /* eslint-disable-next-line @next/next/no-img-element */
+        <img
+          ref={imageRef}
+          src={cur?.src}
+          alt={cur?.title}
+          onLoad={() => {
+            const img = imageRef.current;
+            if (!img?.naturalWidth || !img.offsetWidth || !img.offsetHeight) return;
+            setDims({ w: img.naturalWidth, h: img.naturalHeight });
+            const ratio = img.naturalWidth / img.naturalHeight;
+            const boxRatio = img.offsetWidth / img.offsetHeight;
+            cssScaleRef.current =
+              (ratio > boxRatio ? img.offsetWidth : img.offsetHeight * ratio) /
+              img.naturalWidth;
+            resetView();
+          }}
+          onMouseDown={(e) => {
+            if (e.button !== 0 || !pointOnImage(e.clientX, e.clientY)) return;
+            e.preventDefault();
+            setDragging(true);
+            dragStartRef.current = {
+              x: e.clientX - imgPosRef.current.x,
+              y: e.clientY - imgPosRef.current.y,
+            };
+          }}
+          className={`max-h-full max-w-full rounded-lg object-contain shadow-2xl will-change-transform ${
+            dragging ? "cursor-grabbing" : "cursor-grab"
+          }`}
+          onClick={(e) => e.stopPropagation()}
+          draggable={false}
+        />
+      )}
       {images.length > 1 ? (
         <>
           <button
@@ -319,9 +356,25 @@ export function Lightbox({
         </button>
         <span className="text-white/40">滚轮缩放 · 拖拽平移</span>
       </div>
-      {/* 操作条（对标竞品详情弹窗）：上下文动作 + 下载/复制图片/复制链接/
-           新标签打开，与关闭聚在右上角同一视觉区 */}
+      {/* 操作条（对标竞品详情弹窗）：环视（全景会话）+ 上下文动作 + 下载/
+           复制图片/复制链接/新标签打开，与关闭聚在右上角同一视觉区 */}
       <div className="absolute right-4 top-4 flex items-center gap-2">
+        {panorama ? (
+          <button
+            type="button"
+            data-tip={pano ? "退出环视" : "环视（720° 拖拽查看）"}
+            aria-label={pano ? "退出环视" : "环视（720° 拖拽查看）"}
+            data-track="lightbox.panorama"
+            className="flex items-center gap-1 rounded-full bg-black/50 px-3 py-1.5 text-xs text-white/90 transition-colors hover:bg-white/20 hover:text-white"
+            onClick={(e) => {
+              e.stopPropagation();
+              setPanoAt((v) => (v === index ? null : index));
+            }}
+          >
+            <Globe2 className="h-4 w-4" />
+            {pano ? "退出环视" : "环视"}
+          </button>
+        ) : null}
         {actions ? (() => {
           const node = actions(cur, { close: onClose });
           return node ? (

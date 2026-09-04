@@ -71,7 +71,9 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Seedream 4.0",
         "tag": "中文影视审美强 · 支持参考图 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
-        "aspects": DEFAULT_ASPECTS,
+        # 2:1 全景幅面（2026-09-04 探针实测：2K 2880x1440 / 4K 4320x2160，
+        # 输出严格 2:1，见 doc/image-panorama-spec.md）
+        "aspects": DEFAULT_ASPECTS + ["2:1"],
         "default_resolution": "1K",
         "max_references": 4,
     },
@@ -80,7 +82,8 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Seedream 4.5",
         "tag": "旗舰画质 · 2K/4K（方图与 4:3 幅面需 4K）",
         "resolutions": ["2K", "4K"],
-        "aspects": DEFAULT_ASPECTS,
+        # 2:1 全景幅面（2026-09-03 2K 探通；2026-09-04 4K 4320x2160 严格 2:1）
+        "aspects": DEFAULT_ASPECTS + ["2:1"],
         "default_resolution": "2K",
         "max_references": 4,
     },
@@ -89,8 +92,9 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
         "label": "Seedream 5.0 Pro",
         "tag": "多图融合 · 最多 10 张参考图合成 · 1K/2K",
         "resolutions": ["1K", "2K"],
-        # responses 通道显式像素上限：21:9 全档超限，不收录
-        "aspects": ["16:9", "9:16", "1:1", "4:3", "3:4"],
+        # responses 通道显式像素上限：21:9 全档超限，不收录；2:1 全景
+        # （2026-09-04 探针：1K 2048x1024 / 2K 2880x1440 均严格 2:1 且在限内）
+        "aspects": ["16:9", "9:16", "1:1", "4:3", "3:4", "2:1"],
         "default_resolution": "1K",
         "max_references": 10,
     },
