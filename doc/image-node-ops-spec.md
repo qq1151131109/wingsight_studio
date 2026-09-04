@@ -306,3 +306,39 @@ seek→上传→图卡连线）**已存在**，不再重做。
 
 **第五波候选**（已盘点未做）：A/B 对比节点（跨卡滑杆对比）、两遍精修
 高清增强（线稿锚→精修，需两步生成编排）、ssvip 入目录后的透明背景全链。
+
+## 10. 第六波：三路竞品再扫描 + 六件落地（2026-09-04）
+
+三个 Explore agent 并行扫 8 竞品（open-storyboard/novanova/viedeo/open-ai-canvas/
+ai-moive-studio/AIGCCanvasFlow/Storyboard-Copilot/OpenLovart），与本仓已有能力
+逐项核实去重（蒙版涂抹重绘/看图反推/机身镜头档案/素材库搜索/多选浮动条
+竞品报告里的「缺口」其实我们已有）。落地六件：
+
+- **连续分镜**（open-storyboard continuousStoryboard）：多功能第六项，5x5
+  二十五格连续场景推进网格，纯提示词模板
+- **扩图 outpaint**（open-storyboard outpainting）：方向三预设 等比/横向/纵向
+  （zh 模板忠实移植）+ 扩图内容补充描述；ImageTemplateDialog 管线
+- **任意 NxM 切图**（novanova split-dialog 泛化）：九宫格 3x3 → 行列 1-12
+  可调，SplitGridDialog 网格预览线 + 产出计数 + 单块像素估算
+- **擦除去物**（open-storyboard erase）：MaskEditDialog 双模式（改内容/擦除），
+  擦除态免提示词——固定去物模板（涂什么删什么，背景按周围纹理重建）
+- **按连线整理**（open-ai-canvas flow 排列）：store.tidyNodesFlow 最长路径
+  分层 → 上游在左下游在右同列纵堆；多选工具条入口。对齐吸附/居中/等距
+  由并行会话同期落地（GuideOverlay + ALIGN_MENU）
+- **AI 艺术评审**（open-ai-canvas art-critique rubric 改写）：四维
+  （构图/色彩/光线/比例结构）一次视觉调用评完，只报真问题不凑数；
+  script_review 基建同范式（image_review_jobs/findings 两表 + start/get/
+  dismiss/cancel 端点 + 卡锚 imageReviewJobId 续链 + master-detail 弹窗），
+  flow `image-art-review`（ArtReviewComponent，gpt-5.6-luna 视觉经 DMX）
+
+第六波工程教训（flow JSON 手造三坑，全部在 build 报错/静默失败中排出）：
+① 组件代码必须写进 `template.code.value`——写到节点级 `node.code` 无效且
+  langflow 会用 template.code（deepcopy 来源的旧代码）执行；
+② `edge.data.sourceHandle/targetHandle` 必须是 dict（顶层同名键才是 œ 串）——
+  用字符串时 graph._build_edges 报 `string indices must be integers`；
+③ `template._type` 填基类名 `Component`——填自定义类名报
+  「No base type provided for vertex」。另：组件内 httpx 下载图片 URL 必须
+  绝对地址，agent 侧经 skills._normalize_asset_url 换算 + api_key tweak
+  必传（DMX 401）。
+回归 90/90；E2E 真跑评审（四合院全景图 → 2 条 medium findings，维度聚合
+与 dismiss 计数正确）。

@@ -261,10 +261,12 @@ async def _run_task(job_id: str, image_url: str, card_title: str, model: str) ->
         _check_cancelled(job_id)
         _append_log(job_id, "info", "评审任务启动（四维一次评完）")
         _update_row(job_id, status="running")
+        # 相对 /agent-service/assets/ → agent 本机绝对 URL（组件 httpx 要下载）
+        abs_url = skills._normalize_asset_url(image_url)
         tweaks: dict[str, Any] = {
             "ArtReview-main": {
                 "payload": json.dumps(
-                    {"image_url": image_url, "card_title": card_title},
+                    {"image_url": abs_url, "card_title": card_title},
                     ensure_ascii=False,
                 ),
                 "api_key": skills.DMX_API_KEY,
