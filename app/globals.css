@@ -594,10 +594,13 @@ cpk-web-inspector {
 
 /* 侧栏骨架自给：Turbopack 与包内 Tailwind 工具类（cpk:）层叠次序不稳，
    关键定位不依赖它们——直接钉死右缘全高（与 v2 出厂观感一致） */
-aside.copilotKitSidebar {
+/* 特异性带 [data-copilotkit][data-copilot-sidebar]：v2 经 adopted stylesheet
+   （不在 document.styleSheets，DevTools 外不可见）注入同分 !important 的
+   宽度规则且层叠在后取胜——曾让宽度始终钉死 420px，整块骨架同罪 */
+aside[data-copilotkit][data-copilot-sidebar].copilotKitSidebar {
     position: fixed !important;
     inset: 0 0 0 auto !important;
-    width: min(var(--sidebar-width, 420px), 100vw) !important;
+    width: min(var(--ws-chat-w, var(--sidebar-width, 420px)), 100vw) !important;
     height: 100dvh !important;
     max-height: 100dvh !important;
     z-index: 1200 !important;
@@ -613,6 +616,35 @@ aside.copilotKitSidebar {
 aside.copilotKitSidebar[aria-hidden="true"] {
     visibility: hidden;
     transition: visibility 0s 300ms;
+}
+
+/* 侧栏内缘拖拽调宽条（ThemedSidebar 渲染，拖动改 --sidebar-width）：
+   仅在侧栏打开时出现——:has 探测打开态（aria-hidden="false"），
+   免去跨组件同步开合状态的管道 */
+.ws-chat-resizer {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    right: calc(var(--ws-chat-w, var(--sidebar-width, 420px)) - 3px);
+    width: 6px;
+    z-index: 1201;
+    cursor: col-resize;
+    background: transparent;
+    touch-action: none;
+}
+.ws-chat-resizer:hover,
+.ws-chat-resizer.dragging {
+    background: var(--color-accent-soft);
+}
+.ws-chat-resizer.dragging::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    /* 拖动中拦截整屏 hover/选中，画布不响应 */
+    cursor: col-resize;
+}
+body:not(:has(aside.copilotKitSidebar[aria-hidden="false"])) .ws-chat-resizer {
+    display: none;
 }
 aside.copilotKitSidebar[aria-hidden="false"] {
     visibility: visible;

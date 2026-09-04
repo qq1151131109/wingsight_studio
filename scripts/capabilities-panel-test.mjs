@@ -173,7 +173,27 @@ if (await createBtn.isVisible().catch(() => false)) {
   });
 }
 
-// 7) console 干净
+// 7) 侧栏内缘拖拽调宽（先 Esc 关掉技能面板，拖 80px 验宽度 + 持久化）
+await page.keyboard.press("Escape");
+await page.waitForTimeout(400);
+const aside = page.locator("aside.copilotKitSidebar");
+if (await aside.isVisible().catch(() => false)) {
+  const b1 = await aside.boundingBox();
+  const edgeX = b1.x + b1.width; // 右泊：左缘 = innerWidth - width ≈ b1.x，拖点取 b1.x
+  await page.mouse.move(b1.x, 380);
+  await page.mouse.down();
+  await page.mouse.move(b1.x - 80, 380, { steps: 8 });
+  await page.mouse.up();
+  const b2 = await aside.boundingBox();
+  check("拖拽内缘可调宽", b2.width >= b1.width + 40, `${Math.round(b1.width)}→${Math.round(b2.width)}`);
+  const saved = await page.evaluate(() => localStorage.getItem("wingsight_sidebar_width"));
+  check("宽度已持久化", Boolean(saved), saved ?? "");
+  await page.evaluate(() => localStorage.removeItem("wingsight_sidebar_width"));
+} else {
+  check("侧栏在场（拖拽前置）", false);
+}
+
+// 8) console 干净
 const realErrors = hasReal404 ? consoleErrors : consoleErrors.filter((e) => !e.startsWith("Failed to load resource"));
 check("页面 console 无错误", realErrors.length === 0 && notFound.length === 0, (realErrors[0] ?? notFound[0] ?? "").slice(0, 120));
 

@@ -13,7 +13,7 @@
  *  - 主题：v2 的 shadcn 式语义变量在 globals.css 里整体映射到米黄纸感 token
  */
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import {
   CopilotSidebar,
   useConfigureSuggestions,
@@ -40,6 +40,9 @@ function asSlot<C>(component: unknown): C {
 function NullSlot(): null {
   return null;
 }
+
+/** 侧栏宽度记忆键（拖拽内缘调宽，globals.css 的 --sidebar-width 同源） */
+const WS_WIDTH_KEY = "wingsight_sidebar_width";
 
 const SUGGESTIONS = [
   {
@@ -113,8 +116,68 @@ export default function ThemedSidebar() {
   const suggestionsConfig = useMemo(() => ({ suggestions: SUGGESTIONS }), []);
   useConfigureSuggestions(suggestionsConfig);
 
+  // 侧栏内缘拖拽调宽：改 --ws-chat-w（globals.css 骨架优先读它、以 v2 自带的
+  // --sidebar-width 兜底——v2 把该变量设在 aside 元素上，root 同名会被遮蔽），
+  // localStorage 记忆；命令式 DOM 操作不走 React 状态
+  const resizerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const saved = window.localStorage.getItem(WS_WIDTH_KEY);
+    if (saved) {
+      document.documentElement.style.setProperty("--ws-chat-w", saved);
+      // 侧栏常驻 DOM（关闭仅 aria-hidden），稍等首帧后还原内联宽度
+      const t = window.setTimeout(() => {
+        (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)
+          ?.style.setProperty("width", saved, "important");
+      }, 400);
+      return () => window.clearTimeout(t);
+    }
+    const el = resizerRef.current;
+    if (!el) return;
+    const clamp = (w: number) =>
+      Math.min(Math.max(w, 340), Math.min(760, window.innerWidth * 0.95));
+    // v2 经 adopted stylesheet 打的 !important 宽度规则会吃掉任何文档层
+    // 选择器（特异性提档也没用）；内联 !important 是唯一稳定赢面（实测），
+    // 同时写 root 变量让 .ws-chat-resizer 条同步贴边
+    const apply = (w: number) => {
+      const px = `${Math.round(w)}px`;
+      document.documentElement.style.setProperty("--ws-chat-w", px);
+      (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)
+        ?.style.setProperty("width", px, "important");
+    };
+    let dragging = false;
+    const onDown = (e: PointerEvent) => {
+      dragging = true;
+      el.classList.add("dragging");
+      el.setPointerCapture(e.pointerId);
+      apply(clamp(window.innerWidth - e.clientX));
+    };
+    const onMove = (e: PointerEvent) => {
+      if (dragging) apply(clamp(window.innerWidth - e.clientX));
+    };
+    const onUp = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      el.classList.remove("dragging");
+      el.releasePointerCapture(e.pointerId);
+      const w = clamp(window.innerWidth - e.clientX);
+      apply(w);
+      window.localStorage.setItem(WS_WIDTH_KEY, `${Math.round(w)}px`);
+    };
+    el.addEventListener("pointerdown", onDown);
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
+    return () => {
+      el.removeEventListener("pointerdown", onDown);
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+    };
+  }, []);
+
   return (
     <div className="contents">
+      <div ref={resizerRef} className="ws-chat-resizer" aria-hidden="true" />
       <CopilotSidebar
         agentId="default"
         defaultOpen={false}
