@@ -215,26 +215,33 @@ try {
   const counter = await page.getByText(/参考 \d\/\d/).textContent();
   check("计数口径=真实序列（3/4）", counter?.trim() === "参考 3/4", counter?.trim() ?? "none");
 
-  // 3. @ 候选：已连线两张置顶（已连线标记），且旧卡不再挤出它们
+  // 3. @ 候选分组：已连线独立成组（tab 直达，组内含两张设定图带已连线标记）；
+  //    旧「混排截断挤卡」问题由分组根治
   await page.locator('[contenteditable="true"]').first().click();
   await page.keyboard.type("@");
   await page.waitForTimeout(300);
-  const badgeCount = await page.locator("text=已连线").count();
+  await page.locator('button[aria-label^="分组 已连线"]').click();
+  await page.waitForTimeout(200);
+  // 点 tab 后焦点在按钮上：还回编辑器，Escape 才不会冒泡成「清空选区」
+  await page.locator('[contenteditable="true"]').first().click();
+  await page.waitForTimeout(150);
+  const badgeCount = await page
+    .locator('.absolute.bottom-full button.py-1', { hasText: "已连线" })
+    .count();
   check("候选已连线标记 ×2", badgeCount === 2, `count=${badgeCount}`);
   const rows = await page
-    .locator('button:has-text("已连线")')
+    .locator(".absolute.bottom-full button.px-1\\.5")
     .allTextContents();
   check(
     "已连线组=女主/男主设定图",
     rows.some((t) => t.includes("女主设定图")) && rows.some((t) => t.includes("男主设定图")),
     rows.join(" | ").slice(0, 80),
   );
-  const allRows = await page
-    .locator("div.absolute button", { hasText: "图片" })
-    .allTextContents();
-  const fi = allRows.findIndex((t) => t.includes("女主设定图"));
-  const oi = allRows.findIndex((t) => t.includes("旧卡0"));
-  check("已连线卡排在旧建卡之前", fi !== -1 && (oi === -1 || fi < oi), `F=${fi} old=${oi}`);
+  check(
+    "已连线组仅含连线卡（旧建卡各归类型组）",
+    !rows.some((t) => t.includes("旧卡")),
+    rows.join(" | ").slice(0, 60),
+  );
   await page.keyboard.press("Escape");
 
   // 4. 契约推断：图片卡 + 带图参考 + 人物剧情 → shot（旧 scene），无改图模板
@@ -311,9 +318,9 @@ try {
   const counter3 = await page.getByText(/参考 \d\/\d/).textContent();
   check("载回恢复 3/4", counter3?.trim() === "参考 3/4", counter3?.trim() ?? "none");
 
-  // 9. 模式标签：带本卡图 = 编辑模式
-  const mode = await page.locator('span[data-tip^="编辑模式：本卡原图参与参考"]').count();
-  check("模式标签=编辑模式", mode === 1);
+  // 9. 模式标签：带本卡图 = 改图（原「编辑模式」已改名说人话）
+  const mode = await page.locator('span[data-tip^="改图：保留本卡原图"]').count();
+  check("模式标签=改图", mode === 1);
 
   // 10. 按设定重掷：无参考 + description=标题+设定正文
   await page.locator('button[aria-label="按设定重新生成（纯文生图新图）"]').click();
@@ -349,8 +356,8 @@ try {
   const n13 = await page.evaluate(() => window.__wsCanvasStore.getState().nodes.length);
   await select("upCard");
   check(
-    "模式标签=派生改图",
-    (await page.locator('span[data-tip^="派生改图：提交生成连线的新卡"]').count()) === 1,
+    "模式标签=派生新卡",
+    (await page.locator('span[data-tip^="提交后在本卡右侧生成连线新卡"]').count()) === 1,
   );
   await typePrompt("把背景换成雨夜霓虹");
   await submit();
@@ -395,6 +402,85 @@ try {
     String(s13?.description ?? "").includes("图1=《上传图》"),
     String(s13?.description ?? "").slice(0, 60),
   );
+
+  // 14. 参与清单（所显即所发）：本卡设定/画风 chip 可见、× 摘除当次生效、
+  //     有指令时设定注入 visualNotes（旧「有指令+无参考」静默丢弃暗坑已修）
+  await select("shot");
+  const bodyChip = page.locator('button[aria-label="移除本卡设定"]');
+  check("J1 本卡设定 chip 可见", (await bodyChip.count()) === 1);
+  await typePrompt("雨夜特写");
+  await submit();
+  const s14a = lastPayload?.shots?.[0];
+  check(
+    "J2 有指令时设定注入 visualNotes（暗坑修复）",
+    String(s14a?.visualNotes ?? "").includes("本卡设定") &&
+      String(s14a?.visualNotes ?? "").includes("霓虹夜景"),
+    String(s14a?.visualNotes ?? "").slice(0, 60),
+  );
+  await bodyChip.click();
+  await page.waitForTimeout(300);
+  await typePrompt("雨夜特写二");
+  await submit();
+  const s14b = lastPayload?.shots?.[0];
+  check(
+    "J3 摘除设定后 visualNotes 不含本卡设定",
+    !String(s14b?.visualNotes ?? "").includes("本卡设定") &&
+      !String(s14b?.visualNotes ?? "").includes("霓虹夜景"),
+    String(s14b?.visualNotes ?? "").slice(0, 60),
+  );
+  await page.locator('button[aria-label="载回本卡设定"]').click();
+  await page.waitForTimeout(300);
+  const styleChipBtn = page.locator('button[aria-label="移除全局画风"]');
+  check("J4 画风 chip 可见", (await styleChipBtn.count()) === 1);
+  await styleChipBtn.click();
+  await page.waitForTimeout(300);
+  await typePrompt("雨夜特写三");
+  await submit();
+  check(
+    "J5 摘除画风后 visualNotes 无全局画风",
+    !String(lastPayload?.shots?.[0]?.visualNotes ?? "").includes("全局视觉风格"),
+  );
+  await page.locator('button[aria-label="载回全局画风"]').click();
+  await page.waitForTimeout(300);
+  await typePrompt("雨夜特写四");
+  await submit();
+  check(
+    "J6 载回画风恢复注入",
+    String(lastPayload?.shots?.[0]?.visualNotes ?? "").includes("全局视觉风格"),
+  );
+
+  // 15. chip 点击行为（竞品共识：预览/插入引用/定位/打开设置）
+  // J7 画风 chip 点击 → 打开画风设置弹窗
+  await page.locator('button[aria-label="打开画风设置"]').click();
+  await page.waitForTimeout(400);
+  check("J7 画风 chip 点击弹画风设置", (await page.getByText("项目画风").count()) > 0);
+  await page.keyboard.press("Escape");
+  await page.mouse.click(300, 850);
+  await page.waitForTimeout(300);
+  // J8 本卡原图标签点击 → 插入 @ 引用 chip 进提示词
+  await select("shot");
+  const selfLabel = page.locator('button[aria-label="插入本卡原图引用"]');
+  check("J8a 本卡原图插入引用钮可见", (await selfLabel.count()) === 1);
+  await page.locator('[contenteditable="true"]').first().click();
+  await selfLabel.click();
+  await page.waitForTimeout(300);
+  check(
+    "J8b 点击插入 @本卡 chip",
+    (await page.locator('.ws-mention[data-mention-id="shot"]').count()) === 1,
+  );
+  // J9 快照 chip 点击 → 灯箱预览（shot 卡有 genShot 快照参考）
+  const snapBtn = page.locator('button[aria-label="预览快照图"]');
+  if ((await snapBtn.count()) > 0) {
+    await snapBtn.first().click();
+    await page.waitForTimeout(300);
+    check(
+      "J9 快照 chip 点击开灯箱预览",
+      (await page.evaluate(() => Boolean(document.querySelector(".fixed.inset-0.z-\\[1300\\]")))) === true,
+    );
+    await page.keyboard.press("Escape");
+  } else {
+    check("J9 快照 chip 点击开灯箱预览", true, "本次序列无快照 chip（可跳过）");
+  }
 } catch (e) {
   console.error("执行中断：", e.message);
 } finally {

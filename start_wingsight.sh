@@ -72,6 +72,8 @@ do_status() {
   web_up "$WEB_PORT" && echo "✓ 前端   :$WEB_PORT" || echo "✗ 前端未运行"
   curl -s -o /dev/null --max-time 2 http://127.0.0.1:7860/health 2>/dev/null \
     && echo "✓ langflow :7860（langflow/ 内置，scripts/setup-langflow.sh 管理）" || echo "⚠ langflow :7860 未运行（拆解/出图需要它，跑 ./scripts/setup-langflow.sh）"
+  curl -s --max-time 2 http://127.0.0.1:1200/healthz 2>/dev/null | grep -q ok \
+    && echo "✓ rsshub   :1200（docker 容器 rsshub，选题池新闻 RSS 通道）" || echo "⚠ rsshub :1200 未运行（选题池新闻 RSS 降级为原生源，docker start rsshub）"
 }
 
 case "${1:-start}" in

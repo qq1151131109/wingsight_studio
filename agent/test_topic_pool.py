@@ -119,20 +119,21 @@ WT = """
 * [[前44年]]：西塞罗开始发表一系列演讲，号召反对马克·安东尼。
 * [[1192年]]：“狮心王”理查一世 (英格蘭)|理查一世与萨拉丁签订{{cite|迦法条约}}<ref>xx</ref>，结束第三次十字军东征。
 * [[1945年]]：日本签署降伏文书，第二次世界大战正式结束。
-* 2020年：某近年的事，不满 20 年不进周年池。
+* 2020年：某近年的事，不满 10 年不进周年池。
 * [[1986年]]：某逢一事件，非逢五逢十不进周年池。
+* 2016年：某逢十事件，十周年即节点（放宽后进池）。
 * 太短的行。
 
 ==节假日==
 * 不该被解析的行
 """
 events = wikiday.parse_day_wikitext(WT)
-expect([e["year"] for e in events] == [-44, 1192, 1945, 2020, 1986], f"应解析 5 条年份行：{events}")
+expect([e["year"] for e in events] == [-44, 1192, 1945, 2020, 1986, 2016], f"应解析 6 条年份行：{events}")
 expect(all("[[" not in e["text"] and "<ref" not in e["text"] for e in events), "文本应剥维基标记")
 kept = wikiday.anniversary_filter(events, on_year=2026)
 ages = {e["age"] for e in kept}
-# 前44年→2070 ✓、1986→40 ✓；1192→834 ✗、1945→81 ✗（非 5 的倍数）、2020→6 ✗（不足 20 年）
-expect(ages == {2070, 40}, f"2026 年应只留逢五逢十且 ≥20 年：{sorted(ages)}")
+# 前44年→2070 ✓、1986→40 ✓、2016→10 ✓（十周年放宽）；1192→834 ✗、1945→81 ✗（非 5 的倍数）、2020→6 ✗（不足 10 年）
+expect(ages == {2070, 40, 10}, f"2026 年应只留逢五逢十且 ≥10 年：{sorted(ages)}")
 
 cache = wikiday.load_window_cache(wikiday.build_window_cache(wikiday.date(2026, 9, 2), kept))
 expect(cache["start"] == "2026-09-02" and cache["events"] == kept, "窗口缓存应回读一致")
@@ -339,6 +340,12 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
                 "vertical": vertical,
                 "tags": ["测试标签"],
                 "sourceIndex": j,
+                "episodes": [
+                    {"title": "开局", "focus": f"{d['name']}的起点与第一现场"},
+                    {"title": "转折", "focus": "关键证据改写走向"},
+                ],
+                "benchmarks": [{"title": "我在故宫修文物", "note": "同靠档案与物件说话"}],
+                "audience": "B站知识区，3×25分钟",
             })
         out.append({"title": "无源卡", "hook": "h", "vertical": "history", "tags": []})  # 缺 arc → 成立性闸拒绝
         out.append({"title": "垂类卡", "hook": "h", "vertical": "sports", "sourceIndex": 0})  # 非法垂类 → 跳过
@@ -353,6 +360,9 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
             "scale": "series",
             "arc": "题眼：冷案重启如何靠新技术与新证人破局；素材：符合规格的告破悬案集合；呈现：每集一案；弧线：一桩冷案重启要跨过什么",
             "vertical": "crime", "tags": ["悬案"], "sourceIndex": 1,
+            "episodes": [{"title": "积案攻坚", "focus": "一起沉年积案如何重启侦破"}],
+            "benchmarks": [{"title": "人生第一次", "note": "同是多单元串珠网格"}],
+            "audience": "腾讯视频悬疑档，6×30分钟",
         })
         return json.dumps(out, ensure_ascii=False)
     if flow_id == "f-series":
@@ -430,12 +440,13 @@ async def fake_search(query: str) -> dict:
     return {
         "query": query,
         "results": [
-            {"title": title, "url": "https://example.com/a", "snippet": "snip", "provider": "tencent"},
+            # 每查询独立 URL（语料合并层按 URL 去重，共用 URL 会折叠成一条）
+            {"title": title, "url": f"https://example.com/{abs(hash(query)) & 0xFFFFFF:x}", "snippet": "snip", "provider": "tencent"},
         ],
     }
 
 
-# 管线测试离线化：周年窗口与播客源打空桩（多源聚合在专测里覆盖）
+# 管线测试离线化：周年窗口与播客/新闻 RSS 源打空桩（多源聚合在专测里覆盖）
 async def _empty_window(start=None, days=45, max_concurrency=8):
     return []
 
@@ -447,7 +458,81 @@ async def _empty_feeds():
 wikiday.anniversary_window = _empty_window
 podcastfeed.fetch_all_feeds = _empty_feeds
 
+import newsfeed
+
+newsfeed.fetch_all_feeds = _empty_feeds
+
+# RSS 解析：RSS 2.0 与 Atom 两种形态（newsfeed 通道的离线凭据）
+_rss_xml = """<?xml version="1.0"?><rss version="2.0"><channel>
+<item><title>考古新发现：某遗址出土千件文物</title><link>https://e.com/a1</link><description>&lt;p&gt;国家文物局通报&lt;/p&gt;</description></item>
+<item><title></title><link>https://e.com/a2</link></item>
+</channel></rss>"""
+_parsed = newsfeed.parse_feed(_rss_xml, "测试源")
+expect(len(_parsed) == 1 and _parsed[0]["url"] == "https://e.com/a1", "RSS 2.0 解析应取有标题条目并剥 HTML")
+expect(_parsed[0]["snippet"] == "国家文物局通报" and _parsed[0]["feed"] == "测试源", "RSS 解析应清 snippet 并带源名")
+_atom_xml = """<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom">
+<entry><title>雪豹归来</title><link href="https://e.com/b1"/><summary>祁连山再现雪豹</summary></entry>
+</feed>"""
+_parsed = newsfeed.parse_feed(_atom_xml, "Atom源")
+expect(len(_parsed) == 1 and _parsed[0]["url"] == "https://e.com/b1", "Atom 解析应从 link href 取 URL")
+
 asyncio.run(run_zhihu_discussion_signal())
+
+
+# ---------- YouTube 频道订阅 + 微博特稿号时间线（fake client，离线） ----------
+async def run_youtube_weibo_channels() -> None:
+    os.environ["TIKHUB_API_KEY"] = "test-key"
+
+    class FakeClient:
+        async def youtube_channel_id(self, name: str):
+            return "UCfakenatgeo" if name == "National Geographic" else None
+
+        async def youtube_channel_videos(self, cid: str, limit: int = 10):
+            return [
+                {"video_id": f"{cid}-v1", "title": f"{cid} 新片预告", "view_count": "12万",
+                 "published_time": "2天前", "url": f"https://youtu.be/{cid}"},
+            ]
+
+        async def weibo_user_search(self, query: str):
+            return [{"uid": "1", "name": "别的高仿号", "fans": 99}, {"uid": "2", "name": query, "fans": 3}]
+
+        async def weibo_user_timeline(self, uid: str, limit: int = 10):
+            assert uid == "2", "微博号应精确名命中（粉丝数不可靠不作依据）"
+            return [
+                {"text": "新的特稿：守塔人四十年", "raw_html": '转发 <a href="https://mp.weixin.qq.com/s/abc123">原文</a>',
+                 "url": "https://weibo.com/2/xyz", "created_at": "刚刚"},
+                {"text": "招聘启事", "raw_html": "", "url": "https://weibo.com/2/abc", "created_at": "1天前"},
+            ]
+
+    import tikhub as tikhub_mod
+
+    real_client = tikhub_mod.TikHubClient
+    tikhub_mod.TikHubClient = lambda **kw: FakeClient()
+    try:
+        curator = TopicCurator(flow_runner=fake_flow_runner, search=fake_search)
+        yt = await curator._collect_youtube_doc_channels()
+        expect(
+            len(yt) == 4
+            and any(s["source"] == "YouTube:National Geographic" for s in yt)
+            and all(s["signal_type"] == "benchmark" for s in yt),
+            "YT 频道订阅应产出 benchmark 信号（未内置 id 的频道按名解析+缓存）",
+        )
+        wb = await curator._collect_weibo_accounts()
+        expect(
+            len(wb) == 6 and wb[0]["source"] == "微博:极昼工作室" and wb[0]["signal_type"] == "validated",
+            "微博特稿号时间线应产出 validated 信号",
+        )
+        expect(
+            wb[0]["url"] == "https://mp.weixin.qq.com/s/abc123",
+            "微博正文里的公众号链接应优先作为出处 URL",
+        )
+    finally:
+        tikhub_mod.TikHubClient = real_client
+        del os.environ["TIKHUB_API_KEY"]
+
+
+asyncio.run(run_youtube_weibo_channels())
+print("YT 频道订阅与微博特稿号 ✓")
 
 
 async def run_signal_matrix() -> None:
@@ -534,6 +619,13 @@ async def run_ideate() -> None:
     series = next(c for c in cards if "单元选集" in c["tags"])
     expect(len(series["heatEvidence"]) == 3, f"选集卡原型出处应为 3 个候选单元：{len(series['heatEvidence'])}")
     expect(all(u["url"] for u in series["heatEvidence"]), "候选单元必须带真实链接")
+    # 组题透传：收敛层产出的策划案三件随选集卡落库（分集=规划的单元槽位）
+    expect(len(series["episodes"]) == 1 and series["audience"], "选集卡应透传收敛层的分集构想与观众定位")
+    # 迷你策划案三件：单体卡带分集构想/对标片/目标观众（选集卡由组题路径产出，不在此列）
+    singles = [c for c in cards if "单元选集" not in c["tags"]]
+    expect(all(len(c["episodes"]) == 2 and c["episodes"][0]["focus"] for c in singles), "生料卡应带分集构想（标题+聚焦）")
+    expect(all(len(c["benchmarks"]) == 1 and c["benchmarks"][0]["note"] for c in singles), "生料卡应带对标片（片名+差异）")
+    expect(all(c["audience"] == "B站知识区，3×25分钟" for c in singles), "生料卡应带目标观众定位")
 
     # 当日题眼清单：落卡即记、同题去重（fake 的题眼只有 3 个方向 + 1 系列）
     themes = json.loads(store.get_setting("topic_pool_ideate_themes") or "{}").get("themes") or []

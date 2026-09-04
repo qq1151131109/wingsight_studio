@@ -220,16 +220,24 @@ async def web_search(query: str) -> dict[str, Any]:
         *(_search_provider(name, query) for name in _enabled_providers()),
         return_exceptions=True,
     )
-    merged: list[dict[str, str]] = []
+    # 轮转交错归并：消费侧普遍 [:N] 截断，顺序 extend 会让前排通道独占名额、
+    # 后排通道整段被截掉（tencent 10 条在前 = sonar 全灭的事故）
+    streams: list[list[dict[str, str]]] = []
     ok_any = False
-    for name, outcome in zip(_enabled_providers(), outcomes):
+    for outcome in outcomes:
         if isinstance(outcome, BaseException):
-            logger.warning("web_search 通道失败 provider=%s query=%s: %s", name, query[:60], str(outcome)[:200])
+            logger.warning("web_search 通道失败 query=%s: %s", query[:60], str(outcome)[:200])
             continue
         ok_any = True
-        merged.extend(outcome)
+        if outcome:
+            streams.append(outcome)
     if not ok_any:
         raise RuntimeError(f"全部搜索通道不可用（query={query[:60]}）")
+    merged: list[dict[str, str]] = []
+    for i in range(max((len(s) for s in streams), default=0)):
+        for s in streams:
+            if i < len(s):
+                merged.append(s[i])
     return {"query": query, "results": merged}
 
 

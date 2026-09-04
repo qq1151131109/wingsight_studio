@@ -233,11 +233,13 @@ class TikHubClient:
         self.timeout = timeout
         self.transport = transport
 
-    async def _get_json(self, client: httpx.AsyncClient, path: str) -> dict[str, Any]:
+    async def _get_json(
+        self, client: httpx.AsyncClient, path: str, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         last_error: Exception | None = None
         for attempt in range(_ATTEMPTS):
             try:
-                response = await client.get(path)
+                response = await client.get(path, params=params)
                 response.raise_for_status()
                 return response.json()
             except Exception as exc:  # noqa: BLE001 - 重试后仍失败由调用方记录
@@ -294,3 +296,112 @@ class TikHubClient:
         ) as client:
             envelope = await self._get_json(client, "/api/v1/zhihu/web/fetch_hot_list")
         return parse_zhihu_hot(envelope)[:limit]
+
+    async def fetch_bilibili_hot(self, limit: int = 20) -> list[dict[str, Any]]:
+        """B站热搜（纪录片主场的事件热度信号）：keyword + heat_score，1 请求。"""
+        headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": _BROWSER_UA, "Accept": "application/json"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=self.timeout, transport=self.transport
+        ) as client:
+            envelope = await self._get_json(client, "/api/v1/bilibili/web/fetch_hot_search", params={"limit": limit})
+        try:
+            lst = (((envelope.get("data") or {}).get("data") or {}).get("trending") or {}).get("list") or []
+        except AttributeError:
+            lst = []
+        out: list[dict[str, Any]] = []
+        for it in lst:
+            kw = str(it.get("keyword") or it.get("show_name") or "").strip()
+            if kw:
+                out.append({"keyword": kw, "heat": it.get("heat_score") or 0})
+        return out[:limit]
+
+    # ---------- YouTube（对标片订阅：国际纪录片厂牌官方频道） ----------
+
+    async def youtube_channel_id(self, channel_name: str) -> str | None:
+        """按频道名解析 channel_id（多词名可能解析不到，调用方需容忍 None）。"""
+        headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": _BROWSER_UA, "Accept": "application/json"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=self.timeout, transport=self.transport
+        ) as client:
+            envelope = await self._get_json(
+                client, "/api/v1/youtube/web/get_channel_id", params={"channel_name": channel_name}
+            )
+        data = envelope.get("data") or {}
+        return str(data.get("channel_id") or data.get("id") or "").strip() or None
+
+    async def youtube_channel_videos(self, channel_id: str, limit: int = 10) -> list[dict[str, Any]]:
+        """频道最新视频：[{video_id, title, view_count, published_time, url}]。"""
+        headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": _BROWSER_UA, "Accept": "application/json"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=self.timeout, transport=self.transport
+        ) as client:
+            envelope = await self._get_json(
+                client, "/api/v1/youtube/web_v2/get_channel_videos", params={"channel_id": channel_id}
+            )
+        videos = (envelope.get("data") or {}).get("videos") or []
+        out: list[dict[str, Any]] = []
+        for v in videos:
+            title = str(v.get("title") or "").strip()
+            if not title:
+                continue
+            out.append(
+                {
+                    "video_id": str(v.get("video_id") or ""),
+                    "title": title,
+                    "view_count": str(v.get("view_count") or ""),
+                    "published_time": str(v.get("published_time") or ""),
+                    "url": str(v.get("url") or (f"https://www.youtube.com/watch?v={v.get('video_id')}" if v.get("video_id") else "")),
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out
+
+    # ---------- 微博（特稿号时间线：公众号文章的微博镜像） ----------
+
+    async def weibo_user_search(self, query: str) -> list[dict[str, Any]]:
+        """按名搜用户：[{uid, name, fans}]（fans 数值不可靠，仅作排序参考）。"""
+        headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": _BROWSER_UA, "Accept": "application/json"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=self.timeout, transport=self.transport
+        ) as client:
+            envelope = await self._get_json(
+                client, "/api/v1/weibo/web_v2/fetch_user_search", params={"query": query, "page": 1}
+            )
+        users = ((envelope.get("data") or {}).get("parsed_data") or {}).get("users") or []
+        return [
+            {"uid": str(u.get("uid") or ""), "name": str(u.get("name") or ""), "fans": u.get("fans") or 0}
+            for u in users
+            if u.get("uid")
+        ]
+
+    async def weibo_user_timeline(self, uid: str, limit: int = 10) -> list[dict[str, Any]]:
+        """用户时间线（category=feed 的卡片）：[{text, url, created_at}]，text 已剥 HTML。"""
+        headers = {"Authorization": f"Bearer {self.api_key}", "User-Agent": _BROWSER_UA, "Accept": "application/json"}
+        async with httpx.AsyncClient(
+            base_url=self.base_url, headers=headers, timeout=self.timeout, transport=self.transport
+        ) as client:
+            envelope = await self._get_json(
+                client, "/api/v1/weibo/app/fetch_user_timeline", params={"uid": uid, "page": 1}
+            )
+        items = (envelope.get("data") or {}).get("items") or []
+        out: list[dict[str, Any]] = []
+        for it in items:
+            if it.get("category") != "feed":
+                continue
+            d = it.get("data") or {}
+            raw = str(d.get("text") or "")
+            text = _strip_html(raw).strip()
+            if not text:
+                continue
+            out.append(
+                {
+                    "text": text[:160],
+                    "raw_html": raw,
+                    "url": f"https://weibo.com/{uid}/{d.get('idstr') or d.get('mid') or ''}",
+                    "created_at": str(d.get("created_at") or ""),
+                }
+            )
+            if len(out) >= limit:
+                break
+        return out

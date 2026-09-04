@@ -178,6 +178,10 @@ export default function PromptBar({
   const [favSaved, setFavSaved] = useState(false);
   // 引用 chip 缩略图点击 → 大图预览（灯箱翻页仅限有图的引用）
   const [preview, setPreview] = useState<number | null>(null);
+  // 单图预览（本卡原图/快照 chip 点击）：不进连线参考灯箱序列，独立开
+  const [soloPreview, setSoloPreview] = useState<{ src: string; title: string } | null>(
+    null,
+  );
   // 画风闸（出图直连管线与非聊天出图同规）：未选画风在本面板内联报错
   const [panelError, setPanelError] = useState("");
   // 文本撰写直连管线（/text/rewrite，卡片级 textModel 在此生效）：
@@ -561,8 +565,31 @@ export default function PromptBar({
                   : "本卡当前图自动作为参考参与本次生成（图生图）；在正文 @ 本卡可指定它的编号位置"
               }
             >
-              <RefThumb node={self as WingNode} />
-              <span className="pr-0.5 text-accent">本卡原图</span>
+              <button
+                type="button"
+                data-tip="预览本卡原图" aria-label="预览本卡原图"
+                className="shrink-0"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSoloPreview({
+                    src: self!.data.imageUrl as string,
+                    title: self?.data.title || "本卡原图",
+                  });
+                }}
+              >
+                <RefThumb node={self as WingNode} />
+              </button>
+              <button
+                type="button"
+                data-tip="插入 @ 引用到提示词（可指定它的编号位置）" aria-label="插入本卡原图引用"
+                className="pr-0.5 text-accent transition-colors hover:underline"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  edRef.current?.appendMention(nodeId);
+                }}
+              >
+                本卡原图
+              </button>
               {refSeqLabelOf(nodeId) ? (
                 <span className="tabular-nums text-text-4">{refSeqLabelOf(nodeId)}</span>
               ) : null}
@@ -591,9 +618,8 @@ export default function PromptBar({
             <span
               className="inline-flex items-center gap-1 rounded border border-solid border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
               title={
-                selfBodyOff
-                  ? "已摘除：本次生成不使用卡上设定，纯按指令/参考图出图"
-                  : "卡上设定将注入本次生成（保持人物/场景一致）；点 × 可摘除"
+                (selfBodyOff ? "已摘除：本次生成不使用卡上设定。" : "卡上设定将注入本次生成（保持人物/场景一致）；点 × 可摘除。") +
+                `「${self?.data.title || "无题"}」设定全文：${String((self?.data.body as string) ?? "").slice(0, 200)}`
               }
             >
               <span
@@ -603,9 +629,21 @@ export default function PromptBar({
               >
                 文
               </span>
-              <span className={`pr-0.5 ${selfBodyOff ? "text-text-4 line-through" : "text-accent"}`}>
+              <button
+                type="button"
+                data-tip="定位到画布卡片查看/编辑设定" aria-label="定位到画布卡片编辑设定"
+                className={`pr-0.5 transition-colors hover:underline ${selfBodyOff ? "text-text-4 line-through" : "text-accent"}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const st = useCanvasStore.getState();
+                  st.selectNodes([nodeId]);
+                  window.dispatchEvent(
+                    new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [nodeId] } }),
+                  );
+                }}
+              >
                 本卡设定
-              </span>
+              </button>
               <span className="tabular-nums text-text-4">
                 {String(((self?.data.body as string) ?? "").length)}字
               </span>
@@ -638,9 +676,21 @@ export default function PromptBar({
               >
                 🎨
               </span>
-              <span className={`max-w-16 truncate pr-0.5 ${styleOff ? "text-text-4 line-through" : "text-accent"}`}>
+              <button
+                type="button"
+                data-tip={
+                  styleOff
+                    ? "已摘除：本次生成不注入全局画风（点击打开画风设置）"
+                    : `全局画风「${projectStyle.trim()}」将注入本次生成（点击打开画风设置；点 × 可摘除）`
+                } aria-label="打开画风设置"
+                className={`max-w-16 truncate pr-0.5 transition-colors hover:underline ${styleOff ? "text-text-4 line-through" : "text-accent"}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
+                }}
+              >
                 {projectStyle.trim()}
-              </span>
+              </button>
               <button
                 type="button"
                 data-tip={styleOff ? "载回：画风重新参与本次生成" : "移除：本次不带全局画风"} aria-label={styleOff ? "载回全局画风" : "移除全局画风"}
@@ -723,8 +773,18 @@ export default function PromptBar({
                 className="inline-flex items-center gap-1 rounded border border-dotted border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-4"
                 title="上次生成使用的参考快照（本次实时序列不含它；字面「重新生成」会按快照原样重跑）"
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src={assetThumbUrl(u)} alt="" className="h-4 w-4 rounded-sm object-cover" />
+                <button
+                  type="button"
+                  data-tip="预览快照图" aria-label="预览快照图"
+                  className="shrink-0"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSoloPreview({ src: u, title: "上次参考快照" });
+                  }}
+                >
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={assetThumbUrl(u)} alt="" className="h-4 w-4 rounded-sm object-cover" />
+                </button>
                 <span>快照</span>
               </span>
             ))}
@@ -1035,6 +1095,14 @@ export default function PromptBar({
           index={Math.min(preview, previewImgs.length - 1)}
           onIndex={setPreview}
           onClose={() => setPreview(null)}
+        />
+      ) : null}
+      {soloPreview ? (
+        <Lightbox
+          images={[{ src: soloPreview.src, title: soloPreview.title }]}
+          index={0}
+          onIndex={() => undefined}
+          onClose={() => setSoloPreview(null)}
         />
       ) : null}
     </div>

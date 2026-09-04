@@ -621,17 +621,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+const SCALE_LABEL: Record<string, string> = {
+  single: "单片",
+  series: "系列",
+  anthology: "选集",
+};
+
 const UNIT_KIND_LABEL: Record<string, string> = {
   person: "人物",
   object: "物",
   case: "案件",
   era: "年代",
 };
-const SCALE_LABEL: Record<string, string> = {
-  single: "单片",
-  series: "系列",
-  anthology: "选集",
-};
+
+/** arc 四段式「题眼：…；素材：…；呈现：…；弧线：…」拆段；残缺时整体回落为一段。 */
+function parseArc(arc: string): { label: string; text: string }[] {
+  const segs: { label: string; text: string }[] = [];
+  for (const part of arc.split(/；|;/)) {
+    const m = part.match(/^(题眼|素材|呈现|弧线)\s*[:：]\s*(.+)$/);
+    if (m) segs.push({ label: m[1], text: m[2].trim() });
+  }
+  if (segs.length === 0) return arc ? [{ label: "", text: arc }] : [];
+  return segs;
+}
 
 function TopicDetail({
   topic,
@@ -691,10 +703,44 @@ function TopicDetail({
         ) : null}
         {raw && topic.arc ? (
           <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
-            <h4 className="text-[11px] font-medium text-text-4">成片推演（跟拍谁 · 追什么 · 从哪到哪）</h4>
-            <p className="mt-0.5 text-sm leading-relaxed text-text-2">{topic.arc}</p>
+            <h4 className="text-[11px] font-medium text-text-4">成片推演（题眼 · 素材 · 呈现 · 弧线）</h4>
+            <div className="mt-1.5 space-y-1.5">
+              {parseArc(topic.arc).map((seg, i) => (
+                <p key={i} className="text-xs leading-relaxed text-text-2">
+                  {seg.label ? <span className="mr-1.5 font-medium text-text">{seg.label}</span> : null}
+                  {seg.text}
+                </p>
+              ))}
+            </div>
           </div>
         ) : null}
+        {raw && topic.episodes.length > 0 ? (
+          <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
+            <h4 className="text-[11px] font-medium text-text-4">分集构想（{topic.episodes.length} 集/节拍）</h4>
+            <ol className="mt-1.5 space-y-1.5">
+              {topic.episodes.map((e, i) => (
+                <li key={i} className="text-xs leading-relaxed text-text-2">
+                  <span className="mr-1.5 font-medium text-text">
+                    {String(i + 1).padStart(2, "0")} {e.title}
+                  </span>
+                  {e.focus}
+                </li>
+              ))}
+            </ol>
+          </div>
+        ) : null}
+        {raw && topic.benchmarks.length > 0 ? (
+          <Field label="对标与差异">
+            <ul className="space-y-1">
+              {topic.benchmarks.map((b, i) => (
+                <li key={i}>
+                  <span className="font-medium text-text">《{b.title}》</span> {b.note}
+                </li>
+              ))}
+            </ul>
+          </Field>
+        ) : null}
+        {raw && topic.audience ? <Field label="目标观众">{topic.audience}</Field> : null}
         {raw && topic.tags.length > 0 ? (
           <div className="flex flex-wrap gap-1.5">
             {topic.tags.map((tag) => (

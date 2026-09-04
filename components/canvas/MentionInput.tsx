@@ -22,7 +22,12 @@ import {
   useRef,
   useState,
 } from "react";
-import { NODE_META, useCanvasStore, type WingNode } from "@/lib/canvas/store";
+import {
+  NODE_META,
+  useCanvasStore,
+  type WingNode,
+  type WingNodeType,
+} from "@/lib/canvas/store";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 
@@ -247,6 +252,9 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
   });
   const [trigger, setTrigger] = useState<Trigger | null>(null);
   const [hi, setHi] = useState(0);
+  // 弹层分组 tab + 组内搜索（←→ 切组、输入过滤）
+  const [tabIdx, setTabIdx] = useState(0);
+  const [searchQ, setSearchQ] = useState("");
   const [stats, setStats] = useState<{ tokenIds: string[]; empty: boolean }>({
     tokenIds: [],
     empty: !initialText,
@@ -324,7 +332,10 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
     });
   }, [nodes]);
 
-  const candidates = useMemo(() => {
+  /** 候选分组（参与来源分组范式）：本卡 / 已连线 / 按类型分桶。桶内带图
+   *  优先；分组+搜索替代旧「分桶轮转截 24」——后建卡被挤出列表的罪案
+   *  实录事故根因不再靠配额缓解，用户按 tab 直达 */
+  const groups = useMemo(() => {
     if (!trigger) return [];
     const q = trigger.q.toLowerCase();
     const match = (n: WingNode) =>
@@ -356,12 +367,6 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
       if (connectedIds?.includes(n.id)) return false;
       return match(n);
     });
-
-    // 按类型分桶轮转取候选：角色优先，但场景/道具/服饰等不再被角色
-    // 挤出列表。桶内带图优先。
-    // 截断放宽（每类 3→8、总数 10→24）：「同类型卡 >3 张时后建的卡永远
-    // 进不了候选」是罪案实录事故根因之一——11 张图片卡时刚连线的两张
-    // （最新建）恰好排在队尾被截掉
     const byType = new Map<string, WingNode[]>();
     for (const n of rest) {
       const t = String(n.data.nodeType);
@@ -373,19 +378,92 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         (a, b) =>
           Number(Boolean(b.data.imageUrl)) - Number(Boolean(a.data.imageUrl)),
       );
-    const rotated: WingNode[] = [];
-    const PER_TYPE = 8;
-    for (let round = 0; rotated.length < 24 && round < PER_TYPE; round++) {
-      for (const t of TYPE_ORDER_KEYS) {
-        const next = byType.get(t)?.[round];
-        if (next) {
-          rotated.push(next);
-          if (rotated.length >= 24) break;
-        }
-      }
+    const out: { key: string; label: string; nodes: WingNode[] }[] = [];
+    if (self) out.push({ key: "self", label: "本卡", nodes: [self] });
+    if (connected.length)
+      out.push({ key: "connected", label: `已连线 ${connected.length}`, nodes: connected });
+    for (const t of TYPE_ORDER_KEYS) {
+      const arr = byType.get(t);
+      if (arr?.length)
+        out.push({
+          key: t,
+          label: `${NODE_META[t as WingNodeType]?.label ?? t} ${arr.length}`,
+          nodes: arr.slice(0, 50),
+        });
     }
-    return [...(self ? [self] : []), ...connected, ...rotated];
+    return out;
   }, [nodes, trigger, stats.tokenIds, nodeId, connectedIds]);
+
+  // 搜索过滤（组内，标题+正文）；有过滤词时空组隐藏，保持 tab 行干净
+  const visibleGroups = useMemo(() => {
+    const sq = searchQ.trim().toLowerCase();
+    const out = groups.map((g) => ({
+      ...g,
+      nodes: sq
+        ? g.nodes.filter(
+            (n) =>
+              (n.data.title ?? "").toLowerCase().includes(sq) ||
+              ((n.data.body as string) ?? "").slice(0, 200).toLowerCase().includes(sq),
+          )
+        : g.nodes,
+    }));
+    return sq ? out.filter((g) => g.nodes.length > 0) : out;
+  }, [groups, searchQ]);
+  const tab = Math.min(tabIdx, Math.max(0, visibleGroups.length - 1));
+  const curNodes = visibleGroups[tab]?.nodes ?? [];
+  const hiClamped = curNodes.length ? Math.min(hi, curNodes.length - 1) : 0;
+
+  // 新一次 @ 触发（null→开）时复位 tab/搜索；打字细化查询词不动已选 tab
+  const prevTriggerRef = useRef<Trigger | null>(null);
+  useEffect(() => {
+    if (trigger && !prevTriggerRef.current) {
+      setTabIdx(0);
+      setSearchQ("");
+      setHi(0);
+    }
+    prevTriggerRef.current = trigger;
+  }, [trigger]);
+
+  // 高亮项滚入可视区（键盘导航跨出列表窗口时跟随）
+  const hiRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    hiRef.current?.scrollIntoView({ block: "nearest" });
+  }, [hiClamped, tab]);
+
+  /** 弹层键盘导航（编辑器与搜索框共用）：←→ 切组、↑↓ 组内循环、Enter
+   *  拾取。返回 true 表示已消费 */
+  const handleNavKey = (e: React.KeyboardEvent): boolean => {
+    if (!trigger) return false;
+    if (e.key === "ArrowRight" && visibleGroups.length > 1) {
+      e.preventDefault();
+      setTabIdx((tab + 1) % visibleGroups.length);
+      setHi(0);
+      return true;
+    }
+    if (e.key === "ArrowLeft" && visibleGroups.length > 1) {
+      e.preventDefault();
+      setTabIdx((tab - 1 + visibleGroups.length) % visibleGroups.length);
+      setHi(0);
+      return true;
+    }
+    if (curNodes.length === 0) return false;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setHi((hiClamped + 1) % curNodes.length);
+      return true;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setHi((hiClamped - 1 + curNodes.length) % curNodes.length);
+      return true;
+    }
+    if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
+      e.preventDefault();
+      pick(curNodes[hiClamped]);
+      return true;
+    }
+    return false;
+  };
 
   const pick = useCallback(
     (n: WingNode) => {
@@ -547,7 +625,13 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
           }
           syncTrigger();
         }}
-        onKeyUp={syncTrigger}
+        onKeyUp={(e) => {
+          // 弹层导航键（↑↓/Enter/Esc）的 keydown 已处理高亮与选中有果；
+          // keyup 再 syncTrigger 会 setHi(0) 把高亮弹回首项——「方向键没
+          // 反应」的根因。左右方向键移动光标会改变 @ 触发上下文，仍重算
+          if (["ArrowUp", "ArrowDown", "Enter", "Escape"].includes(e.key)) return;
+          syncTrigger();
+        }}
         onCompositionStart={() => {
           composingRef.current = true;
         }}
@@ -566,27 +650,11 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         onKeyDown={(e) => {
           // IME 组合中的 Enter 是选字确认，编辑器层面不抢
           if (e.nativeEvent.isComposing) return;
-          if (trigger && candidates.length > 0) {
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setHi((h) => (h + 1) % candidates.length);
-              return;
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setHi((h) => (h - 1 + candidates.length) % candidates.length);
-              return;
-            }
-            if (e.key === "Enter" && !e.ctrlKey && !e.metaKey) {
-              e.preventDefault();
-              pick(candidates[hi]);
-              return;
-            }
-            if (e.key === "Escape") {
-              e.stopPropagation();
-              setTrigger(null);
-              return;
-            }
+          if (trigger && handleNavKey(e)) return;
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            setTrigger(null);
+            return;
           }
           if (e.key === "Enter") {
             // enterToSubmit（聊天侧）：裸 Enter 提交、Shift+Enter 换行；
@@ -611,47 +679,105 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         }}
         dangerouslySetInnerHTML={{ __html: initHtml }}
       />
-      {trigger && candidates.length > 0 ? (
-        <div className="absolute bottom-full left-0 z-20 mb-1 max-h-44 w-64 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-          {candidates.map((c, i) => {
-            const isConnected = connectedIds?.includes(c.id) ?? false;
-            return (
-            <button
-              key={c.id}
-              type="button"
-              // 阻止 mousedown 抢焦点导致编辑器失焦闪烁
-              onMouseDown={(e) => e.preventDefault()}
-              className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${
-                i === hi ? "bg-surface-2 text-text" : "text-text-2"
-              }`}
-              onClick={() => pick(c)}
-              onMouseEnter={() => setHi(i)}
-              title={c.id === nodeId ? "引用本卡当前图（图生图迭代）" : undefined}
-            >
-              <RefBadge node={c} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate">
-                  {c.id === nodeId ? "本卡原图 · " : ""}
-                  {c.data.title || NODE_META[c.data.nodeType]?.label || "（无标题）"}
-                </span>
-                {(c.data.body ?? "").trim() ? (
-                  <span className="block truncate text-[9px] leading-tight text-text-4">
-                    {(c.data.body as string).slice(0, 48)}
+      {trigger && visibleGroups.length > 0 ? (
+        <div className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+          {/* 组内搜索（open-ai-canvas mention 菜单分区+搜索范式）：过滤标题
+              与正文；↑↓/Enter 与编辑器内同一套导航 */}
+          <input
+            value={searchQ}
+            onChange={(e) => {
+              setSearchQ(e.target.value);
+              setHi(0);
+            }}
+            onKeyDown={(e) => {
+              if (handleNavKey(e)) return;
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                if (searchQ) {
+                  setSearchQ("");
+                  setHi(0);
+                } else {
+                  setTrigger(null);
+                  edRef.current?.focus();
+                }
+              }
+            }}
+            placeholder="搜索卡片（标题/正文）…"
+            className="mb-1 w-full rounded-md border border-hairline bg-surface-2/60 px-2 py-1 text-xs text-text outline-none focus:border-accent placeholder:text-text-4"
+          />
+          {visibleGroups.length > 1 ? (
+            <div className="mb-1 flex gap-0.5 overflow-x-auto border-b border-hairline-soft pb-1">
+              {visibleGroups.map((g, gi) => (
+                <button
+                  key={g.key}
+                  type="button"
+                  data-tip="左右方向键快速切换分组" aria-label={`分组 ${g.label}`}
+                  className={`shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
+                    gi === tab
+                      ? "bg-accent-dim text-text"
+                      : "text-text-3 hover:bg-surface-2 hover:text-text"
+                  }`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setTabIdx(gi);
+                    setHi(0);
+                  }}
+                >
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <div className="max-h-44 overflow-y-auto">
+            {curNodes.length === 0 ? (
+              <p className="px-2 py-2 text-[10px] leading-relaxed text-text-4">
+                没有匹配「{searchQ}」的卡
+              </p>
+            ) : (
+              curNodes.map((c, i) => {
+                const isConnected = connectedIds?.includes(c.id) ?? false;
+                const active = i === hiClamped;
+                return (
+                <button
+                  key={c.id}
+                  ref={active ? hiRef : undefined}
+                  type="button"
+                  // 阻止 mousedown 抢焦点导致编辑器失焦闪烁
+                  onMouseDown={(e) => e.preventDefault()}
+                  className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${
+                    active ? "bg-surface-2 text-text" : "text-text-2"
+                  }`}
+                  onClick={() => pick(c)}
+                  onMouseEnter={() => setHi(i)}
+                  title={c.id === nodeId ? "引用本卡当前图（图生图迭代）" : undefined}
+                >
+                  <RefBadge node={c} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate">
+                      {c.id === nodeId ? "本卡原图 · " : ""}
+                      {c.data.title || NODE_META[c.data.nodeType]?.label || "（无标题）"}
+                    </span>
+                    {(c.data.body ?? "").trim() ? (
+                      <span className="block truncate text-[9px] leading-tight text-text-4">
+                        {(c.data.body as string).slice(0, 48)}
+                      </span>
+                    ) : null}
                   </span>
-                ) : null}
-              </span>
-              {isConnected ? (
-                <span className="ml-auto shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] text-accent">
-                  已连线
-                </span>
-              ) : (
-                <span className="ml-auto shrink-0 text-[10px] text-text-4">
-                  {NODE_META[c.data.nodeType]?.label}
-                </span>
-              )}
-            </button>
-            );
-          })}
+                  {isConnected ? (
+                    <span className="ml-auto shrink-0 rounded bg-accent/10 px-1 py-0.5 text-[9px] text-accent">
+                      已连线
+                    </span>
+                  ) : (
+                    <span className="ml-auto shrink-0 text-[10px] text-text-4">
+                      {NODE_META[c.data.nodeType]?.label}
+                    </span>
+                  )}
+                </button>
+                );
+              })
+            )}
+          </div>
         </div>
       ) : trigger ? (
         <div className="absolute bottom-full left-0 z-20 mb-1 w-64 rounded-lg border border-hairline bg-surface-1 p-2 text-[10px] leading-relaxed text-text-4 shadow-lg">

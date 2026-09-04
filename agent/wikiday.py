@@ -21,8 +21,8 @@ import httpx
 
 _API = "https://zh.wikipedia.org/w/api.php"
 _UA = "Wingsight/1.0 (documentary research)"
-# 周年筛：距事件至少 20 年（有历史纵深）且逢五逢十
-MIN_AGE_YEARS = 20
+# 周年筛：距事件至少 10 年（十周年即成立性节点）且逢五逢十
+MIN_AGE_YEARS = 10
 # 大事记段里的年份行：`* [[前44年]]：…` / `* 1752年：…` / `* [[1945年]]，…`
 _YEAR_LINE = re.compile(r"^\*+\s*(?:\[\[)?(前\d{1,4}|\d{1,4})(?:\]\]|年)")
 # 行内维基标记 → 纯文本（[[a|b]] 取 b，[[a]] 取 a，其余标记剥除）

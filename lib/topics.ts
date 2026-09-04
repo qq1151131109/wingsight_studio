@@ -57,6 +57,18 @@ export interface TopicResearch {
   angle_options?: { template: string; angle: string; viewing_question?: string; unit_kind?: string }[];
 }
 
+/** 分集构想（系列=每集一类单元；单片=段落节拍） */
+export interface TopicEpisode {
+  title: string;
+  focus: string;
+}
+
+/** 对标片（真实纪录片 + 一句差异） */
+export interface TopicBenchmark {
+  title: string;
+  note: string;
+}
+
 export interface Topic {
   id: string;
   vertical: TopicVertical;
@@ -72,8 +84,14 @@ export interface Topic {
   stage: "raw" | "verified";
   /** 索引标签：时代/地域/题材（生成层打） */
   tags: string[];
-  /** 成片推演（跟拍谁/追查什么/从哪到哪）——生料卡的成立性凭证，新闻稿式选题在生成闸就被拒 */
+  /** 成片推演（题眼/素材/呈现/弧线四段式）——生料卡的成立性凭证，新闻稿式选题在生成闸就被拒 */
   arc: string;
+  /** 分集构想：导演判断"能讲多少东西"的直接凭据（生成层打的迷你策划案） */
+  episodes: TopicEpisode[];
+  /** 对标片与差异 */
+  benchmarks: TopicBenchmark[];
+  /** 目标观众与平台定位（一句话） */
+  audience: string;
   createdAt: string;
   updatedAt: string;
   lastProgressAt: string;

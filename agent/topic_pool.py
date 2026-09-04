@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import random
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -283,7 +284,28 @@ BENCHMARK_SEED_QUERIES: tuple[str, ...] = (
     "圣丹斯 纪录片 获奖 {year}",
     "奥斯卡 最佳纪录片 提名 {year}",
     "BBC Storyville 纪录片 {year}",
+    "Hot Docs 纪录片节 获奖 {year}",
+    "西湖国际纪录片大会 获奖 {year}",
+    "广州国际纪录片节 获奖名单 {year}",
 )
+# YouTube 纪录片厂牌官方频道订阅（TikHub；id 空的按名解析一次并缓存。
+# National Geographic 多词名解析不到，留空走运行时解析，失败优雅跳过）
+YOUTUBE_DOC_CHANNELS: dict[str, str | None] = {
+    "BBC Earth": "UCwmZiChSryoWQCZMIQezgTg",
+    "Smithsonian Channel": "UCWqPRUsJlZaDp-PVbqEch9g",
+    "DW Documentary": "UCW39zufHfsuGgpLviKh297Q",
+    "National Geographic": None,
+}
+YT_CHANNELS_KEY = "topic_pool_yt_channels"
+# 微博特稿号（精确名定位；定位不到的号明报跳过——谷雨实验室无官微、
+# 真实故事计划搜不到，未列入）
+WEIBO_FEATURE_ACCOUNTS: tuple[str, ...] = (
+    "极昼工作室",
+    "三联生活周刊",
+    "南方人物周刊",
+)
+WEIBO_UIDS_KEY = "topic_pool_weibo_uids"
+_WECHAT_LINK_RE = re.compile(r"""https?://mp\.weixin\.qq\.com/[^"'\s<>\\]+""")
 # 周年窗口天数（提前量给调研与立项留时间；juben 同款 45-60 天取下沿）
 ANNIVERSARY_WINDOW_DAYS = 45
 
@@ -367,6 +389,23 @@ def fingerprint_of(title: str) -> str:
     """规范化标题的 sha256，作为池内幂等去重键。"""
     keep = [ch for ch in title.lower() if ch.isalnum()]
     return hashlib.sha256("".join(keep).encode("utf-8")).hexdigest()
+
+
+def _sanitize_pairs(items: Any, note_key: str, cap: int) -> list[dict[str, str]]:
+    """策划案子项（分集/对标片）清洗：[{title, <note_key>}]，去空串、限上限。"""
+    out: list[dict[str, str]] = []
+    if not isinstance(items, list):
+        return out
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        title = str(it.get("title") or "").strip()
+        note = str(it.get(note_key) or "").strip()
+        if title and note:
+            out.append({"title": title[:40], note_key: note[:160]})
+        if len(out) >= cap:
+            break
+    return out
 
 
 def _year_anchor() -> str:
@@ -644,7 +683,7 @@ class TopicCurator:
         ]
 
     async def collect_validated_content(self) -> list[dict[str, Any]]:
-        """已验证内容信号：特稿镜像（搜索）+ 叙事播客（RSS），故事性已验证。"""
+        """已验证内容信号：特稿镜像（搜索）+ 叙事播客（RSS）+ 微博特稿号时间线，故事性已验证。"""
         items = await self._collect_seed_queries(
             {None: tuple(q.format(year=_year_anchor()) for q in VALIDATED_SEED_QUERIES)},
             signal_type="validated",
@@ -669,14 +708,130 @@ class TopicCurator:
             )
             for ep in episodes
         )
+        items.extend(await self._collect_weibo_accounts())
         return items
 
+    async def _collect_weibo_accounts(self) -> list[dict[str, Any]]:
+        """微博特稿号时间线（TikHub）：特稿号微博发自己的文章链接——公众号
+        token 权限开下来之前的特稿本体线索通道。
+
+        账号 uid 精确名定位一次并缓存（app_settings）；定位不到的号本轮跳过
+        并记日志（明报不硬凑）。正文里的 mp.weixin 链接优先作为出处 URL。
+        """
+        api_key = os.environ.get("TIKHUB_API_KEY", "").strip()
+        if not api_key:
+            return []
+        try:
+            import tikhub
+
+            client = tikhub.TikHubClient(api_key=api_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("微博特稿号初始化失败: %s", str(exc)[:160])
+            return []
+        cache_raw = store.get_setting(WEIBO_UIDS_KEY)
+        try:
+            cache = json.loads(cache_raw) if cache_raw else {}
+        except json.JSONDecodeError:
+            cache = {}
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        out: list[dict[str, Any]] = []
+        for name in WEIBO_FEATURE_ACCOUNTS:
+            uid = cache.get(name) or ""
+            if not uid:
+                try:
+                    users = await client.weibo_user_search(name)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("微博号定位失败 %s: %s", name, str(exc)[:120])
+                    continue
+                exact = next((u for u in users if u["name"] == name), None)
+                if exact is None:
+                    logger.warning("微博号未精确命中，跳过: %s", name)
+                    continue
+                uid = exact["uid"]
+                cache[name] = uid
+                store.set_setting(WEIBO_UIDS_KEY, json.dumps(cache, ensure_ascii=False))
+            try:
+                posts = await client.weibo_user_timeline(uid, limit=10)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("微博时间线拉取失败 %s: %s", name, str(exc)[:120])
+                continue
+            for p in posts:
+                wx = _WECHAT_LINK_RE.search(p.get("raw_html") or "")
+                out.append(
+                    self._signal_of(
+                        p["text"],
+                        {"url": wx.group(0) if wx else p["url"], "snippet": p["created_at"], "provider": "tikhub"},
+                        source=f"微博:{name}",
+                        signal_type="validated",
+                        vertical_seed=None,
+                        fetched_at=fetched_at,
+                        platform="weibo",
+                    )
+                )
+        return out
+
     async def collect_benchmarks(self) -> list[dict[str, Any]]:
-        """对标片单信号：节展/海外已验证题材 → 国产化空白。"""
-        return await self._collect_seed_queries(
+        """对标片单信号：节展/海外已验证题材搜索 + 国际纪录片厂牌官方频道订阅（TikHub）。"""
+        items = await self._collect_seed_queries(
             {None: tuple(q.format(year=_year_anchor()) for q in BENCHMARK_SEED_QUERIES)},
             signal_type="benchmark",
         )
+        items.extend(await self._collect_youtube_doc_channels())
+        return items
+
+    async def _collect_youtube_doc_channels(self) -> list[dict[str, Any]]:
+        """YouTube 纪录片厂牌频道最新视频（一手片单，比节展名单快且全）。
+
+        频道 id 优先用内置表，缺的按名解析一次并缓存（app_settings，跨轮稳定）。
+        """
+        api_key = os.environ.get("TIKHUB_API_KEY", "").strip()
+        if not api_key:
+            return []
+        try:
+            import tikhub
+
+            client = tikhub.TikHubClient(api_key=api_key)
+        except Exception as exc:  # noqa: BLE001 - TikHub 不可用不拖累节展搜索
+            logger.warning("YouTube 频道订阅初始化失败: %s", str(exc)[:160])
+            return []
+        cache_raw = store.get_setting(YT_CHANNELS_KEY)
+        try:
+            cache = json.loads(cache_raw) if cache_raw else {}
+        except json.JSONDecodeError:
+            cache = {}
+        out: list[dict[str, Any]] = []
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        for name, known_id in YOUTUBE_DOC_CHANNELS.items():
+            cid = known_id or cache.get(name) or ""
+            if not cid:
+                try:
+                    cid = await client.youtube_channel_id(name) or ""
+                except Exception as exc:  # noqa: BLE001 - 单频道失败跳过
+                    logger.warning("YT 频道名解析失败 %s: %s", name, str(exc)[:120])
+                    cid = ""
+                if cid:
+                    cache[name] = cid
+                    store.set_setting(YT_CHANNELS_KEY, json.dumps(cache, ensure_ascii=False))
+            if not cid:
+                continue
+            try:
+                videos = await client.youtube_channel_videos(cid, limit=10)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("YT 频道视频拉取失败 %s: %s", name, str(exc)[:120])
+                continue
+            for v in videos:
+                out.append(
+                    self._signal_of(
+                        v["title"],
+                        {"url": v["url"], "snippet": f"{v['published_time']} · {v['view_count']}", "provider": "tikhub"},
+                        source=f"YouTube:{name}",
+                        signal_type="benchmark",
+                        vertical_seed=None,
+                        fetched_at=fetched_at,
+                        platform="youtube",
+                    )
+                )
+        return out
 
     async def collect_zhihu_discussions(self) -> list[dict[str, Any]]:
         """知乎沉淀讨论信号：按垂类种子搜高赞文章/回答（TikHub，1 种子 1 请求）。
@@ -722,6 +877,69 @@ class TopicCurator:
                     )
         return signals
 
+    async def collect_news_feeds(self) -> list[dict[str, Any]]:
+        """新闻发布 RSS 信号（当日新鲜，零 key 零配额）：央媒/机构/科普 feed 推流。
+
+        归 material 信号类型——它们就是"今天刚发生的材料事件"，且官方一手
+        源自带「为何是现在」；URL 去重在语料合并层（同新闻多通道命中不占名额）。
+        """
+        try:
+            import newsfeed
+        except ImportError:  # 独立部署裁剪场景：无该模块按空通道计
+            return []
+        try:
+            entries = await newsfeed.fetch_all_feeds()
+        except Exception as exc:  # noqa: BLE001 - RSSHub 挂了只丢它代理的源
+            logger.warning("新闻 RSS 采集失败: %s", str(exc)[:160])
+            return []
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        return [
+            self._signal_of(
+                e["title"],
+                {"url": e.get("url") or "", "snippet": e.get("snippet") or ""},
+                source=f"RSS:{e.get('feed') or '新闻源'}",
+                signal_type="material",
+                vertical_seed=None,
+                fetched_at=fetched_at,
+                platform="rss",
+            )
+            for e in entries
+            if e.get("title")
+        ]
+
+    async def collect_hotboards(self) -> list[dict[str, Any]]:
+        """热榜流（TikHub）：B站热搜——纪录片主场的事件热度信号，1 请求/轮。
+
+        热搜词条是关键词不是文章：url 为空、热度进 snippet；归 material。
+        微博热搜结构脏且泛娱乐占比高，不收（B站热搜里科技/公共事件浓度更高）。
+        """
+        api_key = os.environ.get("TIKHUB_API_KEY", "").strip()
+        if not api_key:
+            return []
+        try:
+            import tikhub
+
+            client = tikhub.TikHubClient(api_key=api_key)
+            items = await client.fetch_bilibili_hot(limit=20)
+        except Exception as exc:  # noqa: BLE001 - 热榜失败不拖累其它通道
+            logger.warning("B站热搜采集失败: %s", str(exc)[:160])
+            return []
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        return [
+            {
+                "title": it["keyword"],
+                "platform": "bilibili",
+                "source": "B站热搜",
+                "url": "",
+                "provider": "tikhub",
+                "vertical_seed": None,
+                "signal_type": "material",
+                "snippet": f"B站热搜 热度 {it.get('heat') or 0}",
+                "fetched_at": fetched_at,
+            }
+            for it in items
+        ]
+
     async def collect_wiki_corpus(self) -> list[dict[str, Any]]:
         """维基类别页语料信号（结构性存量，检索免费；按天缓存不重拉）。"""
         import topics as settings_store
@@ -746,18 +964,20 @@ class TopicCurator:
         return signals
 
     async def collect_signals(self) -> list[dict[str, Any]]:
-        """聚合六源语料（材料/周年/已验证内容/对标/知乎高赞讨论/维基语料）；全部失败才返回空。"""
-        material, anniversary, validated, benchmark, zhihu, wiki = await asyncio.gather(
+        """聚合八源语料（材料/周年/已验证内容/对标/知乎高赞讨论/新闻RSS/热榜/维基语料）；全部失败才返回空。"""
+        material, anniversary, validated, benchmark, zhihu, news, hotboard, wiki = await asyncio.gather(
             self.collect_material_window(),
             self.collect_anniversaries(),
             self.collect_validated_content(),
             self.collect_benchmarks(),
             self.collect_zhihu_discussions(),
+            self.collect_news_feeds(),
+            self.collect_hotboards(),
             self.collect_wiki_corpus(),
         )
-        return material + anniversary + validated + benchmark + zhihu + wiki
+        return material + anniversary + validated + benchmark + zhihu + news + hotboard + wiki
 
-    # 六源的可续采集：每通道完成即落账——外部看护 ~20 分钟重启一次服务，
+    # 八源的可续采集：每通道完成即落账——外部看护 ~20 分钟重启一次服务，
     # 采集又是最贵的阶段（冷启动可超一个重启窗），不落账会陷入"采集中被杀
     # →续跑从零再采"的死循环；通道名 → collector 方法名
     _CORPUS_CHANNELS: tuple[tuple[str, str], ...] = (
@@ -766,6 +986,8 @@ class TopicCurator:
         ("validated", "collect_validated_content"),
         ("benchmark", "collect_benchmarks"),
         ("zhihu", "collect_zhihu_discussions"),
+        ("news", "collect_news_feeds"),
+        ("hotboard", "collect_hotboards"),
         ("wiki", "collect_wiki_corpus"),
     )
 
@@ -807,7 +1029,19 @@ class TopicCurator:
             await asyncio.gather(*(_one(name, coro) for name, coro in pending))
         complete = self._load_corpus_partials()  # 重读：含本轮刚完成的通道
         store.set_setting(CORPUS_PARTIALS_KEY, "")  # 全通道齐：清散账
-        return [item for items in complete.values() for item in items]
+        # URL 去重：同一条新闻会被多个种子查询/多个搜索通道各命中一次，
+        # 交错归并后重叠上升，占着线索名额却发不散新方向
+        seen_urls: set[str] = set()
+        merged: list[dict[str, Any]] = []
+        for items in complete.values():
+            for item in items:
+                url = str(item.get("url") or "")
+                if url and url in seen_urls:
+                    continue
+                if url:
+                    seen_urls.add(url)
+                merged.append(item)
+        return merged
 
     # --- 主流程：批量创意生成（生料层） ----------------------------------------
 
@@ -1114,7 +1348,11 @@ class TopicCurator:
             return
         tags = [str(t).strip() for t in (entry.get("tags") or []) if str(t).strip()][:4]
         if "单元选集" not in tags and "系列网格" not in tags:
-            tags = (tags + ["单元选集"])[:4]
+            tags = ((tags + ["单元选集"])[:4] if len(tags) < 4 else tags[:3] + ["单元选集"])
+        # 收敛层已产出的策划案三件随选集卡透传（分集=规划的单元槽位，units=检索到的候选）
+        episodes = _sanitize_pairs(entry.get("episodes"), "focus", 5)
+        benchmarks = _sanitize_pairs(entry.get("benchmarks"), "note", 3)
+        audience = str(entry.get("audience") or "").strip()[:80]
         try:
             store.create_topic(
                 vertical=vertical,
@@ -1127,6 +1365,9 @@ class TopicCurator:
                 stage="raw",
                 tags=tags,
                 arc=arc,
+                episodes=episodes,
+                benchmarks=benchmarks,
+                audience=audience,
             )
             result.created += 1
             result.series_created += 1
@@ -1171,6 +1412,10 @@ class TopicCurator:
         if proto is None:
             return  # 锚不到真实原型的选题不落库（不编造）
         tags = [str(t).strip() for t in (entry.get("tags") or []) if str(t).strip()][:4]
+        # 迷你策划案三件：分集构想/对标片/目标观众（导演评估凭据，缺失不拦卡）
+        episodes = _sanitize_pairs(entry.get("episodes"), "focus", 5)
+        benchmarks = _sanitize_pairs(entry.get("benchmarks"), "note", 3)
+        audience = str(entry.get("audience") or "").strip()[:80]
         try:
             store.create_topic(
                 vertical=vertical,
@@ -1190,6 +1435,9 @@ class TopicCurator:
                 stage="raw",
                 tags=tags,
                 arc=arc,
+                episodes=episodes,
+                benchmarks=benchmarks,
+                audience=audience,
             )
             result.created += 1
             self._add_day_theme(arc)  # 记题眼：后续批次的同题材去重清单

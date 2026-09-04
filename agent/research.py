@@ -21,6 +21,7 @@ import asyncio
 import html
 import json
 import logging
+import os
 import re
 import sqlite3
 import uuid
@@ -368,6 +369,15 @@ async def fetch_page_text(url: str) -> str:
     except Exception as exc:  # noqa: BLE001
         direct_error = f"直抓失败：{str(exc)[:80]}"
 
+    # 知乎专栏：登录墙双通道皆败的专项通道（TikHub 按 article_id 取正文；
+    # key 失效/无额度时静默跳过落到 Jina）
+    m = re.match(r"https?://zhuanlan\.zhihu\.com/p/(\w+)", url)
+    if m and os.environ.get("TIKHUB_API_KEY", "").strip():
+        try:
+            return (await _tikhub_zhihu_article(m.group(1)))[:_MAX_PAGE_CHARS]
+        except Exception:  # noqa: BLE001
+            pass
+
     if jina_reader.enabled():
         try:
             md = await jina_reader.fetch_markdown(url)
@@ -377,6 +387,27 @@ async def fetch_page_text(url: str) -> str:
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"{direct_error}；Jina 回退失败：{str(exc)[:80]}") from exc
     raise ValueError(direct_error)
+
+
+async def _tikhub_zhihu_article(article_id: str) -> str:
+    """TikHub 知乎专栏文章详情 → 纯文本。失败抛异常由调用方降级。"""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(20.0), follow_redirects=True) as client:
+        resp = await client.get(
+            "https://api.tikhub.io/api/v1/zhihu/web/fetch_column_article_detail",
+            params={"article_id": article_id},
+            headers={"Authorization": f"Bearer {os.environ.get('TIKHUB_API_KEY', '').strip()}"},
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        if payload.get("code") not in (200, None):
+            raise ValueError(f"TikHub code={payload.get('code')} {str(payload.get('message'))[:60]}")
+        data = payload.get("data") or {}
+        content = str(data.get("content") or "")
+        title = str(data.get("title") or "")
+        text = _strip_html(f"{title}\n{content}") if "<" in content else f"{title}\n{content}"
+        if len(text) < 80:
+            raise ValueError("TikHub 正文过短")
+        return text
 
 
 # ---------- 开题 ----------

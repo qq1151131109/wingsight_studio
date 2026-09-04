@@ -182,10 +182,33 @@ def dismiss_topic(topic_id: str, user: auth.CurrentUser):
 
 
 def _topic_card_body(topic: dict[str, Any]) -> str:
-    """选题内容落画布剧本卡的正文：建议卡写全立项建议，观察卡写观察记录。"""
+    """选题内容落画布剧本卡的正文：生料卡写全迷你策划案，建议卡写立项建议，观察卡写观察记录。"""
     research = topic.get("research") or {}
     lines: list[str] = []
-    if (research.get("evidence_level") or "") == "strong":
+    if topic.get("stage") == "raw":
+        lines.append(f"【情绪钩子】{topic.get('summary', '')}")
+        if topic.get("arc"):
+            lines.append(f"【成片推演】{topic['arc']}")
+        episodes = topic.get("episodes") or []
+        if episodes:
+            lines.append("【分集构想】")
+            lines.extend(f"- {e.get('title', '')}：{e.get('focus', '')}" for e in episodes)
+        benchmarks = topic.get("benchmarks") or []
+        if benchmarks:
+            lines.append("【对标与差异】")
+            lines.extend(f"- 《{b.get('title', '')}》{b.get('note', '')}" for b in benchmarks)
+        if topic.get("audience"):
+            lines.append(f"【目标观众】{topic['audience']}")
+        evidence = topic.get("heatEvidence") or []
+        if evidence:
+            lines.append("【原型出处】")
+            lines.extend(
+                f"- {h.get('title', '')}{'（' + h['url'] + '）' if h.get('url') else ''}"
+                for h in evidence
+                if h.get("title")
+            )
+        lines.append("【下一步】深挖取证补信源底账，或直接开始拆解分镜")
+    elif (research.get("evidence_level") or "") == "strong":
         lines.append(f"【事件】{research.get('event', '')}")
         if research.get("why_now"):
             lines.append(f"【为何是现在】{research['why_now']}")

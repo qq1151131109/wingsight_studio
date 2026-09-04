@@ -62,6 +62,13 @@ def init_topics_db() -> None:
         # 成片推演（跟拍谁/追查什么/从哪到哪）：生料卡的成立性凭证，没有它不落库
         if "arc" not in cols:
             conn.execute("ALTER TABLE topics ADD COLUMN arc TEXT NOT NULL DEFAULT ''")
+        # 迷你策划案三件：分集构想/对标片/目标观众（导演评估"能讲多少、对标谁、给谁看"）
+        if "episodes_json" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN episodes_json TEXT NOT NULL DEFAULT '[]'")
+        if "benchmarks_json" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN benchmarks_json TEXT NOT NULL DEFAULT '[]'")
+        if "audience" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN audience TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage)")
 
 
@@ -106,6 +113,9 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         "adoptedPid": row["adopted_pid"],
         "stage": row["stage"],
         "arc": row["arc"],
+        "episodes": json.loads(row["episodes_json"]),
+        "benchmarks": json.loads(row["benchmarks_json"]),
+        "audience": row["audience"],
         "tags": json.loads(row["tags_json"]),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
@@ -127,6 +137,9 @@ def create_topic(
     stage: str = "verified",
     tags: list[str] | None = None,
     arc: str = "",
+    episodes: list[dict[str, str]] | None = None,
+    benchmarks: list[dict[str, str]] | None = None,
+    audience: str = "",
 ) -> dict[str, Any]:
     tid = uuid.uuid4().hex[:12]
     now = _now()
@@ -134,8 +147,9 @@ def create_topic(
         conn.execute(
             "INSERT INTO topics (id, vertical, source, title, title_fingerprint, summary,"
             " angles_json, heat_evidence_json, research_json, status, stage, tags_json, arc,"
+            " episodes_json, benchmarks_json, audience,"
             " last_progress_at, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 tid,
                 vertical,
@@ -149,6 +163,9 @@ def create_topic(
                 stage,
                 json.dumps(tags or [], ensure_ascii=False),
                 arc,
+                json.dumps(episodes or [], ensure_ascii=False),
+                json.dumps(benchmarks or [], ensure_ascii=False),
+                audience,
                 now,
                 now,
                 now,

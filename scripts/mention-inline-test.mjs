@@ -213,8 +213,8 @@ await page.waitForTimeout(300);
 const bareDd = page.locator("button", { hasText: "本卡原图" });
 check("M5a 裸 @ 候选含本卡自己（钉顶）", (await bareDd.count()) > 0);
 check(
-  "M5b 裸 @ 候选含场景卡（不被角色挤出）",
-  (await page.locator("button", { hasText: "场景甲" }).count()) > 0,
+  "M5b 场景卡有独立分组（不被角色挤出，tab 直达）",
+  (await page.locator('button[aria-label^="分组 场景"]').count()) > 0,
 );
 await page.keyboard.press("Escape");
 await page.keyboard.press("Backspace"); // 抠掉裸 @，还原到「雨夜」继续后续流程
@@ -227,7 +227,7 @@ await page.locator("button", { hasText: "设定图A" }).first().click();
 await page.keyboard.type(" 与 ", { delay: 30 });
 await page.keyboard.type("@目标", { delay: 60 });
 await page.waitForTimeout(300);
-const selfItem = page.locator("button", { hasText: "本卡原图" });
+const selfItem = page.locator("button", { hasText: "本卡原图 · 目标卡" });
 check("M6 @ 候选含本卡自己（includeSelf）", (await selfItem.count()) > 0);
 if ((await selfItem.count()) > 0) await selfItem.first().click();
 await page.waitForTimeout(200);
@@ -240,8 +240,8 @@ await page.keyboard.type("@", { delay: 60 });
 await page.waitForTimeout(300);
 check(
   "M7b 已 @ 过的卡不再进候选",
-  (await page.locator("button", { hasText: "设定图A" }).count()) === 0 &&
-    (await page.locator("button", { hasText: "本卡原图" }).count()) === 0,
+  (await page.locator("button", { hasText: "本卡原图 · 目标卡" }).count()) === 0 &&
+    (await page.locator("button", { hasText: "设定图A" }).count()) === 0,
 );
 await page.keyboard.press("Escape");
 await page.keyboard.press("Backspace");
@@ -278,7 +278,14 @@ const tgtNode = page.locator(".react-flow__node").filter({ hasText: "目标卡" 
 // ---- M12-M14：候选部分失败 → 补出（沿用入参快照） ----
 jobMode = "partial";
 await editor.click();
-await page.locator("button", { hasText: "2 张" }).first().click();
+// 候选张数已收进模型弹窗（ImagegenChips）：先点开再选 2 张
+await page
+  .locator('button[aria-label^="本卡覆盖"], button[aria-label^="跟随项目默认"]')
+  .first()
+  .click();
+await page.locator('button[aria-label="候选 2 张"]').click();
+// 外点关弹窗并落焦编辑器（Escape 会连浮动面板一起关掉）
+await page.locator('[contenteditable="true"]').first().click();
 await page.keyboard.type("，夜色深沉");
 await page.keyboard.press("Control+Enter");
 await page.waitForTimeout(3500); // 轮询间隔 2.5s
@@ -331,6 +338,81 @@ if ((await chatEd.count()) >= 1) {
     (await chatEd.locator('.ws-mention[data-mention-id="n_c0"]').count()) === 1,
   );
   // 不真发送（会消耗 LLM）；draft 不持久化，刷新即清
+}
+
+// ---- M20-M22：@ 弹层键盘导航（keyup 重置 hi 曾把高亮弹回首项——「方向键没反应」根因） ----
+await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["n_tgt"]));
+await page.waitForTimeout(600);
+{
+  const ed2 = page.locator('[contenteditable="true"]').first();
+  await ed2.click();
+  // 清空后打 @ 触发弹层（候选 ≥2：设定图A + 目标卡以外的卡）
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.type("@", { delay: 60 });
+  await page.waitForTimeout(400);
+  const readHi = () =>
+    page.evaluate(() => {
+      const all = [
+        ...document.querySelectorAll(".absolute.bottom-full button"),
+      ].filter((b) => b.className.includes("px-1.5 py-1")); // 仅候选项（排除 tab）
+      return {
+        total: all.length,
+        hiIdx: all.findIndex((b) => b.className.includes("bg-surface-2")),
+      };
+    });
+  const s0 = await readHi();
+  // 初始 tab=本卡（带图自引候选）；→→ 经已连线切到角色组（多项）测组内导航
+  await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(250);
+  await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(250);
+  const s0b = await readHi();
+  check("M20 切角色组且首项高亮", s0b.total >= 2 && s0b.hiIdx === 0, JSON.stringify({ s0, s0b }));
+  await page.keyboard.press("ArrowDown");
+  await page.waitForTimeout(250);
+  const s1 = await readHi();
+  check("M21 ↓ 高亮移到第二项", s1.hiIdx === 1, JSON.stringify(s1));
+  await page.keyboard.press("Enter");
+  await page.waitForTimeout(300);
+  const chips2 = await page.evaluate(
+    () => document.querySelectorAll(".ws-mention").length,
+  );
+  check("M22 Enter 选中候选拾取 chip", chips2 >= 1, `chips=${chips2}`);
+
+  // ---- M23-M26：弹层分组 tab（←→ 切组）+ 组内搜索 ----
+  await ed2.click();
+  await page.keyboard.press("ControlOrMeta+a"); // 全选替换，光标落末尾文本节点（chip 上点不开 trigger）
+  await page.keyboard.type("@", { delay: 60 });
+  await page.waitForTimeout(400);
+  const tabs = page.locator('button[aria-label^="分组"]');
+  const tabCount = await tabs.count();
+  check("M23 分组 tab 行可见（已连线/角色/场景…）", tabCount >= 3, `tabs=${tabCount}`);
+  const activeTab = () =>
+    page.evaluate(() => {
+      const t = [...document.querySelectorAll('button[aria-label^="分组"]')];
+      return t.findIndex((b) => b.className.includes("bg-accent-dim"));
+    });
+  check("M24 默认激活第一组（已连线）", (await activeTab()) === 0);
+  await page.keyboard.press("ArrowRight");
+  await page.waitForTimeout(250);
+  check("M25 → 切到下一组", (await activeTab()) === 1);
+  await page.keyboard.press("ArrowLeft");
+  await page.waitForTimeout(250);
+  check("M25b ← 切回第一组", (await activeTab()) === 0);
+  // 组内搜索：过滤标题，空组隐藏
+  await page.locator(".absolute.bottom-full input").fill("设定图A");
+  await page.waitForTimeout(300);
+  const itemsAfterSearch = await page.evaluate(() => {
+    const pop = document.querySelector(".absolute.bottom-full");
+    return [...(pop?.querySelectorAll("button") ?? [])].filter((b) =>
+      b.className.includes("px-1.5 py-1"),
+    ).length;
+  });
+  check("M26 搜索过滤后仅剩匹配项", itemsAfterSearch === 1, `items=${itemsAfterSearch}`);
+  await page.locator(".absolute.bottom-full input").fill("");
+  await page.waitForTimeout(200);
+  await page.keyboard.press("Escape"); // 关弹层，恢复编辑器干净状态
+  await page.waitForTimeout(200);
 }
 
 await browser.close();
