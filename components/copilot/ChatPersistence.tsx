@@ -211,6 +211,18 @@ export default function ChatPersistence() {
     if (hydratedKeyRef.current !== keyOf(projectId, threadId)) return;
     const records = toRecords(messages as ChatMsg[]);
     useChatSession.getState().setHasMessages(records.length > 0);
+    // 新会话（tid=null）绝不为空记录建库：切「新会话」瞬间消息态还是旧会话
+    // 的残留（清空在微任务里落地），残留若先入了 dirty、清空落地后本轮回
+    // 到空——必须连滞留 dirty 一起撤销，否则 1.2s 后旧防抖照发、拿残留记录
+    // 建库（克隆会话 + 空壳会话的工厂）
+    if (!threadId && records.length === 0) {
+      dirtyRef.current = null;
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
     const snapshot = JSON.stringify(records);
     if (snapshot === lastSavedRef.current) return;
     dirtyRef.current = { pid: projectId, tid: threadId ?? null, records };

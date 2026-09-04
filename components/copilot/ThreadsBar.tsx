@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCopilotChat } from "@copilotkit/react-core";
 import { useCopilotChatConfiguration } from "@copilotkit/react-core/v2";
-import { History, MessageSquarePlus, Pencil, Download, Sparkles, Trash2, X } from "lucide-react";
+import { History, Pencil, Download, Plus, Sparkles, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { OPEN_CAPABILITIES_EVENT } from "@/lib/canvas/events";
 import { useChatSession } from "@/lib/chat/session";
@@ -125,8 +125,8 @@ export default function ChatSidebarHeader() {
     }
   }, [projectId]);
 
-  // 挂载静默拉一次：header 要常驻显示当前会话标题（juben SessionSelector
-  // 范式——快速索引/切换的入口），历史面板打开时再刷新
+  // 挂载与 threadId 变化时重拉：header 标题与页签条都吃这份列表
+  // （新建会话首存落库、自动标题更新、删除后的落位都要反映到页签）
   useEffect(() => {
     if (!projectId) return;
     let alive = true;
@@ -141,7 +141,7 @@ export default function ChatSidebarHeader() {
     return () => {
       alive = false;
     };
-  }, [projectId]);
+  }, [projectId, threadId]);
 
   const togglePanel = () => {
     // 打开时拉最新列表（而非 effect 里拉，避免级联渲染）
@@ -190,15 +190,16 @@ export default function ChatSidebarHeader() {
   return (
     <div
       ref={wrapRef}
-      className="copilotKitHeader relative flex w-full items-center"
+      className="copilotKitHeader relative flex w-full flex-col gap-1.5"
     >
+      <div className="relative flex w-full items-center">
       <RunErrorBanner />
       {/* 当前会话标题（juben SessionSelector 范式）：常驻可点，点击开历史面板
           快速切换；运行中亮黄点 */}
       <button
         type="button"
         onClick={togglePanel}
-        data-tip="切换会话" aria-label="切换会话"
+        data-tip="全部会话（搜索/重命名）" aria-label="全部会话"
         data-track="chat.threadSwitcher"
         className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
       >
@@ -227,29 +228,68 @@ export default function ChatSidebarHeader() {
         </button>
         <button
           type="button"
-          data-tip="新会话" aria-label="新会话"
-          onClick={startNew}
-          className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-        >
-          <MessageSquarePlus className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          data-tip="历史会话" aria-label="历史会话"
-          onClick={togglePanel}
-          className={`rounded-md p-1.5 transition-colors hover:bg-surface-2 hover:text-text ${
-            panelOpen ? "bg-surface-2 text-text" : "text-text-3"
-          }`}
-        >
-          <History className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
           aria-label="关闭" data-tip="关闭"
           onClick={() => config?.setModalOpen(false)}
           className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
         >
           <X className="h-4 w-4" />
+        </button>
+      </div>
+      </div>
+
+      {/* 页签条（浏览器 tab 范式）：最近会话常驻可见，点击切换 / × 关闭 / + 新建 */}
+      <div className="flex items-end gap-0.5 overflow-x-auto pb-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {threadId === null || !((threads ?? []).some((t) => t.id === threadId)) ? (
+          <span
+            className="flex shrink-0 items-center gap-1 rounded-t-md border-b-2 border-accent bg-surface-2/60 px-2 py-1 text-[11px] text-text"
+            aria-current="page"
+          >
+            新会话
+          </span>
+        ) : null}
+        {(threads ?? []).slice(0, 8).map((t) => {
+          const active = t.id === threadId;
+          return (
+            <span
+              key={t.id}
+              className={`group flex shrink-0 items-center gap-1 rounded-t-md border-b-2 px-2 py-1 text-[11px] transition-colors ${
+                active
+                  ? "border-accent bg-surface-2/60 text-text"
+                  : "border-transparent text-text-3 hover:bg-surface-2/40 hover:text-text"
+              }`}
+            >
+              <button
+                type="button"
+                data-track="chat.tabSwitch"
+                onClick={() => {
+                  if (t.id !== threadId) abandonActiveRun();
+                  setThreadId(t.id);
+                }}
+                className="max-w-28 truncate"
+                title={t.title || "未命名会话"}
+              >
+                {t.title || "未命名会话"}
+              </button>
+              <button
+                type="button"
+                data-tip="关闭会话" aria-label={`关闭会话 ${t.title || ""}`}
+                data-track="chat.tabClose"
+                onClick={() => setDeleting(t)}
+                className="rounded p-0.5 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </span>
+          );
+        })}
+        <button
+          type="button"
+          data-tip="新会话" aria-label="新会话"
+          data-track="chat.tabNew"
+          onClick={startNew}
+          className="shrink-0 rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
 
