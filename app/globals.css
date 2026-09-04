@@ -610,7 +610,10 @@ cpk-web-inspector {
 aside[data-copilotkit][data-copilot-sidebar].copilotKitSidebar {
     position: fixed !important;
     inset: 0 0 0 auto !important;
-    width: min(var(--ws-chat-w, var(--sidebar-width, 420px)), 100vw) !important;
+    /* 兜底写死 420px，不读 v2 的 --sidebar-width：v2 现在把「实测宽度」回写进
+       该变量（不传 width prop 时靠 ResizeObserver 量我们），读它就变成回显自锁——
+       v2 初值 480 会先定住侧栏宽度，量回来 480 再锁 480，默认宽度静默漂移 */
+    width: min(var(--ws-chat-w, 420px), 100vw) !important;
     height: 100dvh !important;
     max-height: 100dvh !important;
     z-index: 1200 !important;
@@ -628,14 +631,14 @@ aside.copilotKitSidebar[aria-hidden="true"] {
     transition: visibility 0s 300ms;
 }
 
-/* 侧栏内缘拖拽调宽条（ThemedSidebar 渲染，拖动改 --sidebar-width）：
+/* 侧栏内缘拖拽调宽条（ThemedSidebar 渲染，拖动改 --ws-chat-w）：
    仅在侧栏打开时出现——:has 探测打开态（aria-hidden="false"），
    免去跨组件同步开合状态的管道 */
 .ws-chat-resizer {
     position: fixed;
     top: 0;
     bottom: 0;
-    right: calc(var(--ws-chat-w, var(--sidebar-width, 420px)) - 5px);
+    right: calc(var(--ws-chat-w, 420px) - 5px);
     width: 10px;
     z-index: 1201;
     cursor: col-resize;
@@ -652,6 +655,12 @@ html.ws-chat-dragging,
 html.ws-chat-dragging * {
     cursor: col-resize !important;
     user-select: none !important;
+}
+/* 拖宽期间掐掉 v2 写在 body 上的 margin-inline-end 过渡（260ms ease）：
+   侧栏宽度变化经 ResizeObserver 回灌成页面让位宽度，带过渡就是拖一条
+   慢半拍的橡皮筋；松手后 v2 自己会在下次开合时恢复过渡 */
+html.ws-chat-dragging body {
+    transition: none !important;
 }
 body:not(:has(aside.copilotKitSidebar[aria-hidden="false"])) .ws-chat-resizer {
     display: none;

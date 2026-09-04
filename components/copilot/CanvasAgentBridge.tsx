@@ -10,7 +10,7 @@ import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
-import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
+import { buildRefSequence } from "@/lib/canvas/refSequence";
 import {
   applyOps,
   normalizeOps,
@@ -126,6 +126,22 @@ async function directImagegen(
         .map((e) => st.nodes.find((n) => n.id === e.source))
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .filter((n) => n.data.imageUrl);
+  // 连线文本参考（2026-09-04 白骨精项目事故）：连进来的卡没有图但有正文
+  // （剧本/文本/调研…）——正文作为设定上下文注入，与 @ 引用无图卡同待遇。
+  // 此前这类卡被直接丢弃且触发参考闸（「连着剧本卡生成角色图」被明报拦下，
+  // 用户没有「从剧本建角色」的直连路径）。@ 过的卡不重复收（正文注入在
+  // mentionedNodes 一侧）
+  const connectedTextNodes = opts.noRefs
+    ? []
+    : st.edges
+        .filter((e) => e.target === nodeId && !validRefIds.includes(e.source))
+        .map((e) => st.nodes.find((n) => n.id === e.source))
+        .filter(
+          (n): n is NonNullable<typeof n> =>
+            Boolean(n) &&
+            !n!.data.imageUrl &&
+            Boolean(String(n!.data.body ?? "").trim()),
+        );
   // 派生改图：editOf=源卡（无谱系上传图）。其原图充当「本卡原图」角色——
   // 改图锚点 + EDIT 最小模板；参考序列的 self 条目挂源卡（selfId=源卡），
   // 图N 编号契约与 visualNotes 才能报出源卡标题；与连线通道按 URL 去重
@@ -150,15 +166,21 @@ async function directImagegen(
       ? []
       : st.edges.filter((e) => e.target === nodeId).map((e) => e.source),
   });
-  // 明式引用（@ 或连线）却一张可用图都没收到 = 曾经「静默降级文生图」的
-  // 根源，明报拦下让用户决策；空卡无引用的直接文生图不受影响
+  // 明式引用（@ 或连线）却一张可用图都没有：连线文本卡（正文注入）不算
+  // 不可用——只有引用的卡「既没图也没正文」才是真不可用，明报拦下让用户
+  // 决策（曾经「静默降级文生图」的根源）；空卡无引用的直接文生图不受影响
   const expectsRefs =
     !opts.noRefs && (validRefIds.length > 0 || st.edges.some((e) => e.target === nodeId));
-  if (expectsRefs && referenceImages.length === 0) {
+  if (
+    expectsRefs &&
+    referenceImages.length === 0 &&
+    connectedTextNodes.length === 0 &&
+    !mentionedNodes.some((n) => String(n.data.body ?? "").trim())
+  ) {
     st.updateNodeData(nodeId, {
       status: "error",
       errorMessage:
-        "未找到可用参考图：@ 引用/连线的卡上都没有图片。请引用带图的卡，或移除引用后直接文生图",
+        "未找到可用参考：@ 引用/连线的卡既没有图片也没有正文。请引用带图的卡，或引用剧本/文本卡（正文会作为设定注入），或移除引用后直接文生图",
     });
     return;
   }
@@ -182,7 +204,7 @@ async function directImagegen(
   const includeSelfBody =
     !opts.noRefs && !opts.selfBodyOff && !!editBody && !bodyInDescription;
   const selfBodyNote = includeSelfBody
-    ? `本卡设定（《${(editSrc ?? node).data.title || "无题"}》）：${editBody.slice(0, CONTEXT_BODY_LIMIT)}`
+    ? `本卡设定（《${(editSrc ?? node).data.title || "无题"}》）：${editBody}`
     : "";
   const visualNotes = [
     selfBodyNote,
@@ -190,11 +212,17 @@ async function directImagegen(
       .filter((n) => !n.data.imageUrl)
       .map(
         (n) =>
-          `${n.data.title}：${((n.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
+          `${n.data.title}：${((n.data.body as string) ?? "")}`,
       ),
+    // 连线文本卡正文注入（「从剧本建缺失角色」的直连路径）：剧本里的人物
+    // 设定随连线进入生成上下文，不连线纯文生图才失去一致性
+    ...connectedTextNodes.map(
+      (n) =>
+        `连线文本《${n.data.title || "无题"}》：${String(n.data.body ?? "")}`,
+    ),
     ...refEntries.map((e) => {
       // 图条目只锚图不带正文——设定文本统一走上面的「本卡设定」项，防重复
-      const body = e.kind === "self" ? "" : ((e.node.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT);
+      const body = e.kind === "self" ? "" : ((e.node.data.body as string) ?? "");
       return `${e.label}=《${e.node.data.title || "无题"}》${body ? `：${body}` : ""}`;
     }),
     ...(opts.styleOff ? [] : [`全局视觉风格：${projectStyle}`]),
@@ -931,7 +959,7 @@ export default function CanvasAgentBridge() {
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .map(
           (n) =>
-            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "")}`,
         )
         .join("\n");
       if (node.data.nodeType === "shotlist") {
@@ -1002,7 +1030,7 @@ export default function CanvasAgentBridge() {
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .map(
           (n) =>
-            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "")}`,
         )
         .join("\n");
       const field = kind === "video" ? "videoUrl" : "imageUrl";
@@ -1104,7 +1132,7 @@ export default function CanvasAgentBridge() {
         .filter((n): n is NonNullable<typeof n> => Boolean(n))
         .map(
           (n) =>
-            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
+            `- @${n.id} ${NODE_TYPE_LABEL[n.data.nodeType] ?? n.data.nodeType}「${n.data.title}」：${(n.data.body ?? "")}`,
         )
         .join("\n");
       const content = [

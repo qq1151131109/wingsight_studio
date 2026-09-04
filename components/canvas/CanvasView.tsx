@@ -69,7 +69,7 @@ import { trackEvent } from "@/lib/telemetry";
 import { ASSET_TYPES } from "@/lib/canvas/shotRefs";
 import { toggleFreeResize } from "@/lib/canvas/imageTools";
 import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
-import { useImageModels, type ImageModelOption } from "@/lib/imagegen";
+import { findModelOption, useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
 import { useCanvasPref } from "@/lib/canvas/prefs";
 import { STYLE_CATEGORIES, STYLE_PRESETS } from "@/lib/canvas/style-presets";
@@ -369,8 +369,14 @@ function NodeSearch() {
   };
 
   return (
-    <div className="relative">
-      <div className="flex h-10 w-52 items-center gap-1.5 rounded-lg border border-hairline bg-surface-1 px-2 shadow-sm">
+    // flex-1 + max-w-52：宽裕时仍是原来那条 208px；画布被挤窄（侧栏拖宽
+    // /小窗口）时可收缩，不把右侧「画布设置」齿轮顶到侧栏底下
+    //（与底坞固定宽度同族病：固定宽控件在叠层里必须受画布宽约束）
+    <div className="relative min-w-0 max-w-52 flex-1">
+      <div
+        className="flex h-10 w-full items-center gap-1.5 rounded-lg border border-hairline bg-surface-1 px-2 shadow-sm"
+        data-tip="搜索画布卡片（Enter 定位首条）· ⌘K 打开按类型分组的画布导航"
+      >
         <Search className="h-3.5 w-3.5 shrink-0 text-text-4" />
         <input
           value={q}
@@ -391,9 +397,11 @@ function NodeSearch() {
             }
           }}
         />
+        <kbd className="micro-kbd shrink-0">⌘K</kbd>
       </div>
       {open && q.trim() && results.length > 0 ? (
-        <div className="absolute left-0 top-full z-30 mt-1 w-56 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+        // 下拉跟随输入框宽度（固定 w-56 在收缩时会比输入框宽出去）
+        <div className="absolute left-0 top-full z-30 mt-1 w-full min-w-44 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
           {results.map((n) => (
             <button
               key={n.id}
@@ -862,10 +870,40 @@ function BottomDock({
   const zoom = useCanvasStore((s) => s.viewport.zoom);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const imagegen = useCanvasStore((s) => s.imagegen);
-  // 模型目录（模块级缓存，与出图面板/PromptBar 共享一次加载）：按钮显示
-  // 目录展示名，目录未到时回落模型 id
-  const { models: imageModels } = useImageModels();
+  // 模型目录（模块级缓存，与出图面板/PromptBar 共享一次加载）：底坞只说人话，
+  // 绝不把内部模型 id 当标签甩出去——曾用 `?? imagegen.model` 静默回落，目录
+  // 没到/加载失败时底坞直接显示 gpt-image-2-03。加载中/失败/已下架三种状态
+  // 各有说法，后两种亮红，重试与重选的入口在点开的「出图设置」弹窗里
+  const { models: imageModels, error: imageModelsError } = useImageModels();
+  const imageModelEntry = findModelOption(imagegen.model, imageModels);
+  const imagegenBroken = Boolean(imageModelsError) || Boolean(imageModels && !imageModelEntry);
+  const imagegenLabel = imageModelsError
+    ? "模型目录加载失败"
+    : !imageModels
+      ? "加载模型目录…"
+      : imageModelEntry
+        ? `${imageModelEntry.label} · ${imagegen.resolution}`
+        : "出图模型已下架";
+  const imagegenTip = imageModelsError
+    ? // error 本身已是人话整句（fetchImageModels：「模型目录加载失败（500）」），
+      // 不再叠前缀
+      `${imageModelsError}（点击在出图设置里重试）`
+    : !imageModels
+      ? "出图设置：模型目录加载中…"
+      : imageModelEntry
+        ? `出图设置：${imageModelEntry.label} · ${imagegen.resolution}（全局默认，点击修改）`
+        : `出图模型 ${imagegen.model} 不在目录中，点击重选`;
   const [stylePanel, setStylePanel] = useState(false);
+  // 画风同理直显生效值：内部存的是整段提示词（预设 prompt / 自定义描述），
+  // 按钮上只报预设名（命中预设库）或「自定义画风」（tooltip 给正文开头），
+  // 未选时明写「未选画风」——画风闸只靠卡上错误提示才看得见，底坞先说清
+  const stylePreset = projectStyle
+    ? STYLE_PRESETS.find((p) => p.prompt === projectStyle)
+    : undefined;
+  const styleLabel = projectStyle ? (stylePreset?.name ?? "自定义画风") : "未选画风";
+  const styleTip = projectStyle
+    ? `项目画风：${styleLabel}${stylePreset ? "" : `（${projectStyle.slice(0, 60)}${projectStyle.length > 60 ? "…" : ""}）`}——注入所有出图与分镜生成（点击修改）`
+    : "未选画风：资产设定图 / 分镜出图等视觉产物会被拦下（文字流程不受影响），点击选择";
   const [imagegenPanel, setImagegenPanel] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
 
@@ -939,37 +977,30 @@ function BottomDock({
       <div className="relative shrink-0">
         <button
           type="button"
-          data-tip="项目画风（全局视觉风格：注入所有出图与分镜生成）" aria-label="项目画风（全局视觉风格：注入所有出图与分镜生成）"
+          data-tip={styleTip} aria-label={styleTip}
           className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
-            projectStyle ? "text-accent" : "text-text-2 hover:text-text"
+            projectStyle ? "text-accent" : "text-text-3 hover:text-text"
           } ${stylePanel ? "bg-surface-2 text-text" : ""}`}
           onClick={() => setStylePanel((v) => !v)}
           data-track="dock.style"
         >
-          <Palette className="h-4 w-4" />
-          画风
-          {projectStyle ? (
-            <span className="h-1.5 w-1.5 rounded-full bg-accent" aria-hidden />
-          ) : null}
+          <Palette className="h-4 w-4 shrink-0" />
+          <span className="max-w-32 truncate">{styleLabel}</span>
         </button>
       </div>
       {/* 出图模型/分辨率（项目级默认，存 meta.imagegen）：所有出图入口生效；
           按钮直显当前生效参数，不藏在一个词后面 */}
       <button
         type="button"
-        data-tip={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，点击修改）`} aria-label={`出图设置：${imagegen.model} · ${imagegen.resolution}（全局默认，点击修改）`}
-        className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
-          imagegenPanel ? "bg-surface-2 text-text" : ""
-        }`}
+        data-tip={imagegenTip} aria-label={imagegenTip}
+        className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
+          imagegenBroken ? "text-danger" : "text-text-2 hover:text-text"
+        } ${imagegenPanel ? "bg-surface-2 text-text" : ""}`}
         onClick={() => setImagegenPanel((v) => !v)}
         data-track="dock.imagegen"
       >
         <ImageIcon className="h-4 w-4 shrink-0" />
-        <span className="max-w-56 truncate">
-          {imageModels?.find((m) => m.id === imagegen.model)?.label ??
-            imagegen.model}{" "}
-          · {imagegen.resolution}
-        </span>
+        <span className="max-w-56 truncate">{imagegenLabel}</span>
       </button>
       <span className="mx-0.5 h-5 w-px shrink-0 bg-hairline" />
       <DockBtn disabled={!canUndo} title="撤销（⌘Z）" onClick={() => useCanvasStore.getState().undo()} data-track="dock.undo">
@@ -1470,7 +1501,7 @@ function EmptyState() {
         <div className="mt-2 space-y-1 text-sm leading-relaxed text-text-3">
           <p>双击空白建卡，或直接拖入图片 / 视频 / 文本文件</p>
           <p>工具条 / 右键菜单建卡连线，输入条 @ 引用角色直接生成</p>
-          <p>也可以让右侧助手帮你搭起故事板</p>
+          <p>也可以让画布助手帮你搭起故事板</p>
         </div>
       </div>
     </div>
@@ -2120,7 +2151,12 @@ export default function CanvasView() {
         onlyRenderVisibleElements
         className={`bg-transparent${edgesVisible ? "" : " ws-edges-hidden"}`}
       >
-        {minimapVisible ? (
+        {minimapVisible && nodes.length > 0 ? (
+          // 有卡才渲染：空画布上小地图是一块无内容的米色空块（1px hairline
+          // 描边几乎看不见），悬在右下角像渲染故障。用户意图照旧尊重：
+          // 「显示小地图」开关在画布左上「画布设置」弹层（useCanvasPref
+          // ("minimap")），只在它开着但没东西可导航时收起
+          //（底坞「导航」不是它的开关——那是 OutlinePanel 列卡面板，别混）
           <MiniMap
             position="bottom-right"
             pannable
@@ -2137,7 +2173,7 @@ export default function CanvasView() {
             nodeStrokeColor="var(--color-hairline)"
           />
         ) : null}
-        <div data-canvas-header className="absolute left-2 top-2 z-10 flex items-center gap-1.5">
+        <div data-canvas-header className="absolute left-2 right-2 top-2 z-10 flex items-center gap-1.5">
           <button
             type="button"
             data-tip="添加节点（Tab / 双击空白同）" aria-label="添加节点"

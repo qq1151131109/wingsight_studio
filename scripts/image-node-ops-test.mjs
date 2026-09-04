@@ -195,6 +195,16 @@ await page.mouse.click(400, 600); // 关菜单
 // ---------- A5 顶部工具条（主入口：选中即在卡上方，无需右键） ----------
 // 经 store 选中（点卡会被媒体区 zoom/工具条拦指针，选区才是唯一变量）
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["img1"]));
+// 低频五项已收进「编辑」下拉（工具条收纳）：断言前先开菜单
+const openEditMenu = async () => {
+  // 卡贴左缘时工具条前段可能伸出视口（xyflow NodeToolbar 无水平钳制，存量
+  // 现象）——force 绕过 actionability 检查点开
+  await page
+    .locator('[aria-label="多视角 / 环视 / 三视图 / 打光 / 质感"]')
+    .evaluate((el) => el.click());
+  await page.waitForTimeout(250);
+};
+await openEditMenu();
 await page.locator('[aria-label="生成其他机位视角"]').waitFor({ timeout: 5000 });
 for (const t of ["裁剪画面比例", "生成其他机位视角", "生成 2:1 球形全景环境图", "替换画面光效", "人物质感精修", "解除比例锁定，任意拉伸"]) {
   check(`A5-1 图片卡顶部条含「${t}」`, (await page.locator(`[aria-label^="${t}"]`).count()) > 0);
@@ -204,11 +214,12 @@ check(
   (await page.locator('[aria-label^="生成三视图"]').count()) === 0,
 );
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["ch1"]));
+await openEditMenu();
 await page.locator('[aria-label^="生成三视图"]').waitFor({ timeout: 5000 });
-check("A5-3 角色卡顶部条含三视图", (await page.locator('[aria-label^="生成三视图"]').count()) > 0);
+check("A5-3 角色卡编辑菜单含三视图", (await page.locator('[aria-label^="生成三视图"]').count()) > 0);
 check(
   "A5-5 角色卡顶部条不含环视（仅场景/图片卡）",
-  (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) === 0,
+  (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) === 0, // 菜单已开（A5-3 残留）
 );
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["note1"]));
 await page.waitForTimeout(400);
@@ -226,7 +237,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(600);
 {
-  const box = await page.locator('[aria-label="生成其他机位视角"]').boundingBox();
+  const box = await page.locator('[aria-label="裁剪画面比例"]').boundingBox();
   check("A6-1 贴顶时工具条钳在应用头部下方", Boolean(box && box.y >= 40 && box.y <= 120), JSON.stringify(box));
 }
 await page.evaluate(() => {
@@ -235,7 +246,7 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(600);
 {
-  const box = await page.locator('[aria-label="生成其他机位视角"]').boundingBox();
+  const box = await page.locator('[aria-label="裁剪画面比例"]').boundingBox();
   const card = await nodeOf("测试底图").boundingBox();
   check(
     "A6-2 离开顶边后工具条回到卡片上方",
@@ -251,7 +262,7 @@ for (const z of [0.45, 0.3]) {
   await page.waitForTimeout(500);
   check(
     `A7 zoom=${z} 时工具条仍可见`,
-    (await page.locator('[aria-label="生成其他机位视角"]').count()) > 0,
+    (await page.locator('[aria-label="裁剪画面比例"]').count()) > 0,
   );
 }
 await page.evaluate(() => {
@@ -560,8 +571,9 @@ const hCard = nodeOf("备忘");
 // ---------- P 全景环视（doc/image-panorama-spec.md）----------
 // 可见性：场景卡有环视（角色卡无已在 A5-5 验过）
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["sc1"]));
+await openEditMenu();
 await page.locator('[aria-label^="生成 2:1 球形全景"]').waitFor({ timeout: 5000 });
-check("P1 场景卡顶部条含环视", (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) > 0);
+check("P1 场景卡编辑菜单含环视", (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) > 0);
 // 弹窗预校验：项目默认模型 gpt-image-2-03 不支持 2:1 → 应明示「已预置 seedream」
 await page.locator('[aria-label^="生成 2:1 球形全景"]').click();
 await page.locator("text=全景环视").first().waitFor({ timeout: 4000 });

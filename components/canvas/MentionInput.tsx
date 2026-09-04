@@ -341,7 +341,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
     const match = (n: WingNode) =>
       !q ||
       (n.data.title ?? "").toLowerCase().includes(q) ||
-      (n.data.body ?? "").slice(0, 120).toLowerCase().includes(q);
+      (n.data.body ?? "").toLowerCase().includes(q);
     // @ 自己：带图才候选（图生图迭代锚点，open-ai-canvas includeSelf 范式）
     const self =
       nodeId !== undefined && stats.tokenIds.includes(nodeId)
@@ -403,7 +403,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
         ? g.nodes.filter(
             (n) =>
               (n.data.title ?? "").toLowerCase().includes(sq) ||
-              ((n.data.body as string) ?? "").slice(0, 200).toLowerCase().includes(sq),
+              ((n.data.body as string) ?? "").toLowerCase().includes(sq),
           )
         : g.nodes,
     }));

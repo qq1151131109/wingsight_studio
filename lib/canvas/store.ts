@@ -150,6 +150,9 @@ export interface WingNodeData {
   versions?: { url: string; at: string; prompt?: string }[];
   /** 自由缩放（右键切换；默认锁图片原始比例）——切回锁定时按原图比例回弹 */
   freeResize?: boolean;
+  /** 媒体比例自适应记账：本条媒体 URL 已按自然比例贴过卡高。同一媒体只贴
+   *  一次（用户手动缩放保持到换图），换图/换主图后重新贴合 */
+  fittedFor?: string;
   /** 锁定：不可拖动、不可改标题（卡上工具条切换） */
   locked?: boolean;
   /** 分镜表：镜头行 */
@@ -232,6 +235,10 @@ interface CanvasState {
   setNodes: (nodes: WingNode[]) => void;
   addNode: (node: Omit<WingNode, "id"> & { id?: string }) => string;
   updateNodeData: (id: string, patch: Partial<WingNodeData>, opts?: NodeDataUpdateOpts) => void;
+  /** 媒体比例自适应（useMediaFitHeight 专用）：一次原子写 fittedFor + 卡高，
+   *  不入撤销栈——自适应是视觉归位不是用户操作，入栈会把「撤销生成」截断成
+   *  「只撤销了卡高」（image-node-ops D4 裁剪撤销回滚事故） */
+  fitNodeHeight: (id: string, url: string, height: number) => void;
   deleteNodes: (ids: string[]) => void;
   connect: (connection: Connection | { source: string; target: string }) => void;
   removeEdges: (ids: string[]) => void;
@@ -363,8 +370,10 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   scene: { w: 288, h: 214 },
   prop: { w: 288, h: 214 },
   costume: { w: 288, h: 214 },
-  image: { w: 256, h: 260 },
-  video: { w: 320, h: 300 },
+  // 图片/视频卡默认尺寸按主流 16:9 给（空态/生成中的初始形状）；媒体到位后
+  // useMediaFitHeight 按真实比例自适应卡高，默认值只影响媒体落地前的形状
+  image: { w: 256, h: 200 },
+  video: { w: 320, h: 220 },
   audio: { w: 280, h: 190 },
   compose: { w: 320, h: 280 },
   storyboard: { w: 320, h: 220 },
@@ -733,6 +742,20 @@ export const useCanvasStore = create<CanvasState>()(
           }),
         }));
         if (readyFlip) get().flashNodes([id]);
+      },
+
+      fitNodeHeight: (id, url, height) => {
+        set((state) => ({
+          nodes: state.nodes.map((n) =>
+            n.id === id
+              ? {
+                  ...n,
+                  style: { ...n.style, height },
+                  data: { ...n.data, fittedFor: url },
+                }
+              : n,
+          ),
+        }));
       },
 
       deleteNodes: (ids) => {

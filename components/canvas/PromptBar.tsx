@@ -21,7 +21,7 @@ import {
   useCanvasStore,
   type WingNode,
 } from "@/lib/canvas/store";
-import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
+import { buildRefSequence } from "@/lib/canvas/refSequence";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import MentionInput, {
   type MentionInputHandle,
@@ -304,9 +304,9 @@ export default function PromptBar({
     ...(lastRead?.mentionIds ?? [])
       .map((id) => nodes.find((n) => n.id === id))
       .filter((n): n is WingNode => Boolean(n))
-      .map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, CONTEXT_BODY_LIMIT)),
+      .map((n) => `${n.data.title}：${(n.data.body as string) ?? ""}`),
     ...connectedRefs.map(
-      (n) => `${n.data.title}：${(n.data.body as string) ?? ""}`.slice(0, CONTEXT_BODY_LIMIT),
+      (n) => `${n.data.title}：${(n.data.body as string) ?? ""}`,
     ),
     projectStyle.trim() ? `全局视觉风格：${projectStyle.trim()}` : "",
   ]
@@ -511,7 +511,7 @@ export default function PromptBar({
         )
         .map((n) => {
           const label = NODE_META[n.data.nodeType]?.label ?? n.data.nodeType;
-          return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim().slice(0, CONTEXT_BODY_LIMIT)}`;
+          return `【${label}·${n.data.title || "（无标题）"}】${((n.data.body as string) ?? "").trim()}`;
         })
         .join("\n");
       const result = await rewriteText({
@@ -715,10 +715,12 @@ export default function PromptBar({
                 key={r.id}
                 className="inline-flex items-center gap-1 rounded border border-dashed border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
                 title={
-                  "连线引用：此卡已连入本卡、参与本次生成（断开连线即移除）" +
-                  ((r.data.body ?? "").trim()
-                    ? `\n${(r.data.body as string).slice(0, 80)}`
-                    : "")
+                  hasImg
+                    ? "连线引用：此卡的图将作为参考图参与本次生成（断开连线即移除）"
+                    : "连线文本卡：正文将作为设定上下文注入本次生成——从剧本/文本卡连线下来的角色、画面描述保持一致（断开连线即移除）" +
+                      ((r.data.body ?? "").trim()
+                        ? `\n${(r.data.body as string).slice(0, 120)}`
+                        : "")
                 }
               >
                 {hasImg ? (

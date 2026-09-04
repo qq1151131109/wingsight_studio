@@ -58,6 +58,7 @@ import {
   AudioLines,
   Loader2,
   Maximize2,
+  MoreHorizontal,
   Music,
   Package,
   Pause,
@@ -724,6 +725,8 @@ function CardShell({
   const [plusMenu, setPlusMenu] = useState<null | "left" | "right">(null);
   // 工具条「多功能」下拉（九宫格机位/剧情推演/前后帧/光影校正）
   const [tplMenu, setTplMenu] = useState(false);
+  // 工具条「编辑」下拉（多视角/环视/三视图/打光/质感——低频收纳入口）
+  const [editMenu, setEditMenu] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   // 磁性追踪（libtv/Flora 手感）：手柄朝光标方向偏移（限幅 12px）+ 按距离放大
   const [magnet, setMagnet] = useState({
@@ -921,6 +924,7 @@ function CardShell({
         });
         setPlusMenu(null);
         setTplMenu(false);
+        setEditMenu(false);
       }}
       style={{ "--ws-hit": `${-10 * handleScale}px` } as React.CSSProperties}
     >
@@ -950,50 +954,88 @@ function CardShell({
               >
                 <Crop className="h-4 w-4" />
               </ToolBtn>
-              <ToolBtn
-                title="生成其他机位视角"
-                label="多视角"
-                disabled={data.status === "loading"}
-                onClick={() => dispatchImageTool(id, "multiview")}
-              >
-                <Camera className="h-4 w-4" />
-              </ToolBtn>
-              {data.nodeType === "scene" || data.nodeType === "image" ? (
+              {/* 低频生成类操作收进「编辑」下拉（novanova 工具条 ≤8 项共识，
+                  平铺 11+ 按钮曾盖住卡上方一大片）；裁剪/多功能/自由缩放高频常驻 */}
+              <div className="relative">
                 <ToolBtn
-                  title="生成 2:1 球形全景环境图（720° 环视，新卡可拖拽环视查看）"
-                  label="环视"
+                  title="多视角 / 环视 / 三视图 / 打光 / 质感"
+                  label="编辑"
                   disabled={data.status === "loading"}
-                  onClick={() => dispatchImageTool(id, "panorama")}
+                  active={editMenu}
+                  onClick={() => setEditMenu((v) => !v)}
                 >
-                  <Globe2 className="h-4 w-4" />
+                  <MoreHorizontal className="h-4 w-4" />
                 </ToolBtn>
-              ) : null}
-              {data.nodeType === "character" ? (
-                <ToolBtn
-                  title="生成三视图设定表"
-                  label="三视图"
-                  disabled={data.status === "loading"}
-                  onClick={() => dispatchImageTool(id, "turnaround")}
-                >
-                  <Columns3 className="h-4 w-4" />
-                </ToolBtn>
-              ) : null}
-              <ToolBtn
-                title="替换画面光效"
-                label="打光"
-                disabled={data.status === "loading"}
-                onClick={() => dispatchImageTool(id, "lighting")}
-              >
-                <Sun className="h-4 w-4" />
-              </ToolBtn>
-              <ToolBtn
-                title="人物质感精修（融合/光影/皮肤/纹理/锐度）"
-                label="质感"
-                disabled={data.status === "loading"}
-                onClick={() => dispatchImageTool(id, "texture")}
-              >
-                <Wand2 className="h-4 w-4" />
-              </ToolBtn>
+                {editMenu ? (
+                  <div className="absolute left-0 top-[calc(100%+6px)] z-50 flex w-44 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+                    {([
+                      {
+                        tool: "multiview" as const,
+                        icon: Camera,
+                        label: "多视角",
+                        hint: "生成其他机位角度",
+                        aria: "生成其他机位视角",
+                        show: true,
+                      },
+                      {
+                        tool: "panorama" as const,
+                        icon: Globe2,
+                        label: "环视",
+                        hint: "2:1 球形全景环境图",
+                        aria: "生成 2:1 球形全景环境图（720° 环视，新卡可拖拽环视查看）",
+                        show:
+                          data.nodeType === "scene" || data.nodeType === "image",
+                      },
+                      {
+                        tool: "turnaround" as const,
+                        icon: Columns3,
+                        label: "三视图",
+                        hint: "生成三视图设定表",
+                        aria: "生成三视图设定表",
+                        show: data.nodeType === "character",
+                      },
+                      {
+                        tool: "lighting" as const,
+                        icon: Sun,
+                        label: "打光",
+                        hint: "替换画面光效",
+                        aria: "替换画面光效",
+                        show: true,
+                      },
+                      {
+                        tool: "texture" as const,
+                        icon: Wand2,
+                        label: "质感",
+                        hint: "人物质感精修",
+                        aria: "人物质感精修（融合/光影/皮肤/纹理/锐度）",
+                        show: true,
+                      },
+                    ] as { tool: "multiview" | "panorama" | "turnaround" | "lighting" | "texture"; icon: typeof Camera; label: string; hint: string; aria: string; show: boolean }[])
+                      .filter((m) => m.show)
+                      .map((m) => {
+                        const MIcon = m.icon;
+                        return (
+                          <button
+                            key={m.tool}
+                            type="button"
+                            className="nodrag flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEditMenu(false);
+                              dispatchImageTool(id, m.tool);
+                            }}
+                          >
+                            <MIcon className="h-3.5 w-3.5 shrink-0 text-text-4" />
+                            <span className="flex flex-col" aria-label={m.aria}>
+                              {m.label}
+                              <span className="text-[10px] text-text-4">{m.hint}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                ) : null}
+              </div>
               <div className="relative">
                 <ToolBtn
                   title="多功能模板：九宫格机位 / 剧情推演 / 前后帧 / 光影校正"
@@ -1163,7 +1205,6 @@ function CardShell({
           draggable
           className="ws-node-drag nodrag ml-auto shrink-0 cursor-grab rounded p-0.5 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100 active:cursor-grabbing"
           data-tip="拖到聊天框引用此卡" aria-label="拖到聊天框引用此卡"
-          title={meta.label}
           onDragStart={(e) => {
             e.dataTransfer.setData(
               "application/x-wingsight-node",
@@ -2129,6 +2170,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [bodyCollapsed, setBodyCollapsed] = useState(true);
   const bodyEmpty = !((d.body as string) ?? "").trim();
   const fileRef = useRef<HTMLInputElement>(null);
+  // 媒体比例自适应：图到位按自然比例贴满媒体区（竖图/方图不再 letterbox）
+  const mediaBoxRef = useRef<HTMLDivElement>(null);
+  const applyMediaFit = useMediaFitHeight(id, d.imageUrl as string | undefined, mediaBoxRef);
   const lod = useLod();
   // 参考图调研状态（状态总线）：批量调研进行中亮「调研中」，有已调研未采纳
   // 的候选亮「N 张待选」徽标（点击进找参考图面板）
@@ -2390,6 +2434,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       extraTools={assetTools}
     >
       <div
+        ref={mediaBoxRef}
         className={`flex min-h-[84px] w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
@@ -2397,7 +2442,11 @@ function AssetCard({ data, id, selected }: NodeProps) {
         {lod === "nano" ? (
           <NanoBlock nodeType={d.nodeType} />
         ) : d.status === "loading" ? (
-          <GenProgress nodeId={id} expected={60} />
+          d.imageUrl ? (
+            <LoadingOverMedia nodeId={id} expected={60} src={d.imageUrl} title={String(d.title ?? "")} />
+          ) : (
+            <GenProgress nodeId={id} expected={60} />
+          )
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
@@ -2415,9 +2464,26 @@ function AssetCard({ data, id, selected }: NodeProps) {
               alt={d.title}
               decoding="async"
               draggable={false}
+              onLoad={(e) =>
+                applyMediaFit(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+              }
               className="ws-media-in pointer-events-none h-full w-full object-contain"
             />
             <MediaDragGrip nodeId={id} title={String(d.title ?? "")} />
+            {(d.versions?.length ?? 0) > 0 ? (
+              <button
+                type="button"
+                data-tip={`版本历史（共 ${(d.versions?.length ?? 0) + 1} 版，点击查看/回滚）`} aria-label="版本历史"
+                data-track="media.versions"
+                className="nodrag absolute bottom-1.5 right-1.5 z-[5] rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHistoryOpen(true);
+                }}
+              >
+                V{(d.versions?.length ?? 0) + 1}
+              </button>
+            ) : null}
           </div>
         ) : (
           <MediaEmpty
@@ -2546,17 +2612,67 @@ function AssetCard({ data, id, selected }: NodeProps) {
   );
 }
 
+/** 媒体比例自适应卡高（2026-09-04）：图/视频到位后按自然宽高比把媒体区贴满
+ *  ——宽不动只调高（竞品 canvas 图片节点通用行为），替代"固定卡高只能贴一种
+ *  比例"的旧方案（资产卡 352 竖版时代 16:9 图上下大留白、改 214 后竖图又
+ *  浪费 68%——审计实测）。fittedFor=url 记账：同一媒体只贴一次，用户手动
+ *  缩放保持到换图；freeResize（解除比例锁定）时不抢。存量卡 fittedFor 为空
+ *  → 首次装载自动纠正历史尺寸，免 sanitize 迁移。尺寸换算用同帧 DOM 比例
+ *  （box/node 的 rect 相除抵消 zoom，视口动画中也不漂移） */
+function useMediaFitHeight(
+  nodeId: string,
+  url: string | undefined,
+  boxRef: React.RefObject<HTMLDivElement | null>,
+) {
+  return useCallback(
+    (naturalW: number, naturalH: number) => {
+      if (!url || !naturalW || !naturalH) return;
+      const st = useCanvasStore.getState();
+      const node = st.nodes.find((n) => n.id === nodeId);
+      const el = boxRef.current;
+      if (!node || !el || node.data.freeResize || node.data.fittedFor === url)
+        return;
+      const nodeEl = el.closest(".ws-node");
+      if (!nodeEl) return;
+      const nr = nodeEl.getBoundingClientRect();
+      const br = el.getBoundingClientRect();
+      if (nr.height <= 0 || nr.width <= 0) return;
+      const nodeH = Number(node.style?.height) || nr.height;
+      const k = nodeH / nr.height; // css px → 布局 px 的缩放因子
+      const boxW = br.width * k;
+      const boxH = br.height * k;
+      const targetH = boxW * (naturalH / naturalW);
+      // 单 action 原子写 fittedFor+卡高且免撤销栈：自适应是视觉归位不是用户
+      // 操作，入栈会把「撤销生成/裁剪」截断成只撤销卡高（D4 事故）
+      st.fitNodeHeight(
+        nodeId,
+        url,
+        Math.abs(targetH - boxH) < 8
+          ? Math.round(nodeH) // 已贴合：只记账不动尺寸
+          : Math.round(nodeH + (targetH - boxH)),
+      );
+    },
+    [nodeId, url, boxRef],
+  );
+}
+
 /**
- * 生成进度（对标 viedeo-workflow 的"诚实进度"）：
- * elapsed/预期时长 推算百分比、封顶 95%（真实完成由 agent 回填 ready），
- * 超过 1.5 倍预期切换为排队提示；超过 5 倍预期落 error（看门狗，防 agent 失联永久转圈）。
+ * 生成进度（viedeo「诚实进度」+ novanova 任务卡范式，2026-09-04 信息升级）：
+ *  - 整卡态（无旧图的新生成）：任务卡布局——状态行 + 提示词摘要 + 模型/画幅
+ *    元数据 + 进度条 + 取消；不再是只有一根进度条的黑盒
+ *  - overlay 态（编辑重生成，卡上有旧图）：旧图保留 + 压暗遮罩（viedeo 范式），
+ *    底部横条放摘要与进度——改的是哪张图心里有数
+ *  百分比按 elapsed/预期推算、封顶 95%（真实完成由 agent 回填 ready），
+ *  超过 1.5 倍预期切排队提示；超过 5 倍预期落 error（看门狗防失联永转）
  */
 function GenProgress({
   nodeId,
   expected,
+  overlay,
 }: {
   nodeId: string;
   expected: number;
+  overlay?: boolean;
 }) {
   const [sec, setSec] = useState(0);
   const flipped = useRef(false);
@@ -2579,34 +2695,108 @@ function GenProgress({
   }, [sec, expected, nodeId]);
   const pct = Math.min(95, Math.round((sec / expected) * 100));
   const slow = sec > expected * 1.5;
-  return (
-    <div className="w-full px-4 text-center">
-      <div className="h-1 w-full overflow-hidden rounded-full bg-hairline-soft">
-        <div
-          className="h-full rounded-full bg-accent transition-[width] duration-1000 ease-linear"
-          style={{ width: `${pct}%` }}
-        />
-      </div>
-      <p className="mt-2 text-xs text-text-3">
-        {slow ? `排队较久 · 已等 ${sec}s` : `生成中 ${pct}% · ${sec}s`}
-        {jobId ? (
-          <>
-            {" · "}
-            <button
-              type="button"
-              className="underline decoration-dotted underline-offset-2 hover:text-danger"
-              onClick={(e) => {
-                e.stopPropagation();
-                window.dispatchEvent(
-                  new CustomEvent(CANCEL_GENERATION_EVENT, { detail: { nodeId } }),
-                );
-              }}
-            >
-              取消
-            </button>
-          </>
+  // 任务上下文（novanova 任务卡范式）：在生成什么/用什么——数据都在卡上，
+  // 这里如实展示。模型名经目录换 label，目录未到不吐内部 id（底坞铁律）
+  const nodeData = useCanvasStore.getState().nodes.find((n) => n.id === nodeId)
+    ?.data;
+  const promptText = String(nodeData?.genPrompt ?? "").trim();
+  const cardGen = saneGen(nodeData?.gen);
+  const { models: imageModels } = useImageModels();
+  const modelLabel = imageModels?.find(
+    (m) => m.id === (cardGen?.model ?? useCanvasStore.getState().imagegen.model),
+  )?.label;
+  const metaParts = [
+    ...(modelLabel ? [modelLabel] : []),
+    ...(cardGen?.aspect ? [`画幅 ${cardGen.aspect}`] : []),
+  ];
+  const statusText = slow ? `排队较久 · 已等 ${sec}s` : `生成中 ${pct}% · ${sec}s`;
+  const cancelBtn = jobId ? (
+    <button
+      type="button"
+      className="shrink-0 underline decoration-dotted underline-offset-2 hover:text-danger"
+      onClick={(e) => {
+        e.stopPropagation();
+        window.dispatchEvent(
+          new CustomEvent(CANCEL_GENERATION_EVENT, { detail: { nodeId } }),
+        );
+      }}
+    >
+      取消
+    </button>
+  ) : null;
+  const bar = (
+    <div className="h-1 w-full overflow-hidden rounded-full bg-hairline-soft">
+      <div
+        className="h-full rounded-full bg-accent transition-[width] duration-1000 ease-linear"
+        style={{ width: `${pct}%` }}
+      />
+    </div>
+  );
+  if (overlay) {
+    // 编辑重生成（卡上有旧图，宿主已渲染旧图+压暗）：底部横条放摘要与进度
+    return (
+      <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/75 to-black/0 px-2.5 pb-2 pt-7 text-left">
+        <div className="flex items-center gap-1.5 text-[11px] text-white/90">
+          <Loader2 className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
+          <span className="shrink-0 tabular-nums">{statusText}</span>
+          {cancelBtn}
+        </div>
+        {promptText ? (
+          <p className="mt-0.5 truncate text-[10px] text-white/70" title={promptText}>
+            {promptText}
+          </p>
         ) : null}
-      </p>
+      </div>
+    );
+  }
+  return (
+    <div className="w-full px-3 py-1 text-center">
+      <div className="flex items-center justify-center gap-1.5 text-xs text-text-3">
+        <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin text-accent" />
+        <span className="tabular-nums">{statusText}</span>
+        {cancelBtn}
+      </div>
+      {promptText ? (
+        <p
+          className="mt-1.5 line-clamp-2 text-left text-[11px] leading-relaxed text-text-3"
+          title={promptText}
+        >
+          {promptText}
+        </p>
+      ) : null}
+      {metaParts.length > 0 ? (
+        <p className="mt-1 truncate text-left text-[10px] text-text-4">
+          {metaParts.join(" · ")}
+        </p>
+      ) : null}
+      <div className="mt-2">{bar}</div>
+    </div>
+  );
+}
+/** 编辑重生成时的媒体区（viedeo 范式）：旧图保留 + 压暗遮罩 + 扫描光带 +
+ *  底部进度横条——改的是哪张图心里有数，不再是黑盒进度条替换掉旧图 */
+function LoadingOverMedia({
+  nodeId,
+  expected,
+  src,
+  title,
+}: {
+  nodeId: string;
+  expected: number;
+  src: string;
+  title?: string;
+}) {
+  return (
+    <div className="ws-loading-scan relative h-full w-full">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={assetThumbUrl(src)}
+        alt={title ?? ""}
+        draggable={false}
+        className="pointer-events-none h-full w-full object-contain opacity-75"
+      />
+      <div className="absolute inset-0 bg-black/20" />
+      <GenProgress nodeId={nodeId} expected={expected} overlay />
     </div>
   );
 }
@@ -2631,12 +2821,15 @@ function RetryPanel({
       }}
     >
       <CircleAlert className="h-5 w-5" />
-      <span className="text-xs">生成失败 · 点击重试</span>
+      <span className="text-xs font-medium">生成失败</span>
       {errorMessage ? (
-        <span className="line-clamp-2 text-[10px] text-text-4">
+        <span className="line-clamp-2 text-[10px] leading-relaxed text-text-4">
           {errorMessage}
         </span>
       ) : null}
+      <span className="mt-0.5 rounded border border-danger/40 bg-danger/10 px-2 py-0.5 text-[11px] font-medium transition-colors hover:bg-danger/20">
+        重试
+      </span>
     </button>
   );
 }
@@ -2717,7 +2910,13 @@ function ImageCard({ data, id, selected }: NodeProps) {
   const [uploading, setUploading] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [maskOpen, setMaskOpen] = useState(false);
+  // 图片卡设定折叠（与资产卡同范式）：body 语义 = 出图注入的本卡设定，
+  // 默认折叠一行摘要，点开 inline 编辑——图是主角、设定是附录
+  const [bodyCollapsed, setBodyCollapsed] = useState(true);
   const fileRef = useRef<HTMLInputElement>(null);
+  // 媒体比例自适应：图到位按自然比例贴满媒体区（竖图/方图不再 letterbox）
+  const mediaBoxRef = useRef<HTMLDivElement>(null);
+  const applyMediaFit = useMediaFitHeight(id, d.imageUrl as string | undefined, mediaBoxRef);
   const lod = useLod();
   const openZoom = (pano = false) => {
     const gal: {
@@ -2918,6 +3117,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
     >
       {/* 媒体区满幅（bleed 去卡内边距）：图片卡只显示图片，图贴卡框 */}
       <div
+        ref={mediaBoxRef}
         className={`flex min-h-0 w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
@@ -2925,7 +3125,11 @@ function ImageCard({ data, id, selected }: NodeProps) {
         {lod === "nano" ? (
           <NanoBlock nodeType={d.nodeType} />
         ) : d.status === "loading" ? (
-          <GenProgress nodeId={id} expected={22} />
+          d.imageUrl ? (
+            <LoadingOverMedia nodeId={id} expected={22} src={d.imageUrl} title={String(d.title ?? "")} />
+          ) : (
+            <GenProgress nodeId={id} expected={22} />
+          )
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : d.imageUrl ? (
@@ -2943,9 +3147,26 @@ function ImageCard({ data, id, selected }: NodeProps) {
               alt={d.title}
               decoding="async"
               draggable={false}
+              onLoad={(e) =>
+                applyMediaFit(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)
+              }
               className="ws-media-in pointer-events-none h-full w-full object-contain"
             />
             <MediaDragGrip nodeId={id} title={String(d.title ?? "")} />
+            {(d.versions?.length ?? 0) > 0 ? (
+              <button
+                type="button"
+                data-tip={`版本历史（共 ${(d.versions?.length ?? 0) + 1} 版，点击查看/回滚）`} aria-label="版本历史"
+                data-track="media.versions"
+                className="nodrag absolute bottom-1.5 right-1.5 z-[5] rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setHistoryOpen(true);
+                }}
+              >
+                V{(d.versions?.length ?? 0) + 1}
+              </button>
+            ) : null}
             {d.panorama && lod === "full" ? (
               <button
                 type="button"
@@ -3025,6 +3246,47 @@ function ImageCard({ data, id, selected }: NodeProps) {
             </button>
           ) : null}
         </div>
+      ) : null}
+      {lod === "full" && ((d.body as string) ?? "").trim() ? (
+        bodyCollapsed ? (
+          <button
+            type="button"
+            data-tip="点击展开编辑设定（出图自动带上）" aria-label="展开设定"
+            className="ws-detail mx-1.5 mb-1 mt-1 flex shrink-0 items-center gap-1 rounded px-0.5 py-0.5 text-left text-[10px] text-text-3 transition-colors hover:text-text"
+            onClick={(e) => {
+              e.stopPropagation();
+              setBodyCollapsed(false);
+            }}
+          >
+            <ChevronDown className="h-3 w-3 shrink-0" />
+            <span className="text-accent">设定</span>
+            <span className="text-text-4">
+              · 出图自动带上 · {String((d.body as string)?.length ?? 0)} 字
+            </span>
+          </button>
+        ) : (
+          <>
+            <Editable
+              value={d.body ?? ""}
+              onSave={(body, opts) => update({ body }, opts)}
+              multiline
+              always
+              placeholder="补充设定（出图自动带上）"
+              className="ws-detail mx-1.5 mb-1 mt-1 max-h-20 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+            />
+            <button
+              type="button"
+              data-tip="收起设定" aria-label="收起设定"
+              className="ws-detail mx-1.5 mb-1 -mt-0.5 shrink-0 self-start text-[10px] text-text-4 transition-colors hover:text-text"
+              onClick={(e) => {
+                e.stopPropagation();
+                setBodyCollapsed(true);
+              }}
+            >
+              收起
+            </button>
+          </>
+        )
       ) : null}
       {zoom !== null && gallery.length > 0 ? (
         <Lightbox
@@ -3324,6 +3586,9 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [frames, setFrames] = useState<{ t: number; data: string }[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
   const [extracting, setExtracting] = useState(false);
+  // 媒体比例自适应：视频元数据到位按自然比例贴满媒体区
+  const mediaBoxRef = useRef<HTMLDivElement>(null);
+  const applyMediaFit = useMediaFitHeight(id, d.videoUrl as string | undefined, mediaBoxRef);
   const [frameCount, setFrameCount] = useState(6);
   const [historyOpen, setHistoryOpen] = useState(false);
   const framesFor = useRef("");
@@ -3492,12 +3757,19 @@ function VideoCard({ data, id, selected }: NodeProps) {
       extraTools={videoTools}
     >
       <div
-        className={`flex h-44 min-h-44 w-full flex-1 items-center justify-center overflow-hidden ${
+        ref={mediaBoxRef}
+        className={`flex min-h-[84px] w-full flex-1 items-center justify-center overflow-hidden ${
           d.status === "loading" ? "ws-loading-scan" : ""
         }`}
       >
         {d.status === "loading" ? (
-          <GenProgress nodeId={id} expected={90} />
+          // 旧画面保留：优先封面图（生成的视频有 poster）；没有封面只有视频
+          // 时退回整卡进度（img 渲染不了视频 URL）
+          d.imageUrl ? (
+            <LoadingOverMedia nodeId={id} expected={90} src={d.imageUrl} title={String(d.title ?? "")} />
+          ) : (
+            <GenProgress nodeId={id} expected={90} />
+          )
         ) : d.status === "error" ? (
           <RetryPanel nodeId={id} errorMessage={d.errorMessage} />
         ) : lod !== "full" ? (
@@ -3520,6 +3792,9 @@ function VideoCard({ data, id, selected }: NodeProps) {
               controls
               preload="metadata"
               playsInline
+              onLoadedMetadata={(e) =>
+                applyMediaFit(e.currentTarget.videoWidth, e.currentTarget.videoHeight)
+              }
               className="ws-media-in h-full w-full bg-black object-contain"
               onClick={(e) => e.stopPropagation()}
             />

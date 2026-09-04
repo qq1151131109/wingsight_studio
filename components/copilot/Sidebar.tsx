@@ -93,8 +93,15 @@ function NullSlot(): null {
   return null;
 }
 
-/** 侧栏宽度记忆键（拖拽内缘调宽，globals.css 的 --sidebar-width 同源） */
+/** 侧栏宽度记忆键（拖拽内缘调宽，globals.css 的 --ws-chat-w 同源；
+ *  页面让位宽度由 v2 实测 aside 宽度后回灌 body margin，无需我们同步） */
 const WS_WIDTH_KEY = "wingsight_sidebar_width";
+
+/** 默认宽度：必须经内联 style 落地，不能只靠 globals.css 的兜底——
+ *  v2 自己的 adopted stylesheet 按 `--sidebar-width`（= 它量回来的实测值）
+ *  写宽度且层叠在后，文档层同分规则赢不了它；不传 width prop 后它的初值
+ *  DEFAULT_SIDEBAR_WIDTH=480 会直接成为实际宽度（实测：无存档时侧栏 480px） */
+const DEFAULT_CHAT_WIDTH = "420px";
 
 const SUGGESTIONS = [
   {
@@ -119,8 +126,12 @@ const SUGGESTIONS = [
   },
 ];
 
-/** 空态建议：v2 建议槽位替换（对话开始后隐藏，依据 = session hasMessages）；
- * 顶部先渲染最近会话（发现性），下面才是建议词 */
+/** 空态（助手身份说明 + 建议词）：v2 建议槽位替换（对话开始后隐藏，依据
+ *  = session hasMessages）。顶部先给一句「我能干什么」，再列最近会话与
+ *  建议词——v2 自带的 WelcomeScreen 在本工程永不渲染（它闸在
+ *  `!hasExplicitThreadId`，而 agent-provider.tsx 给 CopilotKit 传了 threadId
+ *  做多会话），所以 labels.welcomeMessageText 是死配置（已删），身份文案
+ *  由本槽位自己说 */
 function EmptyStateSuggestions({
   suggestions,
   onSelectSuggestion,
@@ -132,6 +143,12 @@ function EmptyStateSuggestions({
   if (hasMessages || suggestions.length === 0) return null;
   return (
     <div>
+      <div className="px-1 pt-3">
+        <p className="text-sm font-semibold text-text">画布助手</p>
+        <p className="mt-1 text-xs leading-relaxed text-text-3">
+          建卡、连关系、拆剧本与分镜、按设定出图都能做：说人话就行，也可以点下面任意一条示例起步。
+        </p>
+      </div>
       <div className="grid grid-cols-2 gap-1.5 px-1 pt-2">
         {suggestions.map((s) => (
           <button
@@ -171,32 +188,42 @@ export default function ThemedSidebar() {
   const suggestionsConfig = useMemo(() => ({ suggestions: SUGGESTIONS }), []);
   useConfigureSuggestions(suggestionsConfig);
 
-  // 侧栏内缘拖拽调宽：改 --ws-chat-w（globals.css 骨架优先读它、以 v2 自带的
-  // --sidebar-width 兜底——v2 把该变量设在 aside 元素上，root 同名会被遮蔽），
-  // localStorage 记忆；命令式 DOM 操作不走 React 状态。
+  // 侧栏内缘拖拽调宽：改 --ws-chat-w（globals.css 骨架的唯一宽度事实源，
+  // 兜底 420px；不再读 v2 自带的 --sidebar-width——它现在由 v2 从实测宽度回写，
+  // 读它会形成回显自锁），localStorage 记忆；命令式 DOM 操作不走 React 状态。
   // move/up 挂 window：指针捕获万一丢失（浏览器差异/中断）拖拽也不死 mid-way，
   // 且 dragging 态放在 html 上，任何收尾路径（up/cancel/blur）都能复位
   const resizerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const saved = window.localStorage.getItem(WS_WIDTH_KEY);
+    const initial = saved || DEFAULT_CHAT_WIDTH;
     const timers: number[] = [];
-    if (saved) {
-      document.documentElement.style.setProperty("--ws-chat-w", saved);
-      // 侧栏常驻 DOM（关闭仅 aria-hidden），稍等首帧后还原内联宽度。
-      // 注意：还原分支绝不早退——曾因 return 跳过下面的监听器挂载，
-      // 「刷新后有存值 → 拖拽永久失灵」就是这个坑
-      timers.push(
-        window.setTimeout(() => {
-          (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)
-            ?.style.setProperty("width", saved, "important");
-        }, 400),
+    document.documentElement.style.setProperty("--ws-chat-w", initial);
+    // 内联宽度立即写一次（防 480→420 闪一屏）+ 首帧后再写一次（防 v2 在
+    // 自己的 layout effect 里回写盖掉）。侧栏常驻 DOM（关闭仅 aria-hidden）
+    // 注意：此分支绝不早退——曾因 return 跳过下面的监听器挂载，
+    // 「刷新后有存值 → 拖拽永久失灵」就是这个坑
+    const applyInitial = () =>
+      (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)?.style.setProperty(
+        "width",
+        initial,
+        "important",
       );
-    }
+    applyInitial();
+    timers.push(window.setTimeout(applyInitial, 400));
     const el = resizerRef.current;
     const cleanupRestore = () => timers.forEach((t) => window.clearTimeout(t));
     if (!el) return cleanupRestore;
-    const clamp = (w: number) =>
-      Math.min(Math.max(w, 340), Math.min(760, window.innerWidth * 0.95));
+    // 上限不只是「别超屏」：还要给画布留最小可用宽（活动栅 56 + 画布 420）。
+    // 否则窄窗口里把侧栏拖到 760，画布只剩两百来 px：顶栏「分享」被挤成
+    // 两行竖排、左上工具条顶到侧栏底下（实测视口 1100 时画布 285px）
+    const clamp = (w: number) => {
+      const upper = Math.max(
+        240,
+        Math.min(760, window.innerWidth - ACTIVITY_W - CANVAS_MIN),
+      );
+      return Math.min(Math.max(w, 340), upper);
+    };
     // v2 经 adopted stylesheet 打的 !important 宽度规则会吃掉任何文档层
     // 选择器（特异性提档也没用）；内联 !important 是唯一稳定赢面（实测），
     // 同时写 root 变量让 .ws-chat-resizer 条同步贴边
@@ -243,6 +270,18 @@ export default function ThemedSidebar() {
     window.addEventListener("pointerup", endDrag);
     window.addEventListener("pointercancel", endDrag);
     window.addEventListener("blur", endDrag as EventListener);
+    // 窗口变窄后不重算的话，「先拖宽、再缩窗口」会让画布被陈旧宽度挤没
+    //（clamp 只在拖拽时生效，拖完不会自己回来）。这里只视觉 clamp，
+    // 不回写 localStorage——用户重新拉宽窗口时他选的宽度还在
+    const onResize = () => {
+      if (dragging) return;
+      const cur =
+        parseFloat(
+          getComputedStyle(document.documentElement).getPropertyValue("--ws-chat-w"),
+        ) || parseInt(DEFAULT_CHAT_WIDTH, 10);
+      apply(clamp(cur));
+    };
+    window.addEventListener("resize", onResize);
     return () => {
       if (typeof cleanupRestore === "function") cleanupRestore();
       el.removeEventListener("pointerdown", onDown);
@@ -250,6 +289,7 @@ export default function ThemedSidebar() {
       window.removeEventListener("pointerup", endDrag);
       window.removeEventListener("pointercancel", endDrag);
       window.removeEventListener("blur", endDrag as EventListener);
+      window.removeEventListener("resize", onResize);
     };
   }, []);
 
@@ -260,10 +300,16 @@ export default function ThemedSidebar() {
         agentId="default"
         defaultOpen={false}
         position="right"
-        width={420}
+        // 故意不传 width：v2 只在 width 缺省时才挂 ResizeObserver 量 aside 实测
+        // 宽度、再据此写 body 的 margin-inline-end（页面让位）。传了就把让位
+        // 钉死在传入值，而实际宽度由可拖的 --ws-chat-w 决定（存 localStorage），
+        // 两者一不等侧栏就盖住画布右缘——顶栏「主题/分享/账户」被裁、小地图被
+        // 吃一条、底坞与空态中心偏右（拖宽侧栏必现）
         labels={{
           modalHeaderTitle: "Wingsight 助手",
-          welcomeMessageText: "你好，我是画布助手。可以让我建卡片、连角色和剧本，或调用宣发 / 资产出图技能。",
+          // welcomeMessageText 不填：v2 的 WelcomeScreen 闸在 !hasExplicitThreadId，
+          // 而我们显式管 threadId（多会话）→ 该屏永不渲染，填了是死配置。
+          // 空态身份文案见 EmptyStateSuggestions
           chatInputPlaceholder: "问点什么…",
           assistantMessageToolbarCopyMessageLabel: "复制",
           assistantMessageToolbarRegenerateLabel: "重新生成",

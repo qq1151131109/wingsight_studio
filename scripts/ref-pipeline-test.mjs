@@ -57,7 +57,8 @@ const svg = (label, bg) =>
   );
 
 let gridI = 0;
-const pos = () => ({ x: (gridI % 4) * 300, y: Math.floor(gridI++ / 4) * 380 });
+// 行距 560：夹具图是 720×1280 竖图，媒体比例自适应后卡高 ~490，380 行距会层叠盖卡（点击被上层拦）
+const pos = () => ({ x: (gridI % 4) * 300, y: Math.floor(gridI++ / 4) * 560 });
 const img = (id, extra = {}) => ({
   id,
   type: "image",
@@ -86,11 +87,21 @@ const nodes = [
   // 角色卡参考的剧照卡
   { id: "charA", type: "character", position: pos(), data: { nodeType: "character", title: "张波", imageUrl: svg("Z", "#4a6a4a") } },
   img("charShot", {}),
+  // 白骨精事故复刻：剧本卡（有正文无图）→ 空图片卡连线——用户「从剧本建
+  // 缺失角色」的自然手势（剧本加拉加号建下游图卡自动连线）
+  {
+    id: "scriptSrc",
+    type: "script",
+    position: pos(),
+    data: { nodeType: "script", title: "白骨精剧本", body: "山中白发老妇，拄杖而行，衣衫褴褛，目光慈祥中藏着妖异，腕系一串白骨念珠。" },
+  },
+  { id: "fromScript", type: "image", position: pos(), data: { nodeType: "image", title: "" } },
 ];
 const edges = [
   { id: "e1", source: "refF", target: "shot" },
   { id: "e2", source: "refM", target: "shot" },
   { id: "e3", source: "charA", target: "charShot" },
+  { id: "e4", source: "scriptSrc", target: "fromScript" },
 ];
 
 // ---------- 测试项目 + 画布 ----------
@@ -104,7 +115,7 @@ const pid = proj.id ?? proj.project?.id;
 const put = await api(`/projects/${pid}/canvas`, {
   method: "PUT",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ nodes, edges, viewport: { x: 10, y: 10, zoom: 0.5 } }),
+  body: JSON.stringify({ nodes, edges, viewport: { x: 10, y: 10, zoom: 0.35 } }),
 });
 if (put.status !== 200) throw new Error(`PUT canvas 失败 ${put.status}: ${JSON.stringify(put.body).slice(0, 200)}`);
 // 视口整体缩小：onlyRenderVisibleElements 会卸载视口外卡，缩放保证全部可点
@@ -145,22 +156,46 @@ await page.route("**/agent-service/storyboard/images/e2e_pipe_job", (route) =>
   }),
 );
 
+const isSel = (id) =>
+  page.evaluate(
+    (nid) =>
+      window.__wsCanvasStore.getState().nodes.find((n) => n.id === nid)
+        ?.selected === true,
+    id,
+  );
 const select = async (id) => {
   // 点卡片头部（避开媒体区防开灯箱）；fitView 动画期点击会被吞，先等稳定，
-  // xyflow 初始化竞态也可能吞一次选择，重试兜底
-  for (let i = 0; i < 3; i++) {
-    await page.waitForTimeout(i === 0 ? 1200 : 800);
-    await page
-      .locator(`.react-flow__node[data-id="${id}"]`)
-      .click({ position: { x: 5, y: 4 }, force: i > 0 });
+  // xyflow 初始化竞态也可能吞一次选择，重试兜底。「看到生成按钮」不能当成功
+  // ——上一张卡的面板还开着时按钮恒可见（自适应改高后点击常被浮层拦，字会
+  // 打进旧卡面板）——必须校验选中 id 真切过去
+  for (let i = 0; i < 4; i++) {
+    await page.waitForTimeout(i === 0 ? 1200 : 500);
+    if (i > 0 || true) {
+      // 先试真实点击（含 force），被拦就 store 直选——两条路殊途同归
+      try {
+        await page
+          .locator(`.react-flow__node[data-id="${id}"]`)
+          .click({ position: { x: 5, y: 4 }, force: i > 0, timeout: 4000 });
+      } catch {
+        await page.evaluate((nid) => window.__wsCanvasStore.getState().selectNodes([nid]), id);
+        await page.waitForTimeout(600);
+      }
+    }
     try {
       await page
         .getByRole("button", { name: /^生成/ }).first()
-        .waitFor({ state: "visible", timeout: 4000 });
-      return;
+        .waitFor({ state: "visible", timeout: 3000 });
+      if (await isSel(id)) return;
     } catch {
-      await page.evaluate((nid) => window.__wsCanvasStore.getState().selectNodes([nid]), id);
-      await page.waitForTimeout(800);
+      /* 面板未开 → store 直选后重试 */
+    }
+    await page.evaluate((nid) => window.__wsCanvasStore.getState().selectNodes([nid]), id);
+    await page.waitForTimeout(600);
+    if (await isSel(id)) {
+      await page
+        .getByRole("button", { name: /^生成/ }).first()
+        .waitFor({ state: "visible", timeout: 3000 });
+      return;
     }
   }
   await page
@@ -481,6 +516,34 @@ try {
   } else {
     check("J9 快照 chip 点击开灯箱预览", true, "本次序列无快照 chip（可跳过）");
   }
+
+  // 16. 连线文本参考（2026-09-04 白骨精项目事故）：剧本卡连线空图片卡 +
+  //     自由文字提示词 → 不再被参考闸拦下，剧本正文作为设定上下文注入
+  //     visualNotes（「从剧本建缺失角色」的直连路径）
+  await select("fromScript");
+  await typePrompt("生成白发老妇的图");
+  await submit();
+  const s16 = lastPayload?.shots?.[0];
+  const st16 = await page.evaluate(() => {
+    const n = window.__wsCanvasStore.getState().nodes.find((x) => x.id === "fromScript");
+    return { status: n?.data.status, err: String(n?.data.errorMessage ?? "") };
+  });
+  check(
+    "K1 剧本连线不被参考闸拦下",
+    Boolean(s16) && st16.status !== "error",
+    `payload=${Boolean(s16)} status=${st16.status} err=${st16.err.slice(0, 40)}`,
+  );
+  check(
+    "K2 剧本正文注入 visualNotes（连线文本《白骨精剧本》）",
+    String(s16?.visualNotes ?? "").includes("连线文本《白骨精剧本》") &&
+      String(s16?.visualNotes ?? "").includes("白发老妇"),
+    String(s16?.visualNotes ?? "").slice(0, 80),
+  );
+  check(
+    "K3 无图连线=纯文生图载荷",
+    (s16?.referenceImages ?? []).length === 0,
+    `refs=${(s16?.referenceImages ?? []).length}`,
+  );
 } catch (e) {
   console.error("执行中断：", e.message);
 } finally {

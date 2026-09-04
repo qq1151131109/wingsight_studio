@@ -683,7 +683,7 @@ export default function ChatInput({
             <button
               type="button"
               className="copilotKitInputSendButton"
-              data-tip={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"} aria-label={uploading ? "附件上传中，稍候…" : "发送（Enter 换行 Shift+Enter）"}
+              data-tip={uploading ? "附件上传中，稍候…" : "发送（Enter 发送，Shift+Enter 换行）"} aria-label={uploading ? "附件上传中，稍候…" : "发送（Enter 发送，Shift+Enter 换行）"}
               disabled={!canSend || uploading}
               onClick={() => void submit()}
             >
