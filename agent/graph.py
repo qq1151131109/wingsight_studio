@@ -533,7 +533,7 @@ backend_tool_names = {t.name for t in backend_tools}
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
 # read_node：系统提示两处指示模型用它在摘要截断时取卡片全文，必须在册；
 # propose_plan / update_plan：计划先行（多步任务先确认后执行、逐步打勾）
-FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "canvas_query", "canvas_validate_ops", "read_node", "propose_plan", "update_plan"}
+FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "canvas_query", "canvas_validate_ops", "read_node", "open_style_picker", "set_project_style", "propose_plan", "update_plan"}
 
 
 # ---------- 多模态附件（图片/视频随消息上传） ----------

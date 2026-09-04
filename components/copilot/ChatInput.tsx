@@ -325,6 +325,52 @@ export default function ChatInput({
     if (added.length > 0) setAttachments((list) => [...list, ...added]);
   };
 
+  // 整个聊天侧栏都是文件落区（v2 aside 是它的 DOM，命令式挂监听）：
+  // 拖到侧栏任意处即入附件，不再要求精确落到输入条。画布卡拖放（→ @ 引用）
+  // 仍由输入条容器自己的 onDrop 处理——这里 defaultPrevented / 节点载荷直接放行。
+  // 依赖 [addFiles] 重订阅拿最新闭包（编译器禁 ref/模块变量赋值，重挂 4 个
+  // 监听器的代价可忽略）
+  useEffect(() => {
+    const aside = document.querySelector("aside.copilotKitSidebar") as HTMLElement | null;
+    if (!aside) return;
+    let dragDepth = 0;
+    const hasFiles = (e: DragEvent) =>
+      Array.from(e.dataTransfer?.types ?? []).includes("Files");
+    const onOver = (e: DragEvent) => {
+      if (!hasFiles(e) || e.defaultPrevented) return;
+      e.preventDefault();
+      e.dataTransfer!.dropEffect = "copy";
+    };
+    const onEnter = (e: DragEvent) => {
+      if (!hasFiles(e) || e.defaultPrevented) return;
+      dragDepth += 1;
+      aside.classList.add("ws-chat-drop");
+    };
+    const onLeave = () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (dragDepth === 0) aside.classList.remove("ws-chat-drop");
+    };
+    const onDrop = (e: DragEvent) => {
+      dragDepth = 0;
+      aside.classList.remove("ws-chat-drop");
+      // 输入条容器已处理（@ 引用等）或无文件 → 不接手
+      if (e.defaultPrevented || !e.dataTransfer?.files?.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      addFiles(e.dataTransfer.files);
+    };
+    aside.addEventListener("dragover", onOver);
+    aside.addEventListener("dragenter", onEnter);
+    aside.addEventListener("dragleave", onLeave);
+    aside.addEventListener("drop", onDrop);
+    return () => {
+      aside.removeEventListener("dragover", onOver);
+      aside.removeEventListener("dragenter", onEnter);
+      aside.removeEventListener("dragleave", onLeave);
+      aside.removeEventListener("drop", onDrop);
+    };
+  }, [addFiles]);
+
   const removeAttachment = (key: string) => {
     setAttachments((list) => list.filter((x) => x.key !== key));
   };

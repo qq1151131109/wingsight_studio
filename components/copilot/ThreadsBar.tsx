@@ -125,6 +125,24 @@ export default function ChatSidebarHeader() {
     }
   }, [projectId]);
 
+  // 挂载静默拉一次：header 要常驻显示当前会话标题（juben SessionSelector
+  // 范式——快速索引/切换的入口），历史面板打开时再刷新
+  useEffect(() => {
+    if (!projectId) return;
+    let alive = true;
+    void (async () => {
+      try {
+        const list = await listChatThreads(projectId);
+        if (alive) setThreads(list);
+      } catch {
+        if (alive) setThreads([]);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [projectId]);
+
   const togglePanel = () => {
     // 打开时拉最新列表（而非 effect 里拉，避免级联渲染）
     if (!panelOpen) void refresh();
@@ -175,7 +193,25 @@ export default function ChatSidebarHeader() {
       className="copilotKitHeader relative flex w-full items-center"
     >
       <RunErrorBanner />
-      <span className="truncate">Wingsight 助手</span>
+      {/* 当前会话标题（juben SessionSelector 范式）：常驻可点，点击开历史面板
+          快速切换；运行中亮黄点 */}
+      <button
+        type="button"
+        onClick={togglePanel}
+        data-tip="切换会话" aria-label="切换会话"
+        data-track="chat.threadSwitcher"
+        className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+      >
+        {isLoading ? (
+          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn" />
+        ) : null}
+        <span className="truncate text-[13px] font-medium">
+          {threadId
+            ? (threads ?? []).find((t) => t.id === threadId)?.title || "当前会话"
+            : "Wingsight 助手"}
+        </span>
+        <History className="h-3.5 w-3.5 shrink-0 text-text-4" />
+      </button>
 
       <div className="ml-auto flex items-center gap-0.5">
         <button
@@ -259,6 +295,12 @@ export default function ChatSidebarHeader() {
                     t.id === threadId ? "bg-surface-2" : ""
                   }`}
                 >
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                      t.id === threadId && isLoading ? "animate-pulse bg-warn" : "bg-text-4/40"
+                    }`}
+                    aria-label={t.id === threadId && isLoading ? "运行中" : "空闲"}
+                  />
                   <button
                     type="button"
                     className="min-w-0 flex-1 text-left"

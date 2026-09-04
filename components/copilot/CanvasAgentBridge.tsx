@@ -7,7 +7,7 @@ import {
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
-import { CheckCircle2, CircleAlert, Crosshair, FileText, Wrench } from "lucide-react";
+import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
 import { buildRefSequence, CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
@@ -74,6 +74,11 @@ async function directImagegen(
     /** 派生改图：源卡 id（无谱系上传图）。事件目标已是右侧连线的新空卡，
      *  源图充当「本卡原图」角色（改图锚点 + EDIT 最小模板契约） */
     editOf?: string;
+    /** 参与清单摘除：本次不带卡上设定正文（noRefs 重掷无视此项——它恰恰
+     *  要按设定出图） */
+    selfBodyOff?: boolean;
+    /** 参与清单摘除：本次不注入全局画风 */
+    styleOff?: boolean;
   },
 ) {
   const st = useCanvasStore.getState();
@@ -165,7 +170,22 @@ async function directImagegen(
         .map((e, i) => `图${i + 1}=《${e.node.data.title || "无题"}》`)
         .join("、")}（图N 即第 N 张参考图）。`
     : "";
+  // 本卡设定统一注入通道（面板「本卡设定」chip 的对端）：chip 开且设定非空
+  // → 必进 visualNotes/compose setting，不再依赖「指令是否为空/是否恰好有
+  // 参考」——旧规则里「有指令+扩写关+无参考」设定被静默丢弃。摘除语义：
+  // selfBodyOff=本次不参与；noRefs「按设定重掷」无视摘除强制带上。
+  // 派生改图时设定取源卡（目标新卡的 body 为空）
+  const editBody = String((editSrc ?? node).data.body ?? "").trim();
+  const promptEmpty = !opts.prompt.trim();
+  const bodyInDescription =
+    promptEmpty && (opts.noRefs || !opts.selfBodyOff);
+  const includeSelfBody =
+    !opts.noRefs && !opts.selfBodyOff && !!editBody && !bodyInDescription;
+  const selfBodyNote = includeSelfBody
+    ? `本卡设定（《${(editSrc ?? node).data.title || "无题"}》）：${editBody.slice(0, CONTEXT_BODY_LIMIT)}`
+    : "";
   const visualNotes = [
+    selfBodyNote,
     ...mentionedNodes
       .filter((n) => !n.data.imageUrl)
       .map(
@@ -173,11 +193,14 @@ async function directImagegen(
           `${n.data.title}：${((n.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT)}`,
       ),
     ...refEntries.map((e) => {
-      const body = ((e.node.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT);
+      // 图条目只锚图不带正文——设定文本统一走上面的「本卡设定」项，防重复
+      const body = e.kind === "self" ? "" : ((e.node.data.body as string) ?? "").slice(0, CONTEXT_BODY_LIMIT);
       return `${e.label}=《${e.node.data.title || "无题"}》${body ? `：${body}` : ""}`;
     }),
-    `全局视觉风格：${projectStyle}`,
-  ].join("；");
+    ...(opts.styleOff ? [] : [`全局视觉风格：${projectStyle}`]),
+  ]
+    .filter(Boolean)
+    .join("；");
   // 资产卡按自身类型出设定图（角色=四格定妆契约、服饰按道具契约、场景/道具
   // 同名）——此前只看引用卡里有没有角色卡，角色资产卡不带角色引用时被误标
   // 成 scene，提示词渲染成「无人空镜」出空场景
@@ -264,7 +287,9 @@ async function directImagegen(
     st.connect({ source: rid, target: nodeId });
   }
   const description = (
-    numberingNote + (opts.prompt || `${node.data.title} ${node.data.body ?? ""}`)
+    numberingNote +
+    (opts.prompt ||
+      `${node.data.title} ${bodyInDescription ? (node.data.body ?? "") : ""}`)
   ).trim();
   // 画幅：卡片级覆盖（面板「画幅」选择，data.gen.aspect）；空=自动——
   // 跟随首位参考图真实比例（吸附模型支持档），无参考图回空（flow 按资产
@@ -315,10 +340,10 @@ async function directImagegen(
           ? {
               compose: true,
               instruction,
-              // 设定文本 + 考据简报（编排扩写的证据材料；用户关编排时原样
-              // 直传不注入——那是明确的"别加工"）
+              // 设定文本（本卡设定 chip 开才注入）+ 考据简报（编排扩写的
+              // 证据材料；用户关编排时原样直传不注入——那是明确的"别加工"）
               setting: [
-                String(node.data.body ?? "").trim(),
+                includeSelfBody ? editBody : "",
                 String(node.data.researchBrief ?? "").trim(),
               ]
                 .filter(Boolean)
@@ -530,6 +555,7 @@ export default function CanvasAgentBridge() {
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
   const canvasRevision = useCanvasStore((s) => s.canvasRevision);
+  const projectStyle = useCanvasStore((s) => s.projectStyle);
 
   // 画布摘要下发通道 = useCopilotReadable → RunAgentInput.context → 桥接层
   // （agent/.venv 补丁）注入为末尾 system/human 消息。
@@ -543,10 +569,68 @@ export default function CanvasAgentBridge() {
     2000,
     canvasRevision,
   );
+  // 画风状态行：agent 据此自主判断「无画风 → 出图前先弹选择器/建议设定」
+  // （画风存画布 meta；summarizeCanvas 是纯函数不掺项目态，桥接层拼）
+  const summaryWithStyle = `${summary}\n画风：${
+    projectStyle.trim()
+      ? projectStyle.trim().slice(0, 40)
+      : "未设定（出图前先 open_style_picker 让用户选，或说明推荐理由后 set_project_style）"
+  }`;
 
   useCopilotReadable({
     description: "当前画布内容（节点 / 连线 / 选中项）",
-    value: summary,
+    value: summaryWithStyle,
+  });
+
+  // 画风选择器：agent 侧一键弹出底部坞「项目画风」面板（预设+自定义）
+  useCopilotAction({
+    name: "open_style_picker",
+    description:
+      "打开「项目画风」选择面板（预设 + 自定义，用户点选即生效）。用户还没定画风、被画风闸拦下、或用户想换画风时调用，面板已自动弹在画布上。",
+    available: "remote",
+    parameters: [],
+    handler: () => {
+      window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
+      return "已打开画风面板，等用户选择后继续（选择即生效，无需再确认）";
+    },
+    render: ({ status }) => (
+      <ToolCard
+        icon={<Palette />}
+        title={status !== "complete" ? "正在打开画风面板" : "已打开画风面板，请在画布上选择"}
+        ok
+      >
+        {null}
+      </ToolCard>
+    ),
+  });
+
+  // 画风直设：经用户同意（或用户点名）时写入项目画风
+  useCopilotAction({
+    name: "set_project_style",
+    description:
+      '设置项目全局画风（对所有出图生效）。style 为一句画风描述，如「吉卜力水彩质感，柔和自然光，低饱和暖色」。用户点名要某画风时直接设；你主动建议时先说明推荐理由再设，并在回复里告知可随时改。',
+    available: "remote",
+    parameters: [
+      { name: "style", type: "string", required: true, description: "画风描述（一句）" },
+    ],
+    handler: ({ style }: { style?: string }) => {
+      const s = String(style ?? "").trim().slice(0, 200);
+      if (!s) return "style 不能为空";
+      useCanvasStore.getState().setProjectStyle(s);
+      return `画风已设定：${s}`;
+    },
+    render: ({ status, args }) => {
+      const s = String((args as { style?: unknown })?.style ?? "");
+      return (
+        <ToolCard
+          icon={<Palette />}
+          title={status !== "complete" ? "正在设定画风" : `画风已设定：「${s.slice(0, 24)}」`}
+          ok
+        >
+          {null}
+        </ToolCard>
+      );
+    },
   });
 
   // 读节点全文：摘要只有 40 字截断，agent 需要时（如回剧本找漏掉的角色）按需读
@@ -830,14 +914,14 @@ export default function CanvasAgentBridge() {
   // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
   useEffect(() => {
     const onGenerate = (e: Event) => {
-      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs, editOf } = (e as CustomEvent<GenerateDetail>)
+      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs, editOf, selfBodyOff, styleOff } = (e as CustomEvent<GenerateDetail>)
         .detail;
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       // 出图=确定性任务，直连 imagegen flow（不经聊天 LLM，不刷聊天屏）
       if (kind === "image") {
-        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs, editOf });
+        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs, editOf, selfBodyOff, styleOff });
         return;
       }
       // 连线即数据流：目标卡的入边上游自动进生成上下文（@ 手动引用过的不重复）

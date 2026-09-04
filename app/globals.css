@@ -646,6 +646,25 @@ html.ws-chat-dragging * {
 body:not(:has(aside.copilotKitSidebar[aria-hidden="false"])) .ws-chat-resizer {
     display: none;
 }
+
+/* 侧栏整区文件拖入反馈：半透明遮罩 + 提示（drop 监听在 ChatInput 命令式
+   挂在 aside 上，拖文件入侧栏任意处即附件，不必精确落输入条） */
+aside.copilotKitSidebar.ws-chat-drop::before {
+    content: "松手添加为附件";
+    position: absolute;
+    inset: 0;
+    z-index: 30;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: oklch(0 0 0 / 0.35);
+    backdrop-filter: blur(1px);
+    color: #fff;
+    font-size: 13px;
+    font-weight: 500;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+}
 aside.copilotKitSidebar[aria-hidden="false"] {
     visibility: visible;
 }
