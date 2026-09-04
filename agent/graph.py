@@ -43,10 +43,15 @@ import skills
 
 
 class AgentState(CopilotKitState):
-    """共享状态：canvasSummary 是画布摘要（前端 useCoAgent 写入）。"""
+    """共享状态：canvasSummary 是画布摘要（前端 useCoAgent 写入）。
+    history_summary/summary_count 是长对话滚动压缩：前 summary_count 条
+    消息已折叠进 history_summary（chat_node 超阈值时自压缩，见
+    _compress_history）。"""
 
     canvasSummary: str = ""
     tools: List[Any] = []
+    history_summary: str = ""
+    summary_count: int = 0
 
 
 # ---------- 后端工具 ----------
@@ -510,6 +515,83 @@ def refresh_skill_meta() -> None:
     ) or "（暂无）"
 
 
+def _msg_text(m: Any) -> str:
+    """消息文本长度（token 保守估算：中文约 1-1.5 字/token，按字符数计偏高
+    不偏低——压缩宁可早不可晚）。多模态 content 取文本块拼接。"""
+    c = getattr(m, "content", m)
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(
+            b.get("text", "") for b in c if isinstance(b, dict) and isinstance(b.get("text"), str)
+        )
+    return str(c or "")
+
+
+async def _fold_into_summary(prev_summary: str, messages: List[Any]) -> str:
+    """把一批旧消息并入滚动摘要（≤1500 字）：保留关键事实、已定决策、
+    实体设定与用户偏好，丢寒暄与过程性工具往返。"""
+    model = ChatOpenAI(
+        model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
+        base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
+        api_key=os.environ.get("AGENT_API_KEY", ""),
+        temperature=0.2,
+        max_tokens=2048,
+        streaming=False,
+        **({"extra_body": {"thinking": {"type": "enabled"}}} if _thinking_enabled() else {"reasoning_effort": "none"}),
+    )
+    lines = "\n".join(f"[{getattr(m, 'type', '?')}] {_msg_text(m)[:600]}" for m in messages)
+    prompt = (
+        "把「已有摘要」与「新增对话片段」合并成一份不超 1500 字的滚动摘要。"
+        "保留：用户目标与偏好、已确认的设定/决策、实体名与关系、未完成事项；"
+        "丢弃：寒暄、失败重试过程、工具调用细节。直接输出摘要正文。"
+        f"\n\n已有摘要：\n{prev_summary or '（无）'}\n\n新增对话片段：\n{lines[:60000]}"
+    )
+    try:
+        resp = await model.ainvoke([("user", prompt)])
+        out = str(resp.content or "").strip()
+        return out[:3000] or prev_summary
+    except Exception:  # noqa: BLE001
+        return prev_summary  # 压缩失败保原状，下轮再试
+
+
+async def _compress_history(
+    summary: str, summary_count: int, messages: List[Any]
+) -> tuple[str, int, dict]:
+    """超阈值时把较旧的消息折叠进滚动摘要。返回 (新摘要, 新计数, state 增量)。
+    阈值 CHAT_COMPRESS_THRESHOLD_TOKENS（默认 400k，字符数近似 token 上界）；
+    触发后保留最近约 40% 预算的消息原文，其余并入摘要。"""
+    threshold = max(int(os.environ.get("CHAT_COMPRESS_THRESHOLD_TOKENS", "400000")), 20000)
+    visible = messages[summary_count:]
+    est = sum(len(_msg_text(m)) for m in visible) + len(summary)
+    if est < threshold or len(visible) <= 8:
+        return summary, summary_count, {}
+    keep_budget = int(threshold * 0.4)
+    acc = 0
+    boundary = len(visible)  # visible[boundary:] 为保留的最近消息
+    for i in range(len(visible) - 1, -1, -1):
+        acc += len(_msg_text(visible[i]))
+        if acc > keep_budget and (len(visible) - i) >= 6:
+            boundary = i + 1
+            break
+        boundary = i
+    if boundary <= 0:
+        return summary, summary_count, {}
+    to_fold = visible[:boundary]
+    # 折叠边界不切开 tool 配对：assistant(tool_calls) 与其 tool 响应同进退
+    while to_fold and getattr(to_fold[-1], "type", "") == "ai" and getattr(to_fold[-1], "tool_calls", None):
+        to_fold.pop()
+        boundary -= 1
+    if not to_fold:
+        return summary, summary_count, {}
+    new_summary = await _fold_into_summary(summary, to_fold)
+    new_count = summary_count + boundary
+    return new_summary, new_count, {
+        "history_summary": new_summary,
+        "summary_count": new_count,
+    }
+
+
 async def generate_thread_title(user_text: str, assistant_text: str) -> str:
     """会话自动命名：首组对话 → 6-14 字中文标题。一次性小调用走主循环同款
     模型通道（聊天基础设施，与「聊天主循环豁免 Langflow」同族；不做 flow）。
@@ -761,7 +843,7 @@ def _embed_local_media(m: Any) -> Any:
 
 SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在无限画布上进行影视创作（剧本、角色、分镜、设定图）。
 
-## 画布当前状态（ground truth，以此为准，忽略聊天历史里的旧状态）
+{history_section}## 画布当前状态（ground truth，以此为准，忽略聊天历史里的旧状态）
 {canvas_summary}
 
 ## 操作画布
@@ -777,18 +859,11 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 - {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
 复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，返回 issues 不落画布，无 error 再用 canvas_ops 应用。
 
-audio（音频）卡：配音 / 音效 / BGM，音频源由用户在卡片上上传（audioUrl），你只负责建卡与连线。
-compose（合成）卡：把多张视频卡按顺序连线到它，用户点卡片上的「合成成片」按钮由服务端 ffmpeg 拼接——
-你只负责建 compose 卡并 connect_nodes 把视频按镜号顺序连上，不要自己生成合成结果。
-
-storyboard（分镜）卡：title=镜头名，body=画面描述（谁、在哪、做什么），
-add_node / update_node 可带 shotNumber（镜号，如 01）、shotSize（远景/全景/中景/近景/特写）、
-cameraMove（运镜，如 推、拉、摇、跟、固定）、duration（如 3s）、dialogue（台词/旁白）。
 分镜分两类处理：
 - **整表分镜**（把剧本拆成分镜表 / 重新生成 / 整表压缩重写）→ 用 generate_storyboard 工具生成 rows
   并写回：画布已有分镜表卡（画布状态里 [分镜表] 行）用 update_node 带 rows 整组替换；没有则
   add_node nodeType=shotlist 带 rows 新建。整表分镜**不要为每个镜头铺独立 storyboard 卡**。
-- 单镜头画面卡 → storyboard 卡（字段见上），按顺序连线（镜号从 01 递增）。
+- 单镜头画面卡 → storyboard 卡，按顺序连线（镜号从 01 递增）；字段规范见 script-to-assets 技能。
 
 节点 id 形如 n_xxx_x，从「画布当前状态」索引或 canvas_query 结果里取。
 新建的卡要在同批或后续连线/更新时，给 add_node 带 id 字段自拟占位符（如 "SB_1"），后续
@@ -824,26 +899,11 @@ connect_nodes / update_node 直接引用同值即可；没带占位符就必须�
 4. 视频：当前没有视频生成管线——如实说明，并把节点置为 {{status:"error", errorMessage:"暂不支持 AI 生成视频，可点击卡片上传本地视频"}}。
 5. 任何失败都要回填 {{status:"error", errorMessage:原因}}，绝不让卡片停在 loading。
 
-## 剧本 → 资产工作流
-用户给出剧本并想要资产/设定图时，按以下次序：
-1. 先用 canvas_ops 建一张 script 卡：标题用片名（用户没提就叫「剧本」），body 放剧本原文全文（不要截断）
-2. 调 decompose_script(剧本原文) 拆出资产清单
-3. 用一次 canvas_ops 批量建资产卡，并把每张用 connect_nodes 连回剧本卡（fromId=剧本卡id）：
-   角色→character 卡（name 做标题）；场景/道具→note 卡（标题带「场景：」「道具：」前缀）；description 与 visual_notes 写进 body
-4. 汇报拆解结果并请用户确认增删。用户补充/删除角色时直接用 canvas_ops 改画布，不要重新拆解；
-   需要回看剧本原文时用 read_node(剧本卡id)
-5. 用户确认后要求出图时：调 generate_asset_images(资产数组 JSON，字段与拆解清单一致，从拆解结果或画布卡内容取)。
-   注意每张约需 1 分钟，调用前先告知用户预计耗时。完成后用 canvas_ops 为每张成功的图建 image 卡
-   （title=资产名，imageUrl 用返回的 image_url），并 connect_nodes 连到对应资产卡；失败的在汇报中说明可重试。
-   出图前可为资产补充摄影质感描述（见下方摄影速查），让设定图更有电影感
+## 剧本 → 资产链路
+剧本建卡/拆解/批量出图的全链路、长镜头节拍拆卡、分镜卡字段、audio·compose 卡规则：
+先 read_skill("script-to-assets") 再执行。
 
 {camera_cheat}
-
-## 长镜头 / 多段动作计划
-用户要求"长镜头计划"或描述一段含多个动作节拍的连续戏时：按动作节拍拆成多张 storyboard 卡——
-镜号用同一镜号加段号（如 03a/03b/03c），每段 duration 2-5 秒，body 写该段的画面描述与节拍动作，
-整镜的 cameraMove 保持一致（保证镜头连续性），按时间顺序 connect_nodes 相邻连线。
-用户在分镜卡上会用「导演台」补摄影语言（body 的【摄影】段），尊重它，不要改写。
 
 ## 行为准则
 1. 用户要求增删改卡片时，必须调用 canvas_ops 实际执行，不要只口头描述；只做用户要求的操作，不要自作主张添加用户没提的节点。
@@ -1010,17 +1070,32 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         or forwarded.get("canvas_summary")
         or "（本轮未随状态提供——若调用方附带的上下文里有画布内容，以它为准）"
     )
+    # 长对话滚动压缩：前 summary_count 条已折叠进 history_summary（超
+    # CHAT_COMPRESS_THRESHOLD_TOKENS，默认 400k 字符近似，触发时保留最近
+    # ~40% 原文、其余并入摘要——替代旧的 messages[-14:] 硬截断：阈值内
+    # 全量原文可见，超阈值旧内容以摘要形态续命而不是直接失明）
+    summary = str(state.get("history_summary") or "")
+    summary_count = int(state.get("summary_count") or 0)
+    summary, summary_count, comp_update = await _compress_history(
+        summary, summary_count, messages
+    )
+    history_section = (
+        f"\n## 更早对话的摘要（已压缩，据此理解前文指代与既定决策）\n{summary}\n"
+        if summary
+        else ""
+    )
     system_message = SystemMessage(
         content=SYSTEM_PROMPT.format(
             canvas_summary=canvas_summary,
             camera_cheat=camera.camera_cheat_sheet(),
             skill_catalog=SKILL_CATALOG,
+            history_section=history_section,
         ),
     )
 
-    # 截断历史 + 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400。
+    # 未压缩窗口 + 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400。
     # 画布摘要只随 system prompt 注入一次（每轮重建，值恒为最新，无需末尾再放）
-    trimmed = _sanitize_messages_for_model(messages[-14:])
+    trimmed = _sanitize_messages_for_model(messages[summary_count:])
 
     # 流式聚合：必须用 astream 而非 ainvoke——ag-ui 桥的 TEXT_MESSAGE_CONTENT
     # 靠 on_chat_model_stream 事件逐 token 下发，ainvoke 是单次非流式请求，
@@ -1050,13 +1125,13 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # 重新发起）。绝不能把含前端调用的消息送进 ToolNode——它不认识前端
     # 工具，会以"invalid tool"错误响应，破坏交替并误导模型。
     if has_frontend_call:
-        return Command(goto=END, update={"messages": [response]})
+        return Command(goto=END, update={"messages": [response], **comp_update})
 
     if has_backend_call:
-        return Command(goto="tool_node", update={"messages": [response]})
+        return Command(goto="tool_node", update={"messages": [response], **comp_update})
 
     # 纯文本回复 → 结束
-    return Command(goto=END, update={"messages": [response]})
+    return Command(goto=END, update={"messages": [response], **comp_update})
 
 
 # ---------- 图 ----------

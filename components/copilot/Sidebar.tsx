@@ -13,7 +13,7 @@
  *  - 主题：v2 的 shadcn 式语义变量在 globals.css 里整体映射到米黄纸感 token
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, type FC } from "react";
 import {
   CopilotSidebar,
   useConfigureSuggestions,
@@ -24,11 +24,12 @@ import {
   type CopilotChatSuggestionView,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
-import { Sparkles } from "lucide-react";
+import { Pencil, Sparkles } from "lucide-react";
 import ChatInput from "./ChatInput";
 import CapabilitiesDialog from "./CapabilitiesDialog";
 import { useChatSession } from "@/lib/chat/session";
 import ChatSidebarHeader from "./ThreadsBar";
+import { CHAT_EDIT_MESSAGE_EVENT } from "@/lib/canvas/events";
 
 /** slot 槽位支持整组件替换（运行时 renderSlot 认任意函数组件），但 d.ts 要求
  *  带静态成员的组件类型——自绘组件按原类型断言收口 */
@@ -37,6 +38,57 @@ function asSlot<C>(component: unknown): C {
 }
 
 /** 空渲染（用于从工具栏里摘掉某个内置按钮） */
+/** 自定义用户气泡：hover 出铅笔 = 编辑重发（v2 有 onEditMessage 槽但框架
+ *  不接线，自接：把原文回填输入条，提交时截断该消息之后的历史再重发） */
+function UserBubble({ message }: { message?: { id?: string; content?: unknown } }) {
+  const textParts: string[] = [];
+  const images: string[] = [];
+  const c = message?.content;
+  if (typeof c === "string") textParts.push(c);
+  else if (Array.isArray(c))
+    for (const b of c) {
+      if (typeof b === "object" && b && "text" in b && typeof b.text === "string") textParts.push(b.text);
+      else if (typeof b === "object" && b && "image_url" in b) {
+        const u = (b as { image_url?: { url?: string } }).image_url?.url;
+        if (u) images.push(u);
+      }
+    }
+  return (
+    <div className="group flex justify-end px-1">
+      <div className="relative max-w-[85%]">
+        <div className="rounded-[14px_14px_4px_14px] bg-accent px-3 py-2 text-sm leading-relaxed text-white">
+          {textParts.join("\n")}
+          {images.length > 0 ? (
+            <div className="mt-1 flex gap-1">
+              {images.slice(0, 4).map((u) => (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img key={u} src={u} alt="附件" className="h-14 w-14 rounded object-cover" />
+              ))}
+            </div>
+          ) : null}
+        </div>
+        {message?.id ? (
+          <button
+            type="button"
+            data-tip="编辑并重发" aria-label="编辑并重发"
+            data-track="chat.editResend"
+            onClick={() =>
+              window.dispatchEvent(
+                new CustomEvent(CHAT_EDIT_MESSAGE_EVENT, {
+                  detail: { id: message.id!, text: textParts.join("\n") },
+                }),
+              )
+            }
+            className="absolute -left-8 top-1.5 rounded-md p-1 text-text-4 opacity-0 transition-opacity hover:bg-surface-2 hover:text-text group-hover:opacity-100"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function NullSlot(): null {
   return null;
 }
@@ -230,9 +282,7 @@ export default function ThemedSidebar() {
           assistantMessage: {
             copyButton: asSlot<never>(NullSlot),
           },
-          userMessage: {
-            copyButton: asSlot<never>(NullSlot),
-          },
+          userMessage: asSlot<never>(UserBubble),
         }}
         onError={(ev) => {
           if (!("error" in ev)) return;

@@ -10,7 +10,7 @@
  *    卡片必须自带订阅才能在用户看到的位置出现并可点击
  */
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { create } from "zustand";
 import { useCopilotAction } from "@copilotkit/react-core";
 import {
@@ -24,6 +24,7 @@ import {
   ShieldAlert,
   Zap,
 } from "lucide-react";
+import { Lightbox } from "@/components/canvas/Lightbox";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 
 // ---------- 审批（canvas_ops 破坏性操作） ----------
@@ -169,6 +170,8 @@ function resultImageUrls(text: string): string[] {
 // ---------- 后端工具注册（render-only：不设 handler，不参与前端执行） ----------
 
 export default function BackendToolCards() {
+  // 设定图卡缩略图放大（Lightbox；曾只能新标签页开原图）
+  const [zoom, setZoom] = useState<{ urls: string[]; index: number } | null>(null);
   useCopilotAction({
     name: "read_skill",
     // render-only：disabled=不转发给模型/不参与前端执行，只拦聊天里的调用渲染
@@ -223,17 +226,16 @@ export default function BackendToolCards() {
           {urls.length > 0 ? (
             <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5">
               {urls.slice(0, 8).map((u) => (
-                <a
+                <button
                   key={u}
-                  href={u}
-                  target="_blank"
-                  rel="noreferrer"
-                  data-tip="查看原图" aria-label="查看原图"
-                  className="block shrink-0 overflow-hidden rounded-md border border-hairline transition-shadow hover:shadow-md"
+                  type="button"
+                  data-tip="查看大图" aria-label="查看大图"
+                  onClick={() => setZoom({ urls, index: urls.indexOf(u) })}
+                  className="block shrink-0 cursor-zoom-in overflow-hidden rounded-md border border-hairline transition-shadow hover:shadow-md"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img src={assetThumbUrl(u)} alt="设定图" className="h-16 w-24 object-cover" />
-                </a>
+                </button>
               ))}
             </div>
           ) : null}
@@ -331,5 +333,14 @@ export default function BackendToolCards() {
       ),
   });
 
-  return null;
+  return (
+    zoom ? (
+      <Lightbox
+        images={zoom.urls.map((u) => ({ src: u, title: "设定图" }))}
+        index={zoom.index}
+        onIndex={(i) => setZoom({ urls: zoom.urls, index: i })}
+        onClose={() => setZoom(null)}
+      />
+    ) : null
+  );
 }

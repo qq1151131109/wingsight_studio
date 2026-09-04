@@ -23,6 +23,7 @@ import {
   ImageIcon,
   Loader2,
   Music,
+  Pencil,
   Palette,
   Paperclip,
   Square,
@@ -42,7 +43,7 @@ import {
   type ChatJob,
 } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
-import { CHAT_INSERT_TEXT_EVENT } from "@/lib/canvas/events";
+import { CHAT_EDIT_MESSAGE_EVENT, CHAT_INSERT_TEXT_EVENT } from "@/lib/canvas/events";
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
 function detectSlash(
@@ -276,6 +277,21 @@ export default function ChatInput({
     return () => window.removeEventListener(CHAT_INSERT_TEXT_EVENT, onInsert);
   }, []);
 
+  // 编辑重发（UserBubble 铅笔）：原文回填输入条 + 编辑态横幅；提交时先截断
+  // 被编辑消息之后的历史（langgraphAgent.setMessages）再照常发送——本轮
+  // run 从编辑点重新展开，旧回答作废
+  const [editingMsg, setEditingMsg] = useState<{ id: string } | null>(null);
+  useEffect(() => {
+    const onEdit = (e: Event) => {
+      const { id, text } = (e as CustomEvent<{ id: string; text: string }>).detail;
+      setEditingMsg({ id });
+      edRef.current?.setValue(text);
+      edRef.current?.focus();
+    };
+    window.addEventListener(CHAT_EDIT_MESSAGE_EVENT, onEdit);
+    return () => window.removeEventListener(CHAT_EDIT_MESSAGE_EVENT, onEdit);
+  }, []);
+
   // ---------- 附件：添加 / 上传 / 内联读取 ----------
 
   const addFiles = (files: FileList | File[]) => {
@@ -385,6 +401,14 @@ export default function ChatInput({
       .filter((n): n is WingNode => Boolean(n));
     if (inProgress || (!prompt && mentioned.length === 0 && attachments.length === 0))
       return;
+    // 编辑重发：截断被编辑消息及其之后的历史，新发送即替代它
+    if (editingMsg) {
+      const msgs = langgraphAgent.messages ?? [];
+      const idx = msgs.findIndex((m) => m.id === editingMsg.id);
+      if (idx > 0) langgraphAgent.setMessages?.(msgs.slice(0, idx) as never);
+      setEditingMsg(null);
+    }
+
     // 等所有上传收尾（含失败的——失败项只进文本清单不阻塞发送）
     await Promise.allSettled([...uploadsRef.current.values()]);
 
@@ -494,6 +518,23 @@ export default function ChatInput({
         }
       }}
     >
+        {editingMsg ? (
+          <div className="mb-1 flex items-center gap-2 rounded-md border border-accent-soft bg-accent/5 px-2 py-1 text-[11px] text-text-2">
+            <Pencil className="h-3 w-3 text-accent" />
+            正在编辑一条消息，发送将从这里重新展开对话
+            <button
+              type="button"
+              className="ml-auto rounded p-0.5 text-text-4 hover:text-text"
+              aria-label="取消编辑" data-tip="取消编辑"
+              onClick={() => {
+                setEditingMsg(null);
+                edRef.current?.setValue("");
+              }}
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </div>
+        ) : null}
       <div className="copilotKitInput relative flex flex-col">
         {thinking ? (
           <div className="ws-thinking-row mb-1.5 flex items-center gap-1.5 rounded-md border border-accent-soft bg-surface-1 px-2 py-1 text-[11px] text-text-3">

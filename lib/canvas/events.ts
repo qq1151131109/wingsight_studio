@@ -5,6 +5,26 @@ export const FOCUS_NODES_EVENT = "wingsight:focus-nodes";
 
 export type FocusNodesDetail = { ids: string[] };
 
+/** 调研卡轮询观察到任务进入终态（完成/失败/中断/取消）。AG-UI 会话没有
+ *  服务端主动推送通道，后台调研任务跑完不会唤醒 agent 说话——由前端轮询
+ *  发现终态后广播，通知桥（ResearchNotice）插聊天瞬时消息 + 浮条动作 */
+export const RESEARCH_TERMINAL_EVENT = "wingsight:research-terminal";
+
+export type ResearchTerminalDetail = {
+  nodeId: string;
+  jobId: string;
+  title: string;
+  status: "done" | "error" | "interrupted" | "stopped";
+  error: string;
+  sourcesCount: number;
+  findingsCount: number;
+};
+
+/** 请求打开某调研卡的卷宗阅读器（通知浮条「查看卷宗」动作用） */
+export const OPEN_RESEARCH_READER_EVENT = "wingsight:open-research-reader";
+
+export type OpenResearchReaderDetail = { nodeId: string };
+
 /** 视频卡"AI 拉片"→ 抽帧上传完成后发此事件，桥接层转成含帧 URL 的聊天指令 */
 export const FRAME_ANALYSIS_EVENT = "wingsight:frame-analysis";
 
@@ -73,6 +93,12 @@ export const OPEN_CAPABILITIES_EVENT = "wingsight:open-capabilities";
 export const CHAT_INSERT_TEXT_EVENT = "wingsight:chat-insert-text";
 
 export type ChatInsertTextDetail = { text: string };
+
+/** 用户消息编辑重发（UserBubble 铅笔 → ChatInput 自听）：detail 带被编辑
+ *  消息 id 与原文；输入条进入编辑态，提交时截断该消息之后的历史再重发 */
+export const CHAT_EDIT_MESSAGE_EVENT = "wingsight:chat-edit-message";
+
+export type ChatEditMessageDetail = { id: string; text: string };
 
 /** Tab 键（CanvasShortcuts）→ 在视口中央打开「添加节点」选择器，
  *  与双击空白共用 CanvasView 的 ctxMenu(kind=add) */
