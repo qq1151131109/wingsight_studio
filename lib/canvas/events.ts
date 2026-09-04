@@ -132,5 +132,12 @@ export type ImageToolDetail = {
     | "turnaround"
     | "lighting"
     | "texture"
-    | "panorama";
+    | "panorama"
+    // 多功能模板五件（open-storyboard MultiFunctionPanel 移植，纯提示词
+    // 模板走 ImageTemplateDialog 管线，doc/image-node-ops-spec.md §8）
+    | "multiGrid"
+    | "plotBeats"
+    | "nextFrame"
+    | "prevFrame"
+    | "grade";
 };

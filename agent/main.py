@@ -237,7 +237,8 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
 
 @app.get("/camera-vocab")
 def camera_vocab() -> dict:
-    """摄影语汇库（导演台面板数据源）：机身档案 / 镜头语汇 / 布光语汇。"""
+    """摄影语汇库（导演台/机位/打光面板数据源）：机身档案 / 镜头语汇 /
+    布光预设（结构化，2026-09-04 起打光弹窗与导演台布光区同源消费）。"""
     return {
         "cameras": [
             {"id": name, "look": p["look"], "lenses": p["lenses"]}
@@ -245,6 +246,7 @@ def camera_vocab() -> dict:
         ],
         "lensHints": camera.LENS_HINTS,
         "lightHints": camera.LIGHT_HINTS,
+        "lightPresets": camera.LIGHT_PRESETS,
     }
 
 

@@ -41,6 +41,11 @@ import {
   Sun,
   Grid3X3,
   Globe2,
+  LayoutGrid,
+  Clapperboard,
+  FastForward,
+  Rewind,
+  Contrast,
   History,
   Image as ImageIcon,
   ImagePlus,
@@ -130,7 +135,6 @@ import {
   SUPPLEMENT_CANDIDATES_EVENT,
   type GenerateDetail,
 } from "./PromptBar";
-import { CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import {
   exportDocxFile,
   exportTextFile,
@@ -392,6 +396,21 @@ function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
   );
 }
 
+/** 多功能模板件（open-storyboard MultiFunctionPanel 移植）：九宫格机位/
+ *  剧情推演/前后帧/光影校正，走 ImageTemplateDialog 纯提示词模板管线 */
+const MULTI_TOOLS: {
+  tool: ImageToolDetail["tool"];
+  label: string;
+  hint: string;
+  icon: typeof LayoutGrid;
+}[] = [
+  { tool: "multiGrid", label: "九宫格机位", hint: "3x3 多机位联系表", icon: LayoutGrid },
+  { tool: "plotBeats", label: "剧情推演", hint: "2x2 四拍叙事网格", icon: Clapperboard },
+  { tool: "nextFrame", label: "预测下一帧", hint: "几秒后的合理瞬间", icon: FastForward },
+  { tool: "prevFrame", label: "回溯前帧", hint: "导致本画面的前一瞬", icon: Rewind },
+  { tool: "grade", label: "光影校正", hint: "只做电影调色 pass", icon: Contrast },
+];
+
 /** 双击聚焦：视口平滑居中到该卡，**统一观感尺寸**——不论卡片本身多大
  *  （小设定图卡/手动拉大的卡/长图），聚焦后都占画布可视区的 ~78%（短边
  *  约束），用户反馈"有的聚焦完还是很小，难道不该统一尺寸"。做法=按卡
@@ -420,6 +439,8 @@ function focusCardView(
     padding: 0,
   });
 }
+
+export { focusCardView };
 
 /** 卡面图片双档显示（竞品五家都是节点直载原图，靠浏览器缩放；我们保留
  *  512 缩略图档省内存，双击聚焦放大后自动换原图——按卡片在屏幕上的实际
@@ -698,6 +719,8 @@ function CardShell({
   children: React.ReactNode;
 }) {
   const [plusMenu, setPlusMenu] = useState<null | "left" | "right">(null);
+  // 工具条「多功能」下拉（九宫格机位/剧情推演/前后帧/光影校正）
+  const [tplMenu, setTplMenu] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   // 磁性追踪（libtv/Flora 手感）：手柄朝光标方向偏移（限幅 12px）+ 按距离放大
   const [magnet, setMagnet] = useState({
@@ -894,6 +917,7 @@ function CardShell({
           right: { p: 0, sx: 0, sy: 0 },
         });
         setPlusMenu(null);
+        setTplMenu(false);
       }}
       style={{ "--ws-hit": `${-10 * handleScale}px` } as React.CSSProperties}
     >
@@ -967,6 +991,43 @@ function CardShell({
               >
                 <Wand2 className="h-4 w-4" />
               </ToolBtn>
+              <div className="relative">
+                <ToolBtn
+                  title="多功能模板：九宫格机位 / 剧情推演 / 前后帧 / 光影校正"
+                  label="多功能"
+                  disabled={data.status === "loading"}
+                  onClick={() => setTplMenu((v) => !v)}
+                >
+                  <LayoutGrid className="h-4 w-4" />
+                </ToolBtn>
+                {tplMenu ? (
+                  // 工具条在 NodeToolbar 屏幕空间层（不在 .ws-card 子树内），
+                  // 下拉不会被卡体裁剪；相对按钮锚定，无缩放补偿需求
+                  <div className="absolute left-0 top-[calc(100%+6px)] z-50 flex w-40 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+                    {MULTI_TOOLS.map((m) => {
+                      const MIcon = m.icon;
+                      return (
+                        <button
+                          key={m.tool}
+                          type="button"
+                          className="nodrag flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setTplMenu(false);
+                            dispatchImageTool(id, m.tool);
+                          }}
+                        >
+                          <MIcon className="h-3.5 w-3.5 shrink-0 text-text-4" />
+                          <span className="flex flex-col">
+                            {m.label}
+                            <span className="text-[10px] text-text-4">{m.hint}</span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
               <ToolBtn
                 title={data.freeResize ? "锁定比例（回原图比例）" : "解除比例锁定，任意拉伸"}
                 label={data.freeResize ? "锁定比例" : "自由缩放"}
@@ -1644,7 +1705,7 @@ function TextCard({
           try {
             const topic =
               (src?.data.title ?? "").trim() || text.replaceAll("\n", " ").slice(0, 30);
-            const job = await startResearch(pid, topic, text.slice(0, 600), "standard");
+            const job = await startResearch(pid, topic, text, "standard");
             const nid = createConnectedNode(id, "research");
             if (nid) {
               useCanvasStore.getState().updateNodeData(nid, {
@@ -2125,8 +2186,8 @@ function AssetCard({ data, id, selected }: NodeProps) {
         instruction: `你是影视美术设定师。为${NODE_META[kind].label}「${title}」写设定，覆盖：${ASSET_WRITE_HINT[kind]}。80 字内白描直给，不要客套与解释。${style ? `全局画风：${style}。` : ""}`,
         body: "",
         context: [
-          script ? `剧情背景（节选）：\n${script.slice(0, 600)}` : "",
-          brief ? `考据简报（事实依据，与剧情冲突时以剧情为准）：\n${brief.slice(0, CONTEXT_BODY_LIMIT)}` : "",
+          script ? `剧情背景：\n${script}` : "",
+          brief ? `考据简报（事实依据，与剧情冲突时以剧情为准）：\n${brief}` : "",
         ]
           .filter(Boolean)
           .join("\n\n"),
@@ -4854,7 +4915,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
   /** 行引用资产 → 一致性参考描述（资产卡标题+设定节选） */
   const refNotesFor = (r: ShotRow) =>
     rowRefNodes(r)
-      .map((n) => `【${n.data.title}】${(n.data.body ?? "").slice(0, CONTEXT_BODY_LIMIT)}`)
+      .map((n) => `【${n.data.title}】${(n.data.body ?? "")}`)
       .join("；");
 
   /** 选中 @候选：补全名称、写入结构化 refIds（改名不失联） */

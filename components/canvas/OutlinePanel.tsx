@@ -20,6 +20,15 @@ import { reportError } from "@/lib/error-dialog";
 export default function OutlinePanel({ onClose }: { onClose: () => void }) {
   const nodes = useCanvasStore((s) => s.nodes);
   const [q, setQ] = useState("");
+  // 键盘导航：过滤结果展平后的高亮序号（↑↓ 循环 / Enter 定位），⌘K 呼出
+  // 后聚焦搜索框即成命令面板
+  const [hi, setHi] = useState(0);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    searchRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -33,7 +42,8 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
       (n) =>
         !k ||
         (n.data.title ?? "").toLowerCase().includes(k) ||
-        (n.data.body ?? "").slice(0, 200).toLowerCase().includes(k),
+        (n.data.body ?? "").slice(0, 200).toLowerCase().includes(k) ||
+        String(NODE_META[n.data.nodeType]?.label ?? "").includes(k),
     );
     const byType = new Map<WingNodeType, typeof filtered>();
     for (const n of filtered) {
@@ -45,6 +55,28 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
       (a, b) => b[1].length - a[1].length,
     );
   }, [nodes, q]);
+
+  // 展平序号：跨组连续，Enter 定位当前高亮
+  const flatIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    let i = 0;
+    for (const [, list] of groups) for (const n of list) m.set(n.id, i++);
+    return m;
+  }, [groups]);
+  const flatCount = flatIndex.size;
+
+  // 过滤词变化回到首项：渲染期调整自身状态（React adjust-state-during-render
+  // 范式，effect 里 setState 会被 React Compiler 打回）
+  const [hiQ, setHiQ] = useState(q);
+  if (hiQ !== q) {
+    setHiQ(q);
+    setHi(0);
+  }
+  useEffect(() => {
+    listRef.current
+      ?.querySelector(`[data-hi="1"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  }, [hi]);
 
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -163,13 +195,32 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
       <div className="mt-1.5 flex h-7 items-center gap-1 rounded-md border border-hairline bg-surface-2 px-1.5">
         <Search className="h-3 w-3 shrink-0 text-text-4" />
         <input
+          ref={searchRef}
           value={q}
-          placeholder="搜索节点…"
+          placeholder="搜索节点…（↑↓ 选择，Enter 定位）"
           className="w-full bg-transparent text-[11px] text-text outline-none placeholder:text-text-4"
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setHi((v) => (flatCount ? (v + 1) % flatCount : 0));
+            }
+            if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setHi((v) => (flatCount ? (v - 1 + flatCount) % flatCount : 0));
+            }
+            if (e.key === "Enter") {
+              e.preventDefault();
+              for (const [id, i] of flatIndex)
+                if (i === hi) {
+                  locate(id);
+                  return;
+                }
+            }
+          }}
         />
       </div>
-      <div className="nowheel mt-1.5 flex-1 overflow-y-auto">
+      <div ref={listRef} className="nowheel mt-1.5 flex-1 overflow-y-auto">
         {groups.length === 0 ? (
           <p className="py-4 text-center text-[11px] text-text-4">
             {nodes.length === 0 ? "画布为空" : "无匹配节点"}
@@ -188,8 +239,14 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
                   <button
                     key={n.id}
                     type="button"
-                    className="flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                    data-hi={flatIndex.get(n.id) === hi ? "1" : undefined}
+                    className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-[11px] transition-colors ${
+                      flatIndex.get(n.id) === hi
+                        ? "bg-accent-dim text-text"
+                        : "text-text-2 hover:bg-surface-2 hover:text-text"
+                    }`}
                     data-tip="点击定位到画布" aria-label="点击定位到画布"
+                    onMouseEnter={() => setHi(flatIndex.get(n.id) ?? 0)}
                     onClick={() => locate(n.id)}
                   >
                     <span

@@ -9,6 +9,8 @@
 import { useEffect, useState } from "react";
 import ImageCropDialog from "./ImageCropDialog";
 import ImageTemplateDialog from "./ImageTemplateDialog";
+import CameraAngleDialog from "./CameraAngleDialog";
+import LightingDialog from "./LightingDialog";
 import { IMAGE_TOOL_EVENT, type ImageToolDetail } from "@/lib/canvas/events";
 
 export default function ImageToolDialogs() {
@@ -26,6 +28,14 @@ export default function ImageToolDialogs() {
   const close = () => setReq(null);
   if (req.tool === "crop") {
     return <ImageCropDialog nodeId={req.nodeId} onClose={close} />;
+  }
+  // 机位与打光是全交互弹窗（球控/预设/多维拼词，open-storyboard 移植版）；
+  // 三视图/质感/全景维持轻量 chips 弹窗
+  if (req.tool === "multiview") {
+    return <CameraAngleDialog nodeId={req.nodeId} onClose={close} />;
+  }
+  if (req.tool === "lighting") {
+    return <LightingDialog nodeId={req.nodeId} onClose={close} />;
   }
   return (
     <ImageTemplateDialog nodeId={req.nodeId} tool={req.tool} onClose={close} />

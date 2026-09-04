@@ -10,17 +10,23 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Camera, Globe2, Loader2, Sparkles, Sun, Wand2, X } from "lucide-react";
+import { Globe2, Loader2, Sparkles, Wand2, X } from "lucide-react";
 import OverlayModal from "./OverlayModal";
 import { useCanvasStore, absolutePosition, NODE_FOOTPRINT, type WingNodeData } from "@/lib/canvas/store";
-import { CONTEXT_BODY_LIMIT } from "@/lib/canvas/refSequence";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import { findModelOption, loadImageModels, type ImageModelOption } from "@/lib/imagegen";
 import type { ImageToolDetail } from "@/lib/canvas/events";
 
 export type TemplateTool = Extract<
   ImageToolDetail["tool"],
-  "multiview" | "turnaround" | "lighting" | "texture" | "panorama"
+  | "turnaround"
+  | "texture"
+  | "panorama"
+  | "multiGrid"
+  | "plotBeats"
+  | "nextFrame"
+  | "prevFrame"
+  | "grade"
 >;
 
 type Preset = { label: string; sentence: string };
@@ -81,18 +87,6 @@ const TOOLS: Record<
   TemplateTool,
   { title: string; hint: string; presets?: Preset[] }
 > = {
-  multiview: {
-    title: "多视角",
-    hint: "同一主体的其他机位（保持长相、服装、场景一致，仅改变视角）",
-    presets: [
-      { label: "正面", sentence: "正面平视机位" },
-      { label: "左侧", sentence: "左侧 90 度机位" },
-      { label: "右侧", sentence: "右侧 90 度机位" },
-      { label: "背面", sentence: "背面 180 度机位" },
-      { label: "俯拍", sentence: "高角度俯拍机位" },
-      { label: "仰拍", sentence: "低角度仰拍机位" },
-    ],
-  },
   turnaround: {
     title: "三视图",
     hint: "角色设定表：正面/侧面/背面 全身立绘（建议已有定妆图再做）",
@@ -102,19 +96,27 @@ const TOOLS: Record<
       { label: "插画", sentence: "插画风格" },
     ],
   },
-  lighting: {
-    title: "打光",
-    hint: "保持画面内容与构图不变，替换光效",
-    presets: [
-      { label: "伦勃朗", sentence: "伦勃朗光（45 度侧主光，明暗对比强）" },
-      { label: "黄金时刻", sentence: "黄金时刻暖阳（低角度金色斜射光）" },
-      { label: "赛博朋克", sentence: "赛博朋克光（品红与青蓝双色霓虹）" },
-      { label: "落日逆光", sentence: "落日逆光（暖色轮廓光，边缘发亮）" },
-      { label: "冷蓝月光", sentence: "冷蓝月光（高色温顶光，冷调阴影）" },
-      { label: "低调暗调", sentence: "低调暗调光（大面积暗部，单点光源）" },
-      { label: "高调平光", sentence: "高调平光（均匀柔光，明亮通透）" },
-      { label: "雨夜霓虹", sentence: "雨夜霓虹（湿面反射，霓虹点彩光斑）" },
-    ],
+  // 多功能模板五件（open-storyboard promptTemplates.ts 中文版忠实移植，
+  // 修掉其「左前三分之三」误译）：全部预设无关（说明行+补充描述即可）
+  multiGrid: {
+    title: "九宫格机位",
+    hint: "一次生成 3x3 多机位联系表：九格同主体不同机位（正面/左右 45°/左右正侧/背面/俯/仰/荷兰角）——机位弹窗精调单角度，这张一次看全部",
+  },
+  plotBeats: {
+    title: "剧情推演",
+    hint: "2x2 四拍叙事网格：铺垫 → 行动升级 → 关键戏剧点 → 后果（角色/服装/地点/光线连续，只有表情机位动作在变）",
+  },
+  nextFrame: {
+    title: "预测下一帧",
+    hint: "渲染参考图几秒之后的合理瞬间（动作自然推进，世界连续性不变）",
+  },
+  prevFrame: {
+    title: "回溯前帧",
+    hint: "渲染导致参考图发生的上一个合理瞬间（动作自然回退，场景逻辑不变）",
+  },
+  grade: {
+    title: "光影校正",
+    hint: "保持人物/场景/构图/姿态完全不变，只做专业电影调色：平衡曝光、受控光影、自然肤色、三向校色、轻微胶片颗粒（与「打光」互补：打光换光，校正 grading）",
   },
   texture: {
     title: "人物质感",
@@ -142,18 +144,32 @@ function buildPrompt(
   srcText: string,
 ): string {
   const parts: string[] = [];
-  if (tool === "multiview") {
-    parts.push(
-      `同一主体的${preset.sentence}视角，保持人物长相、服装、道具、场景与参考图完全一致，仅改变机位角度`,
-    );
-  } else if (tool === "turnaround") {
+  if (tool === "turnaround") {
     parts.push(
       `同一角色三视图设定图：画面横向等分为三个区域，依次为 正面 / 左侧面 / 背面 全身立绘，纯色背景，服装道具细节与参考图一致，标准角色设定图排版，${preset.sentence}`,
     );
-  } else if (tool === "lighting") {
-    parts.push(`保持画面内容与构图不变，光效改为${preset.sentence}`);
   } else if (tool === "panorama") {
     parts.push(PANO_PROMPT);
+  } else if (tool === "multiGrid") {
+    parts.push(
+      "基于参考图创建一张干净的 3x3 多机位角度联系表。九个画格展示同一主体和同一场景的不同机位：正面、左前四分之三、右前四分之三、左侧全侧面、右侧全侧面、背面、俯拍、仰拍、荷兰倾斜角。所有画格保持身份、服装、发型、动作、背景世界、光线和色彩氛围一致，只改变机位和取景。使用细窄中性分隔线，不要字幕、编号、UI 标签、额外人物、重复主体或画面内摄影设备",
+    );
+  } else if (tool === "plotBeats") {
+    parts.push(
+      "基于参考图推演一张 2x2 分镜网格，形成合理的四拍叙事。画格顺序从左到右、从上到下：铺垫、行动升级、关键戏剧点、后果。四格保持相同角色、身份、服装、地点、光线逻辑和世界连续性，只改变表情、机位、取景和动作推进。使用电影剧照质感和细窄中性分隔线，不要字幕、对白气泡、文字标签、新主角或环境风格变化",
+    );
+  } else if (tool === "nextFrame") {
+    parts.push(
+      "预测并渲染参考图之后的下一个合理瞬间：保持相同角色、身份、服装、地点和光线，让动作自然推进几秒，保持世界连续性，机位和取景可以自然变化，电影剧照质感。不要发明新角色，不要改变环境，不要把场景压缩成普通肖像",
+    );
+  } else if (tool === "prevFrame") {
+    parts.push(
+      "预测并渲染导致参考图发生的上一个合理瞬间：保持相同角色、身份、服装、地点和光线，将动作自然回退几秒，保持世界连续性和场景逻辑，机位和取景可以自然变化，电影剧照质感。不要发明新角色，不要改变环境",
+    );
+  } else if (tool === "grade") {
+    parts.push(
+      "这是对参考图进行调色和光线校正：严格保持相同人物、相同场景、相同构图和相同姿态，只应用专业电影调色、平衡曝光、受控高光与阴影、自然肤色、三向色彩校正、轻微胶片颗粒、IMAX / HDR 质感。不要重画主体，不要改变身份，不要在颜色和对比之外改变风格",
+    );
   }
   if (srcText) parts.push(`参考画面内容：${srcText}`);
   if (extra.trim()) parts.push(extra.trim());
@@ -242,7 +258,7 @@ export default function ImageTemplateDialog({
 
   const srcText = useMemo(() => {
     const t = String(d?.genPrompt ?? "").trim() || String(d?.body ?? "").trim();
-    return t.slice(0, CONTEXT_BODY_LIMIT);
+    return t;
   }, [d?.genPrompt, d?.body]);
 
   const confirm = () => {
@@ -263,7 +279,7 @@ export default function ImageTemplateDialog({
         ? "质感"
         : tool === "panorama"
           ? "全景"
-          : (preset?.label ?? "");
+          : (preset?.label ?? cfg.title);
     const newId = st.addNode({
       position: { x: abs.x + nw + 80, y: abs.y },
       data: {
@@ -298,15 +314,7 @@ export default function ImageTemplateDialog({
   };
 
   const Icon =
-    tool === "lighting"
-      ? Sun
-      : tool === "turnaround"
-        ? Sparkles
-        : tool === "texture"
-          ? Wand2
-          : tool === "panorama"
-            ? Globe2
-            : Camera;
+    tool === "turnaround" ? Sparkles : tool === "texture" ? Wand2 : Globe2;
 
   const chipCls = (on: boolean) =>
     `rounded-md border px-2.5 py-1 text-xs transition-colors ${
@@ -391,6 +399,18 @@ export default function ImageTemplateDialog({
                 </span>
               )}
             </p>
+          </div>
+        ) : !cfg.presets && tool !== "texture" ? (
+          // 多功能模板件（九宫格机位/剧情推演/前后帧/光影校正）：预设无关，
+          // 固定说明行 + 源摘要
+          <div className="rounded-md border border-hairline bg-surface-2/60 p-2.5 text-xs leading-relaxed text-text-2">
+            <p>{cfg.hint}</p>
+            {srcText ? (
+              <p className="mt-1 text-[11px] text-text-4">
+                参考内容：{srcText.slice(0, 120)}
+                {srcText.length > 120 ? "…" : ""}
+              </p>
+            ) : null}
           </div>
         ) : tool === "texture" ? (
           <div className="space-y-1.5">

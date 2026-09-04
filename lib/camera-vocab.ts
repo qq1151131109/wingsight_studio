@@ -52,28 +52,46 @@ const APERTURE_DESC: Record<string, string> = {
   "f/8": "大景深，环境与主体同样清晰，纪实感",
 };
 
+export interface LightPreset {
+  id: string;
+  name: string;
+  prompt: string;
+}
+
 export interface CameraVocab {
   cameras: { id: string; look: string; lenses: string[] }[];
   lensHints: Record<string, string>;
   lightHints: string[];
+  /** 结构化布光预设（agent camera.py LIGHT_PRESETS 单一事实源，2026-09-04
+   *  起 打光弹窗与导演台布光区同源）；旧 agent 无此字段时回退 lightHints */
+  lightPresets: LightPreset[];
 }
 
 const EMPTY_VOCAB: CameraVocab = {
   cameras: [],
   lensHints: {},
   lightHints: [],
+  lightPresets: [],
 };
 
-let vocabCache: CameraVocab | null = null;
+const vocabCache: Map<string, CameraVocab> = new Map();
 
 /** 拉取摄影语汇（模块级缓存；失败返回空表，面板隐藏对应区块） */
 export async function getCameraVocab(): Promise<CameraVocab> {
-  if (vocabCache) return vocabCache;
+  const cached = vocabCache.get("v");
+  if (cached) return cached;
   try {
     const r = await apiFetch("/agent-service/camera-vocab");
     if (!r.ok) return EMPTY_VOCAB;
-    vocabCache = (await r.json()) as CameraVocab;
-    return vocabCache;
+    const raw = (await r.json()) as Partial<CameraVocab>;
+    const vocab: CameraVocab = {
+      cameras: raw.cameras ?? [],
+      lensHints: raw.lensHints ?? {},
+      lightHints: raw.lightHints ?? [],
+      lightPresets: raw.lightPresets ?? [],
+    };
+    vocabCache.set("v", vocab);
+    return vocab;
   } catch {
     return EMPTY_VOCAB;
   }

@@ -109,7 +109,11 @@ export default function DirectorPanel({
   }, [onClose]);
 
   const compiled = useMemo(
-    () => compileCinePrompt(sel, vocab ?? { cameras: [], lensHints: {}, lightHints: [] }),
+    () =>
+      compileCinePrompt(
+        sel,
+        vocab ?? { cameras: [], lensHints: {}, lightHints: [], lightPresets: [] },
+      ),
     [sel, vocab],
   );
 

@@ -1790,6 +1790,21 @@ export default function CanvasView() {
   const [trayOpen, setTrayOpen] = useState(false);
   const [promptsOpen, setPromptsOpen] = useState(false);
   const [outlineOpen, setOutlineOpen] = useState(false);
+  // ⌘K 呼出画布导航（⌘K 命令面板范式，open-ai-canvas canvas-node-search 同款
+  // 入口）：capture 拦截防浏览器搜索栏抢键；面板内自动聚焦搜索框
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setTrayOpen(false);
+        setPromptsOpen(false);
+        setOutlineOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
   // 右键菜单触发的导演台 / 节点信息弹窗
   const [directorNode, setDirectorNode] = useState<WingNode | null>(null);
   const [infoNode, setInfoNode] = useState<WingNode | null>(null);
@@ -2486,6 +2501,29 @@ export default function CanvasView() {
                               closeCtx();
                             }}
                           />
+                          {(
+                            [
+                              ["九宫格机位…", "multiGrid"],
+                              ["剧情推演…", "plotBeats"],
+                              ["预测下一帧…", "nextFrame"],
+                              ["回溯前帧…", "prevFrame"],
+                              ["光影校正…", "grade"],
+                            ] as const
+                          ).map(([label, tool]) => (
+                            <CtxItem
+                              key={tool}
+                              label={label}
+                              disabled={node?.data.status === "loading"}
+                              onClick={() => {
+                                window.dispatchEvent(
+                                  new CustomEvent(IMAGE_TOOL_EVENT, {
+                                    detail: { nodeId: ctxMenu.id, tool },
+                                  }),
+                                );
+                                closeCtx();
+                              }}
+                            />
+                          ))}
                         </>
                       ) : null
                     ) : null}

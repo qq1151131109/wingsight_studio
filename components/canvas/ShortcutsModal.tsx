@@ -30,6 +30,7 @@ const SHORTCUTS: ShortcutItem[] = [
   { keys: ["双击标题/正文"], title: "就地编辑", group: "创作" },
   { keys: ["@"], title: "引用画布卡片保持一致", group: "创作" },
   { keys: ["Ctrl", "↵"], title: "输入条内提交生成/撰写", group: "创作" },
+  { keys: ["⌘", "K"], title: "搜索画布节点（命令面板）", group: "创作" },
   { keys: ["⌘", "C"], title: "复制选中卡片", group: "创作" },
   { keys: ["⌘", "X"], title: "剪切选中卡片", group: "创作" },
   { keys: ["⌘", "V"], title: "粘贴卡片 / 图片 / 文本", group: "创作" },

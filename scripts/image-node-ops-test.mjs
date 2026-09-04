@@ -266,12 +266,15 @@ await page.waitForTimeout(400);
 check("A4 文本卡无图片操作段", (await page.locator("text=图片操作").count()) === 0);
 await page.mouse.click(400, 600);
 
-// ---------- B 模板化动作 ----------
+// ---------- B 机位视角（open-storyboard CameraAngleDialog 移植版）----------
 await openMenu("测试底图");
 await page.locator("text=多视角…").click();
-await page.locator("text=俯拍").waitFor({ timeout: 4000 });
-await page.locator("text=俯拍").click();
-await page.getByRole("button", { name: /生成多视角卡/ }).click();
+await page.locator("text=正面俯拍").waitFor({ timeout: 4000 });
+// 球控与滑杆在（Canvas 球体 + 吸附滑杆）
+check("B0a 机位弹窗含球控 canvas", (await page.locator("canvas").count()) > 0);
+check("B0b 机位弹窗含模式 chips", (await page.locator("text=提示词模式").count()) > 0);
+await page.locator("text=正面俯拍").click();
+await page.getByRole("button", { name: /生成机位卡/ }).click();
 await page.waitForTimeout(4000);
 
 const stateB = await page.evaluate(() => {
@@ -281,7 +284,7 @@ const stateB = await page.evaluate(() => {
     edges: st.edges.map((e) => ({ s: e.source, t: e.target })),
   };
 });
-const newCard = stateB.nodes.find((n) => n.title?.includes("俯拍"));
+const newCard = stateB.nodes.find((n) => n.title?.includes("正面俯拍"));
 check("B1 生成新图片卡（标题含预设）", Boolean(newCard && newCard.type === "image"), JSON.stringify(newCard?.title));
 check("B2 源卡连线到新卡", Boolean(newCard && stateB.edges.some((e) => e.s === "img1" && e.t === newCard.id)), JSON.stringify(stateB.edges));
 check("B3 源卡图不被覆盖", stateB.nodes.find((n) => n.id === "img1")?.img === SRC_URL);
@@ -289,20 +292,21 @@ const shot = genPosts[0]?.shots?.[0];
 // compose 开时模板 prompt 走 instruction 字段（description=编号注记+prompt）
 const instr = shot?.instruction ?? shot?.prompt ?? "";
 check(
-  "B4 载荷 prompt 含模板句与源上下文",
-  instr.includes("机位") && instr.includes("完全一致") && instr.includes("码头黄昏"),
+  "B4 载荷含机位编辑条款与源上下文",
+  instr.includes("机位编辑") && instr.includes("俯拍") && instr.includes("码头黄昏"),
   instr.slice(0, 80),
 );
 check("B5 载荷参考含源图", (shot?.referenceImages ?? []).includes(SRC_URL), JSON.stringify(shot?.referenceImages));
 check("B6 rid 指新卡（非源卡）", Boolean(newCard && shot?.rid?.startsWith(`${newCard.id}#`)), shot?.rid);
 check("B7 新卡出图完成（ready）", newCard?.status === "ready" && Boolean(newCard?.img), `${newCard?.status} ${newCard?.img?.slice(0, 40)}`);
 
-// ---------- C 画风闸 ----------
+// ---------- C 画风闸（打光弹窗预设卡路径）----------
 await page.evaluate(() => window.__wsCanvasStore?.setState({ projectStyle: "" }));
 await openMenu("测试角色");
 await page.locator("text=打光…").click();
-await page.locator("text=伦勃朗").waitFor({ timeout: 4000 });
-await page.locator("text=伦勃朗").click();
+await page.locator("text=光效预设").waitFor({ timeout: 4000 });
+check("C0 打光弹窗含光位球与预设卡（camera.py 同源）", (await page.locator("canvas").count()) > 0 && (await page.locator("text=伦勃朗光").count()) > 0);
+await page.locator("text=伦勃朗光").click();
 await page.getByRole("button", { name: /生成打光卡/ }).click();
 await page.waitForTimeout(1500);
 const stateC = await page.evaluate(() => {
@@ -605,6 +609,57 @@ check("P10 灯箱环视挂载 PSV 查看器", (await page.locator(".psv-containe
 await page.locator('[aria-label="退出环视"]').click();
 await page.waitForTimeout(400);
 check("P11 退出环视回普通灯箱", (await page.locator(".psv-container").count()) === 0);
+await page.keyboard.press("Escape");
+
+// ---------- M 多功能模板五件（open-storyboard MultiFunctionPanel 移植）----------
+// 工具条「多功能」下拉
+await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["img1"]));
+await page.locator('[aria-label^="多功能模板"]').waitFor({ timeout: 5000 });
+await page.locator('[aria-label^="多功能模板"]').click();
+await page.locator("text=九宫格机位").first().waitFor({ timeout: 4000 });
+check("M1 工具条多功能下拉五项可见", (await page.locator("text=剧情推演").count()) > 0 && (await page.locator("text=光影校正").count()) > 0);
+await page.locator("text=九宫格机位").first().click();
+await page.getByRole("button", { name: /生成九宫格机位卡/ }).waitFor({ timeout: 4000 });
+const postsBeforeM = genPosts.length;
+await page.getByRole("button", { name: /生成九宫格机位卡/ }).click();
+await page.waitForTimeout(3500);
+const stateM = await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  const n = st.nodes.filter((x) => x.data.title?.includes("九宫格机位")).pop();
+  return { id: n?.id ?? "", linked: st.edges.some((e) => e.source === "img1" && e.target === n?.id) };
+});
+const mShot = genPosts[postsBeforeM]?.shots?.[0];
+check("M2 九宫格机位出卡+连线", Boolean(stateM.id) && stateM.linked, stateM.id);
+check(
+  "M3 载荷含联系表模板句",
+  (mShot?.instruction ?? mShot?.prompt ?? "").includes("3x3 多机位"),
+  (mShot?.instruction ?? mShot?.prompt ?? "").slice(0, 50),
+);
+// 右键入口
+await page.mouse.click(400, 600);
+await openMenu("测试底图");
+check("M4 右键含多功能五项", (await page.locator("text=剧情推演…").count()) > 0 && (await page.locator("text=回溯前帧…").count()) > 0);
+await page.mouse.click(400, 600);
+
+// ---------- K ⌘K 画布导航命令面板 ----------
+await page.keyboard.press("Control+k");
+await page.locator("text=画布导航").first().waitFor({ timeout: 4000 });
+check("K1 ⌘K 呼出画布导航", true);
+const kFocused = await page.evaluate(() => {
+  const el = document.activeElement;
+  return el instanceof HTMLInputElement && el.placeholder.includes("搜索节点");
+});
+check("K2 搜索框自动聚焦", kFocused);
+await page.keyboard.type("测试角色");
+await page.waitForTimeout(300);
+const kRows = await page.locator('[aria-label="点击定位到画布"]').count();
+check("K3 过滤命中角色卡", kRows >= 1, `rows=${kRows}`);
+await page.keyboard.press("Enter");
+await page.waitForTimeout(800);
+const kSel = await page.evaluate(() =>
+  window.__wsCanvasStore.getState().nodes.find((n) => n.id === "ch1")?.selected,
+);
+check("K4 Enter 定位选中目标卡", kSel === true, String(kSel));
 await page.keyboard.press("Escape");
 
 await browser.close();
