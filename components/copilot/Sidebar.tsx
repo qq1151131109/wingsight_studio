@@ -26,6 +26,7 @@ import {
 import "@copilotkit/react-core/v2/styles.css";
 import { Sparkles } from "lucide-react";
 import ChatInput from "./ChatInput";
+import CapabilitiesDialog from "./CapabilitiesDialog";
 import { useChatSession } from "@/lib/chat/session";
 import ChatSidebarHeader from "./ThreadsBar";
 
@@ -147,6 +148,7 @@ export default function ThemedSidebar() {
           useChatSession.getState().setRunError(friendlyError(raw));
         }}
       />
+      <CapabilitiesDialog />
     </div>
   );
 }

@@ -42,6 +42,7 @@ import {
   type ChatJob,
 } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
+import { CHAT_INSERT_TEXT_EVENT } from "@/lib/canvas/events";
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
 function detectSlash(
@@ -264,6 +265,16 @@ export default function ChatInput({
     edRef.current?.insertAtCaret(`调用技能「${s.name}」处理：`);
     setSlash(null);
   };
+
+  // 能力面板（CapabilitiesDialog）点了示例句/技能 → 插入输入条并聚焦
+  useEffect(() => {
+    const onInsert = (e: Event) => {
+      const { text } = (e as CustomEvent<{ text: string }>).detail;
+      if (text) edRef.current?.insertAtCaret(text);
+    };
+    window.addEventListener(CHAT_INSERT_TEXT_EVENT, onInsert);
+    return () => window.removeEventListener(CHAT_INSERT_TEXT_EVENT, onInsert);
+  }, []);
 
   // ---------- 附件：添加 / 上传 / 内联读取 ----------
 

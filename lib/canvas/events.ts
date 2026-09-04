@@ -65,6 +65,15 @@ export const OPEN_STYLE_EVENT = "wingsight:open-style";
 /** 底部坞「快捷键」按钮 → 打开快捷键速查表（ShortcutsModal 自听） */
 export const OPEN_SHORTCUTS_EVENT = "wingsight:open-shortcuts";
 
+/** 聊天侧栏「助手能力」按钮 → 打开能力面板（CapabilitiesDialog 自听） */
+export const OPEN_CAPABILITIES_EVENT = "wingsight:open-capabilities";
+
+/** 能力面板点了示例/技能 → 往聊天输入条插入文本（ChatInput 自听；
+ *  detail.text 必填，插入后自动聚焦输入条） */
+export const CHAT_INSERT_TEXT_EVENT = "wingsight:chat-insert-text";
+
+export type ChatInsertTextDetail = { text: string };
+
 /** Tab 键（CanvasShortcuts）→ 在视口中央打开「添加节点」选择器，
  *  与双击空白共用 CanvasView 的 ctxMenu(kind=add) */
 export const OPEN_ADD_MENU_EVENT = "wingsight:open-add-menu";

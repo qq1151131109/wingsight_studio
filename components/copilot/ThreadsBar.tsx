@@ -11,8 +11,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCopilotChat } from "@copilotkit/react-core";
 import { useCopilotChatConfiguration } from "@copilotkit/react-core/v2";
-import { History, MessageSquarePlus, Pencil, Download, Trash2, X } from "lucide-react";
+import { History, MessageSquarePlus, Pencil, Download, Sparkles, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
+import { OPEN_CAPABILITIES_EVENT } from "@/lib/canvas/events";
 import { useChatSession } from "@/lib/chat/session";
 import { contentToMarkdown, decodeContent } from "@/lib/chat/content";
 import {
@@ -177,6 +178,17 @@ export default function ChatSidebarHeader() {
       <span className="truncate">Wingsight 助手</span>
 
       <div className="ml-auto flex items-center gap-0.5">
+        <button
+          type="button"
+          data-tip="助手会什么" aria-label="助手能力"
+          data-track="chat.capabilities"
+          onClick={() =>
+            window.dispatchEvent(new CustomEvent(OPEN_CAPABILITIES_EVENT))
+          }
+          className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        >
+          <Sparkles className="h-4 w-4" />
+        </button>
         <button
           type="button"
           data-tip="新会话" aria-label="新会话"
