@@ -599,12 +599,33 @@ check(
 check("P7 载荷画幅 2:1（卡 gen 生效进请求）", panoShot?.aspect === "2:1", String(panoShot?.aspect));
 check("P8 rid 指新卡（非源卡）", Boolean(panoShot?.rid?.startsWith(`${stateP.id}#`)), panoShot?.rid);
 check("P9 出图完成（ready）", stateP.status === "ready" && Boolean(stateP.img), stateP.status);
+// 生成完成自动弹 3D（用户主诉「生成完还是平面图」的修复）：图一到位灯箱
+// 直进球形模式（PSV 懒加载首编 chunk 慢，宽限 90s）——不弹就是回归
+await page.locator(".psv-container").first().waitFor({ timeout: 90000 });
+check(
+  "P9.5 生成完成自动进入环视（PSV 已挂载）",
+  (await page.locator(".psv-container").count()) > 0,
+);
+await page.keyboard.press("Escape"); // 关自动弹的灯箱，后续手动路径回归
+await page.waitForTimeout(500);
+check("P9.6 Esc 关闭自动弹的环视灯箱", (await page.locator(".psv-container").count()) === 0);
+// 卡面常驻「720° 环视」钮（本轮显性化）：一键直进球形模式
+await page.locator('[aria-label="环视（720° 拖拽查看）"]').first().waitFor({ timeout: 5000 });
+await page.locator('[aria-label="环视（720° 拖拽查看）"]').first().click();
+await page.locator(".psv-container").first().waitFor({ timeout: 90000 });
+check(
+  "P9.7 卡面「720° 环视」钮直进球形模式",
+  (await page.locator(".psv-container").count()) > 0,
+);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(500);
 // 灯箱环视：选中全景卡 → 工具条 ⌕ 开灯箱 → 「环视」→ PSV 挂载（懒加载
 // 首次编译 chunk 慢，宽限 90s）→ 退出回普通灯箱
 await page.evaluate((pid) => window.__wsCanvasStore.getState().selectNodes([pid]), stateP.id);
 await page.locator('[aria-label^="查看大图"]').first().click();
-await page.locator('[aria-label="环视（720° 拖拽查看）"]').waitFor({ timeout: 8000 });
-await page.locator('[aria-label="环视（720° 拖拽查看）"]').click();
+// 卡面钮与灯箱钮同 aria-label：按 data-track 锚定灯箱钮（card.panorama.view 是卡面）
+await page.locator('[data-track="lightbox.panorama"]').waitFor({ timeout: 8000 });
+await page.locator('[data-track="lightbox.panorama"]').click();
 await page.locator(".psv-container").first().waitFor({ timeout: 90000 });
 check("P10 灯箱环视挂载 PSV 查看器", (await page.locator(".psv-container").count()) > 0);
 await page.locator('[aria-label="退出环视"]').click();

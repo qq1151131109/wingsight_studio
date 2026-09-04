@@ -2709,6 +2709,8 @@ function ImageCard({ data, id, selected }: NodeProps) {
   // 并带 meta——灯箱上下文动作（标注重绘/九宫格/设为主图/恢复版本）只对本卡
   // 图片出现："看图干活"的操作在大图做，缩略图悬浮条只留快捷动作
   const [zoom, setZoom] = useState<number | null>(null);
+  // 环视直进（卡面「环视」钮/生成完成自动弹）：开灯箱即进球形模式
+  const [zoomPano, setZoomPano] = useState(false);
   const [gallery, setGallery] = useState<
     { src: string; title?: string; meta?: unknown }[]
   >([]);
@@ -2717,10 +2719,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
   const [maskOpen, setMaskOpen] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const lod = useLod();
-  // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
-  if (!d || typeof d.nodeType !== "string") return null;
-
-  const openZoom = () => {
+  const openZoom = (pano = false) => {
     const gal: {
       src: string;
       title?: string;
@@ -2771,8 +2770,24 @@ function ImageCard({ data, id, selected }: NodeProps) {
     }
     setGallery(gal);
     const idx = gal.findIndex((g) => g.src === d.imageUrl);
+    setZoomPano(pano && Boolean(d.panorama));
     setZoom(idx >= 0 ? idx : 0);
   };
+
+  // 生成完成自动进球形环视（用户报「生成完还是平面图」的解法：环视是这卡
+  // 的全部意义，图一到位立刻弹 3D）。prevRef 首帧记初值——装载/刷新时图
+  // 早已存在不算翻转，不弹。openZoom 是纯函数（无 hooks，读 store 快照），
+  // 上移到本 effect 之前声明——React Compiler 禁止 effect 引用后声明绑定
+  const prevPanoImgRef = useRef<string | null | undefined>(undefined);
+  useEffect(() => {
+    const prev = prevPanoImgRef.current;
+    prevPanoImgRef.current = d.imageUrl ?? null;
+    if (prev === undefined || prev || !d.imageUrl || !d.panorama) return;
+    openZoom(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- openZoom 读 store/卡数据快照，翻转判定只看 imageUrl
+  }, [d.imageUrl, d.panorama]);
+  // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
+  if (!d || typeof d.nodeType !== "string") return null;
 
   // 恢复历史版本（与 NodeMediaHistory.restore 同逻辑：当前版入档、目标版
   // 出档回主图，genPrompt 一并回滚防串词；灯箱动作区调用）
@@ -2931,6 +2946,23 @@ function ImageCard({ data, id, selected }: NodeProps) {
               className="ws-media-in pointer-events-none h-full w-full object-contain"
             />
             <MediaDragGrip nodeId={id} title={String(d.title ?? "")} />
+            {d.panorama && lod === "full" ? (
+              <button
+                type="button"
+                className="nodrag absolute bottom-1.5 left-1.5 z-10 flex items-center gap-1 rounded-full border border-hairline bg-surface-1/90 px-2 py-0.5 text-[10px] text-text-2 shadow-sm transition-colors hover:border-accent-soft hover:text-text"
+                data-tip="拖拽环视 720° 球形查看"
+                aria-label="环视（720° 拖拽查看）"
+                data-track="card.panorama.view"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openZoom(true);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                <Globe2 className="h-3 w-3" />
+                720° 环视
+              </button>
+            ) : null}
           </div>
         ) : (
           <MediaEmpty
@@ -3001,6 +3033,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           onIndex={setZoom}
           onClose={() => setZoom(null)}
           panorama={Boolean(d.panorama)}
+          initialPano={zoomPano}
           actions={(item, api) => {
             const meta = item.meta as
               | {

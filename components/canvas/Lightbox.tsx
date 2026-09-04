@@ -37,6 +37,7 @@ export function Lightbox({
   onClose,
   actions,
   panorama = false,
+  initialPano = false,
 }: {
   images: LightboxImage[];
   index: number;
@@ -48,6 +49,8 @@ export function Lightbox({
   ) => React.ReactNode;
   /** 全景会话（全景卡打开）：工具区多「环视」钮，图片区可换装球形查看器 */
   panorama?: boolean;
+  /** 打开即进球形环视模式（生成完成的「立刻 3D」时刻/卡面环视钮直进） */
+  initialPano?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -65,8 +68,11 @@ export function Lightbox({
   const [flash, setFlash] = useState("");
   const [busy, setBusy] = useState("");
   // 环视模式（换装球形查看器）：记录启用时的 index 派生开关——翻页自动退出
-  // （翻到的下一张可能是普通图），无需 effect 复位
-  const [panoAt, setPanoAt] = useState<number | null>(null);
+  // （翻到的下一张可能是普通图），无需 effect 复位。initialPano 懒初始化直进
+  // （仅首帧生效：打开即 3D，翻页派生退出语义不变）
+  const [panoAt, setPanoAt] = useState<number | null>(() =>
+    initialPano && panorama ? index : null,
+  );
   const pano = panoAt === index;
 
   const applyTransform = useCallback(() => {
