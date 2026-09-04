@@ -1,11 +1,12 @@
 /**
- * E2E：技能面板（Claude Code 式单一列表，无 LLM，~15s）。
- * 聊天 header「技能」按钮 → CapabilitiesDialog 单一列表（手册类 + 指令类
- * 混排，每项 = 名称 + 描述 + 展开内容）→ 指令类「插入输入条」。
+ * E2E：技能面板（Claude Code 式单一列表 + 管理员编辑，无 LLM，~20s）。
+ * 聊天 header「技能」按钮 → 单一列表（手册/指令混排）→ 指令「插入输入条」；
+ * 管理员：手册「编辑」改正文保存 → 列表即时反映并还原；「新建」技能 →
+ * 出现在列表（测试技能由本脚本直接删目录收尾，产品无删除端点）。
  *
- * 前置：agent(8123) + 前端(8008) 在跑。
+ * 前置：agent(8123) + 前端(8008) 在跑，登录账号须是 admin。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { chromium } from "playwright";
 
 const BASE = "http://127.0.0.1:8008";
@@ -107,7 +108,76 @@ const inputText = await page.evaluate(
 );
 check("调用模板已插入输入条", inputText.includes("调用技能「宣发文案生成」处理："), inputText.slice(0, 40));
 
-// 5) console 干净
+// 5) 管理员编辑回环：重开面板 → 展开手册 → 改正文 → 保存 → 列表反映 → 还原
+await page.getByRole("button", { name: "技能", exact: true }).click();
+await page
+  .getByRole("button", { name: /asset-aware-generation/ })
+  .waitFor({ state: "visible", timeout: 6000 })
+  .catch(() => {});
+await page.getByRole("button", { name: /asset-aware-generation/ }).click();
+await page
+  .getByText("# 资产感知生成")
+  .waitFor({ state: "visible", timeout: 3000 })
+  .catch(() => {});
+const editBtn = page.getByRole("button", { name: "编辑", exact: true });
+check("管理员可见「编辑」按钮", await editBtn.isVisible().catch(() => false));
+if (await editBtn.isVisible().catch(() => false)) {
+  await editBtn.click();
+  const ta = page.locator("textarea").first();
+  await ta.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+  const original = await ta.inputValue();
+  await ta.fill(original + "\n6. E2E 编辑测试行。");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const savedShown = await page
+    .getByText("E2E 编辑测试行")
+    .waitFor({ state: "visible", timeout: 6000 })
+    .then(() => true)
+    .catch(() => false);
+  check("编辑保存后列表即时反映", savedShown);
+  // 还原（走 API；UI 不会因外部写入实时刷新，还原结果从 API 断言）
+  await fetch(`${BASE}/agent-service/capabilities/skills/asset-aware-generation`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({ body: original }),
+  });
+  const after = await (
+    await fetch(`${BASE}/agent-service/capabilities`, { headers: { Authorization: `Bearer ${TOKEN}` } })
+  ).json();
+  const restoredSkill = after.skills.find((s) => s.name === "asset-aware-generation");
+  check(
+    "还原成功（API 侧正文已复原）",
+    Boolean(restoredSkill && !restoredSkill.body.includes("E2E 编辑测试行")),
+  );
+}
+
+// 6) 管理员新建技能 → 列表出现 → 删目录收尾
+const createBtn = page.getByRole("button", { name: "新建", exact: true });
+check("管理员可见「新建」按钮", await createBtn.isVisible().catch(() => false));
+if (await createBtn.isVisible().catch(() => false)) {
+  await createBtn.click();
+  await page.locator('input[placeholder*="名称"]').fill("e2e-test-skill");
+  await page.locator('input[placeholder*="描述"]').fill("E2E 临时技能，测试后删除");
+  await page.locator("textarea").last().fill("# 临时技能\n\n测试正文。");
+  await page.getByRole("button", { name: "创建", exact: true }).click();
+  // 创建成功后面板内联刷新（POST→GET→setState），沉降后按全文断言（探针同款）
+  await page.waitForTimeout(2000);
+  const panelText = await page.locator("body").innerText();
+  check("新建技能出现在列表", panelText.includes("e2e-test-skill"));
+  rmSync(new URL("../agent/skills/e2e-test-skill", import.meta.url), {
+    recursive: true,
+    force: true,
+  });
+  // 通知 agent 重扫（调一次编辑端点触发 refresh 即可）
+  await fetch(`${BASE}/agent-service/capabilities/skills/canvas-editing`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({
+      body: readFileSync(new URL("../agent/skills/canvas-editing/SKILL.md", import.meta.url), "utf8"),
+    }),
+  });
+}
+
+// 7) console 干净
 const realErrors = hasReal404 ? consoleErrors : consoleErrors.filter((e) => !e.startsWith("Failed to load resource"));
 check("页面 console 无错误", realErrors.length === 0 && notFound.length === 0, (realErrors[0] ?? notFound[0] ?? "").slice(0, 120));
 

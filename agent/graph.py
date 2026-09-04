@@ -500,6 +500,16 @@ SKILL_CATALOG = "\n".join(
 ) or "（暂无）"
 
 
+def refresh_skill_meta() -> None:
+    """重扫 skills 目录并热更新模块级目录/清单（技能编辑/新建端点保存后调用，
+    免重启 agent——chat_node 每轮 format 时读的就是这两个模块全局量）。"""
+    global SKILL_META, SKILL_CATALOG
+    SKILL_META = load_skill_meta()
+    SKILL_CATALOG = "\n".join(
+        f"- {m['name']} — {m['description']}" for m in SKILL_META
+    ) or "（暂无）"
+
+
 @tool
 def read_skill(name: str) -> str:
     """读取一份技能手册全文（SKILL.md）。系统提示里的「技能手册」目录只是

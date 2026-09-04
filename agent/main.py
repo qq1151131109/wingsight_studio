@@ -11,6 +11,7 @@
 import json
 import asyncio
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -257,9 +258,10 @@ def list_skills() -> list:
 def api_capabilities(user: auth.CurrentUser):
     """技能清单（聊天「技能」面板数据源，Claude Code 式单一列表）：
     手册类（agent/skills 的 SKILL.md，助手执行对应任务时自动使用，全文可看）
-    + 指令类（Langflow 注册表，输入条打 / 直达，点击插入调用模板）。"""
+    + 指令类（Langflow 注册表，输入条打 / 直达，点击插入调用模板）。
+    can_edit：admin 才能编辑/新建手册。"""
     skills_list = []
-    for m in graph.SKILL_META:
+    for m in graph.load_skill_meta():
         try:
             body = (graph.SKILLS_DIR / m["name"] / "SKILL.md").read_text(
                 encoding="utf-8"
@@ -284,7 +286,68 @@ def api_capabilities(user: auth.CurrentUser):
                 "params": f.get("params") or [],
             }
         )
-    return {"skills": skills_list}
+    return {
+        "skills": skills_list,
+        "can_edit": getattr(user, "role", "") == "admin",
+    }
+
+
+def _skill_body_ok(name: str, body: str) -> str | None:
+    """校验 SKILL.md 正文：frontmatter 必须有 name+description 且 name 与
+    目录一致（spec 要求，read_skill 按名寻径）。返回错误原因或 None。"""
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n", body, re.S)
+    if not m:
+        return "缺少 frontmatter（--- 开头的 name/description 块）"
+    fields = dict(re.findall(r"^(\w+):\s*(.+?)\s*$", m.group(1), re.M))
+    if not fields.get("name") or not fields.get("description"):
+        return "frontmatter 缺少 name 或 description"
+    if fields["name"] != name:
+        return f"frontmatter name（{fields['name']}）必须与目录名（{name}）一致"
+    return None
+
+
+@app.put("/capabilities/skills/{name}")
+async def api_update_skill(name: str, req: dict, user: auth.CurrentUser):
+    """管理员直接编辑一份手册技能（raw SKILL.md 全文）。保存后热刷新目录，
+    免重启 agent。"""
+    if getattr(user, "role", "") != "admin":
+        return Response(status_code=403, content="仅管理员可编辑技能")
+    body = str(req.get("body") or "")
+    d = graph.SKILLS_DIR / name.strip()
+    if not d.is_dir() or not d.resolve().is_relative_to(graph.SKILLS_DIR.resolve()):
+        return Response(status_code=404, content=f"手册 {name} 不存在")
+    if err := _skill_body_ok(name, body):
+        return Response(status_code=400, content=err, media_type="text/plain")
+    (d / "SKILL.md").write_text(body, encoding="utf-8")
+    graph.refresh_skill_meta()
+    return {"ok": True}
+
+
+@app.post("/capabilities/skills")
+async def api_create_skill(req: dict, user: auth.CurrentUser):
+    """管理员新建一份手册技能（自动生成 frontmatter）。name 需是小写
+    字母/数字/连字符（Agent Skills 规范）。"""
+    if getattr(user, "role", "") != "admin":
+        return Response(status_code=403, content="仅管理员可新建技能")
+    name = str(req.get("name") or "").strip()
+    description = str(req.get("description") or "").strip()
+    body = str(req.get("body") or "")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{1,63}", name):
+        return Response(
+            status_code=400,
+            content="name 需为小写字母/数字/连字符，2-64 字符（如 historical-research）",
+            media_type="text/plain",
+        )
+    if not description:
+        return Response(status_code=400, content="description 不能为空", media_type="text/plain")
+    d = graph.SKILLS_DIR / name
+    if d.exists():
+        return Response(status_code=409, content=f"技能 {name} 已存在", media_type="text/plain")
+    d.mkdir(parents=True)
+    content = f"---\nname: {name}\ndescription: {description}\n---\n\n{body}"
+    (d / "SKILL.md").write_text(content, encoding="utf-8")
+    graph.refresh_skill_meta()
+    return {"ok": True, "name": name}
 
 
 # ---------- 项目与画布持久化（前端经 /agent-service/projects/* 访问）----------
