@@ -198,6 +198,7 @@ FLOWS = {
     "script-review-consistency.json": "LANGFLOW_SCRIPT_CONSISTENCY_FLOW_ID",
     "script-review-fact-claims.json": "LANGFLOW_SCRIPT_FACTCLAIMS_FLOW_ID",
     "script-review-fact-verdict.json": "LANGFLOW_SCRIPT_FACTVERDICT_FLOW_ID",
+    "image-art-review.json": "LANGFLOW_IMAGE_ART_REVIEW_FLOW_ID",
 }
 skills_idx = next((i for i, l in enumerate(lines) if l.startswith("LANGFLOW_SKILLS_JSON=")), None)
 skills = json.loads(env["LANGFLOW_SKILLS_JSON"]) if env.get("LANGFLOW_SKILLS_JSON") else {}

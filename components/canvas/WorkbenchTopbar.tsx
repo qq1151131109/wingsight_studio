@@ -90,9 +90,12 @@ export default function WorkbenchTopbar() {
 
       <span className="ml-auto" />
 
-      {/* 协作者头像组（首字占位；悬停看全名） */}
+      {/* 协作者头像组（首字占位；悬停看全名）。右侧操作组一律 shrink-0 +
+          不换行：窄窗口里该让位的是项目名（它已 min-w-0 + truncate），不是
+          这几颗按钮——按钮被挤时不消失而是折行，「分享」竖排成两行、头像组
+          压成半圆（实测画布 285px 时） */}
       <div
-        className="flex items-center -space-x-1.5"
+        className="flex shrink-0 items-center -space-x-1.5"
         title={
           collabs.length
             ? `协作者：${collabs.join("、")}`
@@ -129,7 +132,7 @@ export default function WorkbenchTopbar() {
             : "切换为夜间（持续到明早 8:00，之后按时间自动：20:00–8:00 夜间）"
         }
         onClick={() => toggleTheme()}
-        className="grid h-8 w-8 place-items-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
       >
         {resolvedTheme === "dark" ? (
           <Sun className="h-4 w-4" />
@@ -141,7 +144,7 @@ export default function WorkbenchTopbar() {
       <button
         type="button"
         onClick={() => setSharing(true)}
-        className="flex items-center gap-1.5 rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
       >
         <UserPlus className="h-3.5 w-3.5" />
         分享

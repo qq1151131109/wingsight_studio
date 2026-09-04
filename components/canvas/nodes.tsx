@@ -43,6 +43,7 @@ import {
   Globe2,
   LayoutGrid,
   PenLine,
+  ClipboardCheck,
   Clapperboard,
   FastForward,
   Rewind,
@@ -58,7 +59,6 @@ import {
   AudioLines,
   Loader2,
   Maximize2,
-  MoreHorizontal,
   Music,
   Package,
   Pause,
@@ -171,9 +171,20 @@ import {
 import { useDismissOnOutside } from "@/lib/useDismiss";
 import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
+import SplitGridDialog from "./SplitGridDialog";
 import RefResearchDialog from "./RefResearchDialog";
 import RefReviewDialog from "./RefReviewDialog";
 import ScriptReviewDialog from "./ScriptReviewDialog";
+import ImageReviewDialog from "./ImageReviewDialog";
+import {
+  cancelArtReview,
+  dismissArtReviewFinding,
+  getArtReview,
+  isArtReviewTerminal,
+  startArtReview,
+  type ArtReviewFinding,
+  type ArtReviewJob,
+} from "@/lib/image-review";
 import { getLatestScriptReviewCached, getScriptReview, type ReviewJob } from "@/lib/script-review";
 import {
   startBatchRefResearch,
@@ -409,10 +420,12 @@ const MULTI_TOOLS: {
   icon: typeof LayoutGrid;
 }[] = [
   { tool: "multiGrid", label: "九宫格机位", hint: "3x3 多机位联系表", icon: LayoutGrid },
+  { tool: "continuous", label: "连续分镜", hint: "25 格连续场景推进网格", icon: Film },
   { tool: "plotBeats", label: "剧情推演", hint: "2x2 四拍叙事网格", icon: Clapperboard },
   { tool: "nextFrame", label: "预测下一帧", hint: "几秒后的合理瞬间", icon: FastForward },
   { tool: "prevFrame", label: "回溯前帧", hint: "导致本画面的前一瞬", icon: Rewind },
   { tool: "grade", label: "光影校正", hint: "只做电影调色 pass", icon: Contrast },
+  { tool: "outpaint", label: "扩图", hint: "延展画面边界补全环境", icon: Maximize2 },
 ];
 
 /** 双击聚焦：视口平滑居中到该卡，**统一观感尺寸**——不论卡片本身多大
@@ -505,8 +518,8 @@ function ToolBtn({
         onClick();
       }}
       onPointerDown={(e) => e.stopPropagation()}
-      className={`flex h-9 items-center rounded-full transition-all active:scale-[0.94] disabled:opacity-40 ${
-        label ? "gap-1.5 px-3.5" : "w-9 justify-center"
+      className={`flex h-7 items-center rounded-full transition-all active:scale-[0.94] disabled:opacity-40 ${
+        label ? "gap-1 px-2.5" : "w-7 justify-center"
       } ${
         danger
           ? "text-text-3 hover:bg-danger/10 hover:text-danger"
@@ -516,7 +529,7 @@ function ToolBtn({
       }`}
     >
       {children}
-      {label ? <span className="whitespace-nowrap text-[13px] font-medium">{label}</span> : null}
+      {label ? <span className="whitespace-nowrap text-[11px] font-medium">{label}</span> : null}
       {badge ? (
         <span className="rounded-full bg-accent px-1.5 text-[10px] font-semibold tabular-nums text-surface-1">
           {badge}
@@ -690,6 +703,56 @@ function useScriptReviewJob(nodeId: string) {
     : { jobId: undefined, job: null as ReviewJob | null, error: "", running: false };
 }
 
+/**
+ * 图片艺术评审任务续链：imageReviewJobId 锚在卡数据上（useScriptReviewJob
+ * 同式）。终态由 ImageCard 清锚并弹评审弹窗。
+ */
+function useArtReviewJob(nodeId: string) {
+  const imageReviewJobId = useCanvasStore(
+    (s) => s.nodes.find((n) => n.id === nodeId)?.data.imageReviewJobId,
+  );
+  const [state, setState] = useState<{
+    jobId: string;
+    job: ArtReviewJob | null;
+    error: string;
+  }>({ jobId: "", job: null, error: "" });
+  useEffect(() => {
+    if (!imageReviewJobId) return;
+    let alive = true;
+    void (async () => {
+      const projectId = useCanvasStore.getState().projectId;
+      if (!projectId) return;
+      let misses = 0;
+      for (;;) {
+        try {
+          const j = await getArtReview(projectId, imageReviewJobId);
+          if (!alive) return;
+          setState({ jobId: imageReviewJobId, job: j, error: "" });
+          if (isArtReviewTerminal(j.status)) return;
+          misses = 0;
+        } catch (exc) {
+          misses += 1;
+          if (!alive) return;
+          const msg = exc instanceof Error ? exc.message : "评审查询失败";
+          if (msg.includes("不存在") || misses >= 5) {
+            setState({ jobId: imageReviewJobId, job: null, error: msg });
+            return;
+          }
+        }
+        await new Promise((r) => setTimeout(r, 2500));
+        if (!alive) return;
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [imageReviewJobId, nodeId]);
+  // 锚已清后旧结果不外露（防旧终态重复触发面板）
+  return imageReviewJobId && state.jobId === imageReviewJobId
+    ? { jobId: imageReviewJobId, job: state.job, error: state.error, running: !isArtReviewTerminal(state.job?.status ?? "queued") }
+    : { jobId: undefined, job: null as ArtReviewJob | null, error: "", running: false };
+}
+
 /** nano 档媒体兜底：类型色着色块（构图/规模可辨，图片解码缓存随卡释放） */
 function NanoBlock({ nodeType }: { nodeType: string }) {
   const dot =
@@ -725,8 +788,6 @@ function CardShell({
   const [plusMenu, setPlusMenu] = useState<null | "left" | "right">(null);
   // 工具条「多功能」下拉（九宫格机位/剧情推演/前后帧/光影校正）
   const [tplMenu, setTplMenu] = useState(false);
-  // 工具条「编辑」下拉（多视角/环视/三视图/打光/质感——低频收纳入口）
-  const [editMenu, setEditMenu] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   // 磁性追踪（libtv/Flora 手感）：手柄朝光标方向偏移（限幅 12px）+ 按距离放大
   const [magnet, setMagnet] = useState({
@@ -924,7 +985,6 @@ function CardShell({
         });
         setPlusMenu(null);
         setTplMenu(false);
-        setEditMenu(false);
       }}
       style={{ "--ws-hit": `${-10 * handleScale}px` } as React.CSSProperties}
     >
@@ -952,90 +1012,56 @@ function CardShell({
                 disabled={data.status === "loading"}
                 onClick={() => dispatchImageTool(id, "crop")}
               >
-                <Crop className="h-4 w-4" />
+                <Crop className="h-3.5 w-3.5" />
               </ToolBtn>
-              {/* 低频生成类操作收进「编辑」下拉（novanova 工具条 ≤8 项共识，
-                  平铺 11+ 按钮曾盖住卡上方一大片）；裁剪/多功能/自由缩放高频常驻 */}
-              <div className="relative">
+              {/* 全功能平铺（用户裁决：功能可见性优先，缩小按钮后放得下——
+                  收纳版让五项生成能力无人知晓）。顺序按操作心智分组：
+                  生成类（多视角/环视/三视图）→ 调整类（打光/质感/裁剪），
+                  条件项按卡型出现 */}
+              <ToolBtn
+                title="生成其他机位视角"
+                label="多视角"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "multiview")}
+              >
+                <Camera className="h-3.5 w-3.5" />
+              </ToolBtn>
+              {data.nodeType === "scene" || data.nodeType === "image" ? (
                 <ToolBtn
-                  title="多视角 / 环视 / 三视图 / 打光 / 质感"
-                  label="编辑"
+                  title="生成 2:1 球形全景环境图（720° 环视，新卡可拖拽环视查看）"
+                  label="环视"
                   disabled={data.status === "loading"}
-                  active={editMenu}
-                  onClick={() => setEditMenu((v) => !v)}
+                  onClick={() => dispatchImageTool(id, "panorama")}
                 >
-                  <MoreHorizontal className="h-4 w-4" />
+                  <Globe2 className="h-3.5 w-3.5" />
                 </ToolBtn>
-                {editMenu ? (
-                  <div className="absolute left-0 top-[calc(100%+6px)] z-50 flex w-44 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
-                    {([
-                      {
-                        tool: "multiview" as const,
-                        icon: Camera,
-                        label: "多视角",
-                        hint: "生成其他机位角度",
-                        aria: "生成其他机位视角",
-                        show: true,
-                      },
-                      {
-                        tool: "panorama" as const,
-                        icon: Globe2,
-                        label: "环视",
-                        hint: "2:1 球形全景环境图",
-                        aria: "生成 2:1 球形全景环境图（720° 环视，新卡可拖拽环视查看）",
-                        show:
-                          data.nodeType === "scene" || data.nodeType === "image",
-                      },
-                      {
-                        tool: "turnaround" as const,
-                        icon: Columns3,
-                        label: "三视图",
-                        hint: "生成三视图设定表",
-                        aria: "生成三视图设定表",
-                        show: data.nodeType === "character",
-                      },
-                      {
-                        tool: "lighting" as const,
-                        icon: Sun,
-                        label: "打光",
-                        hint: "替换画面光效",
-                        aria: "替换画面光效",
-                        show: true,
-                      },
-                      {
-                        tool: "texture" as const,
-                        icon: Wand2,
-                        label: "质感",
-                        hint: "人物质感精修",
-                        aria: "人物质感精修（融合/光影/皮肤/纹理/锐度）",
-                        show: true,
-                      },
-                    ] as { tool: "multiview" | "panorama" | "turnaround" | "lighting" | "texture"; icon: typeof Camera; label: string; hint: string; aria: string; show: boolean }[])
-                      .filter((m) => m.show)
-                      .map((m) => {
-                        const MIcon = m.icon;
-                        return (
-                          <button
-                            key={m.tool}
-                            type="button"
-                            className="nodrag flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setEditMenu(false);
-                              dispatchImageTool(id, m.tool);
-                            }}
-                          >
-                            <MIcon className="h-3.5 w-3.5 shrink-0 text-text-4" />
-                            <span className="flex flex-col" aria-label={m.aria}>
-                              {m.label}
-                              <span className="text-[10px] text-text-4">{m.hint}</span>
-                            </span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                ) : null}
-              </div>
+              ) : null}
+              {data.nodeType === "character" ? (
+                <ToolBtn
+                  title="生成三视图设定表"
+                  label="三视图"
+                  disabled={data.status === "loading"}
+                  onClick={() => dispatchImageTool(id, "turnaround")}
+                >
+                  <Columns3 className="h-3.5 w-3.5" />
+                </ToolBtn>
+              ) : null}
+              <ToolBtn
+                title="替换画面光效"
+                label="打光"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "lighting")}
+              >
+                <Sun className="h-3.5 w-3.5" />
+              </ToolBtn>
+              <ToolBtn
+                title="人物质感精修（融合/光影/皮肤/纹理/锐度）"
+                label="质感"
+                disabled={data.status === "loading"}
+                onClick={() => dispatchImageTool(id, "texture")}
+              >
+                <Wand2 className="h-3.5 w-3.5" />
+              </ToolBtn>
               <div className="relative">
                 <ToolBtn
                   title="多功能模板：九宫格机位 / 剧情推演 / 前后帧 / 光影校正"
@@ -1043,7 +1069,7 @@ function CardShell({
                   disabled={data.status === "loading"}
                   onClick={() => setTplMenu((v) => !v)}
                 >
-                  <LayoutGrid className="h-4 w-4" />
+                  <LayoutGrid className="h-3.5 w-3.5" />
                 </ToolBtn>
                 {tplMenu ? (
                   // 工具条在 NodeToolbar 屏幕空间层（不在 .ws-card 子树内），
@@ -1079,7 +1105,7 @@ function CardShell({
                 active={Boolean(data.freeResize)}
                 onClick={() => toggleFreeResize(id)}
               >
-                <Scaling className="h-4 w-4" />
+                <Scaling className="h-3.5 w-3.5" />
               </ToolBtn>
               <span className="mx-1 h-4 w-px bg-hairline" />
             </>
@@ -1091,10 +1117,10 @@ function CardShell({
             </>
           ) : null}
           <ToolBtn title="原地复制" onClick={() => useCanvasStore.getState().duplicateSelection()}>
-            <Copy className="h-4 w-4" />
+            <Copy className="h-3.5 w-3.5" />
           </ToolBtn>
           <ToolBtn title={locked ? "解锁" : "锁定"} onClick={() => update({ locked: !locked })}>
-            {locked ? <LockOpen className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+            {locked ? <LockOpen className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
           </ToolBtn>
           <ToolBtn
             title="节点信息"
@@ -1104,7 +1130,7 @@ function CardShell({
               )
             }
           >
-            <Info className="h-4 w-4" />
+            <Info className="h-3.5 w-3.5" />
           </ToolBtn>
           <span className="mx-1 h-4 w-px bg-hairline" />
           <ToolBtn
@@ -1116,7 +1142,7 @@ function CardShell({
               st.deleteNodes([id]);
             }}
           >
-            <Trash2 className="h-4 w-4" />
+            <Trash2 className="h-3.5 w-3.5" />
           </ToolBtn>
         </div>
       </NodeToolbar>
@@ -1998,7 +2024,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
         disabled={empty || decomposing}
         onClick={() => decompose()}
       >
-        <Combine className="h-4 w-4" />
+        <Combine className="h-3.5 w-3.5" />
       </ToolBtn>
       {researchCount > 0 ? (
         <ToolBtn
@@ -2013,7 +2039,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
           disabled={empty || researching || !!refJob.batchId}
           onClick={() => void researchRefs()}
         >
-          <Search className="h-4 w-4" />
+          <Search className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       {missingAssetCount > 0 ? (
@@ -2023,7 +2049,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
           disabled={empty || fillingAssets}
           onClick={() => void fillAssets()}
         >
-          <ImageUp className="h-4 w-4" />
+          <ImageUp className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -2032,7 +2058,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
         disabled={empty}
         onClick={() => setShowReview(true)}
       >
-        <ScanSearch className="h-4 w-4" />
+        <ScanSearch className="h-3.5 w-3.5" />
       </ToolBtn>
       <ToolBtn
         title="在本卡右侧新建分镜表卡并自动生成分镜（已连分镜表则重新生成）"
@@ -2041,7 +2067,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
         disabled={empty}
         onClick={() => genShotlist()}
       >
-        <Film className="h-4 w-4" />
+        <Film className="h-3.5 w-3.5" />
       </ToolBtn>
       <ExportMenuButton
         onExport={doExport}
@@ -2340,7 +2366,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
         {refRunning ? (
           <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
         ) : (
-          <Search className="h-4 w-4" />
+          <Search className="h-3.5 w-3.5" />
         )}
       </ToolBtn>
       <ToolBtn
@@ -2349,7 +2375,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
         disabled={writing}
         onClick={() => void writeSetting()}
       >
-        <Sparkles className="h-4 w-4" />
+        <Sparkles className="h-3.5 w-3.5" />
       </ToolBtn>
       {!d.imageUrl ? (
         <ToolBtn
@@ -2358,7 +2384,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           disabled={imgJob}
           onClick={() => void genLook()}
         >
-          <Sparkles className="h-4 w-4" />
+          <Sparkles className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       {d.imageUrl ? (
@@ -2367,7 +2393,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           label={`V${versionCount + 1}`}
           onClick={() => setHistoryOpen(true)}
         >
-          <History className="h-4 w-4" />
+          <History className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       {d.imageUrl ? (
@@ -2376,7 +2402,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
           disabled={imgJob}
           onClick={() => void genLook()}
         >
-          <RefreshCw className="h-4 w-4" />
+          <RefreshCw className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -2384,7 +2410,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
         disabled={uploading}
         onClick={() => fileRef.current?.click()}
       >
-        <Upload className="h-4 w-4" />
+        <Upload className="h-3.5 w-3.5" />
       </ToolBtn>
       {d.imageUrl ? (
         <>
@@ -2399,7 +2425,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
               );
             }}
           >
-            <Download className="h-4 w-4" />
+            <Download className="h-3.5 w-3.5" />
           </ToolBtn>
           <ToolBtn
             title="复制图片到剪贴板"
@@ -2411,13 +2437,13 @@ function AssetCard({ data, id, selected }: NodeProps) {
               );
             }}
           >
-            <ImagePlus className="h-4 w-4" />
+            <ImagePlus className="h-3.5 w-3.5" />
           </ToolBtn>
           <ToolBtn
             title="查看大图（标注重绘/九宫格/版本在此操作）"
             onClick={() => setZoom(true)}
           >
-            <ZoomIn className="h-4 w-4" />
+            <ZoomIn className="h-3.5 w-3.5" />
           </ToolBtn>
         </>
       ) : null}
@@ -2834,8 +2860,16 @@ function RetryPanel({
   );
 }
 
-/** 九宫格切图：3×3 裁块逐个上传，在原图右侧排成网格（对标 open-ai-canvas 切图） */
-async function splitImageToGrid(nodeId: string, url: string, title: string) {
+/** NxM 网格切图：裁块逐个上传，在原图右侧排成网格（对标 open-ai-canvas
+ *  切图，行列可调版——九宫格是 3×3 特例，novanova split-dialog 泛化范式）。
+ *  行列经 SplitGridDialog 预览确认后传入。 */
+async function splitImageToGrid(
+  nodeId: string,
+  url: string,
+  title: string,
+  rows: number,
+  cols: number,
+) {
   const img = new Image();
   img.crossOrigin = "anonymous";
   await new Promise<void>((resolve, reject) => {
@@ -2850,19 +2884,21 @@ async function splitImageToGrid(nodeId: string, url: string, title: string) {
   const source = st0.nodes.find((n) => n.id === nodeId);
   if (!source) return;
   const abs = absolutePosition(st0.nodes, source);
-  const tileW = Math.max(64, Math.round(w / 3 / 2));
+  const tileW = Math.max(64, Math.round(w / cols / 2));
   const tileH = Math.round(tileW * (h / w));
   const canvas = document.createElement("canvas");
-  canvas.width = Math.round(w / 3);
-  canvas.height = Math.round(h / 3);
+  canvas.width = Math.round(w / cols);
+  canvas.height = Math.round(h / rows);
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
+  const tw = canvas.width;
+  const th = canvas.height;
   let placed = 0;
   const createdIds: string[] = [];
-  for (let r = 0; r < 3; r++) {
-    for (let c = 0; c < 3; c++) {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, (w / 3) * c, (h / 3) * r, w / 3, h / 3, 0, 0, w / 3, h / 3);
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      ctx.clearRect(0, 0, tw, th);
+      ctx.drawImage(img, tw * c, th * r, tw, th, 0, 0, tw, th);
       const blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob((b) => resolve(b), "image/jpeg", 0.9),
       );
@@ -2877,7 +2913,7 @@ async function splitImageToGrid(nodeId: string, url: string, title: string) {
         },
         data: {
           nodeType: "image",
-          title: `${title || "图片"} · ${r * 3 + c + 1}/9`,
+          title: `${title || "图片"} · ${r * cols + c + 1}/${rows * cols}`,
           body: "",
           imageUrl: tileUrl,
           status: "ready",
@@ -2910,6 +2946,77 @@ function ImageCard({ data, id, selected }: NodeProps) {
   const [uploading, setUploading] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [maskOpen, setMaskOpen] = useState(false);
+  // NxM 网格切图弹窗（九宫格切图泛化，灯箱钮开）：记录动作时点的那张图
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitSrc, setSplitSrc] = useState("");
+  const [splitTitle, setSplitTitle] = useState("");
+  // AI 艺术评审（§10）：锚续链 + 终态自动弹评审弹窗
+  const artJob = useArtReviewJob(id);
+  const [artReviewOpen, setArtReviewOpen] = useState(false);
+  const [artJobView, setArtJobView] = useState<ArtReviewJob | null>(null);
+  const [artError, setArtError] = useState("");
+  const artStarting = artJob.running && !artJob.job;
+  // 评审收尾（含跨卸载恢复到的终态）：清锚 + 弹结果
+  useEffect(() => {
+    const j = artJob.job;
+    if (!j || artJob.running) return;
+    useCanvasStore.getState().updateNodeData(id, { imageReviewJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setArtJobView(j);
+      setArtError(artJob.error);
+      setArtReviewOpen(true);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 与剧本审查同式：job 到终态即收尾一次
+  }, [artJob.job, artJob.running, id]);
+  // 续链查询失败（任务不存在等）：清锚 + 明报
+  useEffect(() => {
+    if (!artJob.error) return;
+    useCanvasStore.getState().updateNodeData(id, { imageReviewJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      setArtError(artJob.error);
+      setArtReviewOpen(true);
+    })();
+  }, [artJob.error, id]);
+
+  const startArtReviewJob = () => {
+    const pid = useCanvasStore.getState().projectId;
+    if (!pid || !d.imageUrl) return;
+    setArtError("");
+    startArtReview(pid, {
+      nodeId: id,
+      title: String(d.title ?? ""),
+      imageUrl: d.imageUrl,
+    })
+      .then((j) => setArtJobView(j))
+      .catch((exc: unknown) => {
+        setArtError(exc instanceof Error ? exc.message : "发起评审失败");
+        setArtReviewOpen(true);
+      });
+  };
+
+  const dismissArtFinding = (f: ArtReviewFinding, dismissed: boolean) => {
+    const pid = useCanvasStore.getState().projectId;
+    const jid = artJobView?.jobId;
+    if (!pid || !jid) return;
+    void dismissArtReviewFinding(pid, jid, f.id, dismissed)
+      .then((updated) => {
+        setArtJobView((prev) =>
+          prev
+            ? {
+                ...prev,
+                findings: (prev.findings ?? []).map((x) =>
+                  x.id === updated.id ? updated : x,
+                ),
+              }
+            : prev,
+        );
+      })
+      .catch((exc: unknown) =>
+        showToast(exc instanceof Error ? exc.message : "更新失败"),
+      );
+  };
   // 图片卡设定折叠（与资产卡同范式）：body 语义 = 出图注入的本卡设定，
   // 默认折叠一行摘要，点开 inline 编辑——图是主角、设定是附录
   const [bodyCollapsed, setBodyCollapsed] = useState(true);
@@ -3050,7 +3157,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
         label={`V${versionCount + 1}`}
         onClick={() => setHistoryOpen(true)}
       >
-        <History className="h-4 w-4" />
+        <History className="h-3.5 w-3.5" />
       </ToolBtn>
       {d.body || d.genPrompt ? (
         <ToolBtn
@@ -3061,7 +3168,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               .catch(() => undefined);
           }}
         >
-          <Copy className="h-4 w-4" />
+          <Copy className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -3074,7 +3181,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           );
         }}
       >
-        <Download className="h-4 w-4" />
+        <Download className="h-3.5 w-3.5" />
       </ToolBtn>
       <ToolBtn
         title="复制图片到剪贴板"
@@ -3086,7 +3193,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
           );
         }}
       >
-        <ImagePlus className="h-4 w-4" />
+        <ImagePlus className="h-3.5 w-3.5" />
       </ToolBtn>
       <ToolBtn
         title="重新生成（快照原样重跑）"
@@ -3098,10 +3205,21 @@ function ImageCard({ data, id, selected }: NodeProps) {
           );
         }}
       >
-        <RefreshCw className="h-4 w-4" />
+        <RefreshCw className="h-3.5 w-3.5" />
       </ToolBtn>
-      <ToolBtn title="查看大图（标注重绘/九宫格/版本在此操作）" onClick={() => openZoom()}>
-        <ZoomIn className="h-4 w-4" />
+      <ToolBtn title="查看大图（标注重绘/网格切图/版本在此操作）" onClick={() => openZoom()}>
+        <ZoomIn className="h-3.5 w-3.5" />
+      </ToolBtn>
+      <ToolBtn
+        title="AI 艺术评审：构图/色彩/光线/比例四维挑毛病"
+        disabled={!d.imageUrl || artStarting}
+        onClick={startArtReviewJob}
+      >
+        {artStarting ? (
+          <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
+        ) : (
+          <ClipboardCheck className="h-3.5 w-3.5" />
+        )}
       </ToolBtn>
     </>
   ) : null;
@@ -3376,12 +3494,15 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 </button>
                 <button
                   type="button"
-                  data-tip="九宫格切图：拆成 9 张卡" aria-label="九宫格切图：拆成 9 张卡"
+                  data-tip="网格切图：自定义行列拆成多张卡" aria-label="网格切图：拆成多张卡"
+                  data-track="card.split"
                   className={btn}
                   onClick={(e) => {
                     e.stopPropagation();
                     api.close();
-                    void splitImageToGrid(id, item.src, item.title ?? "");
+                    setSplitSrc(item.src);
+                    setSplitTitle(item.title ?? "");
+                    setSplitOpen(true);
                   }}
                 >
                   <Grid3X3 className="h-4 w-4" />
@@ -3400,6 +3521,30 @@ function ImageCard({ data, id, selected }: NodeProps) {
           src={d.imageUrl}
           title={d.title ?? ""}
           onClose={() => setMaskOpen(false)}
+        />
+      ) : null}
+      {artReviewOpen ? (
+        <ImageReviewDialog
+          job={artJobView}
+          error={artError}
+          running={artStarting}
+          onClose={() => {
+            setArtReviewOpen(false);
+            setArtJobView(null);
+            setArtError("");
+          }}
+          onDismiss={dismissArtFinding}
+        />
+      ) : null}
+      {splitOpen && splitSrc ? (
+        <SplitGridDialog
+          url={splitSrc}
+          title={splitTitle}
+          onClose={() => setSplitOpen(false)}
+          onConfirm={(rows, cols) => {
+            setSplitOpen(false);
+            void splitImageToGrid(id, splitSrc, splitTitle, rows, cols);
+          }}
         />
       ) : null}
       <input
@@ -3710,7 +3855,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
           label={`V${versionCount + 1}`}
           onClick={() => setHistoryOpen(true)}
         >
-          <History className="h-4 w-4" />
+          <History className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -3718,7 +3863,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
         disabled={analyzing}
         onClick={() => void runFrameAnalysis()}
       >
-        <ScanSearch className="h-4 w-4" />
+        <ScanSearch className="h-3.5 w-3.5" />
       </ToolBtn>
       <ToolBtn
         title={extracting ? "音轨提取中…" : "提取音轨为音频卡（配音/BGM 素材化）"}
@@ -3727,7 +3872,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
         data-track="video.extract-audio"
         onClick={() => void extractAudio()}
       >
-        {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
+        {extracting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <AudioLines className="h-3.5 w-3.5" />}
       </ToolBtn>
       <ToolBtn
         title="下载视频"
@@ -3739,10 +3884,10 @@ function VideoCard({ data, id, selected }: NodeProps) {
           );
         }}
       >
-        <Download className="h-4 w-4" />
+        <Download className="h-3.5 w-3.5" />
       </ToolBtn>
       <ToolBtn title="放大播放" onClick={() => setZoom(true)}>
-        <Maximize2 className="h-4 w-4" />
+        <Maximize2 className="h-3.5 w-3.5" />
       </ToolBtn>
     </>
   );
@@ -5804,7 +5949,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         disabled={decomposing || !scriptSource}
         onClick={() => void decompose()}
       >
-        <Combine className="h-4 w-4" />
+        <Combine className="h-3.5 w-3.5" />
       </ToolBtn>
       {researchCount > 0 ? (
         <ToolBtn
@@ -5819,7 +5964,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           disabled={!scriptSource || researching || !!refJob.batchId}
           onClick={() => void researchRefs()}
         >
-          <Search className="h-4 w-4" />
+          <Search className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       {missingAssetCount > 0 ? (
@@ -5829,7 +5974,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           disabled={!scriptSource || fillingAssets}
           onClick={() => void fillAssets()}
         >
-          <ImageUp className="h-4 w-4" />
+          <ImageUp className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -5842,7 +5987,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           )
         }
       >
-        <Sparkles className="h-4 w-4" />
+        <Sparkles className="h-3.5 w-3.5" />
       </ToolBtn>
       {missingRows.length > 0 ? (
         <ToolBtn
@@ -5855,7 +6000,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             )
           }
         >
-          <ImageUp className="h-4 w-4" />
+          <ImageUp className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -5864,7 +6009,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         disabled={videoSources.length < 2}
         onClick={() => void composeShots()}
       >
-        <Combine className="h-4 w-4" />
+        <Combine className="h-3.5 w-3.5" />
       </ToolBtn>
       <ToolBtn
         title="分镜帧合成宫格大图（帧编号+画面备注，交付用）"
@@ -5872,7 +6017,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         disabled={gridBusy || !rows.some((r) => r.imageUrl || r.imageNodeId)}
         onClick={() => void exportGrid()}
       >
-        <Grid3X3 className="h-4 w-4" />
+        <Grid3X3 className="h-3.5 w-3.5" />
       </ToolBtn>
       <ExportMenuButton
         onExport={doExport}
@@ -6014,9 +6159,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       {thumbLoading ? (
                         <Loader2 className="h-4 w-4 animate-spin" />
                       ) : thumbError ? (
-                        <RefreshCw className="h-4 w-4" />
+                        <RefreshCw className="h-3.5 w-3.5" />
                       ) : (
-                        <ImageIcon className="h-4 w-4" />
+                        <ImageIcon className="h-3.5 w-3.5" />
                       )}
                       <span className="text-[9px]">
                         {thumbLoading ? "出图中…" : thumbError ? "出图失败·重试" : "出图"}

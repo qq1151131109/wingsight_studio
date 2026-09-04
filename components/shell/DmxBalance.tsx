@@ -158,7 +158,7 @@ export default function DmxBalance() {
         type="button"
         data-tip={tip} aria-label="DMX 余额与出图用量"
         onClick={() => setOpen((v) => !v)}
-        className={`flex cursor-pointer items-center gap-1 rounded-md border border-hairline bg-surface-1 px-2 py-1 text-[11px] tabular-nums transition-colors hover:bg-surface-2 ${
+        className={`flex shrink-0 cursor-pointer items-center gap-1 whitespace-nowrap rounded-md border border-hairline bg-surface-1 px-2 py-1 text-[11px] tabular-nums transition-colors hover:bg-surface-2 ${
           err ? "text-text-4" : "text-text-2"
         }`}
       >

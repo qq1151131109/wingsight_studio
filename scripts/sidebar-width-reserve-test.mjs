@@ -12,8 +12,10 @@
  *  P1 空态：空画布上不渲染小地图（无内容空块像渲染故障）；聊天侧栏空态有
  *  一行助手身份说明（v2 WelcomeScreen 因我们显式管 threadId 而永不渲染）。
  *
- *  P2 窄画布叠层：窗口收窄 + 侧栏拖到接近上限时，左上工具条（加号/搜索框/
- *  画布设置齿轮）整条仍在画布内——搜索框写死 w-52 不收缩会把齿轮顶到侧栏底下。
+ *  P2 窄窗口不挤没画布：侧栏宽度 clamp（装载与拖拽同口径：上限 = 视口 -
+ *  活动栏 56 - 画布最小可用宽 420），顶栏右组 shrink-0 不折行（旧行为：「分享」
+ *  竖排成两行）；即使带着陈旧宽度（760px）挤到画布 284px，左上工具条也得把
+ *  齿轮留在画布内——搜索框写死 w-52 不收缩时会把齿轮顶到侧栏底下。
  *
  *  自建临时项目跑（空画布与有卡两种状态都要确定可控），结束删除。
  *  用法：node scripts/sidebar-width-reserve-test.mjs   （需 web:8008 + agent:8123 在跑）
@@ -275,46 +277,105 @@ check(
 
 await page.screenshot({ path: "/tmp/sidebar-reserve-wide.png" });
 
-// ===== ⑦ 窄画布：左上工具条整条可见（搜索框可收缩、不顶出齿轮）=====
+// ===== ⑦ 窄窗口：侧栏宽度被 clamp（装载与拖拽同口径），顶栏不折行 =====
+// 陈旧存值路径：先塞一个 760px（宽窗口下拖得出来），再把窗口收到 1100 并
+// reload——装载时必须 clamp，否则画布只剩 284px：顶栏「分享」竖排成两行、
+// 左上工具条顶到侧栏底下（旧代码实测如此）
+await page.evaluate(() => window.localStorage.setItem("wingsight_sidebar_width", "760px"));
 await page.setViewportSize({ width: 1100, height: 800 });
+await page.reload();
+await page.waitForSelector(".react-flow__renderer");
+if ((await page.evaluate(() => document.querySelector("aside.copilotKitSidebar")?.getAttribute("aria-hidden"))) !== "false") {
+  await page.locator('[aria-label="打开画布助手"]').click();
+}
+// 等让位稳定再量：body margin 有过渡，早读会读到中间态（实测读到过 1014px）
+await page.waitForFunction(
+  () => {
+    const f = document.querySelector(".react-flow__renderer");
+    const a = document.querySelector("aside.copilotKitSidebar");
+    if (!f || !a || a.getAttribute("aria-hidden") !== "false") return false;
+    return Math.abs(f.getBoundingClientRect().right - a.getBoundingClientRect().left) <= 2;
+  },
+  null,
+  { timeout: 5000 },
+);
 const narrow = await page.evaluate(async () => {
-  const r = document.querySelector(".ws-chat-resizer");
-  if (!r) return null;
-  const rect = r.getBoundingClientRect();
-  const opts = { bubbles: true, pointerId: 1, isPrimary: true, button: 0 };
-  r.dispatchEvent(new PointerEvent("pointerdown", { ...opts, clientX: rect.left + 5, clientY: 40 }));
-  // 往左拖超可用上限：clamp 把侧栏推到最宽，画布挤到最窄
-  window.dispatchEvent(new PointerEvent("pointermove", { ...opts, clientX: rect.left - 900, clientY: 40 }));
-  window.dispatchEvent(new PointerEvent("pointerup", { ...opts, clientX: rect.left - 900, clientY: 40 }));
-  await new Promise((res) => setTimeout(res, 250));
-  const flow = document.querySelector(".react-flow__renderer").getBoundingClientRect();
-  const aside = document.querySelector("aside.copilotKitSidebar").getBoundingClientRect();
-  const bar = document.querySelector("[data-canvas-header]");
-  const kids = [...bar.children].map((c) => {
-    const b = c.getBoundingClientRect();
-    return { cls: c.className.slice(0, 22), left: Math.round(b.left), right: Math.round(b.right), width: Math.round(b.width) };
-  });
-  return {
-    flow: { left: Math.round(flow.left), right: Math.round(flow.right) },
-    asideLeft: Math.round(aside.left),
-    chatW: getComputedStyle(document.documentElement).getPropertyValue("--ws-chat-w").trim(),
-    kids,
-    barRight: Math.round(bar.getBoundingClientRect().right),
-    kbd: bar.querySelector("kbd")?.textContent ?? null,
+  const rect = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height) };
   };
+  const read = () => {
+    const flow = document.querySelector(".react-flow__renderer");
+    const aside = document.querySelector("aside.copilotKitSidebar");
+    const bar = document.querySelector("[data-canvas-header]");
+    const header = document.querySelector("header");
+    const share = [...(header?.querySelectorAll("button") ?? [])].find((b) => b.textContent?.trim() === "分享");
+    return {
+      flow: rect(flow),
+      aside: rect(aside),
+      asideAriaHidden: aside?.getAttribute("aria-hidden"),
+      chatW: getComputedStyle(document.documentElement).getPropertyValue("--ws-chat-w").trim(),
+      kids: [...(bar?.children ?? [])].map((c) => ({ cls: c.className.slice(0, 22), ...rect(c) })),
+      barRight: Math.round(bar?.getBoundingClientRect().right ?? 0),
+      headerRight: Math.round(header?.getBoundingClientRect().right ?? 0),
+      share: rect(share),
+      kbd: bar?.querySelector("kbd")?.textContent ?? null,
+    };
+  };
+  const first = read();
+  // 强行塞回陈旧宽度（绕过 clamp，模拟「旧版本存值 + 窄窗口」以及任何
+  // 未预期的挤窄）：此时搜索框必须能收缩，不把齿轮顶出画布
+  const squeeze = async (px) => {
+    document.documentElement.style.setProperty("--ws-chat-w", px);
+    document.querySelector("aside.copilotKitSidebar")?.style.setProperty("width", px, "important");
+    // 等 v2 的 ResizeObserver 回灌 body margin 并跑完过渡，否则量到中间态
+    const t0 = Date.now();
+    for (;;) {
+      const f = document.querySelector(".react-flow__renderer").getBoundingClientRect();
+      const a = document.querySelector("aside.copilotKitSidebar").getBoundingClientRect();
+      if (Math.abs(f.right - a.left) <= 2 || Date.now() - t0 > 2000) break;
+      await new Promise((res) => setTimeout(res, 60));
+    }
+    return read();
+  };
+  const squeezed = await squeeze("760px");
+  await squeeze(first.chatW); // 复原，不污染后面的拖拽量测
+  await new Promise((res) => setTimeout(res, 200));
+  // 再拖一次：往左拖超可用上限，拖拽路径必须守同一个上限（不是只装载时算）
+  const r = document.querySelector(".ws-chat-resizer");
+  const rr = r.getBoundingClientRect();
+  const opts = { bubbles: true, pointerId: 1, isPrimary: true, button: 0 };
+  r.dispatchEvent(new PointerEvent("pointerdown", { ...opts, clientX: rr.left + 5, clientY: 40 }));
+  window.dispatchEvent(new PointerEvent("pointermove", { ...opts, clientX: rr.left - 900, clientY: 40 }));
+  window.dispatchEvent(new PointerEvent("pointerup", { ...opts, clientX: rr.left - 900, clientY: 40 }));
+  await new Promise((res) => setTimeout(res, 250));
+  return { first, squeezed, dragged: read() };
 });
-const canvasW = narrow.flow.right - narrow.flow.left;
-const search = narrow.kids.find((k) => k.cls.includes("relative"));
-const last = narrow.kids[narrow.kids.length - 1];
-console.log(`· 窄画布：视口 1100 → 画布 ${canvasW}px（--ws-chat-w=${narrow.chatW}）子项=${JSON.stringify(narrow.kids)}`);
-check("⑦ 前置：画布确实被挤窄（<420px，旧固定宽必溢出）", canvasW < 420, `画布宽=${canvasW}`);
-check("⑦ 工具条整条不越入侧栏下", narrow.barRight <= narrow.asideLeft + 1, `bar.right=${narrow.barRight} aside.left=${narrow.asideLeft}`);
-check("⑦ 画布设置齿轮仍在画布内可见", narrow.kids.length >= 3 && last.right <= narrow.flow.right + 1, `末子项 right=${last.right} flow.right=${narrow.flow.right}`);
-// 挤窄时必须真的低于自然宽 208（旧写法 w-52 卡死 208，靠右邻齿轮一起越界）
-check("⑦ 搜索框随画布收缩（低于自然宽 208）", Boolean(search) && search.width > 0 && search.width < 208, `搜索框宽=${search?.width}`);
-check("⑦ 搜索框标出 ⌘K 入口（与导航面板同一发现路径）", narrow.kbd === "⌘K", `kbd=${JSON.stringify(narrow.kbd)}`);
+if (narrow.first.asideAriaHidden !== "false") throw new Error("侧栏没打开，⑦ 量测无意义");
+const canvasW = narrow.first.flow.width;
+const upper = 1100 - 56 - 420; // 活动栏 56 + 画布最小可用宽 420
+const last = narrow.first.kids[narrow.first.kids.length - 1];
+console.log(`· 窄窗口：视口 1100 存值 760px → 实际侧栏 ${narrow.first.chatW}，画布 ${canvasW}px，分享钮高=${narrow.first.share?.height}`);
+check("⑦ 装载时陈旧存值被 clamp（侧栏≤" + upper + "px）", parseInt(narrow.first.chatW, 10) <= upper + 1, `--ws-chat-w=${narrow.first.chatW}`);
+check("⑦ 画布保住最小可用宽（≥420px）", canvasW >= 420 - 1, `画布宽=${canvasW}`);
+check("⑦ 顶栏「分享」单行不折行", Boolean(narrow.first.share) && narrow.first.share.height <= 32, `高=${narrow.first.share?.height}`);
+check("⑦ 顶栏右组不被裁", Boolean(narrow.first.share) && narrow.first.share.right <= narrow.first.headerRight + 1, `share.right=${narrow.first.share?.right} header.right=${narrow.first.headerRight}`);
+// 工具条行本身是整行宽（left-2 right-2），只能看末子项（齿轮）是否还在画布内
+check("⑦ 左上工具条末子项（齿轮）在画布内", Boolean(last) && last.right <= narrow.first.flow.right + 1, `末子项 right=${last?.right} flow.right=${narrow.first.flow.right}`);
+const sqLast = narrow.squeezed.kids[narrow.squeezed.kids.length - 1];
+const sqSearch = narrow.squeezed.kids.find((k) => k.cls.includes("relative"));
+console.log(`· 强行塞 760px：画布 ${narrow.squeezed.flow.width}px，搜索框 ${sqSearch?.width}px，齿轮 right=${sqLast?.right} flow.right=${narrow.squeezed.flow.right}`);
+check("⑦ 前置：强行塞陈旧宽度后画布确实 <320px", narrow.squeezed.flow.width < 320, `画布宽=${narrow.squeezed.flow.width}`);
+check("⑦ 挤窄时搜索框真收缩（不卡死 208）", Boolean(sqSearch) && sqSearch.width > 0 && sqSearch.width < 208, `搜索框宽=${sqSearch?.width}`);
+check("⑦ 挤窄时齿轮不被顶出画布", Boolean(sqLast) && sqLast.right <= narrow.squeezed.flow.right + 1, `齿轮 right=${sqLast?.right} flow.right=${narrow.squeezed.flow.right}`);
+check("⑦ 搜索框标出 ⌘K 入口（与导航面板同一发现路径）", narrow.first.kbd === "⌘K", `kbd=${JSON.stringify(narrow.first.kbd)}`);
+check("⑦ 拖拽也守同一上限", parseInt(narrow.dragged.chatW, 10) <= upper + 1 && narrow.dragged.flow.width >= 420 - 1, `拖后 --ws-chat-w=${narrow.dragged.chatW} 画布=${narrow.dragged.flow.width}`);
 await page.screenshot({ path: "/tmp/sidebar-reserve-narrow.png" });
+await page.evaluate(() => window.localStorage.removeItem("wingsight_sidebar_width"));
 await page.setViewportSize({ width: VIEWPORT.width, height: VIEWPORT.height });
+await page.reload();
+await page.waitForSelector(".react-flow__renderer");
 
 console.log("· 拖宽后截图 /tmp/sidebar-reserve-wide.png");
 

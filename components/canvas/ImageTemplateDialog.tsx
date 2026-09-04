@@ -23,10 +23,12 @@ export type TemplateTool = Extract<
   | "texture"
   | "panorama"
   | "multiGrid"
+  | "continuous"
   | "plotBeats"
   | "nextFrame"
   | "prevFrame"
   | "grade"
+  | "outpaint"
 >;
 
 type Preset = { label: string; sentence: string };
@@ -96,11 +98,16 @@ const TOOLS: Record<
       { label: "插画", sentence: "插画风格" },
     ],
   },
-  // 多功能模板五件（open-storyboard promptTemplates.ts 中文版忠实移植，
-  // 修掉其「左前三分之三」误译）：全部预设无关（说明行+补充描述即可）
+  // 多功能模板（open-storyboard promptTemplates.ts 中文版忠实移植，
+  // 修掉其「左前三分之三」误译）：multiGrid/continuous/plotBeats/nextFrame/
+  // prevFrame/grade 预设无关（说明行+补充描述即可）；outpaint 用预设切方向
   multiGrid: {
     title: "九宫格机位",
     hint: "一次生成 3x3 多机位联系表：九格同主体不同机位（正面/左右 45°/左右正侧/背面/俯/仰/荷兰角）——机位弹窗精调单角度，这张一次看全部",
+  },
+  continuous: {
+    title: "连续分镜",
+    hint: "5x5 二十五格连续场景推进：从参考图开始，机位/取景/表情/动作逐格自然变化，世界连续性不变——拆解故事的第一刀",
   },
   plotBeats: {
     title: "剧情推演",
@@ -117,6 +124,27 @@ const TOOLS: Record<
   grade: {
     title: "光影校正",
     hint: "保持人物/场景/构图/姿态完全不变，只做专业电影调色：平衡曝光、受控光影、自然肤色、三向校色、轻微胶片颗粒（与「打光」互补：打光换光，校正 grading）",
+  },
+  outpaint: {
+    title: "扩图",
+    hint: "延展画面边界补全环境：等比向四周 / 横向向左右 / 纵向向上下，原图内容严格不变，光线透视无缝延续——补充描述可指定扩出的内容（如：补充远处的山和天空）",
+    presets: [
+      {
+        label: "等比扩展",
+        sentence:
+          "这是扩图任务：在所有方向向外延展参考图，同时严格保持原图内容不变。将环境、光线、透视、镜头特性、阴影、纹理和调色无缝延续到新边界。不要移动、重画、裁切或改变原始主体。",
+      },
+      {
+        label: "横向扩展",
+        sentence:
+          "这是横向扩图任务：向左和向右延展参考图，同时严格保持原图内容不变。无缝延续环境、光线、透视、镜头特性、阴影、纹理和调色。不要移动、重画、裁切或改变原始主体。",
+      },
+      {
+        label: "纵向扩展",
+        sentence:
+          "这是纵向扩图任务：向上和向下延展参考图，同时严格保持原图内容不变。无缝延续天空/天花板、地面/地板、光线、透视、镜头特性、阴影、纹理和调色。不要移动、重画、裁切或改变原始主体。",
+      },
+    ],
   },
   texture: {
     title: "人物质感",
@@ -179,6 +207,13 @@ function buildPrompt(
     parts.push(
       "这是对参考图进行调色和光线校正：严格保持相同人物、相同场景、相同构图和相同姿态，只应用专业电影调色、平衡曝光、受控高光与阴影、自然肤色、三向色彩校正、轻微胶片颗粒、IMAX / HDR 质感。不要重画主体，不要改变身份，不要在颜色和对比之外改变风格",
     );
+  } else if (tool === "continuous") {
+    parts.push(
+      "创建一张 5x5、共 25 格的连续分镜网格，从参考图开始展示一个连续场景推进。阅读顺序从左到右、从上到下。每格保持相同角色、身份、服装、地点、光线逻辑和世界连续性，机位、取景、表情和动作在格与格之间自然变化。使用一致的电影调色和细窄中性分隔线，不要字幕、格号、对白气泡、新主角或身份互换",
+    );
+  } else if (tool === "outpaint") {
+    // 方向模板整体在 preset.sentence（等比/横向/纵向三选一）
+    parts.push(preset.sentence);
   }
   if (srcText) parts.push(`参考画面内容：${srcText}`);
   if (extra.trim()) parts.push(extra.trim());
@@ -246,9 +281,12 @@ export default function ImageTemplateDialog({
     const capable = catalog.filter((m) => (m.aspects ?? []).includes("2:1"));
     if (!capable.length) return null;
     const chosen = capable.find((m) => m.id === imagegen.model) ?? capable[0];
-    const resolution = chosen.resolutions.includes("2K")
-      ? "2K"
-      : chosen.default_resolution;
+    // 分辨率取最高档（2026-09-04 清晰度反馈：2K 2880×1440 投球面后每视角
+    // 只占一小块、观感糊；4K 4320×2160 探针实测严格 2:1——seedream 4-0/4-5
+    // 都有，5-pro responses 通道 4.19M 像素上限封顶 2K，按目录自动落位）
+    const resolution = ["4K", "2K"].find((r) =>
+      chosen.resolutions.includes(r),
+    ) ?? chosen.default_resolution;
     return {
       model: chosen.id,
       resolution,
@@ -288,7 +326,9 @@ export default function ImageTemplateDialog({
         ? "质感"
         : tool === "panorama"
           ? "全景"
-          : (preset?.label ?? cfg.title);
+          : tool === "outpaint"
+            ? `扩图·${preset?.label ?? ""}`
+            : (preset?.label ?? cfg.title);
     const newId = st.addNode({
       position: { x: abs.x + nw + 80, y: abs.y },
       data: {
@@ -450,7 +490,11 @@ export default function ImageTemplateDialog({
         <textarea
           value={extra}
           onChange={(e) => setExtra(e.target.value)}
-          placeholder="补充要求（可选）：如 构图不变、不要背景、加一顶帽子…"
+          placeholder={
+            tool === "outpaint"
+              ? "扩图内容补充（可选）：如 补充远处的山和天空、延伸街道纵深…"
+              : "补充要求（可选）：如 构图不变、不要背景、加一顶帽子…"
+          }
           rows={2}
           maxLength={300}
           className="w-full resize-none rounded-md border border-hairline bg-surface-2/60 px-2 py-1.5 text-xs text-text outline-none focus:border-accent placeholder:text-text-4"

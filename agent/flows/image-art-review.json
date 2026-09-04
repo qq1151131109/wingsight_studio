@@ -1,0 +1,518 @@
+{
+  "name": "图片艺术评审",
+  "description": "AI 艺术评审：四维 rubric 视觉评审（构图/色彩/光线/比例结构），单用途自定义组件 gpt-5.6-luna 视觉经 DMX",
+  "icon": null,
+  "icon_bg_color": null,
+  "gradient": null,
+  "data": {
+    "nodes": [
+      {
+        "id": "ArtReview-main",
+        "type": "genericNode",
+        "position": {
+          "x": 220,
+          "y": 200
+        },
+        "positionAbsolute": {
+          "x": 220,
+          "y": 200
+        },
+        "dragging": false,
+        "selected": false,
+        "measured": {
+          "width": 384,
+          "height": 300
+        },
+        "data": {
+          "id": "ArtReview-main",
+          "type": "ArtReviewComponent",
+          "selected_output": "result",
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "legacy": false,
+            "frozen": false,
+            "minimized": false,
+            "pinned": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "documentation": "",
+            "description": "四维 rubric 视觉评审",
+            "display_name": "艺术评审",
+            "edited": false,
+            "icon": "sparkles",
+            "lf_version": "1.12.0",
+            "metadata": {},
+            "name": "ArtReviewComponent",
+            "output_types": [
+              "Message"
+            ],
+            "tool_mode": false,
+            "field_order": [
+              "payload",
+              "model_name",
+              "base_url",
+              "api_key"
+            ],
+            "outputs": [
+              {
+                "display_name": "评审结果",
+                "name": "result",
+                "method": "run_review",
+                "types": [
+                  "Message"
+                ],
+                "selected": "Message"
+              }
+            ],
+            "template": {
+              "_type": "Component",
+              "code": {
+                "type": "code",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": "\"\"\"AI 艺术评审（doc/image-node-ops-spec.md §10）：四维 rubric 视觉评审。\n\n单用途组件（open-ai-canvas art-critique rubric 改写）：构图/色彩/光线/比例结构\n四个维度一次看图评完，只报真问题不凑数。gpt-5.6-luna 视觉经 DMX。严格输出\nJSON findings 数组，agent 侧解析落库（image_review_findings）。\n\"\"\"\n\nfrom __future__ import annotations\n\nimport asyncio\nimport base64\nimport json\nfrom typing import Any\n\nimport httpx\nfrom lfx.custom.custom_component.component import Component\nfrom lfx.inputs.inputs import MultilineInput, SecretStrInput, StrInput\nfrom lfx.schema.message import Message\nfrom lfx.template.field.base import Output\n\nSYSTEM_PROMPT = \"\"\"你是资深影视美术指导，对给出的画面做专业艺术评审。四个维度：\n\n【构图与视觉层级】主体位置是否服务画面意图；左右/上下视觉重量是否失衡；留白是否挤压主体或没有发挥作用；第一视觉焦点与视线动线是否清楚（背景高对比是否抢走主体注意力）；裁切、遮挡和前中后景是否强化主体关系。\n【色彩】主色/辅色/强调色关系是否清楚；冷暖或色相是否无故跳出；明度层次与饱和度是否支持视觉层级（主体与背景明度接近、颜色发灰发脏、次要区域过度鲜艳都算）；主体与背景、相邻形体的色彩区分是否足够。\n【光线】主光源方向、高光与阴影方向是否一致；曝光与对比是否保留关键信息（主体关键区域过曝、死黑）；光线是否帮助形体、距离和空间深度被理解（形体变平、空间混乱）；主体是否通过光线与环境建立清楚层次。\n【比例结构与透视】人物的脸部、五官、手脚、肢体长度和头身关系是否自然（不要把正常透视变化误判为畸形）；物体相对大小是否符合场景关系；消失方向、近大远小、地面关系和遮挡顺序是否一致；关键边缘、纹理、清晰度是否有明显崩坏或重复。\n\n规则：\n- 只报告确实存在的问题，宁缺毋滥：每个维度没有问题就不报，不要凑数\n- 正常的透视收缩、风格化的比例、有意的失衡不是问题\n- severity：high=明显破坏画面可信度或表达；medium=可感知的瑕疵；low=打磨级建议\n\n严格只输出 JSON（无 markdown 代码块、无解释）：\n{\"findings\":[{\"dimension\":\"composition|color|lighting|proportion\",\"severity\":\"high|medium|low\",\"title\":\"问题短标题\",\"quote\":\"画面位置描述（如：画面左上角/人物右手）\",\"detail\":\"为什么是问题，引用画面证据\",\"suggestion\":\"具体怎么改\"}]}\"\"\"\n\n\nclass ArtReviewComponent(Component):\n    display_name = \"艺术评审\"\n    description = \"四维 rubric 视觉评审：构图/色彩/光线/比例\"\n    icon = \"clipboard-check\"\n\n    inputs = [\n        MultilineInput(\n            name=\"payload\",\n            display_name=\"任务载荷\",\n            info='JSON：{\"image_url\":\"被评审图URL\",\"card_title\":\"卡标题\"}',\n            required=True,\n        ),\n        StrInput(name=\"model_name\", display_name=\"评审模型\", value=\"gpt-5.6-luna\", advanced=True),\n        StrInput(name=\"base_url\", display_name=\"Base URL\", value=\"https://www.dmxapi.cn/v1\", advanced=True),\n        SecretStrInput(name=\"api_key\", display_name=\"API Key\", advanced=True),\n    ]\n\n    outputs = [Output(display_name=\"评审结果\", name=\"result\", method=\"run_review\")]\n\n    async def run_review(self) -> Message:\n        raw = str(self.payload or \"\").strip()\n        if not raw:\n            raise ValueError(\"payload 为空：需要 {image_url, card_title} JSON\")\n        data: dict[str, Any] = json.loads(raw)\n        image_url = str(data.get(\"image_url\") or \"\").strip()\n        title = str(data.get(\"card_title\") or \"\").strip()\n        if not image_url:\n            raise ValueError(\"艺术评审需要一张被评审图\")\n\n        def _to_data_url(url: str) -> str:\n            \"\"\"本地/远程 URL → base64 data URL（DMX 云端拉不到内网地址）\"\"\"\n            if url.startswith(\"data:\"):\n                return url\n            resp = httpx.get(url, timeout=30, follow_redirects=True)\n            resp.raise_for_status()\n            head = resp.headers.get(\"content-type\", \"image/png\").split(\";\")[0].strip()\n            return f\"data:{head};base64,{base64.b64encode(resp.content).decode()}\"\n\n        data_url = await asyncio.to_thread(_to_data_url, image_url)\n        body = {\n            \"model\": str(self.model_name or \"gpt-5.6-luna\"),\n            \"messages\": [\n                {\"role\": \"system\", \"content\": SYSTEM_PROMPT},\n                {\n                    \"role\": \"user\",\n                    \"content\": [\n                        {\"type\": \"text\", \"text\": f\"评审对象：《{title or \"未命名\"}》\"},\n                        {\"type\": \"image_url\", \"image_url\": {\"url\": data_url}},\n                    ],\n                },\n            ],\n            \"temperature\": 0.3,\n        }\n        base = str(self.base_url or \"https://www.dmxapi.cn/v1\").rstrip(\"/\")\n        headers = {\"Authorization\": f\"Bearer {self.api_key}\", \"Content-Type\": \"application/json\"}\n\n        def _call() -> str:\n            resp = httpx.post(f\"{base}/chat/completions\", json=body, headers=headers, timeout=180)\n            resp.raise_for_status()\n            out = resp.json()\n            return str(out[\"choices\"][0][\"message\"][\"content\"] or \"\").strip()\n\n        text = await asyncio.to_thread(_call)\n        if not text:\n            raise ValueError(\"模型返回空结果\")\n        self.status = f\"评审完成（{len(text)} 字）\"\n        return Message(text=text)",
+                "name": "code",
+                "display_name": "code",
+                "advanced": true,
+                "load_from_db": false
+              },
+              "payload": {
+                "type": "str",
+                "required": true,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": true,
+                "value": null,
+                "name": "payload",
+                "display_name": "payload",
+                "advanced": false,
+                "info": "JSON：{\"image_url\":\"被评审图URL\",\"card_title\":\"卡标题\"}",
+                "_input_type": "MultilineInput",
+                "load_from_db": false,
+                "dynamic": false
+              },
+              "model_name": {
+                "type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": false,
+                "value": "gpt-5.6-luna",
+                "name": "model_name",
+                "display_name": "model_name",
+                "advanced": true,
+                "info": "",
+                "_input_type": "MessageTextInput",
+                "load_from_db": false,
+                "dynamic": false
+              },
+              "base_url": {
+                "type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": false,
+                "value": "https://www.dmxapi.cn/v1",
+                "name": "base_url",
+                "display_name": "base_url",
+                "advanced": true,
+                "info": "",
+                "_input_type": "MessageTextInput",
+                "load_from_db": false,
+                "dynamic": false
+              },
+              "api_key": {
+                "type": "str",
+                "required": false,
+                "placeholder": "",
+                "list": false,
+                "show": true,
+                "multiline": false,
+                "value": null,
+                "name": "api_key",
+                "display_name": "api_key",
+                "advanced": true,
+                "info": "",
+                "_input_type": "SecretStrInput",
+                "load_from_db": false,
+                "dynamic": false
+              }
+            }
+          },
+          "showNode": true
+        }
+      },
+      {
+        "id": "ArtReview-out",
+        "type": "genericNode",
+        "position": {
+          "x": 640,
+          "y": 220
+        },
+        "data": {
+          "node": {
+            "base_classes": [
+              "Message"
+            ],
+            "beta": false,
+            "conditional_paths": [],
+            "custom_fields": {},
+            "description": "Display a chat message in the Playground.",
+            "display_name": "Chat Output",
+            "documentation": "https://docs.langflow.org/chat-input-and-output",
+            "edited": false,
+            "field_order": [
+              "input_value",
+              "should_store_message",
+              "sender",
+              "sender_name",
+              "session_id",
+              "context_id",
+              "data_template",
+              "clean_data"
+            ],
+            "frozen": false,
+            "icon": "MessagesSquare",
+            "legacy": false,
+            "metadata": {
+              "code_hash": "84009527d08c",
+              "dependencies": {
+                "dependencies": [
+                  {
+                    "name": "orjson",
+                    "version": "3.11.9"
+                  },
+                  {
+                    "name": "fastapi",
+                    "version": "0.139.2"
+                  },
+                  {
+                    "name": "lfx",
+                    "version": null
+                  }
+                ],
+                "total_dependencies": 3
+              },
+              "module": "lfx.components.input_output.chat_output.ChatOutput"
+            },
+            "minimized": true,
+            "output_types": [],
+            "outputs": [
+              {
+                "allows_loop": false,
+                "cache": true,
+                "display_name": "Output Message",
+                "group_outputs": false,
+                "method": "message_response",
+                "name": "message",
+                "selected": "Message",
+                "tool_mode": true,
+                "types": [
+                  "Message"
+                ],
+                "value": "__UNDEFINED__"
+              }
+            ],
+            "pinned": false,
+            "template": {
+              "_type": "Component",
+              "clean_data": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Basic Clean Data",
+                "dynamic": false,
+                "info": "Whether to clean data before converting to string.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "clean_data",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              },
+              "code": {
+                "advanced": true,
+                "api_editable": false,
+                "dynamic": true,
+                "fileTypes": [],
+                "file_path": "",
+                "info": "",
+                "list": false,
+                "load_from_db": false,
+                "multiline": true,
+                "name": "code",
+                "password": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "type": "code",
+                "value": "from collections.abc import Generator\nfrom typing import Any\n\nimport orjson\nfrom fastapi.encoders import jsonable_encoder\n\nfrom lfx.base.io.chat import ChatComponent\nfrom lfx.helpers.data import safe_convert\nfrom lfx.inputs.inputs import BoolInput, DropdownInput, HandleInput, MessageTextInput\nfrom lfx.schema.data import Data\nfrom lfx.schema.dataframe import DataFrame\nfrom lfx.schema.message import Message\nfrom lfx.schema.properties import Source\nfrom lfx.template.field.base import Output\nfrom lfx.utils.constants import (\n    MESSAGE_SENDER_AI,\n    MESSAGE_SENDER_NAME_AI,\n    MESSAGE_SENDER_USER,\n)\n\n\nclass ChatOutput(ChatComponent):\n    display_name = \"Chat Output\"\n    description = \"Display a chat message in the Playground.\"\n    documentation: str = \"https://docs.langflow.org/chat-input-and-output\"\n    icon = \"MessagesSquare\"\n    name = \"ChatOutput\"\n    minimized = True\n\n    inputs = [\n        HandleInput(\n            name=\"input_value\",\n            display_name=\"Inputs\",\n            info=\"Message to be passed as output.\",\n            input_types=[\"Data\", \"JSON\", \"DataFrame\", \"Table\", \"Message\"],\n            required=True,\n        ),\n        BoolInput(\n            name=\"should_store_message\",\n            display_name=\"Store Messages\",\n            info=\"Store the message in the history.\",\n            value=True,\n            advanced=True,\n        ),\n        DropdownInput(\n            name=\"sender\",\n            display_name=\"Sender Type\",\n            options=[MESSAGE_SENDER_AI, MESSAGE_SENDER_USER],\n            value=MESSAGE_SENDER_AI,\n            advanced=True,\n            info=\"Type of sender.\",\n        ),\n        MessageTextInput(\n            name=\"sender_name\",\n            display_name=\"Sender Name\",\n            info=\"Name of the sender.\",\n            value=MESSAGE_SENDER_NAME_AI,\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"session_id\",\n            display_name=\"Session ID\",\n            info=\"The session ID of the chat. If empty, the current session ID parameter will be used.\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"context_id\",\n            display_name=\"Context ID\",\n            info=\"The context ID of the chat. Adds an extra layer to the local memory.\",\n            value=\"\",\n            advanced=True,\n        ),\n        MessageTextInput(\n            name=\"data_template\",\n            display_name=\"Data Template\",\n            value=\"{text}\",\n            advanced=True,\n            info=\"Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.\",\n        ),\n        BoolInput(\n            name=\"clean_data\",\n            display_name=\"Basic Clean Data\",\n            value=True,\n            advanced=True,\n            info=\"Whether to clean data before converting to string.\",\n        ),\n    ]\n    outputs = [\n        Output(\n            display_name=\"Output Message\",\n            name=\"message\",\n            method=\"message_response\",\n        ),\n    ]\n\n    def _build_source(self, id_: str | None, display_name: str | None, source: str | None) -> Source:\n        source_dict = {}\n        if id_:\n            source_dict[\"id\"] = id_\n        if display_name:\n            source_dict[\"display_name\"] = display_name\n        if source:\n            # Handle case where source is a ChatOpenAI object\n            if hasattr(source, \"model_name\"):\n                source_dict[\"source\"] = source.model_name\n            elif hasattr(source, \"model\"):\n                source_dict[\"source\"] = str(source.model)\n            else:\n                source_dict[\"source\"] = str(source)\n        return Source(**source_dict)\n\n    async def message_response(self) -> Message:\n        # First convert the input to string if needed\n        text = self.convert_to_string()\n\n        # Get source properties\n        source, _, display_name, source_id = self.get_properties_from_source_component()\n\n        # Create or use existing Message object\n        if isinstance(self.input_value, Message) and not self.is_connected_to_chat_input():\n            message = self.input_value\n            # Update message properties\n            message.text = text\n            # Preserve existing session_id from the incoming message if it exists\n            existing_session_id = message.session_id\n        else:\n            message = Message(text=text)\n            existing_session_id = None\n\n        # Set message properties\n        message.sender = self.sender\n        message.sender_name = self.sender_name\n        # Preserve session_id from incoming message, or use component/graph session_id\n        message.session_id = (\n            self.session_id or existing_session_id or (self.graph.session_id if hasattr(self, \"graph\") else None) or \"\"\n        )\n        message.context_id = self.context_id\n        message.flow_id = self.graph.flow_id if hasattr(self, \"graph\") else None\n        message.properties.source = self._build_source(source_id, display_name, source)\n\n        # Store message if needed\n        if message.session_id and self.should_store_message:\n            stored_message = await self.send_message(message)\n            self.message.value = stored_message\n            message = stored_message\n\n        # Set accumulated token usage from all upstream LLM vertices.\n        # This must happen AFTER send_message() because streaming captures\n        # usage from chunks and would overwrite accumulated totals.\n        if hasattr(self, \"_vertex\") and self._vertex is not None:\n            accumulated_usage = self._vertex._accumulate_upstream_token_usage()  # noqa: SLF001\n            if accumulated_usage:\n                message.properties.usage = accumulated_usage\n                if self.should_store_message and message.get_id():\n                    message = await self._update_stored_message(message)\n                    await self._send_message_event(message, id_=message.get_id())\n\n        self.status = message\n        return message\n\n    def _serialize_data(self, data: Data) -> str:\n        \"\"\"Serialize Data object to JSON string.\"\"\"\n        # Convert data.data to JSON-serializable format\n        serializable_data = jsonable_encoder(data.data)\n        # Serialize with orjson, enabling pretty printing with indentation\n        json_bytes = orjson.dumps(serializable_data, option=orjson.OPT_INDENT_2)\n        # Convert bytes to string and wrap in Markdown code blocks\n        return \"```json\\n\" + json_bytes.decode(\"utf-8\") + \"\\n```\"\n\n    def _validate_input(self) -> None:\n        \"\"\"Validate the input data and raise ValueError if invalid.\"\"\"\n        if self.input_value is None:\n            msg = \"Input data cannot be None\"\n            raise ValueError(msg)\n        if isinstance(self.input_value, list) and not all(\n            isinstance(item, Message | Data | DataFrame | str) for item in self.input_value\n        ):\n            invalid_types = [\n                type(item).__name__\n                for item in self.input_value\n                if not isinstance(item, Message | Data | DataFrame | str)\n            ]\n            msg = f\"Expected Data or DataFrame or Message or str, got {invalid_types}\"\n            raise TypeError(msg)\n        if not isinstance(\n            self.input_value,\n            Message | Data | DataFrame | str | list | Generator | type(None),\n        ):\n            type_name = type(self.input_value).__name__\n            msg = f\"Expected Data or DataFrame or Message or str, Generator or None, got {type_name}\"\n            raise TypeError(msg)\n\n    def convert_to_string(self) -> str | Generator[Any, None, None]:\n        \"\"\"Convert input data to string with proper error handling.\"\"\"\n        self._validate_input()\n        if isinstance(self.input_value, list):\n            clean_data: bool = getattr(self, \"clean_data\", False)\n            return \"\\n\".join([safe_convert(item, clean_data=clean_data) for item in self.input_value])\n        if isinstance(self.input_value, Generator):\n            return self.input_value\n        return safe_convert(self.input_value)\n"
+              },
+              "context_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Context ID",
+                "dynamic": false,
+                "info": "The context ID of the chat. Adds an extra layer to the local memory.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "context_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "data_template": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Data Template",
+                "dynamic": false,
+                "info": "Template to convert Data to Text. If left empty, it will be dynamically set to the Data's text key.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "data_template",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "{text}"
+              },
+              "input_value": {
+                "_input_type": "HandleInput",
+                "advanced": false,
+                "api_editable": false,
+                "display_name": "Inputs",
+                "dynamic": false,
+                "info": "Message to be passed as output.",
+                "input_types": [
+                  "Data",
+                  "JSON",
+                  "DataFrame",
+                  "Table",
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "input_value",
+                "override_skip": false,
+                "placeholder": "",
+                "required": true,
+                "show": true,
+                "title_case": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "other",
+                "value": ""
+              },
+              "sender": {
+                "_input_type": "DropdownInput",
+                "advanced": true,
+                "api_editable": false,
+                "combobox": false,
+                "dialog_inputs": {},
+                "display_name": "Sender Type",
+                "dynamic": false,
+                "external_options": {},
+                "info": "Type of sender.",
+                "name": "sender",
+                "options": [
+                  "Machine",
+                  "User"
+                ],
+                "options_metadata": [],
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "toggle": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "str",
+                "value": "Machine"
+              },
+              "sender_name": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Sender Name",
+                "dynamic": false,
+                "info": "Name of the sender.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "sender_name",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": "AI"
+              },
+              "session_id": {
+                "_input_type": "MessageTextInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Session ID",
+                "dynamic": false,
+                "info": "The session ID of the chat. If empty, the current session ID parameter will be used.",
+                "input_types": [
+                  "Message"
+                ],
+                "list": false,
+                "list_add_label": "Add More",
+                "load_from_db": false,
+                "name": "session_id",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_input": true,
+                "trace_as_metadata": true,
+                "track_in_telemetry": false,
+                "type": "str",
+                "value": ""
+              },
+              "should_store_message": {
+                "_input_type": "BoolInput",
+                "advanced": true,
+                "api_editable": false,
+                "display_name": "Store Messages",
+                "dynamic": false,
+                "info": "Store the message in the history.",
+                "list": false,
+                "list_add_label": "Add More",
+                "name": "should_store_message",
+                "override_skip": false,
+                "placeholder": "",
+                "required": false,
+                "show": true,
+                "title_case": false,
+                "tool_mode": false,
+                "trace_as_metadata": true,
+                "track_in_telemetry": true,
+                "type": "bool",
+                "value": true
+              }
+            },
+            "tool_mode": false,
+            "lf_version": "1.12.0"
+          },
+          "showNode": false,
+          "type": "ChatOutput",
+          "id": "ArtReview-out"
+        },
+        "selected": false,
+        "dragging": false,
+        "measured": {
+          "width": 192,
+          "height": 52
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-artreview-out",
+        "source": "ArtReview-main",
+        "target": "ArtReview-out",
+        "sourceHandle": "{œdataTypeœ: œArtReviewComponentœ, œidœ: œArtReview-mainœ, œnameœ: œresultœ, œoutput_typesœ: [œMessageœ]}",
+        "targetHandle": "{œfieldNameœ: œinput_valueœ, œidœ: œArtReview-outœ, œinputTypesœ: [œDataœ, œMessageœ, œstrœ], œtypeœ: œstrœ}",
+        "data": {
+          "sourceHandle": {
+            "dataType": "ArtReviewComponent",
+            "id": "ArtReview-main",
+            "name": "result",
+            "output_types": [
+              "Message"
+            ]
+          },
+          "targetHandle": {
+            "fieldName": "input_value",
+            "id": "ArtReview-out",
+            "inputTypes": [
+              "Data",
+              "Message",
+              "str"
+            ],
+            "type": "str"
+          }
+        },
+        "animated": false,
+        "className": ""
+      }
+    ],
+    "viewport": {
+      "x": 0,
+      "y": 0,
+      "zoom": 1
+    }
+  },
+  "is_component": false,
+  "updated_at": "2026-09-01T11:53:22+00:00",
+  "webhook": false,
+  "endpoint_name": "image-art-review",
+  "tags": null,
+  "locked": false,
+  "mcp_enabled": false,
+  "action_name": null,
+  "action_description": null,
+  "access_type": "PRIVATE",
+  "flow_type": "workflow",
+  "a2a_enabled": false,
+  "a2a_card_overrides": null,
+  "user_id": "32b76b44-73fd-4b6a-bfaa-f00e162592a8",
+  "folder_id": "da3303f8-7b24-44d0-8485-b71ab36e1a45",
+  "workspace_id": null,
+  "name_key": null
+}

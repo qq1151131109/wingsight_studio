@@ -1470,6 +1470,7 @@ function SelectionToolbar() {
         </div>
         <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
         <SelBtn onClick={() => useCanvasStore.getState().tidyNodes(ids)}>整理</SelBtn>
+        <SelBtn onClick={() => useCanvasStore.getState().tidyNodesFlow(ids)}>按连线整理</SelBtn>
         <SelBtn danger onClick={() => useCanvasStore.getState().deleteNodes(ids)}>
           删除
         </SelBtn>

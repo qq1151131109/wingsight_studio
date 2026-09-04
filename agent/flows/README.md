@@ -41,6 +41,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `script-review-consistency.json` | 剧本审查·一致性 | 剧本全文 → 内部矛盾 findings（人物/时间线/设定，双位置引文） | `LANGFLOW_SCRIPT_CONSISTENCY_FLOW_ID` | 无（同上） |
 | `script-review-fact-claims.json` | 剧本审查·事实抽取 | 剧本全文 → 可核查现实事实断言 ≤12 条（quote+检索用 claim） | `LANGFLOW_SCRIPT_FACTCLAIMS_FLOW_ID` | 无（同上） |
 | `script-review-fact-verdict.json` | 剧本审查·事实判定 | 断言+Serper 证据清单 → 逐条 verdict（true/false/uncertain/unverifiable，S 编号引用） | `LANGFLOW_SCRIPT_FACTVERDICT_FLOW_ID` | 无（同上） |
+| `image-art-review.json` | 图片艺术评审 | 画面 → 四维 rubric 评审 findings JSON（构图/色彩/光线/比例结构，只报真问题）。单用途自定义组件 `ArtReviewComponent`（gpt-5.6-luna 视觉经 DMX） | `LANGFLOW_IMAGE_ART_REVIEW_FLOW_ID` | `ArtReview-main`（payload JSON + api_key） |
 
 注：三个分类型拆解 flow 由 agent 三路并发调用（`/assets/decompose`），各自
 输出小、按类型定制提示词、单类失败不拖累其他；未配置三类变量时回落到

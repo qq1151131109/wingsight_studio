@@ -45,6 +45,8 @@ import prompt_presets  # noqa: E402
 import ref_routes  # noqa: E402
 import research  # noqa: E402
 import research_routes  # noqa: E402
+import image_review  # noqa: E402
+import image_review_routes  # noqa: E402
 import script_review  # noqa: E402
 import script_review_routes  # noqa: E402
 import serper_routes  # noqa: E402
@@ -65,6 +67,7 @@ imgresearch.init_ref_research_db()
 imgresearch.init_serper_pool_db()
 research.init_research_db()
 script_review.init_review_db()
+image_review.init_review_db()
 auth.init_auth_db()
 auth.ensure_auth_password()
 
@@ -79,6 +82,8 @@ async def _lifespan(_app: FastAPI):
     research.report_interrupted_jobs()
     # 剧本审查：queued/running 孤儿标记 interrupted
     script_review.report_interrupted_jobs()
+    # 艺术评审同理
+    image_review.report_interrupted_jobs()
     # 选题池每日定时刷新（进程内 asyncio 轮询；关停随事件循环取消）
     scheduler = asyncio.create_task(topic_pool.auto_refresh_loop())
     try:
@@ -116,6 +121,7 @@ app.include_router(ref_routes.router)
 app.include_router(research_routes.router)
 # 剧本审查（项目域资源挂根路径）
 app.include_router(script_review_routes.router)
+app.include_router(image_review_routes.router)
 # DMX 余额（顶栏实时显示，admin）
 app.include_router(dmx_routes.router, prefix="/api/v1")
 # 出图用量（按用户张数/模型分布，admin）

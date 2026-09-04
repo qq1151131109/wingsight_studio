@@ -133,13 +133,16 @@ export type ImageToolDetail = {
     | "lighting"
     | "texture"
     | "panorama"
-    // 多功能模板五件（open-storyboard MultiFunctionPanel 移植，纯提示词
+    // 多功能模板六件（open-storyboard MultiFunctionPanel 移植，纯提示词
     // 模板走 ImageTemplateDialog 管线，doc/image-node-ops-spec.md §8）
     | "multiGrid"
+    | "continuous"
     | "plotBeats"
     | "nextFrame"
     | "prevFrame"
     | "grade"
+    // 扩图（open-storyboard outpainting 方向三预设，模板管线同上）
+    | "outpaint"
     // 标注批注（viedeo ImageEditorModal 简化移植）：箭头/文字/画笔烘焙新图卡
     | "annotate";
 };

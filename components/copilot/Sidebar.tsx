@@ -103,6 +103,25 @@ const WS_WIDTH_KEY = "wingsight_sidebar_width";
  *  DEFAULT_SIDEBAR_WIDTH=480 会直接成为实际宽度（实测：无存档时侧栏 480px） */
 const DEFAULT_CHAT_WIDTH = "420px";
 
+/** 活动栏宽（components/shell/ActivityBar 的 w-14）与画布最小可用宽：
+ *  侧栏上限由这两个数反推，不是拍一个 760 了事 */
+const ACTIVITY_W = 56;
+const CANVAS_MIN = 420;
+
+/**
+ * 侧栏宽度 clamp：下限 340（再窄输入条/卡片就堆叠），上限不只「别超屏」——
+ * 还要给画布留最小可用宽。否则窄窗口里侧栏拖到 760（或带着 760 的存值换到
+ * 窄窗口）会把画布挤成两百来 px：顶栏「分享」被挤成两行竖排、左上工具条
+ * 顶到侧栏底下（实测视口 1100 时画布 285px）
+ */
+function clampChatWidth(w: number): number {
+  const upper = Math.max(
+    240,
+    Math.min(760, window.innerWidth - ACTIVITY_W - CANVAS_MIN),
+  );
+  return Math.min(Math.max(w, 340), upper);
+}
+
 const SUGGESTIONS = [
   {
     title: "✍️ 建个剧本卡",
@@ -196,7 +215,10 @@ export default function ThemedSidebar() {
   const resizerRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const saved = window.localStorage.getItem(WS_WIDTH_KEY);
-    const initial = saved || DEFAULT_CHAT_WIDTH;
+    // 装载也 clamp：存着 760px 的人在 1100 宽的窗口打开，不该把画布挤成 284px
+    //（clamp 原本只在拖拽时生效，拖完/换窗口不会自己回来）
+    const want = parseInt(saved || DEFAULT_CHAT_WIDTH, 10);
+    const initial = `${clampChatWidth(Number.isFinite(want) ? want : 420)}px`;
     const timers: number[] = [];
     document.documentElement.style.setProperty("--ws-chat-w", initial);
     // 内联宽度立即写一次（防 480→420 闪一屏）+ 首帧后再写一次（防 v2 在
@@ -214,16 +236,7 @@ export default function ThemedSidebar() {
     const el = resizerRef.current;
     const cleanupRestore = () => timers.forEach((t) => window.clearTimeout(t));
     if (!el) return cleanupRestore;
-    // 上限不只是「别超屏」：还要给画布留最小可用宽（活动栅 56 + 画布 420）。
-    // 否则窄窗口里把侧栏拖到 760，画布只剩两百来 px：顶栏「分享」被挤成
-    // 两行竖排、左上工具条顶到侧栏底下（实测视口 1100 时画布 285px）
-    const clamp = (w: number) => {
-      const upper = Math.max(
-        240,
-        Math.min(760, window.innerWidth - ACTIVITY_W - CANVAS_MIN),
-      );
-      return Math.min(Math.max(w, 340), upper);
-    };
+    const clamp = clampChatWidth;
     // v2 经 adopted stylesheet 打的 !important 宽度规则会吃掉任何文档层
     // 选择器（特异性提档也没用）；内联 !important 是唯一稳定赢面（实测），
     // 同时写 root 变量让 .ws-chat-resizer 条同步贴边

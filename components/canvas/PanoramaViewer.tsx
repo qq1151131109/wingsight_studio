@@ -83,6 +83,38 @@ export default function PanoramaViewer({ src }: { src: string }) {
     if (!host) return;
     let viewer: Viewer | null = null;
     let destroyed = false;
+    // 环视手势（2026-09-04 控制手感反馈；Figma/Maps 业界标准）：
+    // 裸滚轮/触摸板双指滑动 = 平移环视（yaw/pitch），捏合/Ctrl+滚轮 = 缩放
+    // ——触摸板捏合在浏览器就是 ctrlKey wheel（系统级手势），鼠标滚轮做
+    // 平移俯仰、Ctrl+滚缩放。PSV 内建 mousewheel（滚轮=缩放）关闭，触摸板
+    // 双指滑曾疯狂误缩放
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const v = viewer;
+      if (!v) return;
+      const unit = e.deltaMode === 1 ? 16 : e.deltaMode ? 1.5 : 1;
+      if (e.ctrlKey || e.metaKey) {
+        // zoom(level) 是绝对档（0-100）：在当前档上做相对增量，钳 0-100
+        const next = Math.max(
+          0,
+          Math.min(100, v.getZoomLevel() - e.deltaY * unit * 0.12),
+        );
+        v.zoom(next);
+        return;
+      }
+      const pos = v.getPosition();
+      // 内容跟手：向右滑（deltaX<0）= 把画面往右带 = 视角左转（yaw 减）；
+      // 俯仰同向并钳在 ±85°，防过极点翻转
+      const k = 0.0022 * unit;
+      const yaw = pos.yaw + e.deltaX * k;
+      const pitch = Math.max(
+        -1.48,
+        Math.min(1.48, pos.pitch + e.deltaY * k),
+      );
+      v.rotate({ yaw, pitch });
+    };
+    host.addEventListener("wheel", onWheel, { passive: false, capture: true });
     normalizePanorama(src)
       .then((panoUrl) => {
         if (destroyed) return;
@@ -91,10 +123,14 @@ export default function PanoramaViewer({ src }: { src: string }) {
             container: host,
             panorama: panoUrl,
             navbar: false,
-            minFov: 25,
-            maxFov: 110,
-            mousewheel: true,
-            moveInertia: false,
+            minFov: 30,
+            maxFov: 90,
+            mousewheel: false,
+            // 拖拽惯性（v5 可传时长 ms；true=默认节奏）——false 时松手即停，
+            // 拖起来像拖木头（2026-09-04 控制手感反馈）
+            moveInertia: true,
+            // 鼠标悬停不按压也转视角（易误触，保持关闭）
+            mousemove: false,
             defaultZoomLvl: 50,
           });
         } catch (e) {
@@ -126,6 +162,7 @@ export default function PanoramaViewer({ src }: { src: string }) {
     check.src = src;
     return () => {
       destroyed = true;
+      host.removeEventListener("wheel", onWheel, { capture: true });
       viewer?.destroy();
     };
   }, [src]);
@@ -143,6 +180,11 @@ export default function PanoramaViewer({ src }: { src: string }) {
           {warn}
         </div>
       ) : null}
+      <div
+        className="pointer-events-none absolute bottom-2 left-1/2 z-10 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-[11px] text-white/75 backdrop-blur-sm"
+      >
+        拖拽 / 双指滑动 = 环视 · 捏合 / Ctrl+滚轮 = 缩放
+      </div>
       <div ref={hostRef} className="h-full w-full" />
     </div>
   );

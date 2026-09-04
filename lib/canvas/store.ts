@@ -172,6 +172,9 @@ export interface WingNodeData {
   /** 剧本卡：进行中的剧本审查任务（useScriptReviewJob 续轮询，终态清锚并弹
    *  审查弹窗；findings 真相在 agent review_jobs 表，不在画布数据里存档） */
   reviewJobId?: string;
+  /** 图片卡：进行中的 AI 艺术评审任务（useArtReviewJob 续轮询，终态清锚并弹
+   *  评审弹窗；findings 真相在 agent image_review_jobs 表） */
+  imageReviewJobId?: string;
   /** 调研卡：深度调研任务 id（卡面是任务实况的视图：进度/卷宗摘要；
    *  正文真相在 agent research_jobs 表，卡片凭它轮询，不在画布数据里存档） */
   researchId?: string;
@@ -256,6 +259,8 @@ interface CanvasState {
   distributeNodes: (ids: string[], axis: "h" | "v") => void;
   /** 宫格整理：ids 缺省=全部顶层未锁定卡，阅读顺序行式流入重排（对标 open-ai-canvas 自动整理） */
   tidyNodes: (ids?: string[]) => void;
+  /** 按连线整理：沿连线方向分列拓扑排布（open-ai-canvas flow 排列范式） */
+  tidyNodesFlow: (ids?: string[]) => void;
   /** 原地复制一份选中节点（Cmd+D） */
   duplicateSelection: () => string[];
   /** 打组：把 ids 收进新建分组框（parentId+extent，坐标转相对），返回组 id */
@@ -1109,6 +1114,68 @@ export const useCanvasStore = create<CanvasState>()(
             const p = placed.get(n.id);
             if (!p) return n;
             const b = boxes.find((x) => x.id === n.id)!;
+            return { ...n, position: { x: p.x - b.dx, y: p.y - b.dy } };
+          }),
+        }));
+      },
+
+      // 按连线整理：Kahn 最长路径分层 → 上游在左、下游在右、同列纵向堆叠。
+      // 只统计可动卡之间的边（外部入边不算依赖）；成环用迭代松弛封顶兜底，
+      // 环内节点按当前阅读顺序落位不卡死
+      tidyNodesFlow: (ids) => {
+        const state = get();
+        const movable = state.nodes.filter(
+          (n) => !n.parentId && !n.data.locked && (!ids || ids.includes(n.id)),
+        );
+        if (movable.length === 0) return;
+        const boxes = selectionBoxes(state.nodes, movable.map((n) => n.id));
+        const boxById = new Map(boxes.map((b) => [b.id, b]));
+        const inSet = (id: string) => boxById.has(id);
+        // 最长路径分层（迭代松弛，上限 n 轮防环）
+        const layer = new Map<string, number>(boxes.map((b) => [b.id, 0]));
+        for (let iter = 0; iter < boxes.length; iter++) {
+          let changed = false;
+          for (const e of state.edges) {
+            if (!inSet(e.source) || !inSet(e.target) || e.source === e.target) continue;
+            const next = layer.get(e.source)! + 1;
+            if (next < boxes.length && layer.get(e.target)! < next) {
+              layer.set(e.target, next);
+              changed = true;
+            }
+          }
+          if (!changed) break;
+        }
+        // 列宽 = 列内最宽卡；列间横排；列内按现有 y 阅读顺序纵堆
+        const GAP = 48;
+        const columns = new Map<number, typeof boxes>();
+        for (const b of boxes) {
+          const l = layer.get(b.id)!;
+          if (!columns.has(l)) columns.set(l, []);
+          columns.get(l)!.push(b);
+        }
+        const originX = Math.min(...boxes.map((b) => b.x));
+        const originY = Math.min(...boxes.map((b) => b.y));
+        const snap16 = (v: number) => Math.round(v / 16) * 16;
+        const placed = new Map<string, { x: number; y: number }>();
+        let cursorX = originX;
+        for (const l of [...columns.keys()].sort((a, b) => a - b)) {
+          const col = columns
+            .get(l)!
+            .sort((a, b) => a.y + a.h / 2 - (b.y + b.h / 2) || a.x - b.x);
+          const colW = Math.max(...col.map((b) => b.w));
+          let cursorY = originY;
+          for (const b of col) {
+            placed.set(b.id, { x: snap16(cursorX), y: snap16(cursorY) });
+            cursorY += b.h + GAP;
+          }
+          cursorX += colW + GAP;
+        }
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) => {
+            const p = placed.get(n.id);
+            if (!p) return n;
+            const b = boxById.get(n.id)!;
             return { ...n, position: { x: p.x - b.dx, y: p.y - b.dy } };
           }),
         }));

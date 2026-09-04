@@ -4,12 +4,20 @@
  * 标注重绘弹窗（对标 open-ai-canvas mask-edit + viedeo-workflow ImageEditorModal）：
  *  原图上用红色半透明笔刷涂出"想改的区域"，导出合成图作为参考，
  *  连同原图 URL 与改法描述一起发给 agent 做图生图（后端 inpaint 接入后可升级真蒙版）。
+ *  擦除模式（open-storyboard erase 移植）：无需描述，固定去物提示词——
+ *  涂什么删什么，背景按周围纹理合理重建。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Brush, Eraser, Undo2, X } from "lucide-react";
 import { uploadAsset } from "@/lib/projects";
 import { MASK_REDRAW_EVENT, type MaskRedrawDetail } from "@/lib/canvas/events";
+
+/** 擦除固定提示词（open-storyboard promptTemplates erase zh 忠实移植） */
+const ERASE_PROMPT =
+  "这是干净的物体移除任务。只移除被蒙版标记的物体或区域，并用周围墙面、地面、" +
+  "景物、图案、阴影和纹理的合理延续重建背后背景。严格保持每个未遮罩主体，包括" +
+  "姿态、身份、表情和服装。不要幽灵轮廓、模糊补丁、重复物体或新主体。";
 
 const COLORS = ["#ff3b30", "#ffd60a", "#2f7cff"] as const;
 const SIZES = [8, 18, 36] as const;
@@ -34,6 +42,8 @@ export default function MaskEditDialog({
   const [color, setColor] = useState<string>(COLORS[0]);
   const [size, setSize] = useState<number>(SIZES[1]);
   const [prompt, setPrompt] = useState("");
+  // erase = 涂什么删什么（固定提示词）；edit = 默认改内容
+  const [mode, setMode] = useState<"edit" | "erase">("edit");
   const [saving, setSaving] = useState(false);
   const [strokeCount, setStrokeCount] = useState(0);
 
@@ -91,7 +101,8 @@ export default function MaskEditDialog({
 
   const save = async () => {
     const canvas = canvasRef.current;
-    if (!canvas || strokes.current.length === 0 || !prompt.trim()) return;
+    const finalPrompt = mode === "erase" ? ERASE_PROMPT : prompt.trim();
+    if (!canvas || strokes.current.length === 0 || !finalPrompt) return;
     setSaving(true);
     try {
       const blob = await new Promise<Blob | null>((resolve) =>
@@ -102,7 +113,7 @@ export default function MaskEditDialog({
       if (!annotatedUrl) return;
       window.dispatchEvent(
         new CustomEvent<MaskRedrawDetail>(MASK_REDRAW_EVENT, {
-          detail: { nodeId, annotatedUrl, originUrl: src, prompt: prompt.trim() },
+          detail: { nodeId, annotatedUrl, originUrl: src, prompt: finalPrompt },
         }),
       );
       onClose();
@@ -122,8 +133,8 @@ export default function MaskEditDialog({
       >
         <div className="flex items-center justify-between">
           <h3 className="flex items-center gap-1.5 text-sm font-semibold text-text">
-            <Brush className="h-4 w-4" />
-            标注重绘 · {title || "图片"}
+            {mode === "erase" ? <Eraser className="h-4 w-4" /> : <Brush className="h-4 w-4" />}
+            {mode === "erase" ? "擦除去物" : "标注重绘"} · {title || "图片"}
           </h3>
           <button type="button" data-tip="关闭" aria-label="关闭" className="rounded p-0.5 text-text-4 hover:text-text" onClick={onClose}>
             <X className="h-4 w-4" />
@@ -131,6 +142,25 @@ export default function MaskEditDialog({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex overflow-hidden rounded-md border border-hairline">
+            {(
+              [
+                { v: "edit", label: "改内容" },
+                { v: "erase", label: "擦除" },
+              ] as const
+            ).map((m) => (
+              <button
+                key={m.v}
+                type="button"
+                className={`px-2 py-0.5 text-[10px] transition-colors ${
+                  mode === m.v ? "bg-accent-dim text-text" : "text-text-3 hover:text-text"
+                }`}
+                onClick={() => setMode(m.v)}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
           <span className="text-[10px] text-text-4">笔刷</span>
           {COLORS.map((c) => (
             <button
@@ -206,24 +236,32 @@ export default function MaskEditDialog({
           onContextMenu={(e) => e.preventDefault()}
         />
 
-        <input
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="标注区域想改成什么？（如：把背景换成雪夜街道，人物保持不变）"
-          className="w-full rounded-md border border-hairline bg-surface-2 px-2 py-1.5 text-xs text-text outline-none focus:border-accent placeholder:text-text-4"
-        />
+        {mode === "edit" ? (
+          <input
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="标注区域想改成什么？（如：把背景换成雪夜街道，人物保持不变）"
+            className="w-full rounded-md border border-hairline bg-surface-2 px-2 py-1.5 text-xs text-text outline-none focus:border-accent placeholder:text-text-4"
+          />
+        ) : (
+          <p className="rounded-md border border-hairline bg-surface-2/60 px-2 py-1.5 text-[11px] leading-relaxed text-text-3">
+            涂什么删什么：红笔涂过物体直接移除，背景按周围纹理自动重建，无需描述。
+          </p>
+        )}
 
         <div className="flex items-center justify-between">
           <span className="text-[10px] text-text-4">
-            红笔区域 = 要改的地方；生成时保持画面其余部分不变
+            {mode === "erase"
+              ? "红笔区域 = 要移除的物体；画面其余部分严格保持不变"
+              : "红笔区域 = 要改的地方；生成时保持画面其余部分不变"}
           </span>
           <button
             type="button"
-            disabled={saving || strokeCount === 0 || !prompt.trim()}
+            disabled={saving || strokeCount === 0 || (mode === "edit" && !prompt.trim())}
             className="rounded-md border border-accent bg-accent-dim px-3 py-1.5 text-xs text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:border-hairline disabled:bg-surface-2 disabled:text-text-4"
             onClick={() => void save()}
           >
-            {saving ? "上传中…" : "保存并让 AI 重绘"}
+            {saving ? "上传中…" : mode === "erase" ? "保存并擦除" : "保存并让 AI 重绘"}
           </button>
         </div>
       </div>
