@@ -29,6 +29,8 @@ export interface SanitizeResult {
   fixedResearchIds: number;
   /** 存量调研卡升文档尺寸的卡数（旧默认 320×220 → 卷宗上卡后的 480×560） */
   upsizedResearch: number;
+  /** 存量资产卡降 16:9 适配高度的卡数（旧默认 288×352 → 288×214） */
+  resizedAssets: number;
 }
 
 /** 旧版建卡/agent 兜底把 NODE_META.hint 占位文案存成真标题（罪案实录 9 张卡
@@ -359,6 +361,24 @@ export function sanitizeCanvas(
     }
   }
 
+  // 存量资产卡降 16:9 适配高度（2026-09-04 媒体区比例适配）：旧默认 288×352
+  // 精确匹配才降 288×214（头部34+16:9媒体161+设定行19）——用户手调过的尺寸
+  // 不动。降后不再命中，装载幂等
+  let resizedAssets = 0;
+  for (const n of cleanNodes) {
+    if (
+      (n.data.nodeType === "character" ||
+        n.data.nodeType === "scene" ||
+        n.data.nodeType === "prop" ||
+        n.data.nodeType === "costume") &&
+      n.style?.width === 288 &&
+      n.style?.height === 352
+    ) {
+      n.style = { ...n.style, width: 288, height: 214 };
+      resizedAssets += 1;
+    }
+  }
+
   // 存量占位标题清洗：hint 默认标题/hex 文件名 → 空名（幂等，二次装载为 0）
   let strippedTitles = 0;
   for (const n of cleanNodes) {
@@ -384,5 +404,6 @@ export function sanitizeCanvas(
     strippedTitles,
     fixedResearchIds,
     upsizedResearch,
+    resizedAssets,
   };
 }

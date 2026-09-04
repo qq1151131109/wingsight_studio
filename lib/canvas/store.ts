@@ -356,12 +356,13 @@ export function absolutePosition(
 export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   note: { w: 280, h: 170 },
   script: { w: 560, h: 420 },
-  // 四种资产卡统一尺寸（用户要求规格一致；内容含考据简报折叠块，352 高
-  // = 标题18+按钮52+简报26+正文96+内边距16+图片区≥120 的最坏组合留位）
-  character: { w: 288, h: 352 },
-  scene: { w: 288, h: 352 },
-  prop: { w: 288, h: 352 },
-  costume: { w: 288, h: 352 },
+  // 四种资产卡统一尺寸（用户要求规格一致）。高度按主流 16:9 出图适配（2026-09-04）：
+  // 头部34 + 媒体区161(288宽 16:9) + 设定摘要行19 = 214——352 时代媒体区被
+  // flex-1 撑到 299，横图上下各留 ~69px 大白边
+  character: { w: 288, h: 214 },
+  scene: { w: 288, h: 214 },
+  prop: { w: 288, h: 214 },
+  costume: { w: 288, h: 214 },
   image: { w: 256, h: 260 },
   video: { w: 320, h: 300 },
   audio: { w: 280, h: 190 },

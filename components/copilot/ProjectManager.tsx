@@ -279,7 +279,8 @@ async function activateProject(p: ProjectMeta) {
         clean.fixedShotRefs ||
         clean.strippedTitles ||
         clean.fixedResearchIds ||
-        clean.upsizedResearch
+        clean.upsizedResearch ||
+        clean.resizedAssets
       ) {
         console.warn(
           `[canvas] 装载消毒：剥离 ${clean.removedNodes} 个坏节点 / ${clean.removedEdges} 条坏连线 / ${clean.fixedParents} 个孤儿分组引用` +
@@ -297,6 +298,9 @@ async function activateProject(p: ProjectMeta) {
               : "") +
             (clean.upsizedResearch
               ? `；${clean.upsizedResearch} 张调研卡升文档尺寸`
+              : "") +
+            (clean.resizedAssets
+              ? `；${clean.resizedAssets} 张资产卡降 16:9 适配高度`
               : ""),
         );
       }

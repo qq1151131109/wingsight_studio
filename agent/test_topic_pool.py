@@ -324,6 +324,7 @@ async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
         return json.dumps(out, ensure_ascii=False)
     if flow_id == "f-ideate":
         assert "directions" in payload and "verticals" in payload, "收敛载荷应含方向清单与垂类"
+        assert all(isinstance(d.get("support"), list) for d in payload["directions"]), "收敛载荷每方向应带支撑线索池（升维母题切面检验的证据面）"
         global _CONVERGE_CALLS
         _CONVERGE_CALLS += 1
         if _CONVERGE_CALLS > 1:
@@ -651,6 +652,48 @@ async def run_ideate() -> None:
     expect(again.created == 0 and again.error.startswith("当日语料已全部喂过"), f"重跑应轮空：{again}")
 
     print("生料生成管线 ✓")
+
+
+# ---------- 支撑线索池（升维母题切面检验的证据面） ----------
+
+def check_support_pool() -> None:
+    clues = [
+        {"title": "都兰出土唐代扎经染色织物复原研究", "url": "https://ex.cn/a"},
+        {"title": "宋代缂丝：宫廷织造的巅峰技艺", "url": "https://ex.cn/b"},
+        {"title": "蓝印花布的民间印染技艺传承", "url": "https://ex.cn/c"},
+        {"title": "甘肃出土汉代简牍整理新进展", "url": "https://ex.cn/d"},
+        {"title": "短题", "url": "https://ex.cn/e"},  # <6 字不进池
+        {"title": "清代龙袍织物织造档案解密", "url": "https://ex.cn/f"},
+    ]
+    directions = [
+        {
+            "title": "都兰出土唐代扎经染色织物复原研究",
+            "url": "https://ex.cn/a",
+            "name": "织物谱系",
+            "sketch": "题眼：中国历代织物染色技艺的流变；切口：都兰唐代织物",
+        }
+    ]
+    topic_pool.attach_support(directions, clues)
+    sup = directions[0]["support"]
+    expect(sup.index("宋代缂丝：宫廷织造的巅峰技艺") < 3 and sup.index("蓝印花布的民间印染技艺传承") < 3,
+           f"纺织同族标题应排在支撑池前部（历代切面的证据面）：{sup}")
+    expect("清代龙袍织物织造档案解密" in sup, f"bigram 命中的同族标题应进支撑池：{sup}")
+    expect("都兰出土唐代扎经染色织物复原研究" not in sup, "原型线索自身不得进支撑池（已是 clue 字段）")
+    
+    # 上限 12：30 条同族标题只取前 12
+    many = {"title": "都兰出土唐代扎经染色织物复原研究", "url": "https://ex.cn/a",
+            "name": "织物谱系", "sketch": "历代织物染色技艺流变"}
+    fat = [{"title": f"历代织物染色技艺流变考（{i}）", "url": f"https://ex.cn/x{i}"} for i in range(30)]
+    topic_pool.attach_support([many], fat)
+    expect(len(many["support"]) == 12, f"支撑池应截断到 12 条：{len(many['support'])}")
+    # 完全无重叠 → 空池不报错
+    lone = {"title": "某个完全无关的线索标题很长", "url": "https://ex.cn/z", "name": "孤方向", "sketch": "毫无重叠"}
+    topic_pool.attach_support([lone], clues)
+    expect(lone["support"] == [], f"无重叠方向支撑池应为空：{lone['support']}")
+    print("支撑线索池 ✓")
+
+
+check_support_pool()
 
 
 asyncio.run(run_ideate())

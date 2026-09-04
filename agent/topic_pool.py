@@ -159,7 +159,8 @@ VERTICAL_LABELS: dict[str, str] = {k: v.label for k, v in VERTICAL_SPECS.items()
 SEED_MATRIX: dict[str, tuple[list[str], tuple[str, ...]]] = {
     "history": (
         ["秦始皇", "汉武帝", "武则天", "成吉思汗", "康熙帝", "郑和", "玄奘", "张骞", "苏东坡", "王安石",
-         "岳飞", "李清照", "郑成功", "林则徐", "三星堆", "敦煌莫高窟", "兵马俑", "大运河", "长城", "丝绸之路"],
+         "岳飞", "李清照", "郑成功", "林则徐", "三星堆", "敦煌莫高窟", "兵马俑", "大运河", "长城", "丝绸之路",
+         "马王堆丝织品", "宋代缂丝", "江南织造", "蜀锦", "苗绣", "敦煌服饰", "旗袍演变", "汉服复兴"],
         ("考古新发现", "未解之谜", "文物传奇", "档案解密", "最新研究"),
     ),
     "crime": (
@@ -355,6 +356,54 @@ from entities import ENTITY_KINDS
 # 过程叙事/档案考古/正义回归/悬念追查/时代切片），verdict 对照证据择优成卡。
 # 未配置 flow 时跳过（verdict 按证据自选角度），不拦主刷新。
 ANGLE_OPTIONS_CAP = 3
+
+
+# 单字停用表：虚词与泛词字不参与打分（「中国历史」在语料里满地都是），
+# 领域实词（织/染/宋/案…）保留——bigram 计主分，稀有单字重叠做补充召回
+_STOP_CHARS = set("的了在是一个与和人上下不有为大小这那之中新旧一二三历史文化和中国")
+# 通用动作/新闻 bigram：表「考古或报道动作」不表族类，压掉让同族标题排前
+_STOP_BIGRAMS = {"出土", "研究", "进展", "整理", "发现", "成果", "发布", "报道",
+                 "新闻", "视频", "纪录", "纪录片", "考古", "博物馆"}
+
+
+def _bigrams(text: str) -> set[str]:
+    s = re.sub(r"\s+", "", str(text or "").lower())
+    return {s[i : i + 2] for i in range(len(s) - 1)}
+
+
+def _chars(text: str) -> set[str]:
+    return set(re.sub(r"[\s\W]+", "", str(text or "").lower()))
+
+
+def attach_support(directions: list[dict[str, Any]], clues: list[dict[str, Any]]) -> None:
+    """为每个方向匹配同库支撑线索标题（bigram + 稀有单字打分），就地写 d["support"]。
+
+    收敛层做「升维母题 → 切面检验」需要证据面：方向指向唐代染色织物时，
+    同库里若有历代纺织/服饰线索，标题直接喂给 flow——母题能不能切成多集、
+    每集素材落哪，是看得见支撑再判断，不是凭空想。
+    """
+    pool = [
+        {
+            "title": str(c.get("title") or "").strip(),
+            "url": str(c.get("url") or ""),
+            "bg": _bigrams(c.get("title")),
+            "ch": _chars(c.get("title")),
+        }
+        for c in clues
+        if len(str(c.get("title") or "").strip()) >= 6
+    ]
+    for d in directions:
+        text = f"{d.get('name') or ''}{d.get('sketch') or ''}{d.get('title') or ''}"
+        q_bg, q_ch = _bigrams(text), _chars(text)
+        scored: list[tuple[int, str]] = []
+        for p in pool:
+            if p["url"] and p["url"] == (d.get("url") or ""):
+                continue  # 原型线索自身不进支撑池（它已是 clue 字段）
+            score = 3 * len((q_bg & p["bg"]) - _STOP_BIGRAMS) + len((q_ch & p["ch"]) - _STOP_CHARS)
+            if score >= 3:
+                scored.append((score, p["title"]))
+        scored.sort(key=lambda x: -x[0])
+        d["support"] = [t for _, t in scored[:12]]
 
 
 def _stratified_batches(
@@ -1162,9 +1211,11 @@ class TopicCurator:
         发散批按垂类种子轮转混编：语料天然偏 history/military，不混批会让
         输出垂类跟着语料构成走。
         """
+        pool = list(clues)  # 支撑池用入口快照：批循环逐批消耗，但任何批次的
+        # 线索标题对后续批的收敛都还是支撑证据，不该随喂掉而消失
         # 1) 收敛存量方向（上轮被杀时遗留的半成品）
         if directions:
-            await self._converge(directions, result)
+            await self._converge(directions, result, pool)
             directions = []
             self._save_day_state(clues, directions)
         # 2) 发散新线索 → 逐轮收敛（分层混批）
@@ -1194,7 +1245,7 @@ class TopicCurator:
             result.directions += len(fresh)
             # 方向先落账再收敛：收敛中途被杀，重启后凭状态续收敛，不丢方向
             self._save_day_state(remaining, fresh)
-            await self._converge(fresh, result)
+            await self._converge(fresh, result, pool)
             self._save_day_state(remaining, [])
 
     def _parse_directions(
@@ -1231,8 +1282,18 @@ class TopicCurator:
                 )
         return out
 
-    async def _converge(self, directions: list[dict[str, Any]], result: IdeateResult) -> None:
-        """方向分批过收敛 flow（成立性三问 + arc），产出的成片卡落库。"""
+    async def _converge(
+        self,
+        directions: list[dict[str, Any]],
+        result: IdeateResult,
+        clues: list[dict[str, Any]],
+    ) -> None:
+        """方向分批过收敛 flow（成立性三问 + arc），产出的成片卡落库。
+
+        clues 是当日语料全量（含未喂）：给每个方向匹配支撑线索标题——
+        收敛层升维母题后凭它判断切面的素材支撑面。
+        """
+        attach_support(directions, clues)
         for i in range(0, len(directions), CONVERGE_DIRECTIONS_PER_BATCH):
             chunk = directions[i : i + CONVERGE_DIRECTIONS_PER_BATCH]
             payload = {
@@ -1243,6 +1304,7 @@ class TopicCurator:
                         "clue_snippet": d.get("snippet") or "",
                         "name": d["name"],
                         "sketch": d["sketch"],
+                        "support": d.get("support") or [],
                     }
                     for j, d in enumerate(chunk)
                 ],
