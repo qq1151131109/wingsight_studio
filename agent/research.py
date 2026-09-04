@@ -30,6 +30,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import httpx
+import jina_reader
 
 import imgresearch
 from topic_pool import extract_json
@@ -347,20 +348,35 @@ def _strip_html(raw: str) -> str:
 
 
 async def fetch_page_text(url: str) -> str:
-    """抓网页正文（剥脚本/样式/标签后取纯文本）。失败抛异常，由调用方记为
-    snippet 级来源（逐源诚实标注，不静默降级整轮）。"""
-    async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=True) as client:
-        resp = await client.get(url, headers={"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9"})
-        resp.raise_for_status()
-        if len(resp.content) > _MAX_PAGE_BYTES:
-            raise ValueError(f"页面过大（{len(resp.content)} 字节）")
-        ctype = (resp.headers.get("content-type") or "").lower()
-        if ctype and "text/html" not in ctype and "text/plain" not in ctype and "application/xhtml" not in ctype:
-            raise ValueError(f"非网页内容（{ctype.split(';')[0]}）")
-        text = _strip_html(resp.text)
-        if len(text) < 80:
-            raise ValueError("正文过短（可能被反爬拦截）")
-        return text[:_MAX_PAGE_CHARS]
+    """抓网页正文：httpx 直抓为主（快），失败自动回退本地 Jina Reader
+    （无头浏览器，过 TLS 指纹反爬 + PDF 文本提取；juben 同款部署）。
+    双败抛异常，由调用方记为 snippet 级来源（逐源诚实标注，不静默降级整轮）。"""
+    direct_error = ""
+    try:
+        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9"})
+            resp.raise_for_status()
+            if len(resp.content) > _MAX_PAGE_BYTES:
+                raise ValueError(f"页面过大（{len(resp.content)} 字节）")
+            ctype = (resp.headers.get("content-type") or "").lower()
+            if ctype and "text/html" not in ctype and "text/plain" not in ctype and "application/xhtml" not in ctype:
+                raise ValueError(f"非网页内容（{ctype.split(';')[0]}）")
+            text = _strip_html(resp.text)
+            if len(text) < 80:
+                raise ValueError("正文过短（可能被反爬拦截）")
+            return text[:_MAX_PAGE_CHARS]
+    except Exception as exc:  # noqa: BLE001
+        direct_error = f"直抓失败：{str(exc)[:80]}"
+
+    if jina_reader.enabled():
+        try:
+            md = await jina_reader.fetch_markdown(url)
+            return md[:_MAX_PAGE_CHARS]
+        except jina_reader.WebSourceUnreachableError:
+            pass  # 本地实例未部署：静默退回直抓结论
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"{direct_error}；Jina 回退失败：{str(exc)[:80]}") from exc
+    raise ValueError(direct_error)
 
 
 # ---------- 开题 ----------
