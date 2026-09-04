@@ -569,6 +569,21 @@ def api_compose(pid: str, req: dict, user: auth.CurrentUser):
     return {"url": url}
 
 
+@app.post("/video/extract-audio")
+def api_extract_audio(req: dict, user: auth.CurrentUser):
+    """视频提音轨（mp3）：视频卡工具条直连，产物落音频卡（配音/BGM 素材化）。"""
+    url = str(req.get("videoUrl") or "").strip()
+    if not url:
+        return Response(status_code=400, content="videoUrl 为空", media_type="text/plain")
+    try:
+        audio_url = compose.extract_audio(url)
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    except Exception as exc:  # ffmpeg 失败（无音轨/解码错）
+        return Response(status_code=500, content=str(exc), media_type="text/plain")
+    return {"audioUrl": audio_url}
+
+
 # ---------- 分镜表生成（shotlist 卡按钮直连 langflow；剧本→rows）----------
 
 

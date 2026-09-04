@@ -42,6 +42,7 @@ import {
   Grid3X3,
   Globe2,
   LayoutGrid,
+  PenLine,
   Clapperboard,
   FastForward,
   Rewind,
@@ -54,6 +55,7 @@ import {
   Landmark,
   Lock,
   LockOpen,
+  AudioLines,
   Loader2,
   Maximize2,
   Music,
@@ -152,6 +154,7 @@ import { Lightbox } from "./Lightbox";
 import { createPortal } from "react-dom";
 import OverlayModal from "./OverlayModal";
 import { composeVideos, uploadAsset } from "@/lib/projects";
+import { apiFetch } from "@/lib/auth";
 import {
   decomposeAssets,
   generateShotlist,
@@ -3065,6 +3068,19 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 </button>
                 <button
                   type="button"
+                  data-tip="标注批注：箭头/文字/圈画反馈，烘焙成新图卡" aria-label="标注批注：箭头/文字/圈画反馈，烘焙成新图卡"
+                  className={btn}
+                  data-track="card.annotate"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    api.close();
+                    dispatchImageTool(id, "annotate");
+                  }}
+                >
+                  <PenLine className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
                   data-tip="九宫格切图：拆成 9 张卡" aria-label="九宫格切图：拆成 9 张卡"
                   className={btn}
                   onClick={(e) => {
@@ -3274,6 +3290,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [uploading, setUploading] = useState(false);
   const [frames, setFrames] = useState<{ t: number; data: string }[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
+  const [extracting, setExtracting] = useState(false);
   const [frameCount, setFrameCount] = useState(6);
   const [historyOpen, setHistoryOpen] = useState(false);
   const framesFor = useRef("");
@@ -3326,6 +3343,42 @@ function VideoCard({ data, id, selected }: NodeProps) {
     })();
   };
 
+  /** 提取音轨：ffmpeg 服务端抽 mp3 → 右侧建音频卡连线（compose.py 同范式直连） */
+  const extractAudio = async () => {
+    if (!d.videoUrl || extracting) return;
+    setExtracting(true);
+    try {
+      const r = await apiFetch("/agent-service/video/extract-audio", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ videoUrl: d.videoUrl }),
+      });
+      if (!r.ok) throw new Error((await r.text()).slice(0, 160) || `HTTP ${r.status}`);
+      const { audioUrl } = (await r.json()) as { audioUrl: string };
+      const st = useCanvasStore.getState();
+      const src = st.nodes.find((n) => n.id === id);
+      if (!src) return;
+      const abs = absolutePosition(st.nodes, src);
+      const nw = src.measured?.width ?? NODE_FOOTPRINT.image.w;
+      const aid = st.addNode({
+        position: { x: abs.x + nw + 80, y: abs.y },
+        data: {
+          nodeType: "audio",
+          title: `${d.title || "视频"} · 音轨`,
+          body: `提取自视频《${d.title || "未命名"}》`,
+          audioUrl,
+          status: "ready",
+        },
+      });
+      st.connect({ source: id, target: aid });
+      st.flashNodes([aid]);
+    } catch (exc) {
+      showToast(`音轨提取失败${exc instanceof Error && exc.message ? `：${exc.message}` : ""}`);
+    } finally {
+      setExtracting(false);
+    }
+  };
+
   /** AI 拉片：抽 8 帧（320px）上传成资产 → 事件 → 桥接层组装聊天指令给 agent 做镜头语言分析 */
   const runFrameAnalysis = async () => {
     if (!d.videoUrl || analyzing) return;
@@ -3368,6 +3421,15 @@ function VideoCard({ data, id, selected }: NodeProps) {
         onClick={() => void runFrameAnalysis()}
       >
         <ScanSearch className="h-4 w-4" />
+      </ToolBtn>
+      <ToolBtn
+        title={extracting ? "音轨提取中…" : "提取音轨为音频卡（配音/BGM 素材化）"}
+        aria-label={extracting ? "音轨提取中…" : "提取音轨为音频卡（配音/BGM 素材化）"}
+        disabled={extracting}
+        data-track="video.extract-audio"
+        onClick={() => void extractAudio()}
+      >
+        {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <AudioLines className="h-4 w-4" />}
       </ToolBtn>
       <ToolBtn
         title="下载视频"

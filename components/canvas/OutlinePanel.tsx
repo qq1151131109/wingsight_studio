@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, ListTree, Search, Upload, X } from "lucide-react";
+import { Download, FileArchive, ListTree, Loader2, Search, Upload, X } from "lucide-react";
 import {
   NODE_META,
   useCanvasStore,
@@ -16,6 +16,7 @@ import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { FOCUS_NODES_EVENT } from "@/lib/canvas/events";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
 import { reportError } from "@/lib/error-dialog";
+import { exportCanvasZip } from "@/lib/canvas/zipExport";
 
 export default function OutlinePanel({ onClose }: { onClose: () => void }) {
   const nodes = useCanvasStore((s) => s.nodes);
@@ -31,9 +32,11 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
   }, []);
 
   useEffect(() => {
+    // capture：画布层/其它 bubble 监听可能在特定焦点路径下抢跑（全量 E2E
+    // 实测 body 焦点时 bubble Esc 偶发不达），capture 恒先于它们
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
   }, [onClose]);
 
   const groups = useMemo(() => {
@@ -149,6 +152,34 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
     );
   };
 
+  // ZIP 交付导出：结构 JSON + 全部媒体 blob（novanova canvas-export 范式）。
+  // 媒体多的画布逐个拉取需时间，按钮转圈 + 完成后 reportError 汇报件数
+  const [zipping, setZipping] = useState("");
+  const exportZip = async () => {
+    if (zipping) return;
+    const st = useCanvasStore.getState();
+    setZipping("准备…");
+    try {
+      const r = await exportCanvasZip({
+        projectId: st.projectId ?? "",
+        projectName: st.projectName ?? "",
+        nodes: st.nodes,
+        edges: st.edges,
+        viewport: st.viewport,
+        visualStyle: st.projectStyle,
+        onProgress: (done, total) => setZipping(`${done}/${total}`),
+      });
+      reportError(
+        "ZIP 交付导出完成",
+        `打包 canvas.json + ${r.mediaCount} 个媒体文件（${r.fileCount} 项），已开始下载`,
+      );
+    } catch (exc) {
+      reportError("ZIP 导出失败", exc instanceof Error ? exc.message : String(exc));
+    } finally {
+      setZipping("");
+    }
+  };
+
   return (
     <div className="absolute left-2 top-14 z-20 flex max-h-[62vh] w-60 flex-col rounded-lg border border-hairline bg-surface-1 p-2 shadow-lg">
       <div className="flex items-center justify-between gap-2">
@@ -163,6 +194,17 @@ export default function OutlinePanel({ onClose }: { onClose: () => void }) {
           onClick={exportCanvas}
         >
           <Download className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          data-tip={zipping ? `ZIP 交付导出中 ${zipping}` : "导出 ZIP 交付包（结构 JSON + 全部媒体文件）"}
+          aria-label={zipping ? `ZIP 交付导出中 ${zipping}` : "导出 ZIP 交付包（结构 JSON + 全部媒体文件）"}
+          className="nodrag flex items-center gap-0.5 rounded p-0.5 text-text-4 hover:text-text disabled:opacity-40"
+          disabled={Boolean(zipping)}
+          data-track="outline.export-zip"
+          onClick={() => void exportZip()}
+        >
+          {zipping ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <FileArchive className="h-3.5 w-3.5" />}
         </button>
         <button
           type="button"

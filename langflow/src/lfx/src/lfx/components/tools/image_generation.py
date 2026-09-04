@@ -79,6 +79,7 @@ async def generate_image(
     resolution: str = "1K",
     reference_images: list[str] | None = None,
     dest_dir: Path | None = None,
+    background: str = "",
 ) -> dict[str, Any]:
     """调用 OpenAI 兼容 images 接口出一张图：有参考图走 edit，无走 generate。"""
     width, height = compute_image_size(aspect_ratio, resolution)
@@ -109,6 +110,11 @@ async def generate_image(
             ref_suffixes.append(path.suffix or ".png")
 
     common = {"model": model, "prompt": prompt, "size": size, "n": 1, "quality": _IMAGE_QUALITY}
+    # 透明背景（gpt-image 系 images 通道参数，generate/edit 均可带；2026-09-04
+    #  DMX 实测仅 gpt-image-2-ssvip 真生效、2-03 静默忽略——目录 transparent 标记
+    #  只给实测通过的模型，闸在 models.resolve_imagegen_params）
+    if background == "transparent":
+        common["background"] = "transparent"
     try:
         if ref_files:
             import io

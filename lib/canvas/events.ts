@@ -139,5 +139,7 @@ export type ImageToolDetail = {
     | "plotBeats"
     | "nextFrame"
     | "prevFrame"
-    | "grade";
+    | "grade"
+    // 标注批注（viedeo ImageEditorModal 简化移植）：箭头/文字/画笔烘焙新图卡
+    | "annotate";
 };

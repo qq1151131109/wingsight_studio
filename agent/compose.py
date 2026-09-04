@@ -72,3 +72,29 @@ def compose_videos(urls: list[str]) -> str:
     finally:
         Path(list_path).unlink(missing_ok=True)
     return f"/agent-service/assets/{out_path.name}"
+
+
+def extract_audio(url: str) -> str:
+    """提取视频音轨为 mp3（配音/BGM 素材化，视频卡工具条直连）。
+
+    重编码 libmp3lame q:a 4（≈165kbps VBR，通用可播）；源无音轨时 ffmpeg
+    产出 0 字节——按大小判失败明报，不静默给空音频。
+    """
+    src = _resolve_local(url)
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = ASSETS_DIR / f"audio_{uuid.uuid4().hex[:12]}.mp3"
+    r = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(src),
+            "-vn", "-acodec", "libmp3lame", "-q:a", "4",
+            str(out_path),
+        ],
+        capture_output=True,
+        timeout=ENCODE_TIMEOUT,
+    )
+    if r.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            r.stderr.decode(errors="ignore")[-400:] or "ffmpeg 提取音轨失败（源视频可能没有音轨）"
+        )
+    return f"/agent-service/assets/{out_path.name}"

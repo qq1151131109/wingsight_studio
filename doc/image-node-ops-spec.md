@@ -188,6 +188,17 @@
 → 2:1 最小 2720×1360；seedream-5-pro 响应通道上限 4,194,304px → 2:1 最大
 2880×1440（4:1 全景超限，只能 2:1）。gpt-image-2 的 size 是固定枚举，2:1 未见支持。
 
+**P3-4 透明背景**（2026-09-04 探针结论，**未实施**）：DMX images 通道
+`background: "transparent"` 实测 **gpt-image-2-ssvip 真支持**（输出
+RGBA colorType=6/ffprobe rgba）、**gpt-image-2-03 静默忽略**（收参数不报错、
+输出仍是 rgb24——最危险的失败形态）。而 ssvip **不在当前目录**，实施前置
+= ssvip 入目录（需 1K/2K/4K × 6 画幅整格探针，~18 张额度）。链路设计已验证
+可行：`generate_image` 已留 `background` 形参（image_generation.py，additive
+无调用方）；flow 组件加 `background` 输入字段 + template 注入 + 目录
+`transparent: true` 标记 + `resolve_imagegen_params` 校验（不支持组合 400
+点名——2-03 的静默忽略必须被目录闸挡在前面）+ ImagegenChips 条件开关。
+动工时从 ssvip 目录探针开始。
+
 以上动工前各补详细 spec，本档只占位。
 
 ## 4. 明确不做
@@ -268,3 +279,30 @@ seek→上传→图卡连线）**已存在**，不再重做。
   抢键，与素材库/提示词库互斥关闭；速查表补 ⌘K 条目
 - 回归 79/79（M 组：下拉五项/右键入口/出卡连线/联系表模板句载荷；
   K 组：呼出/聚焦/过滤/Enter 定位选中）
+
+## 9. 第四波：标注批注 / ZIP 交付 / 视频提音轨（2026-09-04）
+
+第二梯队精选三件落地（透明背景探针结论见 P3-4——ssvip 支持 2-03 静默
+忽略、ssvip 不在目录故不实施）：
+
+- **标注批注弹窗**（AnnotateDialog，viedeo ImageEditorModal 简化移植）：
+  箭头（拖画，矢量端点可改）/文字（点击落字，白描边垫底任何底色可读）/
+  画笔（折线）三层全矢量模型——撤销栈快照元素表而非位图；选择工具可
+  选中拖动/删端点/Del 删除；确认时在**原生分辨率**烘焙（底图+标注）成
+  新图卡+连线（干净底图不动，标注版是交付物不是覆盖）。入口：灯箱
+  actions（标注重绘旁）+ 右键「标注批注…」，走 IMAGE_TOOL_EVENT("annotate")
+- **画布 ZIP 交付导出**（zipExport.ts，novanova canvas-export 范式）：
+  零依赖 STORE 型 zip 打包器（媒体本就是压缩格式无需 deflate；jszip 只是
+  传递依赖不可直用），canvas.json + 全部媒体 blob（主图/视频/音频/候选/
+  版本/分镜行图，去重，单个失败不拦整包）。入口：画布导航面板（⌘K 呼出）
+  导出按钮旁「ZIP 交付」钮，转圈进度 + 完成汇报件数
+- **视频提音轨**（compose.extract_audio + POST /video/extract-audio）：
+  ffmpeg 抽 mp3（libmp3lame q:a 4，无音轨按 0 字节判失败明报不静默），
+  视频卡工具条「提取音轨」→ 右侧建音频卡+连线（配音/BGM 素材化）
+- 顺手修：OutlinePanel Esc 关闭改 capture 监听（全量 E2E 实测 body 焦点
+  路径下 bubble Esc 偶发被抢跑，面板滞留开态被下一次 ⌘K toggle 关掉）
+- 回归 87/87（N 组：标注拖画→烘焙真实上传→连线；ZIP 下载→unzip 验
+  canvas.json+assets；ffmpeg 造带音轨 mp4→提取→音频卡+连线全真链路）
+
+**第五波候选**（已盘点未做）：A/B 对比节点（跨卡滑杆对比）、两遍精修
+高清增强（线稿锚→精修，需两步生成编排）、ssvip 入目录后的透明背景全链。

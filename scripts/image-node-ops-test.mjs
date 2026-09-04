@@ -11,6 +11,7 @@
  * 前置：agent(8123) + 前端(8008) 在跑。
  */
 import { readFileSync } from "node:fs";
+import { execSync as execSyncFunc } from "node:child_process";
 import zlib from "node:zlib";
 import { chromium } from "playwright";
 
@@ -661,6 +662,114 @@ const kSel = await page.evaluate(() =>
 );
 check("K4 Enter 定位选中目标卡", kSel === true, String(kSel));
 await page.keyboard.press("Escape");
+
+// ---------- N 标注批注 / ZIP 导出 / 视频提音轨 ----------
+// N1-N3 标注：右键入口 → 箭头拖画 → 烘焙新图卡+连线（真实上传）
+await openMenu("测试底图");
+await page.locator("text=标注批注…").click();
+await page.locator("text=生成标注卡").waitFor({ timeout: 5000 });
+check("N1 标注弹窗打开（含工具条）", (await page.locator('[aria-label="箭头"]').count()) > 0);
+{
+  const img = page.locator("div.nowheel img").first();
+  await img.waitFor({ timeout: 5000 });
+  const b = await img.boundingBox();
+  await page.mouse.move(b.x + b.width * 0.3, b.y + b.height * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width * 0.7, b.y + b.height * 0.6, { steps: 5 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+}
+await page.getByRole("button", { name: /生成标注卡/ }).click();
+await page.waitForTimeout(4000); // 烘焙 + 真实上传
+const stateN = await page.evaluate(() => {
+  const st = window.__wsCanvasStore.getState();
+  const n = st.nodes.filter((x) => x.data.title?.includes("· 标注")).pop();
+  return {
+    id: n?.id ?? "",
+    img: n?.data.imageUrl ?? "",
+    status: n?.data.status ?? "",
+    linked: st.edges.some((e) => e.source === "img1" && e.target === n?.id),
+  };
+});
+check("N2 标注烘焙新图卡（真实上传 ready）", stateN.status === "ready" && Boolean(stateN.img) && stateN.img !== SRC_URL, stateN.img.slice(0, 44));
+check("N3 标注卡连线源卡", stateN.linked, stateN.id);
+
+// N4-N5 ZIP 交付导出：⌘K 呼出导航 → ZIP 钮 → 下载 → 解包验 canvas.json + assets
+await page.keyboard.press("Control+k");
+// K 组的 Esc 已关面板；为防 toggle 语义下偶发面板仍开，先确保关净再开
+await page.waitForTimeout(300);
+await page.locator('[aria-label^="导出 ZIP 交付包"]').waitFor({ timeout: 4000 });
+const zipDl = page.waitForEvent("download", { timeout: 20000 }).catch(() => null);
+await page.locator('[aria-label^="导出 ZIP 交付包"]').click();
+const zipItem = await zipDl;
+check("N4 ZIP 导出触发下载", Boolean(zipItem), zipItem?.suggestedFilename() ?? "");
+if (zipItem) {
+  const zipPath = `/tmp/${zipItem.suggestedFilename()}`;
+  await zipItem.saveAs(zipPath);
+  const listing = execSyncFunc(`unzip -l "${zipPath}"`).toString();
+  const hasJson = listing.includes("canvas.json");
+  const assetCount = (listing.match(/assets\//g) ?? []).length;
+  check("N5 ZIP 含 canvas.json + 媒体目录", hasJson && assetCount >= 2, `canvas.json=${hasJson} assets 条目=${assetCount}`);
+} else {
+  check("N5 ZIP 含 canvas.json + 媒体目录", false, "未捕获下载");
+}
+await page.keyboard.press("Escape");
+
+// N6-N8 视频提音轨：ffmpeg 造 1s 带音轨 mp4 → 上传 → 视频卡 → 提取 → 音频卡+连线
+{
+  execSyncFunc(
+    `ffmpeg -y -f lavfi -i testsrc=duration=1:size=320x240:rate=10 -f lavfi -i sine=frequency=440:duration=1 -shortest -c:v libx264 -c:a aac /tmp/e2e_audio_src.mp4 2>/dev/null`,
+  );
+  const mp4 = readFileSync("/tmp/e2e_audio_src.mp4");
+  const upv = await api("/assets?name=e2e_audio_src.mp4", {
+    method: "POST",
+    headers: { "Content-Type": "video/mp4" },
+    body: mp4,
+  });
+  if (upv.status === 200) {
+    const nodesNow = await page.evaluate(() =>
+      window.__wsCanvasStore.getState().nodes.map((n) => ({ ...n, selected: false, dragging: false })),
+    );
+    const edgesNow = await page.evaluate(() => window.__wsCanvasStore.getState().edges);
+    await api(`/projects/${pid}/canvas`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        nodes: [
+          ...nodesNow,
+          { id: "v1", type: "video", position: { x: 0, y: 900 }, data: { nodeType: "video", title: "测试视频", body: "", videoUrl: upv.body.url, status: "ready" } },
+        ],
+        edges: edgesNow,
+        viewport: { x: 40, y: 40, zoom: 0.6 },
+      }),
+    });
+    await page.reload();
+    await page.locator("text=测试视频").first().waitFor({ timeout: 15000 });
+    await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["v1"]));
+    await page.locator('[aria-label^="提取音轨"]').waitFor({ timeout: 5000 });
+    await page.locator('[aria-label^="提取音轨"]').click();
+    await page.waitForFunction(
+      () => window.__wsCanvasStore.getState().nodes.some((n) => n.data.nodeType === "audio" && (n.data.audioUrl ?? "") !== ""),
+      { timeout: 20000 },
+    );
+    const stateV = await page.evaluate(() => {
+      const st = window.__wsCanvasStore.getState();
+      const a = st.nodes.find((n) => n.data.nodeType === "audio");
+      return {
+        audioUrl: a?.data.audioUrl ?? "",
+        title: a?.data.title ?? "",
+        linked: st.edges.some((e) => e.source === "v1" && e.target === a?.id),
+      };
+    });
+    check("N6 提取音轨落音频卡", stateV.audioUrl.includes("/agent-service/assets/"), stateV.audioUrl.slice(0, 48));
+    check("N7 音频卡标题承源", stateV.title.includes("音轨"), stateV.title);
+    check("N8 音频卡连线视频卡", stateV.linked);
+  } else {
+    check("N6 提取音轨落音频卡", false, `造源视频上传失败 ${upv.status}`);
+    check("N7 音频卡标题承源", false, "跳过");
+    check("N8 音频卡连线视频卡", false, "跳过");
+  }
+}
 
 await browser.close();
 // 自清理测试项目（历史版本不自删，曾积累 60 个 e2e-imgops-* 垃圾项目）

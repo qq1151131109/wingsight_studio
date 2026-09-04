@@ -2409,6 +2409,21 @@ export default function CanvasView() {
                             }}
                           />
                           <CtxItem
+                            label="标注批注…"
+                            disabled={node?.data.status === "loading"}
+                            onClick={() => {
+                              window.dispatchEvent(
+                                new CustomEvent(IMAGE_TOOL_EVENT, {
+                                  detail: {
+                                    nodeId: ctxMenu.id,
+                                    tool: "annotate",
+                                  },
+                                }),
+                              );
+                              closeCtx();
+                            }}
+                          />
+                          <CtxItem
                             label={node?.data.freeResize ? "锁定比例" : "自由缩放"}
                             icon={
                               node?.data.freeResize ? (
