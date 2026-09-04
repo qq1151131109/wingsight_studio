@@ -511,6 +511,18 @@ def load_chat_messages(
     return [dict(r) for r in rows]
 
 
+def thread_title_is_mechanical(title: str, messages: list) -> bool:
+    """标题是否仍是机器产物（空 / 「未命名会话」遗留 / 首条用户消息的截断前缀）
+    ——LLM 智能命名的触发条件。用户手动命名后标题不再是首条消息前缀，
+    天然免打扰。"""
+    if not title or title == "未命名会话":
+        return True
+    first_user = next(
+        (str(m.get("content") or "") for m in messages if m.get("role") == "user"), ""
+    )
+    return bool(first_user) and first_user.startswith(title)
+
+
 def save_chat_messages(
     pid: str, tid: str, messages: Any, viewer: Any = ANON_VIEWER
 ) -> List[Dict[str, Any]]:
@@ -549,11 +561,13 @@ def save_chat_messages(
                 for i, it in enumerate(items)
             ],
         )
-        # 自动标题：无标题且有用户消息 → 取首条前 N 字（一次性，之后保留用户命名）
+        # 自动标题（过渡态）：无标题且有用户消息 → 取首条前 N 字；首组对话
+        # 完成后由 LLM 智能命名升级（见 main.py 保存端点的后台任务）。不落
+        # 「未命名会话」字面量——它会让后续命名逻辑误判"已有标题"而永不改名
         title = thread["title"] or ""
         if not title:
             first_user = next((it["content"] for it in items if it["role"] == "user"), "")
-            title = first_user[:AUTO_TITLE_CHARS].strip() or "未命名会话"
+            title = first_user[:AUTO_TITLE_CHARS].strip()
         conn.execute(
             "UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ?",
             (title, now, tid),

@@ -72,6 +72,8 @@ export default function ChatSidebarHeader() {
   const [threads, setThreads] = useState<ChatThreadMeta[] | null>(null);
   const [threadQuery, setThreadQuery] = useState("");
   const [deleting, setDeleting] = useState<ChatThreadMeta | null>(null);
+  // 页签双击重命名（浏览器 tab 范式）：内联输入，Enter/失焦提交、Esc 取消
+  const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
   /** 离开当前会话前收尾：运行中先停客户端 run + 透传后端取消（在途出图不再烧钱） */
@@ -163,6 +165,14 @@ export default function ChatSidebarHeader() {
     abandonActiveRun();
     setThreadId(null);
     setPanelOpen(false);
+  };
+
+  const commitTabRename = async (id: string) => {
+    const next = (renaming?.value ?? "").trim();
+    const old = (threads ?? []).find((t) => t.id === id)?.title || "";
+    setRenaming(null);
+    if (!projectId || !next || next === old) return;
+    if (await renameChatThread(projectId, id, next)) void refresh();
   };
 
   const rename = async (t: ChatThreadMeta) => {
@@ -258,18 +268,38 @@ export default function ChatSidebarHeader() {
                   : "border-transparent text-text-3 hover:bg-surface-2/40 hover:text-text"
               }`}
             >
-              <button
-                type="button"
-                data-track="chat.tabSwitch"
-                onClick={() => {
-                  if (t.id !== threadId) abandonActiveRun();
-                  setThreadId(t.id);
-                }}
-                className="max-w-28 truncate"
-                title={t.title || "未命名会话"}
-              >
-                {t.title || "未命名会话"}
-              </button>
+              {renaming?.id === t.id ? (
+                <input
+                  value={renaming.value}
+                  onChange={(e) => setRenaming({ id: t.id, value: e.target.value })}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void commitTabRename(t.id);
+                    if (e.key === "Escape") setRenaming(null);
+                    e.stopPropagation();
+                  }}
+                  onBlur={() => void commitTabRename(t.id)}
+                  // 双击进入即全选，直接打字覆盖
+                  onFocus={(e) => e.currentTarget.select()}
+                  autoFocus
+                  className="w-28 rounded border border-accent-soft bg-surface-1 px-1 py-0.5 text-[11px] text-text outline-none"
+                />
+              ) : (
+                <button
+                  type="button"
+                  data-track="chat.tabSwitch"
+                  onClick={() => {
+                    if (t.id !== threadId) abandonActiveRun();
+                    setThreadId(t.id);
+                  }}
+                  onDoubleClick={() =>
+                    setRenaming({ id: t.id, value: t.title || "" })
+                  }
+                  className="max-w-28 truncate"
+                  title={t.title || "未命名会话（双击重命名）"}
+                >
+                  {t.title || "未命名会话"}
+                </button>
+              )}
               <button
                 type="button"
                 data-tip="关闭会话" aria-label={`关闭会话 ${t.title || ""}`}

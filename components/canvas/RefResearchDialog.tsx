@@ -228,7 +228,7 @@ export default function RefResearchDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
       onClick={running || adopting ? undefined : onClose}
     >
       <div

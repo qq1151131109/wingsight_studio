@@ -346,7 +346,25 @@ export function NodeInfoModal({
               <span className="text-text">{refs.length} 张卡</span>
             </>
           ) : null}
+          {d.genPrompt ? (
+            <>
+              <span className="text-text-4">上次提示词</span>
+              <span className="text-text">{d.genPrompt}</span>
+            </>
+          ) : null}
         </div>
+        {/* 上次生成实际注入的设定与画风（genShot 快照）：排查「图和设定
+            打架」用的审计信息——从生成面板挪来这儿，面板只留创作相关 */}
+        {(d.genShot?.visualNotes ?? "").trim() ? (
+          <details className="rounded-md border border-hairline bg-surface-2 p-2 text-xs">
+            <summary className="cursor-pointer text-text-3">
+              上次注入的设定与画风
+            </summary>
+            <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-relaxed text-text-3">
+              {d.genShot!.visualNotes}
+            </p>
+          </details>
+        ) : null}
         <details className="rounded-md border border-hairline bg-surface-2 p-2 text-xs">
           <summary className="cursor-pointer text-text-3">原始数据 (JSON)</summary>
           <pre className="nowheel mt-1.5 max-h-48 overflow-auto whitespace-pre-wrap break-all text-[10px] leading-relaxed text-text-3">
@@ -2025,6 +2043,10 @@ function AssetCard({ data, id, selected }: NodeProps) {
   const [writing, setWriting] = useState(false);
   const [writePreview, setWritePreview] = useState<string | null>(null);
   const [writeMsg, setWriteMsg] = useState("");
+  // 设定折叠：有设定默认收成一行摘要，展开才是 inline 编辑态；写空自动回到
+  // 直接编辑（placeholder 引导录入）
+  const [bodyCollapsed, setBodyCollapsed] = useState(true);
+  const bodyEmpty = !((d.body as string) ?? "").trim();
   const fileRef = useRef<HTMLInputElement>(null);
   const lod = useLod();
   // 参考图调研状态（状态总线）：批量调研进行中亮「调研中」，有已调研未采纳
@@ -2364,14 +2386,50 @@ function AssetCard({ data, id, selected }: NodeProps) {
           </div>
         ) : (
           <>
-            <Editable
-              value={d.body ?? ""}
-              onSave={(body, opts) => update({ body }, opts)}
-              multiline
-              always
-              placeholder={ASSET_BODY_PH[kind]}
-              className="ws-detail mx-1.5 mb-1 mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
-            />
+            {/* 设定默认折叠成一行摘要（「图是主角、设定是附录」）：有设定时
+                卡面不再常驻最多 96px 的文字块；点开才是原 inline 编辑态。
+                空设定保持 placeholder 直接可编辑引导录入 */}
+            {bodyCollapsed && !bodyEmpty ? (
+              <button
+                type="button"
+                data-tip="点击展开编辑设定" aria-label="展开设定"
+                className="ws-detail mx-1.5 mb-1 mt-1 flex shrink-0 items-center gap-1 rounded px-0.5 py-0.5 text-left text-[10px] text-text-3 transition-colors hover:text-text"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setBodyCollapsed(false);
+                }}
+              >
+                <ChevronDown className="h-3 w-3 shrink-0" />
+                <span className="text-accent">设定</span>
+                <span className="text-text-4">
+                  · 出图自动带上 · {String((d.body as string)?.length ?? 0)} 字
+                </span>
+              </button>
+            ) : (
+              <>
+                <Editable
+                  value={d.body ?? ""}
+                  onSave={(body, opts) => update({ body }, opts)}
+                  multiline
+                  always
+                  placeholder={ASSET_BODY_PH[kind]}
+                  className="ws-detail mx-1.5 mb-1 mt-1 max-h-24 overflow-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2"
+                />
+                {!((d.body as string) ?? "").trim() ? null : (
+                  <button
+                    type="button"
+                    data-tip="收起设定" aria-label="收起设定"
+                    className="ws-detail mx-1.5 mb-1 -mt-0.5 shrink-0 self-start text-[10px] text-text-4 transition-colors hover:text-text"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setBodyCollapsed(true);
+                    }}
+                  >
+                    收起
+                  </button>
+                )}
+              </>
+            )}
             {writeMsg ? (
               <p className="ws-detail mx-1.5 mb-1 mt-1 text-[10px] text-danger">{writeMsg}</p>
             ) : null}

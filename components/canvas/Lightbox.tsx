@@ -222,7 +222,7 @@ export function Lightbox({
   return (
     <OverlayModal
       ref={containerRef}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-8"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/70 p-8"
       onMouseMove={(e) => {
         if (!dragging) return;
         movedRef.current = true;

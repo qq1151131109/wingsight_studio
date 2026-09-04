@@ -469,9 +469,58 @@ def api_load_thread_messages(pid: str, tid: str, user: auth.CurrentUser):
     return projects.load_chat_messages(pid, tid, user)
 
 
+# 智能命名在途集合：防抖保存高频到达，同会话只跑一个命名任务
+_TITLE_INFLIGHT: set[str] = set()
+
+
+async def _smart_title_task(pid: str, tid: str, user: auth.CurrentUser) -> None:
+    """首组对话完成后给会话起 6-14 字标题（graph.generate_thread_title）。
+    落库前重查：用户可能已手动命名（机械标题判定不过就放弃）。"""
+    try:
+        msgs = projects.load_chat_messages(pid, tid, user)
+        first_user = next((m for m in msgs if m["role"] == "user"), None)
+        first_ai = next((m for m in msgs if m["role"] == "assistant"), None)
+        if not first_user or not first_ai:
+            return
+        current = next(
+            (t.get("title") or "" for t in projects.list_threads(pid, user) if t.get("id") == tid),
+            "",
+        )
+        if not projects.thread_title_is_mechanical(current, msgs):
+            return  # 用户已命名或 LLM 已命名
+        title = await graph.generate_thread_title(first_user["content"], first_ai["content"])
+        if title:
+            projects.rename_thread(pid, tid, title, user)
+    except Exception:  # noqa: BLE001
+        pass  # 命名失败保留过渡标题（首条消息截断），下次保存再试
+    finally:
+        _TITLE_INFLIGHT.discard(tid)
+
+
 @app.put("/projects/{pid}/threads/{tid}/messages")
 async def api_save_thread_messages(pid: str, tid: str, req: dict, user: auth.CurrentUser):
     saved = projects.save_chat_messages(pid, tid, req.get("messages", []), user)
+    # 首组对话齐了且标题仍是机器产物 → 后台智能命名（fire-and-forget）
+    has_u = any(m["role"] == "user" for m in saved)
+    has_a = any(m["role"] == "assistant" for m in saved)
+    if (
+        has_u
+        and has_a
+        and tid not in _TITLE_INFLIGHT
+        and projects.thread_title_is_mechanical(
+            next(
+                (
+                    t.get("title") or ""
+                    for t in projects.list_threads(pid, user)
+                    if t.get("id") == tid
+                ),
+                "",
+            ),
+            saved,
+        )
+    ):
+        _TITLE_INFLIGHT.add(tid)
+        asyncio.create_task(_smart_title_task(pid, tid, user))
     return {"ok": True, "count": len(saved)}
 
 

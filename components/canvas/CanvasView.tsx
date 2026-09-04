@@ -491,7 +491,7 @@ function StyleEditDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
       onClick={busy === "save" ? undefined : onClose}
     >
       <div
@@ -1015,7 +1015,7 @@ function BottomDock({
       </div>
       {stylePanel ? (
         <OverlayModal
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
+          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/45 p-6"
           onClick={() => setStylePanel(false)}
         >
           <div
@@ -1072,7 +1072,7 @@ function BottomDock({
       ) : null}
       {imagegenPanel ? (
         <OverlayModal
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-6"
+          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/45 p-6"
           onClick={() => setImagegenPanel(false)}
         >
           <div

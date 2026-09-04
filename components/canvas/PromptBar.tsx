@@ -114,11 +114,16 @@ export type GenerateDetail = {
    *  提交不在本卡原位覆盖，事件已在源卡右侧建好连线的新空卡上发出；此字段
    *  = 源卡 id，桥接层把源图当「改图锚点」（EDIT 最小模板契约） */
   editOf?: string;
+  /** 参与清单摘除语义：本次不带卡上设定正文（chip × 掉后的当次生效；
+   *  noRefs「按设定重掷」恰恰要用设定，会无视此项强制带上） */
+  selfBodyOff?: boolean;
+  /** 参与清单摘除语义：本次不带全局画风（画风 chip × 掉后的当次生效） */
+  styleOff?: boolean;
 };
 
 const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
-  image: "描述画面，@ 引用画布卡片保持一致",
-  video: "描述镜头内容，@ 引用画布卡片保持一致",
+  image: "描述想改/想生成什么；留空则按卡上标题与设定出图",
+  video: "描述镜头内容；留空则按卡上标题与设定生成",
   text: "想让 AI 写什么？@ 引用画布卡片补充设定",
   shotlist: "想让 AI 改这页分镜？如：按剧本重新生成 / 压缩到 6 镜 / 给第 3 镜加雨戏",
 };
@@ -189,11 +194,11 @@ export default function PromptBar({
     const pre =
       kind === "text" ? consumeTextWritePrefill(nodeId) : "";
     if (pre) return pre;
-    // 出图/生视频预填优先用上一次生成的提示词（genPrompt 快照），
-    // 没有才回退卡上正文——重开面板不丢当时敲的词
+    // 只回显用户自己敲过的词（genPrompt 快照）——卡上标题/设定不预填：
+    // 它就展示在卡上，再抄进输入框是两份一样的字（用户「反人性」反馈；
+    // novanova 同款：输入框从空白开始，空提示词=按卡上标题与设定生成）
     return kind === "image" || kind === "video"
-      ? (String(self0?.data.genPrompt ?? "").trim() ||
-          ((self0?.data.body as string) ?? "").trim())
+      ? String(self0?.data.genPrompt ?? "").trim()
       : "";
   });
   const projectStyle = useCanvasStore((s) => s.projectStyle);
@@ -218,6 +223,10 @@ export default function PromptBar({
   // 本卡原图当次移除（novanova「上一张图显式动作才进参考」范式）：× 掉后
   // 本次纯文生图/仅外部参考，面板重开（切卡）自动恢复默认带上
   const [selfRefOff, setSelfRefOff] = useState(false);
+  // 参与清单显性化（八家竞品共识：「所显即所发」）：本卡设定/全局画风与
+  // 参考图同为 chip，× 掉即本次不参与——不再有隐式合并规则要猜
+  const [selfBodyOff, setSelfBodyOff] = useState(false);
+  const [styleOff, setStyleOff] = useState(false);
   const connectedRefs = useMemo(() => {
     const out: WingNode[] = [];
     for (const e of edges) {
@@ -409,9 +418,11 @@ export default function PromptBar({
           ...(count > 1 ? { count } : {}),
           ...(o.noRefs
             ? { selfRefOff: true, noRefs: true }
-            : selfRefOff
-              ? { selfRefOff: true }
-              : { editOf: nodeId }),
+            : {
+                ...(selfRefOff ? { selfRefOff: true } : { editOf: nodeId }),
+                ...(selfBodyOff ? { selfBodyOff: true } : {}),
+                ...(styleOff ? { styleOff: true } : {}),
+              }),
         },
       }),
     );
@@ -466,6 +477,8 @@ export default function PromptBar({
           refIds: r.mentionIds,
           ...(kind === "image" && count > 1 ? { count } : {}),
           ...(kind === "image" && selfRefOff ? { selfRefOff: true } : {}),
+          ...(kind === "image" && selfBodyOff ? { selfBodyOff: true } : {}),
+          ...(kind === "image" && styleOff ? { styleOff: true } : {}),
     },
       }),
     );
@@ -521,6 +534,11 @@ export default function PromptBar({
   // 图生图锚点提示：本卡已有图时自动并入参考（未在正文 @ 时排最前，
   // 桥接层 directImagegen）；正文里 @ 本卡可显式指定它的编号位置
   const selfImageChip = kind === "image" && Boolean(self?.data.imageUrl);
+  // 参与清单成员：本卡设定（文本注入）与全局画风（视觉注入）。只做出图
+  // 直连管线——video 走聊天指令式，没有这两条注入通道，不摆假清单
+  const selfBodyChip =
+    kind === "image" && Boolean(((self?.data.body as string) ?? "").trim());
+  const styleChip = kind === "image" && Boolean(projectStyle.trim());
   // 智能编排（缺省开）：出图前经「指令合成」flow 扩写短指令（详见 lib 说明）
   const composeOn = kind === "image" && self?.data.composeOpt !== false;
   return (
@@ -529,7 +547,10 @@ export default function PromptBar({
         floating ? "border-0 bg-transparent p-0" : "mt-1.5 p-1.5"
       }`}
     >
-      {connectedRefs.length > 0 || selfImageChip ? (
+      {connectedRefs.length > 0 ||
+      selfImageChip ||
+      selfBodyChip ||
+      styleChip ? (
         <div className={`flex flex-wrap gap-1 ${floating ? "mb-1.5" : "mb-1"}`}>
           {selfImageChip ? (
             <span
@@ -563,6 +584,73 @@ export default function PromptBar({
                 }}
               >
                 {selfRefOff ? "载回" : "×"}
+              </button>
+            </span>
+          ) : null}
+          {selfBodyChip ? (
+            <span
+              className="inline-flex items-center gap-1 rounded border border-solid border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
+              title={
+                selfBodyOff
+                  ? "已摘除：本次生成不使用卡上设定，纯按指令/参考图出图"
+                  : "卡上设定将注入本次生成（保持人物/场景一致）；点 × 可摘除"
+              }
+            >
+              <span
+                className={`grid h-4 w-4 shrink-0 place-items-center rounded-sm text-[9px] font-medium ${
+                  selfBodyOff ? "bg-surface-2 text-text-4" : "bg-accent-dim text-text"
+                }`}
+              >
+                文
+              </span>
+              <span className={`pr-0.5 ${selfBodyOff ? "text-text-4 line-through" : "text-accent"}`}>
+                本卡设定
+              </span>
+              <span className="tabular-nums text-text-4">
+                {String(((self?.data.body as string) ?? "").length)}字
+              </span>
+              <button
+                type="button"
+                data-tip={selfBodyOff ? "载回：设定重新参与本次生成" : "移除：本次不带卡上设定"} aria-label={selfBodyOff ? "载回本卡设定" : "移除本卡设定"}
+                className="px-0.5 text-text-4 transition-colors hover:text-text"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelfBodyOff(!selfBodyOff);
+                }}
+              >
+                {selfBodyOff ? "载回" : "×"}
+              </button>
+            </span>
+          ) : null}
+          {styleChip ? (
+            <span
+              className="inline-flex items-center gap-1 rounded border border-solid border-hairline bg-surface-1 py-0.5 pl-0.5 pr-1 text-[10px] text-text-2"
+              title={
+                styleOff
+                  ? "已摘除：本次生成不注入全局画风"
+                  : `全局画风「${projectStyle.trim()}」将注入本次生成；点 × 可摘除`
+              }
+            >
+              <span
+                className={`grid h-4 w-4 shrink-0 place-items-center rounded-sm text-[9px] ${
+                  styleOff ? "bg-surface-2 text-text-4" : "bg-accent-dim text-text"
+                }`}
+              >
+                🎨
+              </span>
+              <span className={`max-w-16 truncate pr-0.5 ${styleOff ? "text-text-4 line-through" : "text-accent"}`}>
+                {projectStyle.trim()}
+              </span>
+              <button
+                type="button"
+                data-tip={styleOff ? "载回：画风重新参与本次生成" : "移除：本次不带全局画风"} aria-label={styleOff ? "载回全局画风" : "移除全局画风"}
+                className="px-0.5 text-text-4 transition-colors hover:text-text"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setStyleOff(!styleOff);
+                }}
+              >
+                {styleOff ? "载回" : "×"}
               </button>
             </span>
           ) : null}
@@ -734,12 +822,13 @@ export default function PromptBar({
           「@ImageN」只是普通文本，不会当作参考引用——删掉后打 @ 从候选选卡，提交时自动编号为 图1/图2…
         </p>
       ) : null}
-      {/* 智能编排合成结果回显：可追溯（真实发给出图模型的提示词），可载入
-          输入框修改后重发——LLM 编排模式的黑箱必须开着盖 */}
+      {/* AI 扩写对照（仅扩写真实发生时出现，默认折叠）：AI 改写了你的话，
+          原话与实发在此对照，可载入重改。注入的设定/画风清单不进面板——
+          那是排查用的审计信息，在「节点信息」弹窗看（面板只留创作相关） */}
       {kind === "image" && self?.data.composedPrompt ? (
         <details className="mb-1 rounded-md border border-hairline-soft bg-surface-1 px-1.5 py-1">
           <summary className="cursor-pointer select-none text-[10px] text-text-3">
-            本次合成提示词（智能编排 · 点开查看）
+            AI 扩写了你的提示词（上次实际发出 · 点开对照）
           </summary>
           <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
             {self.data.composedPrompt}
@@ -756,69 +845,38 @@ export default function PromptBar({
           </button>
         </details>
       ) : null}
-      {/* 注入开盖（萧燕燕事故后的透明度补齐，全行业竞品都没做）：上次生成
-          实际注入的参考资产设定与全局画风（genShot.visualNotes 快照）。
-          参考图与设定文本打架（上传金袍图 vs 拆解素服文本）时，用户在这里
-          能直接看到两路输入，不再是无从排查的黑箱 */}
-      {kind === "image" && (self?.data.genShot?.visualNotes ?? "").trim() ? (
-        <details className="mb-1 rounded-md border border-hairline-soft bg-surface-1 px-1.5 py-1">
-          <summary className="cursor-pointer select-none text-[10px] text-text-3">
-            本次注入的设定与画风（上次生成 · 点开查看）
-          </summary>
-          <p className="mt-1 whitespace-pre-wrap text-[11px] leading-relaxed text-text-2">
-            {self!.data.genShot!.visualNotes}
-          </p>
-        </details>
-      ) : null}
       {/* 底栏：左侧 = 生成参数（出图候选/模型、文本模型），右侧 = 辅助/收藏/发送
           （对标竞品 composer：模型左下、发送右下圆钮） */}
       <div className="mt-1 flex items-center gap-1">
         <div className="flex min-w-0 flex-1 items-center gap-1">
           {kind === "image" ? (
             <>
-              {/* 卡片级出图模型/档位（写本卡 data.gen，缺省跟随项目）：
-                  批量/重跑/聊天入口生成此卡时全部生效；置于底栏最左 */}
-              <ImagegenChips nodeId={nodeId} />
-              <span className="shrink-0 text-[10px] text-text-4">候选</span>
-              {[1, 2, 4].map((n) => (
-                <button
-                  key={n}
-                  type="button"
-                  className={`shrink-0 whitespace-nowrap rounded px-1.5 py-0.5 text-[10px] transition-colors ${
-                    count === n
-                      ? "bg-accent-dim text-text"
-                      : "text-text-3 hover:bg-surface-2 hover:text-text"
-                  }`}
-                  onClick={() => setCount(n)}
-                  data-track="promptbar.count"
-                  data-track-props={JSON.stringify({ count: n, kind })}
-                >
-                  {n} 张
-                </button>
-              ))}
+              {/* 卡片级出图参数单入口（模型/档位/画幅/候选张数在弹窗里，
+                  底栏不再堆术语）；批量/重跑/聊天入口生成本卡时全部生效 */}
+              <ImagegenChips nodeId={nodeId} count={count} onCountChange={setCount} />
               {/* 模式标签（Storyboard-Copilot modeLabel 范式）：提交前就
-                  知道这次会不会被参考图锚定 */}
+                  知道这次会不会被参考图锚定——命名说人话，解释进 tooltip */}
               {deriveEdit && !selfRefOff ? (
                 <span
                   className="shrink-0 whitespace-nowrap rounded px-1 py-1 text-[11px] text-text-4"
-                  data-tip="派生改图：提交生成连线的新卡，以本图为改图锚点（保留构图只改要改的），本卡原图不动"
+                  data-tip="提交后在本卡右侧生成连线新卡：本图自动作改图参考、原图不动"
                 >
-                  派生改图
+                  派生新卡
                 </span>
               ) : (
               <span
                 className="shrink-0 whitespace-nowrap rounded px-1 py-1 text-[11px] text-text-4"
                 data-tip={
                   refSeq && refSeq.entries.some((e) => e.kind === "self")
-                    ? "编辑模式：本卡原图参与参考，输出将保留其构图与已确认内容"
+                    ? "改图：保留本卡原图的构图与内容，只按提示词改要改的地方；新图替换本卡图，旧图入版本档案"
                     : refSeq && refSeq.entries.length > 0
-                      ? "参考生成：以 @/连线的卡为一致性参考"
+                      ? "参考生成：以 @/连线的卡为一致性参考，生成新图"
                       : "文生图：无参考图，按提示词全新生成"
                 }
               >
                 {refSeq && refSeq.entries.length > 0
                   ? refSeq.entries.some((e) => e.kind === "self")
-                    ? "编辑模式"
+                    ? "改图"
                     : "参考生成"
                   : "文生图"}
               </span>
@@ -846,19 +904,17 @@ export default function PromptBar({
                   </span>
                 );
               })()}
-              {/* 智能编排开关（novanova KEEP/OPTIMIZE 范式）：开=出图前经
-                  「指令合成」flow 把 短指令+设定文本 扩写成完整提示词；
-                  完整描述/改图指令自动判定 keep 原样直传。默认开 */}
+              {/* AI 扩写（原「编排」开关，说人话）：开=提交后先把短指令+卡片
+                  设定扩写成完整提示词再出图；完整描述/改图指令自动判定不改写。
+                  高频开关留在底栏，不藏进模型弹窗 */}
               <button
                 type="button"
                 data-tip={
                   composeOn
-                    ? "智能编排已开启：短指令将结合卡片设定自动扩写成完整提示词，改图指令/完整描述原样直传（点击关闭）"
-                    : "智能编排已关闭：输入框文本原样直传生图模型（点击开启）"
+                    ? "AI 扩写已开启：提交后先把短指令结合卡片设定扩写成完整提示词再出图；完整描述/改图指令不改写（点击关闭）"
+                    : "AI 扩写已关闭：输入框文本原样发给生图模型，不做任何改写（点击开启）"
                 } aria-label={
-                  composeOn
-                    ? "智能编排已开启：短指令将结合卡片设定自动扩写成完整提示词，改图指令/完整描述原样直传（点击关闭）"
-                    : "智能编排已关闭：输入框文本原样直传生图模型（点击开启）"
+                  composeOn ? "AI 扩写已开启" : "AI 扩写已关闭"
                 }
                 className={`shrink-0 whitespace-nowrap rounded px-1.5 py-1 text-[11px] transition-colors ${
                   composeOn ? "text-accent" : "text-text-4 hover:bg-surface-2 hover:text-text-2"
@@ -870,7 +926,7 @@ export default function PromptBar({
                     .updateNodeData(nodeId, { composeOpt: composeOn ? false : undefined });
                 }}
               >
-                编排{composeOn ? "开" : "关"}
+                AI 扩写{composeOn ? "开" : "关"}
               </button>
             </>
           ) : null}
@@ -1085,7 +1141,16 @@ function TextModelChip({ nodeId }: { nodeId: string }) {
  *  显示本卡生效配置（data.gen 覆盖，缺省跟随项目级 store.imagegen），
  *  点击弹出选择器写回卡上 data.gen——生成本卡图片的所有入口（面板直连/
  *  补资产图/分镜批量）都读同一份覆盖。模型清单来自 agent 实探目录 */
-function ImagegenChips({ nodeId }: { nodeId: string }) {
+function ImagegenChips({
+  nodeId,
+  count,
+  onCountChange,
+}: {
+  nodeId: string;
+  /** 候选张数收进此弹窗（AI 扩写开关留在底栏——高频开关不藏进弹窗） */
+  count: number;
+  onCountChange: (n: number) => void;
+}) {
   const node = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId));
   const project = useCanvasStore((s) => s.imagegen);
   const { models, error, reload } = useImageModels();
@@ -1141,6 +1206,7 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
       >
         {option?.label ?? effective.model} · {effective.resolution} ·{" "}
         {effective.aspect || "自动"}
+        {count > 1 ? ` · ${count}张` : ""}
         <ChevronDown className="h-3 w-3 text-text-4" />
       </button>
       {open ? (
@@ -1258,6 +1324,27 @@ function ImagegenChips({ nodeId }: { nodeId: string }) {
                   })}
                 </div>
               ) : null}
+              {/* 候选张数（原底栏独立组，收拢进弹窗少一排术语） */}
+              <div className="mt-1.5 flex items-center gap-1 border-t border-hairline pt-1.5">
+                <span className="text-[10px] text-text-4">候选</span>
+                {[1, 2, 4].map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    data-tip={`一次生成 ${n} 张候选，多余的进候选区切换主图`} aria-label={`候选 ${n} 张`}
+                    className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
+                      count === n
+                        ? "border-accent bg-accent-dim text-text"
+                        : "border-hairline text-text-3 hover:text-text"
+                    }`}
+                    onClick={() => onCountChange(n)}
+                    data-track="promptbar.count"
+                    data-track-props={JSON.stringify({ count: n, kind: "image" })}
+                  >
+                    {n} 张
+                  </button>
+                ))}
+              </div>
             </>
           )}
         </div>

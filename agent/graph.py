@@ -510,6 +510,40 @@ def refresh_skill_meta() -> None:
     ) or "（暂无）"
 
 
+async def generate_thread_title(user_text: str, assistant_text: str) -> str:
+    """会话自动命名：首组对话 → 6-14 字中文标题。一次性小调用走主循环同款
+    模型通道（聊天基础设施，与「聊天主循环豁免 Langflow」同族；不做 flow）。
+    失败返回空串，调用方保留原标题。"""
+    # thinking_kwargs 与主循环同款：GLM 系开思考；其余 reasoning_effort=none
+    # （实测 luna 会把小 max_tokens 全烧在 reasoning 上，finish=length 标题为空）
+    model = ChatOpenAI(
+        model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
+        base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
+        api_key=os.environ.get("AGENT_API_KEY", ""),
+        temperature=0.3,
+        max_tokens=256,
+        streaming=False,
+        **({"extra_body": {"thinking": {"type": "enabled"}}} if _thinking_enabled() else {"reasoning_effort": "none"}),
+    )
+    try:
+        resp = await model.ainvoke(
+            [
+                (
+                    "system",
+                    "为下面的对话起一个会话标题：6-14 个中文字，概括用户意图或主题，"
+                    "不要引号、不要句号、不要前缀。只输出标题本身。",
+                ),
+                (
+                    "user",
+                    f"用户：{user_text[:600]}\n\n助手：{assistant_text[:600]}",
+                ),
+            ]
+        )
+        return str(resp.content or "").strip().strip('"“”«»').splitlines()[0][:24]
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 @tool
 def read_skill(name: str) -> str:
     """读取一份技能手册全文（SKILL.md）。系统提示里的「技能手册」目录只是
