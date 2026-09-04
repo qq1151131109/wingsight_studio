@@ -78,43 +78,39 @@ check("聊天 header「技能」按钮可见", await btn.isVisible().catch(() =>
 await btn.click();
 check("技能面板打开", await page.getByText("技能", { exact: true }).first().isVisible({ timeout: 5000 }).catch(() => false));
 
-// 2) 单一列表混排：3 份手册 + 1 条指令（宣发文案）都在同一列表
-// （面板打开后异步拉清单，断言要等元素出现而非瞬时 isVisible 快照）
+// 2) 纯技能列表：3 份 SKILL.md；生成管线（工具）不再进列表
 const waitVisible = (loc, ms = 6000) =>
   loc.waitFor({ state: "visible", timeout: ms }).then(() => true).catch(() => false);
-check("手册类在列（asset-aware-generation）", await waitVisible(page.getByText("asset-aware-generation")));
-check("手册类在列（canvas-editing）", await waitVisible(page.getByText("canvas-editing")));
-check("指令类在列（宣发文案生成）", await waitVisible(page.getByText("宣发文案生成")));
-await waitVisible(page.getByText("手册", { exact: true }).first());
-const kindBadges = await page.getByText("手册", { exact: true }).count();
-const flowBadges = await page.getByText("指令", { exact: true }).count();
-check("类型徽标（手册×3 + 指令×1）", kindBadges >= 3 && flowBadges >= 1, `手册=${kindBadges} 指令=${flowBadges}`);
-check("旧三分区已移除（无「能做什么」区）", !(await page.getByText("能做什么").isVisible().catch(() => false)));
+check("技能在列（asset-aware-generation）", await waitVisible(page.getByText("asset-aware-generation")));
+check("技能在列（canvas-editing）", await waitVisible(page.getByText("canvas-editing")));
+check("类型徽标已移除（无「手册」「指令」标签）",
+  (await page.getByText("手册", { exact: true }).count()) === 0 && (await page.getByText("指令", { exact: true }).count()) === 0);
 
-// 3) 展开手册看全文
+// 3) 展开看手册全文
 await page.getByRole("button", { name: /asset-aware-generation/ }).click();
-check("手册展开显示 SKILL.md 全文", await page.getByText("# 资产感知生成").isVisible({ timeout: 3000 }).catch(() => false));
-await page.getByRole("button", { name: /asset-aware-generation/ }).click();
+check("展开显示 SKILL.md 全文", await waitVisible(page.getByText("# 资产感知生成"), 3000));
 
-// 4) 指令类展开 →「插入输入条」
-await page.getByRole("button", { name: /宣发文案生成/ }).click();
-const insertBtn = page.getByRole("button", { name: "插入输入条" });
-check("指令类展开有「插入输入条」", await insertBtn.isVisible({ timeout: 3000 }).catch(() => false));
-await insertBtn.click();
+// 4)「按此技能处理」→ 面板关 + 点名文本进输入条
+const invoke = page.getByRole("button", { name: "按此技能处理" });
+check("「按此技能处理」按钮可见", await invoke.isVisible().catch(() => false));
+await invoke.click();
 await page.waitForTimeout(600);
-check("点击后面板关闭", !(await page.getByText("手册", { exact: true }).first().isVisible().catch(() => false)));
+check("点击后面板关闭", !(await page.getByText("按此技能处理").isVisible().catch(() => false)));
 const inputText = await page.evaluate(
   () => document.querySelector('[data-placeholder^="问点什么"]')?.textContent ?? "",
 );
-check("调用模板已插入输入条", inputText.includes("调用技能「宣发文案生成」处理："), inputText.slice(0, 40));
+check("点名文本已插入输入条", inputText.includes("请按技能「asset-aware-generation」的规则处理"), inputText.slice(0, 40));
 
-// 5) 管理员编辑回环：重开面板 → 展开手册 → 改正文 → 保存 → 列表反映 → 还原
+// 5) 管理员编辑回环：重开面板 → 确保手册展开 → 改正文 → 保存 → 列表反映 → 还原
+// （面板重开后展开态保留——组件不卸载；点行是 toggle，先看正文在不在再决定点不点）
 await page.getByRole("button", { name: "技能", exact: true }).click();
 await page
   .getByRole("button", { name: /asset-aware-generation/ })
   .waitFor({ state: "visible", timeout: 6000 })
   .catch(() => {});
-await page.getByRole("button", { name: /asset-aware-generation/ }).click();
+if (!(await page.getByText("# 资产感知生成").isVisible().catch(() => false))) {
+  await page.getByRole("button", { name: /asset-aware-generation/ }).click();
+}
 await page
   .getByText("# 资产感知生成")
   .waitFor({ state: "visible", timeout: 3000 })

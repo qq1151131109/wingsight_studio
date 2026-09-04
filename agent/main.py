@@ -256,10 +256,10 @@ def list_skills() -> list:
 
 @app.get("/capabilities")
 def api_capabilities(user: auth.CurrentUser):
-    """技能清单（聊天「技能」面板数据源，Claude Code 式单一列表）：
-    手册类（agent/skills 的 SKILL.md，助手执行对应任务时自动使用，全文可看）
-    + 指令类（Langflow 注册表，输入条打 / 直达，点击插入调用模板）。
-    can_edit：admin 才能编辑/新建手册。"""
+    """技能清单（聊天「技能」面板数据源，Claude Code 同构：技能 = SKILL.md
+    操作手册，助手执行对应任务时自动采用）。Langflow 生成管线是工具不是
+    技能，不进此列表（入口 = 输入条打 /，数据源 /skills）。
+    can_edit：admin 才能编辑/新建技能。"""
     skills_list = []
     for m in graph.load_skill_meta():
         try:
@@ -269,22 +269,7 @@ def api_capabilities(user: auth.CurrentUser):
         except OSError:
             body = ""
         skills_list.append(
-            {
-                "name": m["name"],
-                "description": m["description"],
-                "kind": "manual",
-                "body": body,
-            }
-        )
-    for f in skills.list_skills_payload():
-        skills_list.append(
-            {
-                "name": str(f.get("name") or ""),
-                "description": str(f.get("description") or ""),
-                "kind": "flow",
-                "body": "",
-                "params": f.get("params") or [],
-            }
+            {"name": m["name"], "description": m["description"], "body": body}
         )
     return {
         "skills": skills_list,
