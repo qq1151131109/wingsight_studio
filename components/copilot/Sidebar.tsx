@@ -13,7 +13,7 @@
  *  - 主题：v2 的 shadcn 式语义变量在 globals.css 里整体映射到米黄纸感 token
  */
 
-import { useEffect, useMemo, useRef, type FC } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CopilotSidebar,
   useConfigureSuggestions,
@@ -24,7 +24,7 @@ import {
   type CopilotChatSuggestionView,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
-import { Pencil, Sparkles } from "lucide-react";
+import { Check, Copy, Music, Pencil, Sparkles, Video } from "lucide-react";
 import ChatInput from "./ChatInput";
 import CapabilitiesDialog from "./CapabilitiesDialog";
 import { useChatSession } from "@/lib/chat/session";
@@ -39,50 +39,103 @@ function asSlot<C>(component: unknown): C {
 
 /** 空渲染（用于从工具栏里摘掉某个内置按钮） */
 /** 自定义用户气泡：hover 出铅笔 = 编辑重发（v2 有 onEditMessage 槽但框架
- *  不接线，自接：把原文回填输入条，提交时截断该消息之后的历史再重发） */
+ *  不接线，自接：把原文回填输入条，提交时截断该消息之后的历史再重发）。
+ *  content 形态按我们 ChatInput 实际发送的 AG-UI parts 解析（text part +
+ *  image/video/audio 的 source:{type:"url",value}）——v2 原厂的附件渲染随
+ *  本槽位一起被替换，媒体缩略图/芯片这里自己出 */
 function UserBubble({ message }: { message?: { id?: string; content?: unknown } }) {
+  const [copied, setCopied] = useState(false);
   const textParts: string[] = [];
-  const images: string[] = [];
+  const media: { kind: "image" | "video" | "audio"; url: string }[] = [];
   const c = message?.content;
   if (typeof c === "string") textParts.push(c);
   else if (Array.isArray(c))
     for (const b of c) {
-      if (typeof b === "object" && b && "text" in b && typeof b.text === "string") textParts.push(b.text);
-      else if (typeof b === "object" && b && "image_url" in b) {
-        const u = (b as { image_url?: { url?: string } }).image_url?.url;
-        if (u) images.push(u);
+      if (!b || typeof b !== "object") continue;
+      const p = b as Record<string, unknown>;
+      if (p.type === "text" && typeof p.text === "string") textParts.push(p.text);
+      else if (
+        (p.type === "image" || p.type === "video" || p.type === "audio") &&
+        typeof p.source === "object" &&
+        p.source !== null
+      ) {
+        const src = p.source as { type?: unknown; value?: unknown };
+        if (src.type === "url" && typeof src.value === "string")
+          media.push({ kind: p.type, url: src.value });
       }
     }
+  const text = textParts.join("\n");
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* 剪贴板被拒时静默（非安全上下文等） */
+    }
+  };
   return (
+    // 用户气泡的真实口径就在这里（px-3 py-2 / text-sm / leading-relaxed /
+    // max-w-[88%]）；whitespace-pre-wrap 保住换行、break-words 折长 URL
+    // ——v2 原厂用户组件（含其 pre-wrap）被本槽位整个替换，漏了就是换行坍缩
     <div className="group flex justify-end px-1">
-      <div className="relative max-w-[85%]">
-        <div className="rounded-[14px_14px_4px_14px] bg-accent px-3 py-2 text-sm leading-relaxed text-white">
-          {textParts.join("\n")}
-          {images.length > 0 ? (
-            <div className="mt-1 flex gap-1">
-              {images.slice(0, 4).map((u) => (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img key={u} src={u} alt="附件" className="h-14 w-14 rounded object-cover" />
-              ))}
-            </div>
-          ) : null}
-        </div>
+      <div className="relative max-w-[88%]">
+        {media.length > 0 ? (
+          <div className="mb-1 flex flex-wrap justify-end gap-1">
+            {media.map((m, i) =>
+              m.kind === "image" ? (
+                <a key={`${i}:${m.url}`} href={m.url} target="_blank" rel="noreferrer" aria-label="查看原图">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={m.url} alt="附件" className="h-14 w-14 rounded-lg border border-hairline object-cover" />
+                </a>
+              ) : (
+                <a
+                  key={`${i}:${m.url}`}
+                  href={m.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-tip={m.kind === "video" ? "查看视频" : "播放音频"}
+                  aria-label={m.kind === "video" ? "查看视频" : "播放音频"}
+                  className="flex h-14 items-center gap-1.5 rounded-lg border border-hairline bg-surface-1 px-2.5 text-xs text-text-2 transition-colors hover:text-text"
+                >
+                  {m.kind === "video" ? <Video className="h-4 w-4" /> : <Music className="h-4 w-4" />}
+                  {m.kind === "video" ? "视频" : "音频"}
+                </a>
+              ),
+            )}
+          </div>
+        ) : null}
+        {text ? (
+          <div className="whitespace-pre-wrap break-words rounded-[14px_14px_4px_14px] bg-accent px-3 py-2 text-sm leading-relaxed text-white">
+            {text}
+          </div>
+        ) : null}
         {message?.id ? (
-          <button
-            type="button"
-            data-tip="编辑并重发" aria-label="编辑并重发"
-            data-track="chat.editResend"
-            onClick={() =>
-              window.dispatchEvent(
-                new CustomEvent(CHAT_EDIT_MESSAGE_EVENT, {
-                  detail: { id: message.id!, text: textParts.join("\n") },
-                }),
-              )
-            }
-            className="absolute -left-8 top-1.5 rounded-md p-1 text-text-4 opacity-0 transition-opacity hover:bg-surface-2 hover:text-text group-hover:opacity-100"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-          </button>
+          <div className="absolute -left-8 top-1 flex flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+            <button
+              type="button"
+              data-tip={copied ? "已复制" : "复制"} aria-label={copied ? "已复制" : "复制"}
+              onClick={() => void copy()}
+              className="rounded-md p-1 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            </button>
+            <button
+              type="button"
+              data-tip="编辑并重发" aria-label="编辑并重发"
+              data-track="chat.editResend"
+              onClick={() =>
+                window.dispatchEvent(
+                  new CustomEvent(CHAT_EDIT_MESSAGE_EVENT, {
+                    detail: { id: message.id!, text },
+                  }),
+                )
+              }
+              className="rounded-md p-1 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+          </div>
         ) : null}
       </div>
     </div>

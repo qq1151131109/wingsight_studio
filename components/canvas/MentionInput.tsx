@@ -164,6 +164,18 @@ function caretToEnd(ed: HTMLDivElement) {
   sel?.addRange(r);
 }
 
+/** 非 chip 节点的文本序列化：内容编辑器的行结构有两副面孔——Shift+Enter
+ *  在白空格 pre-wrap 下是「后续行包 <div>」（块=新起一行，\n 加在块前），
+ *  个别路径是 <br>（textContent 空串）。只取 textContent 会把多行拍成
+ *  一整段（聊天消息 / 出图提示词换行丢失事故），行结构必须还原成 \n */
+function serializeText(node: Node): string {
+  if (node.nodeType !== Node.ELEMENT_NODE) return node.textContent ?? "";
+  const el = node as HTMLElement;
+  if (el.tagName === "BR") return "\n";
+  const inner = Array.from(el.childNodes).map(serializeText).join("");
+  return el.tagName === "DIV" || el.tagName === "P" ? `\n${inner}` : inner;
+}
+
 /** 序列化：图N 编号在这里现场生成（token 只存 id，增删引用不漂移） */
 function readEditor(ed: HTMLDivElement): MentionRead {
   const nodes = useCanvasStore.getState().nodes;
@@ -188,8 +200,8 @@ function readEditor(ed: HTMLDivElement): MentionRead {
       }
       display += `@${title.slice(0, 12)}`;
     } else {
-      prompt += n.textContent ?? "";
-      display += n.textContent ?? "";
+      prompt += serializeText(n);
+      display += serializeText(n);
     }
   }
   return {
