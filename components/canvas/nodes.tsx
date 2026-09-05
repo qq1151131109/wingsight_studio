@@ -2659,15 +2659,15 @@ function useMediaFitHeight(
       const el = boxRef.current;
       if (!node || !el || node.data.freeResize || node.data.fittedFor === url)
         return;
-      const nodeEl = el.closest(".ws-node");
+      const nodeEl = el.closest<HTMLElement>(".ws-node");
       if (!nodeEl) return;
-      const nr = nodeEl.getBoundingClientRect();
-      const br = el.getBoundingClientRect();
-      if (nr.height <= 0 || nr.width <= 0) return;
-      const nodeH = Number(node.style?.height) || nr.height;
-      const k = nodeH / nr.height; // css px → 布局 px 的缩放因子
-      const boxW = br.width * k;
-      const boxH = br.height * k;
+      // 用 offsetWidth/Height（布局单位）换算——getBoundingClientRect 会把
+      // fitView/视口动画中的 transform 缩放混进来，动画中量一次就锁死垃圾
+      // 高度（fittedFor 记账后不再重贴，卡片永久畸小，G2/G3 事故）
+      const nodeH = nodeEl.offsetHeight;
+      const boxW = el.offsetWidth;
+      const boxH = el.offsetHeight;
+      if (nodeH <= 0 || boxW <= 0 || boxH <= 0) return;
       const targetH = boxW * (naturalH / naturalW);
       // 单 action 原子写 fittedFor+卡高且免撤销栈：自适应是视觉归位不是用户
       // 操作，入栈会把「撤销生成/裁剪」截断成只撤销卡高（D4 事故）
@@ -2675,7 +2675,7 @@ function useMediaFitHeight(
         nodeId,
         url,
         Math.abs(targetH - boxH) < 8
-          ? Math.round(nodeH) // 已贴合：只记账不动尺寸
+          ? nodeH // 已贴合：只记账不动尺寸
           : Math.round(nodeH + (targetH - boxH)),
       );
     },
@@ -2990,7 +2990,13 @@ function ImageCard({ data, id, selected }: NodeProps) {
       title: String(d.title ?? ""),
       imageUrl: d.imageUrl,
     })
-      .then((j) => setArtJobView(j))
+      .then((j) => {
+        // 锚驱动续链：hook 凭 imageReviewJobId 轮询（刷新/移出视口恢复），
+        // 终态由收尾 effect 清锚。不写锚 = 任务跑了界面永远无感
+        useCanvasStore.getState().updateNodeData(id, { imageReviewJobId: j.jobId });
+        setArtJobView(j);
+        setArtReviewOpen(true);
+      })
       .catch((exc: unknown) => {
         setArtError(exc instanceof Error ? exc.message : "发起评审失败");
         setArtReviewOpen(true);
@@ -3526,9 +3532,9 @@ function ImageCard({ data, id, selected }: NodeProps) {
       ) : null}
       {artReviewOpen ? (
         <ImageReviewDialog
-          job={artJobView}
-          error={artError}
-          running={artStarting}
+          job={artJob.job ?? artJobView}
+          error={artJob.error || artError}
+          running={artStarting || artJob.running}
           onClose={() => {
             setArtReviewOpen(false);
             setArtJobView(null);

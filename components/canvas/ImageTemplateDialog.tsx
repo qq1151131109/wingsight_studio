@@ -283,7 +283,8 @@ export default function ImageTemplateDialog({
   const node = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId));
   const d = node?.data as WingNodeData | undefined;
   const cfg = TOOLS[tool];
-  const [pick, setPick] = useState(0);
+  // 情绪矩阵默认「中性克制」（25 档正中）；其余工具默认第一档
+  const [pick, setPick] = useState(tool === "emotion" ? 12 : 0);
   const [texPicks, setTexPicks] = useState<Record<string, number>>(() =>
     Object.fromEntries(TEXTURE_GROUPS.map((g) => [g.key, 1])),
   );
@@ -380,6 +381,19 @@ export default function ImageTemplateDialog({
                 model: panoGen.model,
                 resolution: panoGen.resolution,
                 aspect: "2:1",
+              },
+            }
+          : {}),
+        // 扩图方向决定画幅才有「扩」的意义（否则模型在原比例里重画）：
+        // 横向 21:9 / 纵向 9:16，等比不设随参考吸附；模型不支持时出图 400 明报
+        ...(tool === "outpaint" &&
+        preset &&
+        (preset.label === "横向扩展" || preset.label === "纵向扩展")
+          ? {
+              gen: {
+                model: imagegen.model,
+                resolution: imagegen.resolution,
+                aspect: preset.label === "横向扩展" ? "21:9" : "9:16",
               },
             }
           : {}),
