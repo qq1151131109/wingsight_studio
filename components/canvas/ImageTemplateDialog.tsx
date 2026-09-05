@@ -14,14 +14,12 @@ import { Globe2, Loader2, Sparkles, Wand2, X } from "lucide-react";
 import OverlayModal from "./OverlayModal";
 import { useCanvasStore, absolutePosition, NODE_FOOTPRINT, type WingNodeData } from "@/lib/canvas/store";
 import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
-import { findModelOption, loadImageModels, type ImageModelOption } from "@/lib/imagegen";
 import type { ImageToolDetail } from "@/lib/canvas/events";
 
 export type TemplateTool = Extract<
   ImageToolDetail["tool"],
   | "turnaround"
   | "texture"
-  | "panorama"
   | "multiGrid"
   | "continuous"
   | "plotBeats"
@@ -178,29 +176,7 @@ const TOOLS: Record<
     title: "情绪",
     hint: "5×5 亲密度×唤醒度情绪矩阵：点选目标情绪，保持人物与画面完全不变，只调面部表情",
   },
-  panorama: {
-    title: "全景环视",
-    hint: "生成 2:1 球形全景环境图，完成自动进入 720° 拖拽环视（卡面「720° 环视」按钮随时重开）",
-  },
 };
-
-/** 全景职责化模板 v3（doc/image-panorama-spec.md §2.3 + §4 探针矩阵）：
- *  参考图角色句防拉伸 + 几何约束 + 竞品 open-storyboard 否定句全集 + 探针
- *  v2 验证有效的鱼眼/圆框/暗角禁令。注意：在售模型画不出严格等距柱状几何
- *  （五组探针结论），本模板职责是防鱼眼圆框/单视角横幅/参考图硬拉伸，
- *  接缝连续性由 PanoramaViewer 的 crop+羽化矫形兜底（竞品同款分工）。 */
-const PANO_PROMPT =
-  "把参考图作为场景参考，生成一张完整的 360 度球形全景环境图：参考图只提供" +
-  "主体、材质、色彩、构图线索与风格，四周缺失的环境（左右后方、天空与地面）" +
-  "由你补全，不要简单拉伸或变形参考图。最终图片必须是等距柱状投影的完整球形" +
-  "全景，比例2比1（宽度是高度的2倍），只输出一张连续画面：水平方向覆盖完整" +
-  "360度，垂直方向覆盖从天空到地面的完整180度，观看者位于场景中心可以环视" +
-  "四周，地平线位于画面垂直中心附近，左右边缘内容自然衔接，像展开的世界地图" +
-  "一样横向铺满整个画幅。画面中所有垂直线条（柱子、墙壁边缘、树木）保持垂直" +
-  "不倾斜不汇聚，地面向左右水平延展不向中心汇聚。禁止：鱼眼镜头效果、圆形或" +
-  "球面边框、桶形畸变、暗角；普通单视角照片、横幅照片、电影宽银幕截图；把全景" +
-  "画成一个球、一个圆窗或一个门洞；分屏拼贴、多宫格、画中画；摄影师、相机、" +
-  "三脚架等拍摄设备；文字、水印、边框、明显接缝。";
 
 function buildPrompt(
   tool: TemplateTool,
@@ -213,8 +189,6 @@ function buildPrompt(
     parts.push(
       `同一角色三视图设定图：画面横向等分为三个区域，依次为 正面 / 左侧面 / 背面 全身立绘，纯色背景，服装道具细节与参考图一致，标准角色设定图排版，${preset.sentence}`,
     );
-  } else if (tool === "panorama") {
-    parts.push(PANO_PROMPT);
   } else if (tool === "multiGrid") {
     parts.push(
       "基于参考图创建一张干净的 3x3 多机位角度联系表。九个画格展示同一主体和同一场景的不同机位：正面、左前四分之三、右前四分之三、左侧全侧面、右侧全侧面、背面、俯拍、仰拍、荷兰倾斜角。所有画格保持身份、服装、发型、动作、背景世界、光线和色彩氛围一致，只改变机位和取景。使用细窄中性分隔线，不要字幕、编号、UI 标签、额外人物、重复主体或画面内摄影设备",
@@ -290,44 +264,8 @@ export default function ImageTemplateDialog({
   );
   const [extra, setExtra] = useState("");
   const [busy, setBusy] = useState(false);
-
-  // 全景模型预校验（doc/image-panorama-spec.md §2.4）：2:1 画幅只有 seedream
-  // 系支持——项目默认模型可用则跟随；否则明示「已预置 X」钉到目录里第一个
-  // 可用模型（明示不静默换）；目录一个都没有则禁用确认
-  const imagegen = useCanvasStore((s) => s.imagegen);
-  const [catalog, setCatalog] = useState<ImageModelOption[] | null>(null);
-  useEffect(() => {
-    if (tool !== "panorama") return;
-    let cancelled = false;
-    loadImageModels()
-      .then((ms) => {
-        if (!cancelled) setCatalog(ms);
-      })
-      .catch(() => {
-        if (!cancelled) setCatalog([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [tool]);
-  const panoGen = useMemo(() => {
-    if (tool !== "panorama" || !catalog?.length) return null;
-    const capable = catalog.filter((m) => (m.aspects ?? []).includes("2:1"));
-    if (!capable.length) return null;
-    const chosen = capable.find((m) => m.id === imagegen.model) ?? capable[0];
-    // 分辨率取最高档（2026-09-04 清晰度反馈：2K 2880×1440 投球面后每视角
-    // 只占一小块、观感糊；4K 4320×2160 探针实测严格 2:1——seedream 4-0/4-5
-    // 都有，5-pro responses 通道 4.19M 像素上限封顶 2K，按目录自动落位）
-    const resolution = ["4K", "2K"].find((r) =>
-      chosen.resolutions.includes(r),
-    ) ?? chosen.default_resolution;
-    return {
-      model: chosen.id,
-      resolution,
-      label: chosen.label,
-      overridden: chosen.id !== imagegen.model,
-    };
-  }, [tool, catalog, imagegen.model]);
+  // 扩图方向画幅用：项目级出图默认（模型/分辨率随项目，画幅按方向钉）
+  const imagegenDefault = useCanvasStore((s) => s.imagegen);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -344,8 +282,6 @@ export default function ImageTemplateDialog({
 
   const confirm = () => {
     if (busy || !node || !d?.imageUrl) return;
-    // 全景必须已有可用模型（目录无 2:1 条目时禁用，不发任务）
-    if (tool === "panorama" && !panoGen) return;
     setBusy(true);
     const st = useCanvasStore.getState();
     const abs = absolutePosition(st.nodes, node);
@@ -358,9 +294,7 @@ export default function ImageTemplateDialog({
     const suffix =
       tool === "texture"
         ? "质感"
-        : tool === "panorama"
-          ? "全景"
-          : tool === "outpaint"
+        : tool === "outpaint"
             ? `扩图·${preset?.label ?? ""}`
             : tool === "emotion"
               ? `情绪·${preset?.label ?? ""}`
@@ -371,19 +305,6 @@ export default function ImageTemplateDialog({
         nodeType: "image",
         title: `${d.title || "图片"} · ${suffix}`,
         body: prompt,
-        // 全景两新键（doc/image-panorama-spec.md §2.4）：panorama 标记挂灯箱
-        // 环视查看器；gen 显式钉 2:1 + 预校验模型——不继承项目默认（默认模型
-        // 可能不支持 2:1，且 gen.aspect 显式值防 resolveAutoAspect 吸附参考比例）
-        ...(tool === "panorama" && panoGen
-          ? {
-              panorama: true,
-              gen: {
-                model: panoGen.model,
-                resolution: panoGen.resolution,
-                aspect: "2:1",
-              },
-            }
-          : {}),
         // 扩图方向决定画幅才有「扩」的意义（否则模型在原比例里重画）：
         // 横向 21:9 / 纵向 9:16，等比不设随参考吸附；模型不支持时出图 400 明报
         ...(tool === "outpaint" &&
@@ -391,8 +312,8 @@ export default function ImageTemplateDialog({
         (preset.label === "横向扩展" || preset.label === "纵向扩展")
           ? {
               gen: {
-                model: imagegen.model,
-                resolution: imagegen.resolution,
+                model: imagegenDefault.model,
+                resolution: imagegenDefault.resolution,
                 aspect: preset.label === "横向扩展" ? "21:9" : "9:16",
               },
             }
@@ -491,43 +412,6 @@ export default function ImageTemplateDialog({
               </span>
             </p>
           </div>
-        ) : tool === "panorama" ? (
-          <div className="rounded-md border border-hairline bg-surface-2/60 p-2.5 text-xs leading-relaxed text-text-2">
-            <p>
-              以《{d?.title || "未命名"}》为场景参考，补全四周环境、天空与
-              地面，输出左右边缘无缝衔接的 2:1 球形全景图。
-            </p>
-            {srcText ? (
-              <p className="mt-1 text-[11px] text-text-4">
-                参考内容：{srcText.slice(0, 120)}
-                {srcText.length > 120 ? "…" : ""}
-              </p>
-            ) : null}
-            <p className="mt-1.5 text-[11px]">
-              {catalog === null ? (
-                <span className="text-text-4">正在核对支持 2:1 画幅的模型…</span>
-              ) : panoGen ? (
-                panoGen.overridden ? (
-                  <span className="text-text-3">
-                    已预置 {panoGen.label}（当前默认模型
-                    {` ${
-                      findModelOption(imagegen.model, catalog)?.label ??
-                      imagegen.model
-                    } `}
-                    不支持 2:1 全景）
-                  </span>
-                ) : (
-                  <span className="text-text-4">
-                    按当前默认模型 {panoGen.label} 生成（2:1 · {panoGen.resolution}）
-                  </span>
-                )
-              ) : (
-                <span className="text-danger">
-                  模型目录暂无支持 2:1 画幅的模型（需 seedream 系），无法生成全景
-                </span>
-              )}
-            </p>
-          </div>
         ) : !cfg.presets && tool !== "texture" ? (
           // 多功能模板件（九宫格机位/剧情推演/前后帧/光影校正）：预设无关，
           // 固定说明行 + 源摘要
@@ -596,7 +480,7 @@ export default function ImageTemplateDialog({
               type="button"
               className="flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-surface-1 transition-opacity hover:opacity-90 disabled:opacity-50"
               data-track={`image.${tool}`}
-              disabled={busy || (tool === "panorama" && !panoGen)}
+              disabled={busy}
               onClick={confirm}
             >
               {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}

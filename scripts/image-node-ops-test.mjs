@@ -578,12 +578,10 @@ const hCard = nodeOf("备忘");
 await page.evaluate(() => window.__wsCanvasStore.getState().selectNodes(["sc1"]));
 await page.locator('[aria-label^="生成 2:1 球形全景"]').waitFor({ timeout: 5000 });
 check("P1 场景卡顶部条含环视", (await page.locator('[aria-label^="生成 2:1 球形全景"]').count()) > 0);
-// 弹窗预校验：项目默认模型 gpt-image-2-03 不支持 2:1 → 应明示「已预置 seedream」
-await page.locator('[aria-label^="生成 2:1 球形全景"]').click();
-await page.locator("text=全景环视").first().waitFor({ timeout: 4000 });
-check("P2 弹窗明示预置 2:1 可用模型", (await page.locator("text=已预置").count()) > 0);
+// v13 去确认弹窗：点环视直接预校验模型 → 建卡连线发事件（补充要求入口随弹窗移除）
 const postsBeforePano = genPosts.length;
-await page.getByRole("button", { name: /生成全景环视卡/ }).click();
+// NodeToolbar 贴缘钳制下 hit-target 偶发被拦（AGENTS 已知坑）：evaluate 直触
+await page.locator('[aria-label^="生成 2:1 球形全景"]').evaluate((el) => el.click());
 await page.waitForTimeout(4000);
 const stateP = await page.evaluate(() => {
   const st = window.__wsCanvasStore.getState();

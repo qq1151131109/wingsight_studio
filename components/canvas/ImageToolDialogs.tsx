@@ -13,6 +13,7 @@ import CameraAngleDialog from "./CameraAngleDialog";
 import LightingDialog from "./LightingDialog";
 import AnnotateDialog from "./AnnotateDialog";
 import { IMAGE_TOOL_EVENT, type ImageToolDetail } from "@/lib/canvas/events";
+import type { TemplateTool } from "./ImageTemplateDialog";
 import { launchPanorama } from "./panoramaLaunch";
 
 export default function ImageToolDialogs() {
@@ -20,19 +21,21 @@ export default function ImageToolDialogs() {
 
   useEffect(() => {
     const onTool = (e: Event) => {
-      setReq((e as CustomEvent<ImageToolDetail>).detail);
+      const detail = (e as CustomEvent<ImageToolDetail>).detail;
+      // 全景环视不弹确认窗（用户裁决：说明文字+可选补充要求不值一次点击）。
+      // 必须在监听器里拦截直接执行——放渲染体会随每次重渲重复启动，而启动
+      // 本身建卡改 store 又触发重渲，无限建卡锁死主线程
+      if (detail.tool === "panorama") {
+        void launchPanorama(detail.nodeId);
+        return;
+      }
+      setReq(detail);
     };
     window.addEventListener(IMAGE_TOOL_EVENT, onTool);
     return () => window.removeEventListener(IMAGE_TOOL_EVENT, onTool);
   }, []);
 
   if (!req) return null;
-  // 全景环视不弹确认窗（用户裁决：说明文字+可选补充要求不值一次点击），
-  // 事件收到就地启动：预校验模型 → 建卡连线 → 发生成事件
-  if (req.tool === "panorama") {
-    void launchPanorama(req.nodeId);
-    return null;
-  }
   const close = () => setReq(null);
   if (req.tool === "crop") {
     return <ImageCropDialog nodeId={req.nodeId} onClose={close} />;
@@ -48,7 +51,12 @@ export default function ImageToolDialogs() {
   if (req.tool === "lighting") {
     return <LightingDialog nodeId={req.nodeId} onClose={close} />;
   }
+  // panorama 已在监听器拦截，运行时不会到这；类型收窄用断言
   return (
-    <ImageTemplateDialog nodeId={req.nodeId} tool={req.tool} onClose={close} />
+    <ImageTemplateDialog
+      nodeId={req.nodeId}
+      tool={req.tool as TemplateTool}
+      onClose={close}
+    />
   );
 }

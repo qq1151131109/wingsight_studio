@@ -13,7 +13,7 @@ import {
   absolutePosition,
   useCanvasStore,
 } from "@/lib/canvas/store";
-import { GENERATE_EVENT, type GenerateDetail } from "@/lib/canvas/events";
+import { GENERATE_EVENT, type GenerateDetail } from "@/components/canvas/PromptBar";
 import { showToast } from "@/lib/toast";
 
 /** 全景职责化模板 v3（doc/image-panorama-spec.md §2.3 + §4 探针矩阵）：
@@ -51,11 +51,12 @@ export async function launchPanorama(nodeId: string): Promise<void> {
       return;
     }
     const pick = capable.find((m) => m.id === st.imagegen.model) ?? capable[0];
+    // 分辨率取最高档（2026-09-04 清晰度反馈：2K 投球面后观感糊；4K 探针实测
+    // 严格 2:1——seedream 4-0/4-5 都有，5-pro 通道像素上限封顶 2K 自动落位）
     chosen = {
       model: pick.id,
-      resolution: pick.resolutions.includes("2K")
-        ? "2K"
-        : pick.default_resolution,
+      resolution: ["4K", "2K"].find((r) => pick.resolutions.includes(r)) ??
+        pick.default_resolution,
     };
   } catch {
     showToast("模型目录加载失败，请到底坞「出图」重试");
