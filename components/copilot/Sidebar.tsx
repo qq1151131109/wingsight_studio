@@ -115,8 +115,10 @@ const CANVAS_MIN = 420;
  * 顶到侧栏底下（实测视口 1100 时画布 285px）
  */
 function clampChatWidth(w: number): number {
+  // 上限不得低于下限 340：窄窗口里「给画布留 420」算出来不足 340 时，画布
+  // 让位优先于画布宽度（否则侧栏被压到自己内容都放不下，输入条直接碎掉）
   const upper = Math.max(
-    240,
+    340,
     Math.min(760, window.innerWidth - ACTIVITY_W - CANVAS_MIN),
   );
   return Math.min(Math.max(w, 340), upper);
@@ -240,11 +242,32 @@ export default function ThemedSidebar() {
     // v2 经 adopted stylesheet 打的 !important 宽度规则会吃掉任何文档层
     // 选择器（特异性提档也没用）；内联 !important 是唯一稳定赢面（实测），
     // 同时写 root 变量让 .ws-chat-resizer 条同步贴边
+    //
+    // 但一次内联写入不够：v2 会在自己下一次 render 里把「它记得的宽度」重新
+    // 提交成内联 style，把命令式写入覆盖回去（实测：窗口 1100→820 后
+    // --ws-chat-w=344px 而 aside 仍 624px，body 让位跟着 624，画布被挤成
+    // 140px）。故补两拍重写（下一帧 + 400ms），与装载时 applyInitial 的双写
+    // 同一手法。applyGen 让新的 apply 作废旧补写（拖拽期间每帧都在改，不能
+    // 回灌陈旧值）；disposed 防卸载后再写 DOM
+    let applyGen = 0;
+    let disposed = false;
     const apply = (w: number) => {
       const px = `${Math.round(w)}px`;
       document.documentElement.style.setProperty("--ws-chat-w", px);
-      (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)
-        ?.style.setProperty("width", px, "important");
+      const write = () =>
+        (document.querySelector("aside.copilotKitSidebar") as HTMLElement | null)?.style.setProperty(
+          "width",
+          px,
+          "important",
+        );
+      write();
+      const gen = ++applyGen;
+      const retry = () => {
+        if (disposed || gen !== applyGen) return;
+        write();
+      };
+      window.requestAnimationFrame(retry);
+      timers.push(window.setTimeout(retry, 400));
     };
     let dragging = false;
     const startDrag = () => {
@@ -260,7 +283,17 @@ export default function ThemedSidebar() {
       } catch {
         /* 未捕获时忽略 */
       }
-      const w = clamp(window.innerWidth - e.clientX);
+      // blur（切窗口 / 失焦）也走这条收尾，但 FocusEvent 没有 clientX：
+      // innerWidth - undefined = NaN，会把「NaNpx」写进 localStorage（下次
+      // 装载只能靠 isFinite 兜回默认值）。失焦时按当前宽度重新 clamp
+      const fromPointer = Number.isFinite(e.clientX);
+      const w = clamp(
+        fromPointer
+          ? window.innerWidth - e.clientX
+          : parseFloat(
+              getComputedStyle(document.documentElement).getPropertyValue("--ws-chat-w"),
+            ) || parseInt(DEFAULT_CHAT_WIDTH, 10),
+      );
       apply(w);
       window.localStorage.setItem(WS_WIDTH_KEY, `${Math.round(w)}px`);
     };
@@ -296,6 +329,7 @@ export default function ThemedSidebar() {
     };
     window.addEventListener("resize", onResize);
     return () => {
+      disposed = true;
       if (typeof cleanupRestore === "function") cleanupRestore();
       el.removeEventListener("pointerdown", onDown);
       window.removeEventListener("pointermove", onMove);

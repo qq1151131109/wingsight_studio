@@ -380,6 +380,10 @@ await page.evaluate(() => {
   st.selectNodes([]);
 });
 await page.waitForTimeout(300);
+// 前几组可能把视口留在远处：先把目标卡挪进视口（否则 dblclick 点在空白
+// 窗格上触发窗格缩放而非卡聚焦——媒体自适应后卡高变化放大了这种漂移）
+await page.evaluate(() => window.__wsCanvasStore.getState().setViewport({ x: 400, y: 150, zoom: 0.6 }));
+await page.waitForTimeout(400);
 // 图片本体 pointer-events-none（拖图=移卡，I 组），双击/单击落在容器上
 const img1 = nodeOf("测试底图").locator('div[title="双击：视口聚焦本卡"]').first();
 await img1.dblclick({ timeout: 5000 });
@@ -405,6 +409,17 @@ await page.waitForTimeout(900); // fitView duration 420ms + 余量
     Boolean(card && Math.abs(card.height / vh.height - 0.78) < 0.15),
     `占比=${card ? (card.height / vh.height).toFixed(2) : "?"}`,
   );
+  console.log("[DIAG G]", JSON.stringify(await page.evaluate(() => {
+    const st = window.__wsCanvasStore.getState();
+    const n = st.nodes.find((x) => x.data.title === "测试底图");
+    return {
+      vp: st.viewport,
+      sel: st.nodes.filter((x) => x.selected).map((x) => x.id),
+      pos: n ? { x: n.position.x, y: n.position.y, h: n.style?.height ?? n.height } : null,
+      fittedFor: n?.data.fittedFor,
+    };
+  })));
+  await page.screenshot({ path: "/tmp/diag-g.png" });
 }
 // 单击图片不再弹灯箱（灯箱走角落 ⌕ 按钮，竞品共识：预览是显式动作）
 await img1.click({ timeout: 5000 });

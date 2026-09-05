@@ -14,6 +14,7 @@
  */
 
 import { useLayoutEffect, useRef, useState } from "react";
+import { useStoreApi } from "@xyflow/react";
 import { useCanvasStore, selectionBoxes } from "@/lib/canvas/store";
 import { ADD_REF_EVENT, type AddRefDetail } from "@/lib/canvas/events";
 import PromptBar from "./PromptBar";
@@ -61,7 +62,15 @@ function PanelBody({ nodeId, kind }: { nodeId: string; kind: string }) {
   // 位置直写：每帧 store 变更 → 算坐标 → 改 style，不过 React（跟手的关键）。
   // useLayoutEffect：挂载首帧绘制前先落位，避免闪到 0,0。
   // 宽度与卡片解耦（对标竞品 composer 的舒展比例：约 36% 视口、480~800），
-  // 面板居中于卡宽并向视口内夹紧，贴卡不越屏
+  // 面板居中于卡宽并向视口内夹紧，贴卡不越屏。
+  // 双订阅（2026-09-04 拖画布面板滞后事故）：拖动卡片时节点位置走
+  // useCanvasStore；拖画布平移/缩放时 xyflow 直写视口 DOM、手势结束才落
+  // useCanvasStore.viewport（缩放零重渲优化）——面板必须订阅 xyflow 内部
+  // store（每帧更新）才能同帧跟随，读自家 store 会全程不动、松手瞬跳
+  // 孤儿面板治理（2026-09-04）：卡被拖出视口后「夹紧在屏幕边」的面板指着
+  // 一张看不见的卡，观感如 bug——卡不可见即藏面板；面板内有焦点（正在
+  // 打字）例外，且此时 top 也夹进视口保证可用
+  const rfStore = useStoreApi();
   useLayoutEffect(() => {
     const write = () => {
       const el = boxRef.current;
@@ -69,19 +78,46 @@ function PanelBody({ nodeId, kind }: { nodeId: string; kind: string }) {
       const s = useCanvasStore.getState();
       const box = selectionBoxes(s.nodes, [nodeId])[0];
       if (!box) return;
+      const [tx, ty, zoom] = rfStore.getState().transform;
       const width = Math.max(480, Math.min(800, window.innerWidth * 0.36));
-      const center = s.viewport.x + (box.x + box.w / 2) * s.viewport.zoom;
+      const center = tx + (box.x + box.w / 2) * zoom;
       const left = Math.min(
         Math.max(center, width / 2 + 8),
         window.innerWidth - width / 2 - 8,
       );
+      const top = ty + (box.y + box.h) * zoom + 12;
+      // 卡屏幕矩形与视口相交（留 120px 缓冲）才算可见
+      const M = 120;
+      const sx = tx + box.x * zoom;
+      const sy = ty + box.y * zoom;
+      const cardVisible =
+        sx < window.innerWidth + M &&
+        sx + box.w * zoom > -M &&
+        sy < window.innerHeight + M &&
+        sy + box.h * zoom > -M;
+      const focused = el.contains(document.activeElement);
+      el.style.visibility = cardVisible || focused ? "visible" : "hidden";
       el.style.left = `${left}px`;
-      el.style.top = `${s.viewport.y + (box.y + box.h) * s.viewport.zoom + 12}px`;
+      el.style.top = `${Math.min(
+        Math.max(top, 8),
+        window.innerHeight - 140,
+      )}px`;
       el.style.width = `${width}px`;
     };
     write();
-    return useCanvasStore.subscribe(write);
-  }, [nodeId]);
+    const unsubNodes = useCanvasStore.subscribe(write);
+    const unsubRf = rfStore.subscribe(write);
+    // 焦点进出也影响可见性（打字中拖走卡 → 面板留守）
+    const onFocus = () => write();
+    window.addEventListener("focusin", onFocus);
+    window.addEventListener("focusout", onFocus);
+    return () => {
+      unsubNodes();
+      unsubRf();
+      window.removeEventListener("focusin", onFocus);
+      window.removeEventListener("focusout", onFocus);
+    };
+  }, [nodeId, rfStore]);
 
   return (
     <div

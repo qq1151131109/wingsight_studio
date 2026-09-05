@@ -13,6 +13,7 @@ import CameraAngleDialog from "./CameraAngleDialog";
 import LightingDialog from "./LightingDialog";
 import AnnotateDialog from "./AnnotateDialog";
 import { IMAGE_TOOL_EVENT, type ImageToolDetail } from "@/lib/canvas/events";
+import { launchPanorama } from "./panoramaLaunch";
 
 export default function ImageToolDialogs() {
   const [req, setReq] = useState<ImageToolDetail | null>(null);
@@ -26,6 +27,12 @@ export default function ImageToolDialogs() {
   }, []);
 
   if (!req) return null;
+  // 全景环视不弹确认窗（用户裁决：说明文字+可选补充要求不值一次点击），
+  // 事件收到就地启动：预校验模型 → 建卡连线 → 发生成事件
+  if (req.tool === "panorama") {
+    void launchPanorama(req.nodeId);
+    return null;
+  }
   const close = () => setReq(null);
   if (req.tool === "crop") {
     return <ImageCropDialog nodeId={req.nodeId} onClose={close} />;
