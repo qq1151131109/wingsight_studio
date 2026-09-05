@@ -831,7 +831,9 @@ export const useCanvasStore = create<CanvasState>()(
         get().commitHistory();
         set((s) => ({
           nodes: [
-            // xyflow 要求父节点在 children 之前（否则告警 + z 序不稳）
+            // xyflow 要求父节点在 children 之前（否则告警 + z 序不稳）；
+            // 只此一份——曾在这里多垫一个尾份（同 id 重复，React key 冲突
+            // 被 React Flow 静默吞掉），分组排版测试把它照了出来
             groupNode,
             ...s.nodes.map((n) =>
               targetIds.has(n.id)
@@ -847,7 +849,6 @@ export const useCanvasStore = create<CanvasState>()(
                   } as WingNode)
                 : n,
             ),
-            groupNode,
           ],
         }));
         return groupId;

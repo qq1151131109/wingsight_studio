@@ -8,12 +8,17 @@
  */
 
 import {
+  NODE_FOOTPRINT,
   NODE_META,
+  findFreePosition,
   useCanvasStore,
   type ShotRow,
   type WingNodeType,
 } from "./store";
 import type { CSSProperties } from "react";
+
+/** 测试/工具同源取 state（tsx 下测试直连 store.ts 会拿到另一个模块实例） */
+export { useCanvasStore };
 
 export type AddNodeOp = {
   op: "add_node";
@@ -377,17 +382,118 @@ function normalizeRows(
   return { rows, emptyIdx };
 }
 
-/** 自动布点：在已有节点包围盒右侧或初始位置放新节点，避免重叠 */
-function autoPosition(): { x: number; y: number } {
+/** 批量自动排版的类型档位：资产四类各成一个组框（novanova 资产分组范式，
+ *  与剧本卡拆解链路同款），其余类型共用一个无边框网格 */
+const LAYOUT_KIND_ORDER: WingNodeType[] = [
+  "character",
+  "scene",
+  "prop",
+  "costume",
+];
+
+type BatchLayout = {
+  /** 未带 position 的 add_node：op 在数组中的下标 → 落点坐标 */
+  positions: Map<number, { x: number; y: number }>;
+  /** 建完后要收进组框的类型（key=nodeType，值=该类型的 op 下标序） */
+  groupedKinds: { type: WingNodeType; label: string; opIdx: number[] }[];
+};
+
+/** 批量建卡的自动排版计划（apply 前算好，循环里按下标取落点）：
+ *  在现有内容下方开一条「资产带」——角色/场景/道具/服饰各一组框、组内
+ *  √n 列网格（组框整块避让找空地，逐卡避让会散成一条横排——白骨精项目
+ *  25 卡 8700px 横带事故）；非资产卡排在带尾的普通网格，不套框。
+ *  agent 显式给了 position 的卡不参与（尊重精确摆位） */
+function planBatchLayout(ops: CanvasOp[]): BatchLayout {
+  const positions = new Map<number, { x: number; y: number }>();
+  const groupedKinds: BatchLayout["groupedKinds"] = [];
+  const autoAdds = ops
+    .map((op, i) => ({ op, i }))
+    .filter(
+      (x): x is { op: Extract<CanvasOp, { op: "add_node" }>; i: number } =>
+        x.op.op === "add_node" && !x.op.position,
+    );
+  if (autoAdds.length === 0) return { positions, groupedKinds };
+
   const { nodes } = useCanvasStore.getState();
-  if (nodes.length === 0) return { x: 0, y: 0 };
-  const maxX = Math.max(...nodes.map((n) => n.position.x));
-  const sameCol = nodes.filter((n) => Math.abs(n.position.x - maxX) < 8);
-  const maxY = Math.max(...sameCol.map((n) => n.position.y));
-  const tooClose = sameCol.some((n) => n.position.y >= maxY - 8);
-  return tooClose
-    ? { x: maxX + 340, y: 0 }
-    : { x: maxX, y: maxY + 220 };
+  // 带的锚点：现有内容包围盒下方（空画布放原点）。下方是中性空地——
+  // 右侧会与「右侧渐新增卡」的直觉位打架，左侧压上游来向
+  let anchor = { x: 0, y: 0 };
+  if (nodes.length > 0) {
+    const xs = nodes.map((n) => n.position.x);
+    const ys = nodes.map((n) => n.position.y);
+    anchor = {
+      x: Math.min(...xs),
+      y: Math.max(...ys) + 160,
+    };
+  }
+
+  let groupLeft = anchor.x;
+  let rowY = anchor.y;
+  /** 混类型网格用批内最大占位做统一单元格（不同 footprint 逐卡错位会散） */
+  const placeGrid = (
+    items: { i: number; nodeType: WingNodeType }[],
+    origin: { x: number; y: number },
+    cols: number,
+  ) => {
+    const w = Math.max(
+      ...items.map((it) => (NODE_FOOTPRINT[it.nodeType] ?? NODE_FOOTPRINT.note).w),
+    );
+    const h = Math.max(
+      ...items.map((it) => (NODE_FOOTPRINT[it.nodeType] ?? NODE_FOOTPRINT.note).h),
+    );
+    items.forEach((it, k) => {
+      positions.set(it.i, {
+        x: origin.x + (k % cols) * (w + 60),
+        y: origin.y + Math.floor(k / cols) * (h + 54),
+      });
+    });
+  };
+
+  for (const kind of LAYOUT_KIND_ORDER) {
+    const items = autoAdds.filter((a) => a.op.nodeType === kind);
+    if (items.length === 0) continue;
+    const fp = NODE_FOOTPRINT[kind];
+    const cols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(items.length))));
+    const kw = cols * (fp.w + 60) - 60;
+    const kh = Math.ceil(items.length / cols) * (fp.h + 54) - 54;
+    const origin = findFreePosition(
+      useCanvasStore.getState().nodes,
+      { x: groupLeft, y: rowY },
+      { w: kw, h: kh },
+    );
+    items.forEach((it, k) => {
+      positions.set(it.i, {
+        x: origin.x + (k % cols) * (fp.w + 60),
+        y: origin.y + Math.floor(k / cols) * (fp.h + 54),
+      });
+    });
+    if (items.length >= 2)
+      groupedKinds.push({
+        type: kind,
+        label: NODE_META[kind].label,
+        opIdx: items.map((it) => it.i),
+      });
+    groupLeft = origin.x + kw + 80;
+    rowY = Math.max(rowY, origin.y);
+  }
+
+  // 非资产卡：带尾普通网格（无边框——笔记/媒体等不是「一格一资产」的语义）
+  const others = autoAdds
+    .filter((a) => !LAYOUT_KIND_ORDER.includes(a.op.nodeType))
+    .map((a) => ({ i: a.i, nodeType: a.op.nodeType }));
+  if (others.length > 0) {
+    const fp0 = NODE_FOOTPRINT[others[0].nodeType] ?? NODE_FOOTPRINT.note;
+    const cols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(others.length))));
+    const kw = cols * (fp0.w + 60) - 60;
+    const kh = Math.ceil(others.length / cols) * (fp0.h + 54) - 54;
+    const origin = findFreePosition(
+      useCanvasStore.getState().nodes,
+      { x: groupLeft, y: rowY },
+      { w: kw, h: kh },
+    );
+    placeGrid(others, origin, cols);
+  }
+  return { positions, groupedKinds };
 }
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -424,10 +530,16 @@ export function normalizeOps(
 export function applyOps(rawOps: unknown): OpResult {
   const errors: string[] = [];
   const ops = normalizeOps(rawOps, errors);
+  // 未带 position 的 add_node 的排版计划（资产四类分组框 + 带尾网格）——
+  // 先整批算好再进循环，循环里逐卡取落点；建完卡后按计划收组框
+  const layout = planBatchLayout(ops);
   let applied = 0;
   const createdIds: string[] = [];
+  // op 下标 → 建出的真实节点 id（收组框用；op.id 占位符或生成 id 都以
+  // addNode 返回为准）
+  const createdByIdx = new Map<number, string>();
 
-  for (const op of ops) {
+  for (const [opIdx, op] of ops.entries()) {
     const live = useCanvasStore.getState();
     try {
       switch (op.op) {
@@ -471,7 +583,13 @@ export function applyOps(rawOps: unknown): OpResult {
             }
             rowsField = norm.rows;
           }
-          const pos = op.position ?? autoPosition();
+          const pos = op.position ?? layout.positions.get(opIdx);
+          if (!pos) {
+            errors.push(
+              `add_node: 排版计划缺位（nodeType=${String(op.nodeType)}）——内部错误，请整批重发`,
+            );
+            break;
+          }
           // 批量建卡级联入场（对标影策 45ms 错峰；CSS 变量经节点 style 继承到卡片）
           const stagger = Math.min(createdIds.length, 12) * 50;
           const id = live.addNode({
@@ -524,6 +642,7 @@ export function applyOps(rawOps: unknown): OpResult {
             },
           });
           createdIds.push(id);
+          createdByIdx.set(opIdx, id);
           applied += 1;
           break;
         }
@@ -684,6 +803,20 @@ export function applyOps(rawOps: unknown): OpResult {
       errors.push(`${(op as { op: string }).op} 执行异常: ${String(exc)}`);
     }
   }
+
+  // 排版计划里的资产组框：建完卡后按类型收拢（组框 id 也进 createdIds，
+  // agent 侧选中/闪烁整框而非散卡）。部分卡建失败（校验拒绝）时仍收剩余的
+  const groupedIds: string[] = [];
+  for (const g of layout.groupedKinds) {
+    const ids = g.opIdx
+      .map((i) => createdByIdx.get(i))
+      .filter((id): id is string => Boolean(id));
+    if (ids.length >= 2) {
+      const gid = useCanvasStore.getState().groupNodes(ids, g.label);
+      if (gid) groupedIds.push(gid);
+    }
+  }
+  createdIds.push(...groupedIds);
 
   return { applied, createdIds, errors };
 }

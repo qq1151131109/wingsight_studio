@@ -9,7 +9,7 @@
  * 运行：pnpm dlx tsx scripts/canvas-read-channel-test.mjs（tsx 解析 TS 与
  * extensionless import；node 原生 strip-types 不行）
  */
-import { validateOps, applyOps } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/ops.ts";
+import { validateOps, applyOps, useCanvasStore } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/ops.ts";
 import { summarizeCanvas } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/store.ts";
 
 let pass = 0, fail = 0;
@@ -80,6 +80,48 @@ const a1 = applyOps([{ op: "update_node", id: "n_a", rows: trunc }]);
 check("应用侧拒绝截断行（整 op 未落）", a1.applied === 0 && a1.errors.some(e => e.includes("内容全空")), a1.errors.join("|"));
 const a2 = validateOps([{ op: "update_node", id: "n_a", rows: trunc }]);
 check("干跑侧发现截断行", !a2.ok && a2.issues.some(i => i.message.includes("内容全空")));
+
+// —— 批量建卡自动分组排版（agent 建资产带：白骨精项目 25 卡横排 8700px 事故）——
+// 不带 position 的 add_node 应按类型收组框（角色/场景/道具/服饰），组内 √n 网格，
+// 在现有内容下方开带；单项不套框；带 position 的卡尊重坐标不参与
+const stBefore = useCanvasStore.getState();
+const maxYBefore = Math.max(...stBefore.nodes.map(n => n.position.y));
+const g1 = applyOps([
+  { op: "add_node", nodeType: "character", id: "C_1", title: "白骨夫人" },
+  { op: "add_node", nodeType: "character", id: "C_2", title: "孙悟空" },
+  { op: "add_node", nodeType: "character", id: "C_3", title: "唐僧" },
+  { op: "add_node", nodeType: "scene", id: "S_1", title: "白虎岭" },
+  { op: "add_node", nodeType: "scene", id: "S_2", title: "取经路" },
+  { op: "add_node", nodeType: "prop", id: "P_1", title: "金箍棒" },
+  { op: "add_node", nodeType: "note", id: "N_9", title: "备忘" },
+]);
+check("批量 7 卡全部应用无错", g1.applied === 7 && g1.errors.length === 0, g1.errors.join("|"));
+const stAfter = useCanvasStore.getState();
+const node = (id) => useCanvasStore.getState().nodes.find(n => n.id === id);
+const groups = useCanvasStore.getState().nodes.filter(n => n.data.nodeType === "group" && ["角色", "场景"].includes(n.data.title));
+check("角色/场景各收一个组框（道具/备注单项不套框）", groups.length === 2,
+  stAfter.nodes.filter(n => n.data.nodeType === "group").map(n => n.data.title).join(","));
+const charGroup = groups.find(g => g.data.title === "角色");
+const sceneGroup = groups.find(g => g.data.title === "场景");
+check("三张角色卡同入「角色」组框", ["C_1", "C_2", "C_3"].every(id => node(id)?.parentId === charGroup?.id));
+check("两张场景卡同入「场景」组框", ["S_1", "S_2"].every(id => node(id)?.parentId === sceneGroup?.id));
+check("单项道具/备注不进组框", node("P_1")?.parentId === undefined && node("N_9")?.parentId === undefined);
+const abs = (id) => {
+  const n = node(id);
+  if (!n) return { x: NaN, y: NaN };
+  if (!n.parentId) return n.position;
+  const p = node(n.parentId);
+  return { x: p.position.x + n.position.x, y: p.position.y + n.position.y };
+};
+const charYs = new Set(["C_1", "C_2", "C_3"].map(id => abs(id).y));
+check("角色组内网格换行（不再一条横排）", charYs.size >= 2, `y 集合=${[...charYs].join(",")}`);
+check("资产带开在现有内容下方", abs("C_1").y >= maxYBefore, `首卡 y=${abs("C_1").y} 原 maxY=${maxYBefore}`);
+check("组框 id 进 createdIds（agent 侧选中整框）", g1.createdIds.length === 9, `created=${g1.createdIds.length}`);
+// 带 position 的卡不参与自动分组：精确摆位尊重原坐标、不套框
+const g2 = applyOps([{ op: "add_node", nodeType: "scene", id: "S_9", title: "天庭", position: { x: 5000, y: -800 } }]);
+const s9 = node("S_9");
+check("显式 position 按坐标放且不进组框", g2.errors.length === 0 && s9?.position.x === 5000 && s9?.parentId === undefined,
+  `pos=${JSON.stringify(s9?.position)} parent=${s9?.parentId}`);
 
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);
