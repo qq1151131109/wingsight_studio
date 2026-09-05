@@ -29,7 +29,8 @@ export type WingNodeType =
   | "storyboard"
   | "shotlist"
   | "research"
-  | "group";
+  | "group"
+  | "compare";
 
 /** 分镜表的一行（一个镜头） */
 export interface ShotRow {
@@ -265,6 +266,9 @@ interface CanvasState {
   tidyNodes: (ids?: string[]) => void;
   /** 按连线整理：沿连线方向分列拓扑排布（open-ai-canvas flow 排列范式） */
   tidyNodesFlow: (ids?: string[]) => void;
+  /** 批量连线：按 ids 顺序依次首尾相连（A→B→C…，选区工具条「依次连线」）。
+   *  整批一次撤销快照；已存在的同向边跳过不重复建 */
+  chainConnect: (ids: string[]) => void;
   /** 原地复制一份选中节点（Cmd+D） */
   duplicateSelection: () => string[];
   /** 打组：把 ids 收进新建分组框（parentId+extent，坐标转相对），返回组 id */
@@ -385,6 +389,7 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   video: { w: 320, h: 220 },
   audio: { w: 280, h: 190 },
   compose: { w: 320, h: 280 },
+  compare: { w: 320, h: 260 },
   storyboard: { w: 320, h: 220 },
   shotlist: { w: 560, h: 420 },
   // 文档型卡（2026-09-04）：卷宗全文直接上卡（不折叠），任务头常驻 + 正文滚动
@@ -1185,6 +1190,28 @@ export const useCanvasStore = create<CanvasState>()(
         }));
       },
 
+      chainConnect: (ids) => {
+        if (ids.length < 2) return;
+        get().commitHistory();
+        set((state) => {
+          const exists = new Set(
+            state.edges.map((e) => `${e.source}->${e.target}`),
+          );
+          const added = state.edges.slice();
+          for (let i = 0; i < ids.length - 1; i++) {
+            const [s, t] = [ids[i], ids[i + 1]];
+            if (s === t || exists.has(`${s}->${t}`)) continue;
+            exists.add(`${s}->${t}`);
+            added.push({
+              id: `e_${s}_${t}_${Date.now().toString(36)}_${i}`,
+              source: s,
+              target: t,
+            });
+          }
+          return { edges: added };
+        });
+      },
+
       duplicateSelection: () => {
         if (get().copySelection() === 0) return [];
         return get().pasteClipboard();
@@ -1441,6 +1468,7 @@ export const NODE_META: Record<
   shotlist: { label: "分镜表", dot: "var(--color-warn)", hint: "整场戏的镜头清单" },
   research: { label: "调研", dot: "var(--color-accent)", hint: "深度调研卷宗（证据/争议/材料簇）" },
   group: { label: "分组", dot: "var(--color-text-3)", hint: "收纳相关卡片" },
+  compare: { label: "对比", dot: "var(--color-accent-2)", hint: "两张图滑杆对比（连线上游）" },
 };
 
 /** 画布摘要（给 agent 的读通道，索引+按需拉取范式：头部计数/警告/版本恒在，

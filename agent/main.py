@@ -602,6 +602,23 @@ def api_extract_audio(req: dict, user: auth.CurrentUser):
     return {"audioUrl": audio_url}
 
 
+@app.post("/video/trim")
+def api_trim_video(req: dict, user: auth.CurrentUser):
+    """截取视频片段（mp4 重编码精确剪）：视频卡「截取片段」直连，产物落新视频卡。"""
+    url = str(req.get("videoUrl") or "").strip()
+    start = req.get("start")
+    end = req.get("end")
+    if not url or not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
+        return Response(status_code=400, content="参数缺失（videoUrl/start/end）", media_type="text/plain")
+    try:
+        clip_url = compose.trim_video(url, float(start), float(end))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    except Exception as exc:  # ffmpeg 失败
+        return Response(status_code=500, content=str(exc), media_type="text/plain")
+    return {"clipUrl": clip_url}
+
+
 # ---------- 分镜表生成（shotlist 卡按钮直连 langflow；剧本→rows）----------
 
 

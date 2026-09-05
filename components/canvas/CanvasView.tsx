@@ -261,6 +261,7 @@ const NODE_TYPE_ITEMS: { type: WingNodeType; key: string }[] = (
     "prop",
     "costume",
     "shotlist",
+    "compare",
   ] as WingNodeType[]
 ).map((type) => ({ type, key: `i-${type}` }));
 
@@ -1497,6 +1498,11 @@ function SelectionToolbar() {
             </>
           ) : null}
         </div>
+        <SelBtn
+          onClick={() => useCanvasStore.getState().chainConnect(ids)}
+        >
+          依次连线
+        </SelBtn>
         <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
         <SelBtn onClick={() => useCanvasStore.getState().tidyNodes(ids)}>整理</SelBtn>
         <SelBtn onClick={() => useCanvasStore.getState().tidyNodesFlow(ids)}>按连线整理</SelBtn>
@@ -2618,6 +2624,41 @@ export default function CanvasView() {
                         </>
                       ) : null
                     ) : null}
+                    {(() => {
+                      // 批量星形连接（open-ai-canvas 批量连线范式）：多选状态下
+                      // 右键某卡 = 把其余选中卡全部连到本卡（参考图→生成卡场景）
+                      const selOthers = nodes.filter(
+                        (n) => n.selected && n.id !== ctxMenu.id,
+                      );
+                      return selOthers.length > 0 ? (
+                        <CtxItem
+                          label={`将选中的 ${selOthers.length} 卡连到本卡`}
+                          onClick={() => {
+                            // 一次性 set：connect 每条都 commitHistory，
+                            // 星连 N 条会是 N 步撤销
+                            const st = useCanvasStore.getState();
+                            st.commitHistory();
+                            useCanvasStore.setState((state) => {
+                              const exists = new Set(
+                                state.edges.map((e) => `${e.source}->${e.target}`),
+                              );
+                              const added = state.edges.slice();
+                              for (const n of selOthers) {
+                                if (n.id === ctxMenu.id || exists.has(`${n.id}->${ctxMenu.id}`)) continue;
+                                exists.add(`${n.id}->${ctxMenu.id}`);
+                                added.push({
+                                  id: `e_${n.id}_${ctxMenu.id}_${Date.now().toString(36)}`,
+                                  source: n.id,
+                                  target: ctxMenu.id,
+                                });
+                              }
+                              return { edges: added };
+                            });
+                            closeCtx();
+                          }}
+                        />
+                      ) : null;
+                    })()}
                     <CtxItem
                       label="复制"
                       onClick={() => {

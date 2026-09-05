@@ -45,6 +45,7 @@ import {
   PenLine,
   ClipboardCheck,
   Clapperboard,
+  ImageUpscale,
   FastForward,
   Rewind,
   Contrast,
@@ -68,6 +69,7 @@ import {
   RotateCcw,
   LocateFixed,
   ScanSearch,
+  Scissors,
   Search,
   Shirt,
   Trash2,
@@ -173,6 +175,9 @@ import VersionHistoryModal from "./NodeMediaHistory";
 import MaskEditDialog from "./MaskEditDialog";
 import SplitGridDialog from "./SplitGridDialog";
 import FrameExtractDialog from "./FrameExtractDialog";
+import TrimDialog from "./TrimDialog";
+import CompareCard from "./CompareCard";
+import UpscaleDialog from "./UpscaleDialog";
 import RefResearchDialog from "./RefResearchDialog";
 import RefReviewDialog from "./RefReviewDialog";
 import ScriptReviewDialog from "./ScriptReviewDialog";
@@ -2949,6 +2954,9 @@ function ImageCard({ data, id, selected }: NodeProps) {
   const [maskOpen, setMaskOpen] = useState(false);
   // NxM 网格切图弹窗（九宫格切图泛化，灯箱钮开）：记录动作时点的那张图
   const [splitOpen, setSplitOpen] = useState(false);
+  // 本地放大弹窗（灯箱钮开，纯前端插值）
+  const [upscaleOpen, setUpscaleOpen] = useState(false);
+  const [upscaleSrc, setUpscaleSrc] = useState("");
   const [splitSrc, setSplitSrc] = useState("");
   const [splitTitle, setSplitTitle] = useState("");
   // AI 艺术评审（§10）：锚续链 + 终态自动弹评审弹窗
@@ -3501,6 +3509,20 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 </button>
                 <button
                   type="button"
+                  data-tip="本地放大：插值到 2K/4K（不耗额度）" aria-label="本地放大"
+                  data-track="card.upscale"
+                  className={btn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    api.close();
+                    setUpscaleSrc(item.src);
+                    setUpscaleOpen(true);
+                  }}
+                >
+                  <ImageUpscale className="h-4 w-4" />
+                </button>
+                <button
+                  type="button"
                   data-tip="网格切图：自定义行列拆成多张卡" aria-label="网格切图：拆成多张卡"
                   data-track="card.split"
                   className={btn}
@@ -3541,6 +3563,14 @@ function ImageCard({ data, id, selected }: NodeProps) {
             setArtError("");
           }}
           onDismiss={dismissArtFinding}
+        />
+      ) : null}
+      {upscaleOpen && upscaleSrc ? (
+        <UpscaleDialog
+          nodeId={id}
+          url={upscaleSrc}
+          title={splitTitle ? splitTitle.replace(/ · 候选\d+$/, "") : String(d.title ?? "")}
+          onClose={() => setUpscaleOpen(false)}
         />
       ) : null}
       {splitOpen && splitSrc ? (
@@ -3738,6 +3768,8 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [frames, setFrames] = useState<{ t: number; data: string }[]>([]);
   // 抽帧建卡弹窗（拖进度标记→原生分辨率捕获→图片卡成排+连线）
   const [frameOpen, setFrameOpen] = useState(false);
+  // 截取片段弹窗（ffmpeg 精确重编码→新视频卡）
+  const [trimOpen, setTrimOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [extracting, setExtracting] = useState(false);
   // 媒体比例自适应：视频元数据到位按自然比例贴满媒体区
@@ -3867,6 +3899,13 @@ function VideoCard({ data, id, selected }: NodeProps) {
           <History className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
+      <ToolBtn
+        title="截取片段：定入出点，精确重编码新视频卡"
+        disabled={!d.videoUrl || trimOpen}
+        onClick={() => setTrimOpen(true)}
+      >
+        <Scissors className="h-4 w-4" />
+      </ToolBtn>
       <ToolBtn
         title="抽帧建卡：拖进度标记画面，原生分辨率建图片卡"
         disabled={!d.videoUrl || frameOpen}
@@ -4025,6 +4064,14 @@ function VideoCard({ data, id, selected }: NodeProps) {
           url={d.videoUrl}
           title={String(d.title ?? "")}
           onClose={() => setFrameOpen(false)}
+        />
+      ) : null}
+      {trimOpen && d.videoUrl ? (
+        <TrimDialog
+          nodeId={id}
+          url={d.videoUrl}
+          title={String(d.title ?? "")}
+          onClose={() => setTrimOpen(false)}
         />
       ) : null}
       {historyOpen ? (
@@ -6885,6 +6932,7 @@ function ResearchCard({ data, id, selected }: NodeProps) {
 
 export const nodeTypes = {
   note: memo(NoteCard),
+  compare: memo(CompareCard),
   script: memo(ScriptCard),
   character: memo(AssetCard),
   scene: memo(AssetCard),

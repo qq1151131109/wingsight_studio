@@ -366,3 +366,30 @@ ai-moive-studio/AIGCCanvasFlow/Storyboard-Copilot/OpenLovart），与本仓已�
 
 回归：image-node-ops 88/90——G2/G3（双击聚焦居中/尺寸）为并行会话工具条
 全平铺改动引起的回归（stash 验证与本波无关，其 DIAG 探针在测），随其修复。
+
+回归：image-node-ops 88/90——G2/G3（双击聚焦居中/尺寸）为并行会话工具条
+全平铺改动引起的回归（stash 验证与本波无关，其 DIAG 探针在测），随其修复。
+
+## 12. 第八波：批量连线 / 本地放大 / 视频截片段 / A/B 对比节点（2026-09-05）
+
+第三轮扫描剩余项落地四件（节点锁定、生成中连线流动虚线经查并行会话已
+完整实现——右键锁定项 + draggable 映射 + animated 边样式，划掉）：
+
+- **批量连线**（open-ai-canvas 批量连接范式）：① 选区工具条「依次连线」
+  （store.chainConnect 按 ids 顺序首尾相连，已有同向边跳过，整批一次撤销
+  快照）② 节点右键「将选中的 N 卡连到本卡」（星形：多张参考图连一个生成
+  卡；一次性 set 防 connect 逐条 commitHistory 造成 N 步撤销）
+- **本地放大**（open-ai-canvas upscale-dialog）：灯箱「本地放大」→
+  1K/2K/4K 三档（已达档明报禁用）× 高清/双线性/最近邻插值，纯前端 canvas
+  重采样零额度，产物成新图片卡连线源卡；AI 超分通道等供应商
+- **视频截片段**（open-ai-canvas canvas-video-segment）：VideoCard「截取
+  片段」→ TrimDialog 双滑杆定入出点 + 选段试播 → agent `POST /video/trim`
+  （ffmpeg `-ss` 入点 + `-t` 时长 + libx264/aac veryfast 精确重编码；段长
+  0.2s~300s 钳制）→ 新视频卡连线。坑：`-to` 在 `-ss` 前置时按重置后的
+  输出时间戳计会多切（实测 2s 剪成 3s），必须用 `-t` 时长
+- **A/B 对比节点**（open-ai-canvas compare-node）：新 nodeType `compare`
+  （添加节点菜单最后一项）——连接两张带图卡，B 叠 A 上层按 clip-path
+  inset 裁切，媒体区即滑杆拖动；上游实时读 store（边即数据不拷贝），
+  滑杆位置只存组件态（竞品同款取舍）；无 PromptBar（KIND_BY_TYPE 白名单
+  制，不加即无输入条）
+- 回归 89/89；trim 端点 ffmpeg 真跑冒烟（5s 测试源 1.0→3.0 剪出精确 2.0s）

@@ -73,6 +73,42 @@ def compose_videos(urls: list[str]) -> str:
         Path(list_path).unlink(missing_ok=True)
     return f"/agent-service/assets/{out_path.name}"
 
+def trim_video(url: str, start: float, end: float) -> str:
+    """截取视频片段为新 mp4（视频卡「截取片段」直连）。
+
+    精确剪（-ss 放 -i 后 + 重编码 h264/aac veryfast）——stream copy 会在非
+    关键帧切点花屏跳帧；段长钳 0.2s~300s 防长任务占死 ffmpeg。
+    """
+    src = _resolve_local(url)
+    if not (0 <= start < end):
+        raise ValueError("时间点无效（需 0 ≤ 起点 < 终点）")
+    if end - start < 0.2:
+        raise ValueError("片段太短（至少 0.2 秒）")
+    if end - start > 300:
+        raise ValueError("片段太长（上限 5 分钟，请分段截取）")
+    ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = ASSETS_DIR / f"clip_{uuid.uuid4().hex[:12]}.mp4"
+    r = subprocess.run(
+        [
+            "ffmpeg", "-y",
+            # -to 按（-ss 重置后的）输出时间戳计会多切；-t 时长语义无歧义
+            "-ss", f"{start:.3f}", "-i", str(src), "-t", f"{end - start:.3f}",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-c:a", "aac", "-b:a", "160k",
+            "-movflags", "+faststart",
+            str(out_path),
+        ],
+        capture_output=True,
+        timeout=ENCODE_TIMEOUT,
+    )
+    if r.returncode != 0 or not out_path.is_file() or out_path.stat().st_size == 0:
+        out_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            r.stderr.decode(errors="ignore")[-400:] or "ffmpeg 截取片段失败"
+        )
+    return f"/agent-service/assets/{out_path.name}"
+
+
 
 def extract_audio(url: str) -> str:
     """提取视频音轨为 mp3（配音/BGM 素材化，视频卡工具条直连）。
