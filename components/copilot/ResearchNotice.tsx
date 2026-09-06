@@ -36,11 +36,17 @@ const CHAT_TEXT: Record<
 export default function ResearchNotice() {
   const [notice, setNotice] = useState<ResearchTerminalDetail | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 双源去重：终态信号现在有两条来路——调研卡轮询翻转 + SSE 事件流
+  // （TaskEvents 翻译成同一个窗口事件），同一 job 同一状态只响一次
+  const seenRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const onTerminal = (e: Event) => {
       const detail = (e as CustomEvent<ResearchTerminalDetail>).detail;
       if (!detail?.nodeId || !detail.jobId) return;
+      const seenKey = `${detail.jobId}:${detail.status}`;
+      if (seenRef.current.has(seenKey)) return;
+      seenRef.current.add(seenKey);
       // 聊天瞬时消息（progress_ 前缀 = 不落库，回看历史时消失）
       const agent = langgraphAgent;
       agent?.setMessages?.([

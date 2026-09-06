@@ -7,6 +7,7 @@ import CanvasAgentBridge from "@/components/copilot/CanvasAgentBridge";
 import ChatPersistence from "@/components/copilot/ChatPersistence";
 import ProjectManager from "@/components/copilot/ProjectManager";
 import ResearchNotice from "@/components/copilot/ResearchNotice";
+import TaskEvents from "@/components/copilot/TaskEvents";
 import ThemedSidebar from "@/components/copilot/Sidebar";
 import ActivityBar from "@/components/shell/ActivityBar";
 import AuthGate from "@/components/shell/AuthGate";
@@ -31,6 +32,7 @@ export default function ProjectWorkbench() {
         <ChatPersistence />
         <ProjectManager />
         <ResearchNotice />
+        <TaskEvents />
         <ThemedSidebar />
       </div>
     </AuthGate>

@@ -110,6 +110,8 @@ export async function decomposeAssets(
       existing,
       auto_looks: opts?.autoLooks ?? false,
       visual_style: opts?.visualStyle ?? "",
+      // 终态事件流按项目路由（TaskEvents 通知过滤）
+      project_id: useCanvasStore.getState().projectId,
       // 全自动出图链沿用项目级出图设置（同 startShotImageJob）
       ...(opts?.autoLooks
         ? { params: useCanvasStore.getState().imagegen }
@@ -168,7 +170,7 @@ export type ShotImageRequest = {
   name: string;
   description: string;
   visualNotes?: string;
-  assetType?: "character" | "scene" | "prop" | "shot";
+  assetType?: "character" | "scene" | "prop" | "costume" | "shot";
   referenceImages?: string[];
   referenceLabels?: { type: string; name: string }[];
   aspect?: string;
@@ -249,6 +251,8 @@ export async function startShotImageJob(
     body: JSON.stringify({
       shots,
       params: params ?? useCanvasStore.getState().imagegen,
+      // 终态事件流按项目路由（TaskEvents 通知过滤）
+      project_id: useCanvasStore.getState().projectId,
     }),
   });
   if (!r.ok) {
@@ -289,7 +293,7 @@ export async function startCharacterImageJob(opts: {
   rid: string;
   name: string;
   description: string;
-  assetType?: "character" | "scene" | "prop";
+  assetType?: "character" | "scene" | "prop" | "costume";
   visualNotes?: string;
   aspect?: string;
   params?: ImagegenParams;

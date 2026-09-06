@@ -65,6 +65,9 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
       }
     }
   const text = textParts.join("\n");
+  // 系统代发的任务通知（TaskEvents 自动续跑）：中性样式 + 摘掉编辑重发
+  // ——那是系统的嘴不是用户的口吻，改了重发没有意义
+  const isJobNotice = text.startsWith("（任务通知）");
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -106,9 +109,15 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
           </div>
         ) : null}
         {text ? (
-          <div className="whitespace-pre-wrap break-words rounded-[14px_14px_4px_14px] bg-accent px-3 py-2 text-sm leading-relaxed text-white">
-            {text}
-          </div>
+          isJobNotice ? (
+            <div className="whitespace-pre-wrap break-words rounded-[14px_14px_4px_14px] border border-hairline bg-surface-2 px-3 py-2 text-[13px] leading-relaxed text-text-2">
+              {text}
+            </div>
+          ) : (
+            <div className="whitespace-pre-wrap break-words rounded-[14px_14px_4px_14px] bg-accent px-3 py-2 text-sm leading-relaxed text-white">
+              {text}
+            </div>
+          )
         ) : null}
         {message?.id ? (
           <div className="absolute -left-8 top-1 flex flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100">
@@ -120,21 +129,23 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
-            <button
-              type="button"
-              data-tip="编辑并重发" aria-label="编辑并重发"
-              data-track="chat.editResend"
-              onClick={() =>
-                window.dispatchEvent(
-                  new CustomEvent(CHAT_EDIT_MESSAGE_EVENT, {
-                    detail: { id: message.id!, text },
-                  }),
-                )
-              }
-              className="rounded-md p-1 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
+            {isJobNotice ? null : (
+              <button
+                type="button"
+                data-tip="编辑并重发" aria-label="编辑并重发"
+                data-track="chat.editResend"
+                onClick={() =>
+                  window.dispatchEvent(
+                    new CustomEvent(CHAT_EDIT_MESSAGE_EVENT, {
+                      detail: { id: message.id!, text },
+                    }),
+                  )
+                }
+                className="rounded-md p-1 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+            )}
           </div>
         ) : null}
       </div>

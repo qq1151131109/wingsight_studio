@@ -82,11 +82,24 @@ export type PromptPickDetail = { text: string };
  *  与其让用户找底坞入口，不如拦下的同时把设定弹窗递到眼前 */
 export const OPEN_STYLE_EVENT = "wingsight:open-style";
 
+/** 「项目画风」弹窗关闭（遮罩点击/X/Esc/完成）→ CanvasAgentBridge 的
+ *  open_style_picker 等待式 handler 据此收尾（用户没选就关 = 未选择） */
+export const STYLE_PANEL_CLOSED_EVENT = "wingsight:style-panel-closed";
+
 /** 底部坞「快捷键」按钮 → 打开快捷键速查表（ShortcutsModal 自听） */
 export const OPEN_SHORTCUTS_EVENT = "wingsight:open-shortcuts";
 
 /** 聊天侧栏「助手能力」按钮 → 打开能力面板（CapabilitiesDialog 自听） */
 export const OPEN_CAPABILITIES_EVENT = "wingsight:open-capabilities";
+
+/** 后台任务终态自动续跑（TaskEvents 决策 → AutoRunBridge 执行）：
+ *  发送动作必须发生在侧栏 chat context 内（useCopilotChatHeadless_c 在
+ *  侧栏外是另一套 context，消息 resolve 了也进不了可见聊天——实测踩坑），
+ *  所以页面级 TaskEvents 只派发本事件，真正 appendMessage 由挂在 ChatInput
+ *  JSX 里的隐形桥完成（可见性/loading 闸也归桥，那才是真 loading 信号） */
+export const AGENT_AUTO_RUN_EVENT = "wingsight:agent-auto-run";
+
+export type AgentAutoRunDetail = { text: string; jobId: string };
 
 /** 能力面板点了示例/技能 → 往聊天输入条插入文本（ChatInput 自听；
  *  detail.text 必填，插入后自动聚焦输入条） */

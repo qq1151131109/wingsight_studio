@@ -116,7 +116,7 @@ export interface WingNodeData {
   genPrompt?: string;
   genShot?: {
     description: string;
-    assetType: "character" | "scene" | "prop" | "shot";
+    assetType: "character" | "scene" | "prop" | "costume" | "shot";
     visualNotes: string;
     referenceImages: string[];
     referenceLabels?: { type: string; name: string }[];

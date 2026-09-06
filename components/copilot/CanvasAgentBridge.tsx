@@ -11,6 +11,7 @@ import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from 
 import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
+import { STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import {
   applyOps,
   normalizeOps,
@@ -40,6 +41,7 @@ import {
   MASK_REDRAW_EVENT,
   OPEN_STYLE_EVENT,
   ROW_GENERATE_EVENT,
+  STYLE_PANEL_CLOSED_EVENT,
   type FrameAnalysisDetail,
   type MaskRedrawDetail,
   type RowGenerateDetail,
@@ -229,15 +231,16 @@ async function directImagegen(
   ]
     .filter(Boolean)
     .join("；");
-  // 资产卡按自身类型出设定图（角色=四格定妆契约、服饰按道具契约、场景/道具
+  // 资产卡按自身类型出设定图（角色=四格定妆、服饰=结构图三视图、场景/道具
   // 同名）——此前只看引用卡里有没有角色卡，角色资产卡不带角色引用时被误标
-  // 成 scene，提示词渲染成「无人空镜」出空场景
+  // 成 scene，提示词渲染成「无人空镜」出空场景；服饰曾因 flow 缺 costume
+  // 类型临时按 prop 契约（4:3），flow 补齐后走本名 16:9 三视图
   const targetType = String(node.data.nodeType);
   const targetAssetType =
     targetType === "character"
       ? "character"
       : targetType === "costume"
-        ? "prop"
+        ? "costume"
         : targetType === "scene" || targetType === "prop"
           ? targetType
           : undefined;
@@ -280,7 +283,7 @@ async function directImagegen(
   const sceneKeyword = /(场景|空镜|环境)/.test(
     `${node.data.title ?? ""} ${opts.prompt}`,
   );
-  const assetType: "character" | "scene" | "prop" | "shot" = targetAssetType
+  const assetType: "character" | "scene" | "prop" | "costume" | "shot" = targetAssetType
     ? targetAssetType
     : fromShotlist
       ? "shot"
@@ -610,26 +613,83 @@ export default function CanvasAgentBridge() {
     value: summaryWithStyle,
   });
 
-  // 画风选择器：agent 侧一键弹出底部坞「项目画风」面板（预设+自定义）
+  // 画风选择器：agent 侧一键弹出底部坞「项目画风」面板（预设+自定义）。
+  // 等待式 handler：面板弹出后挂起，用户实际选完（画风变化稳定 2s——自定义
+  // 输入逐键保存，等停笔）/关面板/超时才返回，返回值带所选画风——此前立即
+  // 返回固定文案，用户选完 agent 一无所知（2026-09-05「选完不知道」事故）
   useCopilotAction({
     name: "open_style_picker",
     description:
-      "打开「项目画风」选择面板（预设 + 自定义，用户点选即生效）。用户还没定画风、被画风闸拦下、或用户想换画风时调用，面板已自动弹在画布上。",
+      "打开「项目画风」选择面板并等用户选完：返回所选画风（或用户关闭面板/超时的说明），拿到返回再继续出图等后续任务。用户还没定画风、被画风闸拦下、或用户想换画风时调用。",
     available: "remote",
     parameters: [],
-    handler: () => {
+    handler: async () => {
       window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
-      return "已打开画风面板，等用户选择后继续（选择即生效，无需再确认）";
+      return await new Promise<string>((resolve) => {
+        let settled = false;
+        let settleTimer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (msg: string) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(settleTimer);
+          clearTimeout(timeout);
+          unsub();
+          window.removeEventListener(STYLE_PANEL_CLOSED_EVENT, onClosed);
+          resolve(msg);
+        };
+        const unsub = useCanvasStore.subscribe((s, prev) => {
+          if (s.projectStyle !== prev.projectStyle && s.projectStyle.trim()) {
+            clearTimeout(settleTimer);
+            settleTimer = setTimeout(() => {
+              const v = useCanvasStore.getState().projectStyle.trim();
+              if (v) {
+                // store 存的是 prompt 全文；命中预设时连名字一起回传（agent
+                // 转述用名、生成用文），与底坞按钮的 styleLabel 同一匹配口径
+                const preset = STYLE_PRESETS.find((p) => p.prompt === v);
+                const label = preset ? `${preset.name}：${v}` : v;
+                finish(
+                  `用户已选择画风：「${label.slice(0, 100)}」（已全局生效）。继续之前的出图/生成任务即可。`,
+                );
+              }
+            }, 2000);
+          }
+        });
+        const onClosed = () => {
+          const v = useCanvasStore.getState().projectStyle.trim();
+          finish(
+            v
+              ? `用户关闭了画风面板，当前画风：「${v.slice(0, 80)}」，可直接继续。`
+              : "用户关闭了画风面板且未选择。可说明推荐理由后 set_project_style 直接设定，或再问用户。",
+          );
+        };
+        window.addEventListener(STYLE_PANEL_CLOSED_EVENT, onClosed);
+        const timeout = setTimeout(
+          () =>
+            finish(
+              "等用户选画风超时（4 分钟）——画风仍未设定的话，先向用户说明并给出推荐。",
+            ),
+          4 * 60_000,
+        );
+      });
     },
-    render: ({ status }) => (
-      <ToolCard
-        icon={<Palette />}
-        title={status !== "complete" ? "正在打开画风面板" : "已打开画风面板，请在画布上选择"}
-        ok
-      >
-        {null}
-      </ToolCard>
-    ),
+    render: ({ status, result }) => {
+      const r = typeof result === "string" ? result : "";
+      return (
+        <ToolCard
+          icon={<Palette />}
+          title={
+            status !== "complete"
+              ? "已打开画风面板，等待选择…"
+              : r.includes("已选择画风") || r.includes("当前画风")
+                ? "用户已选择画风"
+                : "画风面板已关闭"
+          }
+          ok
+        >
+          {null}
+        </ToolCard>
+      );
+    },
   });
 
   // 画风直设：经用户同意（或用户点名）时写入项目画风
@@ -1293,14 +1353,14 @@ export default function CanvasAgentBridge() {
       const r = result as unknown as OpResultEx;
       if (r.rejected) {
         return (
-          <div className="my-1 rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs text-text-3">
+          <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs text-text-3">
             已按你的选择跳过这批删除 / 分组操作。
           </div>
         );
       }
       const ok = r.errors.length === 0;
       return (
-        <div className="my-1 rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
+        <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
           <div
             className={`flex items-center gap-1.5 font-medium ${
               ok ? "text-good" : "text-warn"

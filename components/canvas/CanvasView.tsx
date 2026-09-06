@@ -67,6 +67,7 @@ import {
   OPEN_ADD_MENU_EVENT,
   OPEN_SHORTCUTS_EVENT,
   OPEN_STYLE_EVENT,
+  STYLE_PANEL_CLOSED_EVENT,
   type FocusNodesDetail,
   type NodeInfoDetail,
 } from "@/lib/canvas/events";
@@ -916,12 +917,20 @@ function BottomDock({
   const [imagegenPanel, setImagegenPanel] = useState(false);
   const { zoomIn, zoomOut, zoomTo, fitView } = useReactFlow();
 
+  // 关画风弹窗统一走这里：广播 STYLE_PANEL_CLOSED_EVENT——open_style_picker
+  // 的等待式 handler 靠它收尾（用户没选就关 = 未选择），四处关闭路径同源
+  const closeStylePanel = () => {
+    setStylePanel(false);
+    window.dispatchEvent(new CustomEvent(STYLE_PANEL_CLOSED_EVENT));
+  };
+
   // 弹窗开着时 Esc 关闭（弹窗经 portal 挂 body，画布的全局 Esc 管不到这里）
   useEffect(() => {
     if (!stylePanel && !imagegenPanel) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
-      setStylePanel(false);
+      if (stylePanel) closeStylePanel();
+      else setStylePanel(false);
       setImagegenPanel(false);
     };
     window.addEventListener("keydown", onKey);
@@ -1061,7 +1070,7 @@ function BottomDock({
       {stylePanel ? (
         <OverlayModal
           className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/45 p-6"
-          onClick={() => setStylePanel(false)}
+          onClick={() => closeStylePanel()}
         >
           <div
             className="flex max-h-[88vh] w-[min(76rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
@@ -1079,7 +1088,7 @@ function BottomDock({
                 type="button"
                 data-tip="关闭" aria-label="关闭"
                 className="rounded-md p-1 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-                onClick={() => setStylePanel(false)}
+                onClick={() => closeStylePanel()}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -1107,7 +1116,7 @@ function BottomDock({
               <button
                 type="button"
                 className="rounded-md border border-hairline px-2 py-0.5 text-[11px] text-text-2 transition-colors hover:border-accent hover:text-text"
-                onClick={() => setStylePanel(false)}
+                onClick={() => closeStylePanel()}
               >
                 完成
               </button>

@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { useCopilotChat } from "@copilotkit/react-core";
+import { useAgent, useCopilotChatConfiguration, useCopilotKit } from "@copilotkit/react-core/v2";
 import { langgraphAgent } from "@/app/agent-provider";
 import {
   ArrowUp,
@@ -44,6 +44,7 @@ import {
 } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
 import { CHAT_EDIT_MESSAGE_EVENT, CHAT_INSERT_TEXT_EVENT } from "@/lib/canvas/events";
+import { AutoRunBridge } from "@/components/copilot/TaskEvents";
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
 function detectSlash(
@@ -136,8 +137,15 @@ export default function ChatInput({
   onStop,
 }: ChatInputSlotProps) {
   const nodes = useCanvasStore((s) => s.nodes);
-  // 开源 headless 面（appendMessage = 入列 + 触发 run；多模态 content parts 同路）
-  const { appendMessage: sendMessage } = useCopilotChat();
+  // 多模态发送 = 复刻 v2 in-context sendMessage 内核（agent.addMessage(裸 AG-UI
+  // 对象) + copilotkit.runAgent）。三条歧路都试过：废弃版 appendMessage 把裸对象
+  // 直塞 gqlToAGUI 炸 "isResultMessage is not a function"（v2 迁移起发图片/视频
+  // 附件就是坏的）；useCopilotChatHeadless_c 是独立 runtime，消息进不了侧栏可见
+  // 聊天；onSubmitMessage 只收 string。useAgent 取的就是侧栏正在用的同一个包装
+  // agent（注册表单例），runAgent 走 core 的流式生命周期，侧栏照常渲染。
+  const chatConfig = useCopilotChatConfiguration();
+  const { agent: chatAgent } = useAgent({ agentId: chatConfig?.agentId ?? "default" });
+  const { copilotkit } = useCopilotKit();
   // 内联引用编辑器（与画布面板同款）：display 文本镜像 + 序列化结果
   const edRef = useRef<MentionInputHandle>(null);
   const [lastRead, setLastRead] = useState<MentionRead | null>(null);
@@ -448,13 +456,16 @@ export default function ChatInput({
 
     if (mediaParts.length > 0) {
       // 多模态消息：text part + 媒体 part（视觉模型服务端透传；文本模型自动降级）
-      void sendMessage(
-        {
+      if (chatAgent) {
+        chatAgent.addMessage({
           id: `u_${Date.now()}`,
           role: "user",
           content: [{ type: "text", text: textPart }, ...mediaParts],
-        } as never,
-      );
+        } as never);
+        void copilotkit.runAgent({ agent: chatAgent }).catch((e: unknown) => {
+          console.error("[ChatInput] 多模态 runAgent 失败", e);
+        });
+      }
     } else {
       if (onSend) void onSend(textPart);
     }
@@ -496,6 +507,7 @@ export default function ChatInput({
     <div
       className="copilotKitInputContainer"
       onDragOver={(e) => e.preventDefault()}
+
       onDrop={(e) => {
         // 画布卡拖进来 = @ 引用（novanova 拖拽引用范式）：把手携带节点 id，
         // 落成 chip（appendMention 自带去重），不当作文件附件
@@ -518,7 +530,10 @@ export default function ChatInput({
         }
       }}
     >
-        {editingMsg ? (
+      {/* 任务终态自动续跑桥：借宿在侧栏 chat context 内（context 分裂实测：
+          侧栏外的 headless hook 消息进了另一套 context，可见聊天收不到） */}
+      <AutoRunBridge onSend={onSend} />
+      {editingMsg ? (
           <div className="mb-1 flex items-center gap-2 rounded-md border border-accent-soft bg-accent/5 px-2 py-1 text-[11px] text-text-2">
             <Pencil className="h-3 w-3 text-accent" />
             正在编辑一条消息，发送将从这里重新展开对话
