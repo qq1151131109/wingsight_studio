@@ -31,6 +31,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import eventbus
+
 import imgresearch
 import models
 import research
@@ -658,6 +660,31 @@ async def _run_task(job_id: str, body: str, dims: list[str], model: str) -> None
         _append_log(job_id, "error", f"任务异常：{str(exc)[:300]}")
     finally:
         _CANCELLED.discard(job_id)
+        _emit_review_terminal(job_id)
+
+
+def _emit_review_terminal(job_id: str) -> None:
+    """终态广播到 SSE 事件流（用户可能已离开剧本卡，卡锚轮询看不见）。"""
+    row = _get_row(job_id)
+    if row is None or row["status"] not in ("done", "error", "stopped"):
+        return
+    n_findings = 0
+    with _conn() as conn:
+        n_findings = conn.execute(
+            "SELECT COUNT(*) FROM review_findings WHERE job_id = ?", (job_id,)
+        ).fetchone()[0]
+    eventbus.publish_job_event(
+        "script_review",
+        str(row["project_id"]),
+        job_id,
+        str(row["status"]),
+        title=str(row["card_title"] or "剧本审查"),
+        summary=(
+            str(row["error"] or "")[:200]
+            if row["status"] != "done"
+            else f"{n_findings} 条发现"
+        ),
+    )
 
 
 def start_review(

@@ -31,6 +31,7 @@ from typing import Any
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 import httpx
+import eventbus
 import jina_reader
 
 import imgresearch
@@ -510,6 +511,7 @@ async def _plan_task(job_id: str) -> None:
         logger.exception("调研 %s 开题失败", job_id)
         _update_row(job_id, status="error", error=f"开题失败：{str(exc)[:300]}")
         _append_log(job_id, "error", f"开题失败：{str(exc)[:300]}")
+        _emit_terminal(job_id)
 
 
 def confirm_plan(job_id: str, plan: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -554,6 +556,33 @@ def cancel_research(job_id: str) -> None:
     _CANCELLED.add(job_id)
 
 
+def _emit_terminal(job_id: str, status_override: str = "", error_override: str = "") -> None:
+    """终态广播到 SSE 事件流（前端通知/自动续跑；无订阅者时空操作）。
+
+    status_override 用于补研失败这类「父任务状态没翻但用户需要知道」的场合
+    ——卡面状态轮询看不见它，只有事件流能送到聊天侧。
+    """
+    view = get_job_view(job_id, include_dossier=False)
+    if view is None:
+        return
+    status = status_override or str(view["status"])
+    error = error_override or str(view["error"] or "")
+    if not status_override and status not in ("done", "error", "stopped", "interrupted"):
+        # agent 关停等场景任务被硬掐、行状态仍是 running——不发非终态事件
+        return
+    eventbus.publish_job_event(
+        "deep_research",
+        str(view["projectId"]),
+        job_id,
+        status,
+        title=str(view["topic"]),
+        summary=str(view["summary"] or "")[:200],
+        error=error[:300],
+        sources_count=int(view["sourcesCount"] or 0),
+        findings_count=int(view["findingsCount"] or 0),
+    )
+
+
 async def _run_task(job_id: str, plan: dict[str, Any]) -> None:
     row = _get_row(job_id)
     if row is None:
@@ -583,6 +612,8 @@ async def _run_task(job_id: str, plan: dict[str, Any]) -> None:
         logger.exception("调研 %s 执行失败", job_id)
         _update_row(job_id, status="error", error=str(exc)[:300])
         _append_log(job_id, "error", f"执行失败：{str(exc)[:300]}")
+    finally:
+        _emit_terminal(job_id)
 
 
 class _Cancelled(Exception):
@@ -963,7 +994,12 @@ async def _gap_task(job_id: str, parent_job_id: str, questions: list[str]) -> No
         _update_row(job_id, status="done", stage="", rounds_done=1)
         _update_row(parent_job_id, status="done", error="")
         _append_log(parent_job_id, "dossier", "补研回填：卷宗已更新")
+        # 卡面锚的是父任务 researchId：卷宗更新事件发父 id（gap id 卡上找不到）
+        _emit_terminal(parent_job_id)
     except Exception as exc:  # noqa: BLE001
         logger.exception("补研 %s 失败", job_id)
         _update_row(job_id, status="error", error=str(exc)[:300])
         _append_log(job_id, "error", f"补研失败：{str(exc)[:300]}")
+        _emit_terminal(
+            parent_job_id, status_override="error", error_override=f"补研失败：{str(exc)[:300]}"
+        )

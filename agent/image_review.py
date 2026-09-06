@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+import eventbus
 import skills
 
 DB_PATH = os.environ.get("WINGSIGHT_DB", "data/wingsight.db")
@@ -292,6 +293,7 @@ async def _run_task(job_id: str, image_url: str, card_title: str, model: str) ->
         _append_log(job_id, "info", f"评审完成：{len(findings)} 条发现")
         _update_row(job_id, status="done")
         _sync_dim_states(job_id)
+        _emit_review_terminal(job_id)
     except _Cancelled:
         return
     except Exception as exc:  # noqa: BLE001
@@ -300,6 +302,22 @@ async def _run_task(job_id: str, image_url: str, card_title: str, model: str) ->
             return
         _append_log(job_id, "error", str(exc)[:300])
         _update_row(job_id, status="error", error=str(exc)[:300])
+        _emit_review_terminal(job_id)
+
+
+def _emit_review_terminal(job_id: str) -> None:
+    """终态广播到 SSE 事件流（用户可能已离开图片卡，卡锚轮询看不见）。"""
+    row = _get_row(job_id)
+    if row is None or row["status"] not in ("done", "error"):
+        return
+    eventbus.publish_job_event(
+        "image_review",
+        str(row["project_id"]),
+        job_id,
+        str(row["status"]),
+        title=str(row["card_title"] or "图片评审"),
+        summary=str(row["error"] or "")[:200] if row["status"] == "error" else "评审完成",
+    )
 
 
 def start_review(

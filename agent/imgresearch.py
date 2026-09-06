@@ -19,6 +19,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+import eventbus  # noqa: E402  (与 main.py 同式：dotenv 之后导入)
+
 import thumbs  # noqa: E402  (与 main.py 同式：dotenv 之后导入)
 from skills import ASSETS_DIR
 
@@ -173,6 +175,27 @@ def mark_adopted(
             [project_id, node_id, *ids],
         ).fetchall()
     return [_to_dict(r) for r in rows]
+
+
+# 终选完成即自动采纳的每资产张数（各出图模型参考上限最小 4，留 1 席余量）
+AUTO_ADOPT_PER_NODE = 3
+
+
+def auto_adopt_top(project_id: str, node_id: str, per_node: int = AUTO_ADOPT_PER_NODE) -> int:
+    """按模型终选推荐（rec_rank 升序）自动采纳前 per_node 张，返回采纳数。
+
+    只挑 recommended 且未采纳的；无推荐/已够则不动——用户手动改选优先。"""
+    cands = [
+        c
+        for c in list_candidates(project_id, node_id)
+        if c.get("recommended") and not c.get("adopted")
+    ]
+    cands.sort(key=lambda c: c.get("recRank") or 99)
+    pick = cands[: max(1, per_node)]
+    if not pick:
+        return 0
+    mark_adopted(project_id, node_id, [c["id"] for c in pick])
+    return len(pick)
 
 
 def delete_candidate(project_id: str, cid: str) -> bool:
@@ -641,6 +664,26 @@ async def _run_batch(
     await asyncio.gather(*[_run_one(i, a) for i, a in enumerate(assets)])
     batch["status"] = "done"
     batch["current"] = ""
+    # 终态广播：聊天侧自动续跑汇报采纳结果（AG-UI 轮次流早已关闭，只有事件流能到）
+    n_ok = sum(1 for it in batch["items"] if it["status"] == "done")
+    n_err = len(batch["items"]) - n_ok
+    eventbus.publish_job_event(
+        "ref_research",
+        project_id,
+        batch_id,
+        "done",
+        title="资产参考图调研",
+        summary=f"{n_ok} 项完成" + (f"、{n_err} 项失败" if n_err else ""),
+        items=[
+            {
+                "node_id": it["nodeId"],
+                "name": it["name"],
+                "status": it["status"],
+                "error": str(it.get("error") or "")[:160],
+            }
+            for it in batch["items"]
+        ],
+    )
 
 
 def _prune_jobs(task: asyncio.Task) -> None:
@@ -783,6 +826,10 @@ async def _run_research(
             selection = await skills.run_ref_select_flow(select_asset, _select_payload(rows))
             _apply_recommendation(project_id, node_id, rows, selection)
             job["note"] = selection.get("note") or ""
+            # 终选完自动采纳 top-K 推荐（rec_rank 升序）——LLM 已挑过一轮，
+            # 再等用户逐张手勾是把模型判断抄写一遍；采纳只是标记不花额度，
+            # 用户可在「找参考图」面板随时改选（2026-09-06 用户「为啥没自动选」）
+            auto_adopt_top(project_id, node_id, AUTO_ADOPT_PER_NODE)
         except Exception as exc:  # noqa: BLE001
             errors["终选"] = str(exc)[:160]
         job["candidates"] = list_candidates(project_id, node_id)

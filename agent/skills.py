@@ -19,6 +19,7 @@ import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import Literal
 
+import eventbus
 import imagejobs
 import models
 import thumbs
@@ -501,6 +502,7 @@ async def start_decompose_job(
     visual_style: str = "",
     params: Optional[Dict[str, str]] = None,
     text_model: str = "",
+    project_id: str = "",
 ) -> str:
     """启动资产拆解任务，立即返回 jobId（前端轮询 GET /assets/decompose/{jobId}）。
 
@@ -509,6 +511,7 @@ async def start_decompose_job(
     结果写回 asset 条目（image_url / looks[i].image_url）。
     params：出图模型/分辨率覆盖（models.resolve_imagegen_params 产物）。
     text_model：拆解文本模型覆盖（models.resolve_text_model 产物，出图链不受影响）。
+    project_id 仅供终态事件流路由（前端按项目过滤通知），空也能跑。
     """
     job_id = uuid.uuid4().hex[:12]
     DECOMPOSE_JOBS[job_id] = {
@@ -565,6 +568,21 @@ async def start_decompose_job(
         finally:
             state["phase"] = "done"
             state["status"] = "done"
+            # 终态事件流：拆解（含全自动出图链）可能数分钟，用户切走后靠这条通道知道完成
+            n_assets = len(state.get("assets") or [])
+            eventbus.publish_job_event(
+                "decompose",
+                project_id,
+                job_id,
+                "error" if state.get("error") else "done",
+                title="剧本拆解",
+                summary=(
+                    str(state["error"])[:200]
+                    if state.get("error")
+                    else f"拆解完成 {n_assets} 项资产"
+                    + (f"；自动出图：{state['images_note']}" if state.get("images_note") else "")
+                ),
+            )
         # 清理历史任务（保留最近 49 个已完成）
         done = [k for k, v in DECOMPOSE_JOBS.items() if v["status"] == "done"]
         for k in done[:-49]:
@@ -635,8 +653,9 @@ async def _auto_asset_images(
             a["error"] = str(r.get("error") or "出图失败")[:200]
 
     async def one_costume(a: Dict[str, Any]) -> None:
-        # 服饰结构图按道具契约（4:3 单件平铺）
-        await gen_main(a, "prop")
+        # 服饰结构图走本名布局（flow LAYOUT_SPECS 已有 costume：16:9 三视图；
+        # 曾因 flow 缺该类型临时按 prop 4:3 出——090602 事故 9/9 服饰 500 后补齐）
+        await gen_main(a, "costume")
 
     async def one_char(a: Dict[str, Any]) -> None:
         await gen_main(a, "character")
@@ -1400,7 +1419,9 @@ async def _generate_single_image(
 
 
 async def start_storyboard_image_job(
-    shots: List[Dict[str, Any]], params: Optional[Dict[str, str]] = None
+    shots: List[Dict[str, Any]],
+    params: Optional[Dict[str, str]] = None,
+    project_id: str = "",
 ) -> str:
     """启动分镜行批量出图任务（直连 imagegen flow，并发 30，不经聊天）。
 
@@ -1409,6 +1430,7 @@ async def start_storyboard_image_job(
     一致（type 固定 scene，镜头画面不是角色设定图）。params：请求级出图
     模型/分辨率/画幅；镜头级 aspect 与 params 覆盖请求级（卡片级覆盖），
     逐镜头合并后预校验——任一组合不合法整批 ValueError（端点转 400 明报）。
+    project_id 仅供终态事件流路由（前端按项目过滤通知），空也能跑。
     立即返回 jobId；每张完成即写入任务状态，前端轮询增量取走。
     """
     if not IMAGEGEN_FLOW_ID:
@@ -1494,6 +1516,17 @@ async def start_storyboard_image_job(
                 imagejobs.finish_job(job_id, job["status"], job["images"])
             except Exception as exc:  # noqa: BLE001
                 print(f"[imagejobs] 终态落库失败 job={job_id}: {exc}", flush=True)
+            # 终态事件流（用户可能已离开触发出图的分镜卡，轮询死了也能收到通知）
+            if job["status"] != "cancelled":
+                ok = sum(1 for r in job["images"].values() if r.get("ok"))
+                eventbus.publish_job_event(
+                    "shot_images",
+                    project_id,
+                    job_id,
+                    job["status"],
+                    title="分镜批量出图",
+                    summary=f"{ok}/{len(job['images'])} 张成功",
+                )
 
     asyncio.create_task(run())
     return job_id

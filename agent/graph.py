@@ -65,10 +65,11 @@ async def list_langflow_skills() -> str:
 
 @tool
 async def decompose_script(script: str, config: RunnableConfig) -> str:
-    """把剧本拆解为资产清单（角色/场景/道具，含外形与视觉要点）。
+    """把剧本拆解为资产清单（角色/场景/道具/服饰，含外形与视觉要点）。
 
     用户给出剧本（完整或片段）并想要资产卡/设定图时，先用这个工具拆解，
-    再用 canvas_ops 把拆出的资产建成画布卡片，等用户确认增删。
+    再用 canvas_ops 把拆出的资产建成画布卡片（建完继续标准链的下一步，
+    增删确认放在链尾汇报时，不要中途停下）。
 
     Args:
         script: 剧本原文（尽量完整传入，不要自行摘要）。
@@ -169,34 +170,49 @@ async def run_langflow_skill(
     return await skills.run_skill(skill, input_text, params)
 
 
-@tool
+# 出图模型目录唯一真相源 = models.IMAGE_MODELS，工具描述里的清单由它生成
+# （此前手抄两份，models.py 改动 docstring 不会跟着变——漂移隐患）。
+# f-string 不能作 docstring，正文进常量、def 后显式赋 __doc__ 再 tool() 包装。
+_IMAGE_MODEL_LINE = (
+    "{"
+    + ", ".join(
+        f'"{m["id"]}": {json.dumps(m["resolutions"])}' for m in models.IMAGE_MODELS
+    )
+    + "}"
+)
+_GEN_ASSETS_DOC = f"""为资产批量生成设定图（并发出图，每张完成会实时推送进度到聊天）。
+
+用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
+{{"type":"character|scene|prop|costume|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词","aspect":"9:16"}}
+（字段与 decompose_script 的输出一致；type=shot 是镜头剧照布局——
+有人物有剧情的单幅画面，分镜/镜头类出图用 shot 而不是 scene；
+服饰卡出图用 costume——服装结构图三视图布局，不要改成 prop）。
+aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：**只在用户明确对
+画幅提出要求**（竖版/横版/方图/宽幕，或重出带「画幅 N」标注的卡）时传。
+资产设定图一律不传 aspect——按类型默认（character/scene/costume=16:9、
+prop=4:3），与角色表「横版 16:9 四格构图」的布局提示词和资产卡 16:9
+媒体区配套；agent 不要自行替用户决定画幅（曾把角色表按 3:4 竖版出，
+四格构图被压变形、资产带格子高低不齐）。reference_images 可选（字符串数组）：一致性参考图的
+/agent-service/assets/ URL（从画布摘要里取带图卡的 imageUrl），配合
+reference_labels（[{{type,name}}]，type=character 时锁身份不继承白底
+排版）——用户要求「按某角色的设定图出」「保持形象一致」时必须带上。
+返回每个资产的成败与 image_url。
+用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
+与各模型支持档位：
+{_IMAGE_MODEL_LINE}
+seedream-5-0-pro 是多图融合模型：多张参考图合成一张（如「图1 的人物
+穿上图2 的服装」），用户要求融合/组合多张参考图时优先选它。
+
+Args:
+    assets_json: 资产数组 JSON 文本。
+    model: 出图模型 id（上表之一），留空用默认 gpt-image-2-03。
+    resolution: 清晰度档位（1K/2K/4K，须在该模型支持列表内），留空用模型默认。"""
+
+
 async def generate_asset_images(
     assets_json: str, config: RunnableConfig, model: str = "", resolution: str = ""
 ) -> str:
-    """为资产批量生成设定图（并发出图，每张完成会实时推送进度到聊天）。
-
-    用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
-    {"type":"character|scene|prop|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词","aspect":"9:16"}
-    （字段与 decompose_script 的输出一致；type=shot 是镜头剧照布局——
-    有人物有剧情的单幅画面，分镜/镜头类出图用 shot 而不是 scene）。
-    aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：用户对画幅有要求
-    （竖版/横版/方图/宽幕）或重出带「画幅 N」标注的卡时传；不传按类型
-    默认幅面。reference_images 可选（字符串数组）：一致性参考图的
-    /agent-service/assets/ URL（从画布摘要里取带图卡的 imageUrl），配合
-    reference_labels（[{type,name}]，type=character 时锁身份不继承白底
-    排版）——用户要求「按某角色的设定图出」「保持形象一致」时必须带上。
-    返回每个资产的成败与 image_url。
-    用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
-    与各模型支持档位：
-    {"gpt-image-2-03": ["1K","2K","4K"], "doubao-seedream-4-0-250828": ["1K","2K","4K"], "doubao-seedream-4-5-251128": ["2K","4K"], "doubao-seedream-5-0-pro-260628": ["1K","2K"]}
-    seedream-5-0-pro 是多图融合模型：多张参考图合成一张（如「图1 的人物
-    穿上图2 的服装」），用户要求融合/组合多张参考图时优先选它。
-
-    Args:
-        assets_json: 资产数组 JSON 文本。
-        model: 出图模型 id（上表之一），留空用默认 gpt-image-2-03。
-        resolution: 清晰度档位（1K/2K/4K，须在该模型支持列表内），留空用模型默认。
-    """
+    """为资产批量生成设定图。"""
     try:
         assets = json.loads(assets_json)
         if not isinstance(assets, list):
@@ -214,6 +230,10 @@ async def generate_asset_images(
     return await skills.generate_asset_images(assets, config=config, params=params)
 
 
+generate_asset_images.__doc__ = _GEN_ASSETS_DOC
+generate_asset_images = tool(generate_asset_images)
+
+
 @tool
 async def research_asset_references(assets_json: str, config: RunnableConfig) -> str:
     """为画布资产批量调研网络参考图（AI 出词 → 豆包搜图 + Wikimedia → 模型看图终选）。
@@ -222,11 +242,20 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
     历史纪实类题材出图前先调研能显著提升形制/材质一致性。纯虚构或动画
     风格、用户明确不需要参考时不要调用。不要在用户没要求时自作主张调研。
 
+    **范围默认全量**：用户说「给资产做调研」没点名具体几个/哪类时，画布上
+    的资产卡（character/scene/prop/costume）**全部传入一次调用**——不要
+    自己挑「重点资产」子集（090602 事故：55 个资产只调研 16 个，用户以为
+    全做了）。用户点名了范围才收窄；只有资产特别多（>60）或用户明显在意
+    时间/成本时，先问一句带默认（「全部 N 个约 X 分钟，还是先做重点？」）。
+    发起**之后**在回复文字里向用户说明「画布 N 个资产全部纳入」——说明
+    只写在回复里，绝不写进 assets_json（JSON 到 ] 即止）。
+
     node_id 必须取自画布摘要（每行行首的节点 id），画布上没有该资产时
-    先用 canvas_ops 建卡、下一轮再调研。后台串行执行：每个资产约 1-2 分钟，
-    发起后立即返回，用 get_reference_research_status 查进度；完成后提示
-    用户打开资产卡的「找参考图」面板勾选采纳（采纳后「补资产图」批量出图
-    会自动带上参考图）。
+    先用 canvas_ops 建卡、下一轮再调研。20 路并发执行：约每 20 个资产
+    一波、每波约 4 分钟，发起后立即返回，用 get_reference_research_status
+    查进度；**完成时系统已按模型终选自动采纳每资产 top-3 推荐参考**（用户
+    可在「找参考图」面板改选，或用 adopt_asset_references 调整张数），
+    「补资产图」批量出图会自动带上已采纳参考。
 
     Args:
         assets_json: 资产数组 JSON 文本，每个元素：
@@ -245,7 +274,11 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
         if not isinstance(assets, list):
             return "assets_json 必须是数组 JSON"
     except json.JSONDecodeError as e:
-        return f"assets_json 不是合法 JSON：{e}"
+        return (
+            f"assets_json 不是合法 JSON：{e}——JSON 到 ] 即止，"
+            "不要在 JSON 后追加任何说明文字（「N 个资产全部纳入」这类话写在回复里）。"
+            "修正后原样重发。"
+        )
     parsed = []
     for a in assets:
         if not isinstance(a, dict):
@@ -264,23 +297,30 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
         )
     if not parsed:
         return "assets_json 缺少有效项：每项需要 node_id 与 name"
-    # 节点存在性校验（防幻觉 id）：画布上不存在的节点直接点名拒绝
+    # 节点存在性校验（防幻觉 id/占位 id）：不在画布上直接点名拒绝，并把
+    # 可用卡列出来——模型下一轮拿真实 id 重发，不必再查一遍画布
     canvas = projects.load_canvas(pid)
-    node_ids = {str(n.get("id") or "") for n in (canvas or {}).get("nodes", [])}
+    nodes = (canvas or {}).get("nodes", [])
+    node_ids = {str(n.get("id") or "") for n in nodes}
     missing = [a["name"] for a in parsed if a["nodeId"] not in node_ids]
     if missing:
+        listing = "；".join(
+            f"{n.get('id')}（{(n.get('data') or {}).get('title') or n.get('id')}）"
+            for n in nodes[:12]
+        )
         return (
-            f"画布上找不到这些资产卡：{('、'.join(missing))[:120]}。"
-            "请核对画布摘要里的节点 id（先建卡再调研）"
+            f"node_id 不在画布上（涉及：{('、'.join(missing))[:80]}）——不要自拟占位 id，"
+            f"从画布摘要行首取真实节点 id。当前画布的卡：{listing[:400]}"
         )
     batch_id = imgresearch.start_batch_research(pid, parsed)
     names = "、".join(a["name"] for a in parsed)[:120]
-    est_min = max(1, -(-len(parsed) // 100) * 4)
+    est_min = max(1, -(-len(parsed) // imgresearch.BATCH_CONCURRENCY) * 4)
     return (
-        f"已发起 {len(parsed)} 个资产（{names}）的参考图调研，后台 100 路并发执行"
-        f"预计约 {est_min} 分钟。batch_id={batch_id}。"
-        "用 get_reference_research_status 查询进度；完成后提醒用户在资产卡上"
-        "打开「找参考图」面板勾选采纳，采纳后可用「补资产图」批量出图。"
+        f"已发起 {len(parsed)} 个资产（{names}）的参考图调研，后台 "
+        f"{imgresearch.BATCH_CONCURRENCY} 路并发执行预计约 {est_min} 分钟。batch_id={batch_id}。"
+        "用 get_reference_research_status 查询进度；完成时系统已按模型终选"
+        "自动采纳每资产 top-3 推荐（用户可在「找参考图」面板改选，或调 "
+        "adopt_asset_references 调整张数），之后可用「补资产图」批量出图。"
     )
 
 
@@ -289,7 +329,8 @@ async def get_reference_research_status(batch_id: str, config: RunnableConfig) -
     """查询参考图调研任务的进度与结果摘要。
 
     发起 research_asset_references 后用户问进度/是否完成时调用；任务完成后
-    返回每个资产的候选数与模型推荐，提醒用户到资产卡面板勾选采纳。
+    返回每个资产的候选数与模型推荐——完成时系统已自动采纳每资产 top-3
+    推荐，用户要换图去「找参考图」面板改选，要调整张数调 adopt_asset_references。
 
     Args:
         batch_id: research_asset_references 返回的任务 id。
@@ -318,8 +359,88 @@ async def get_reference_research_status(batch_id: str, config: RunnableConfig) -
             elif cands:
                 summaries.append(f"{item['name']}：候选 {len(cands)} 张，无强推荐，建议用户自行挑选")
         lines.extend(summaries)
-        lines.append("请提醒用户：打开资产卡的「找参考图」面板勾选采纳，采纳后「补资产图」会带上参考图。")
+        lines.append("完成时已自动采纳每资产 top-3 推荐；用户要换图去「找参考图」面板改选，要调整张数调 adopt_asset_references。")
     return "\n".join(lines)
+
+
+@tool
+async def adopt_asset_references(
+    node_ids_json: str, config: RunnableConfig, per_node: int = 3
+) -> str:
+    """调整资产参考图的自动采纳：按调研终选推荐（rec_rank 升序）补采纳。
+
+    调研完成时系统已自动采纳每资产 top-3 推荐；用户想多带几张（如「每个
+    资产带 5 张参考」）、少带（面板改选更直观）或某资产漏了推荐时用这个
+    工具补齐——等价于在资产卡「找参考图」面板里勾选推荐项，采纳后
+    「补资产图」批量出图自动带上参考；用户随时可在面板改选。
+    （2026-09-06 用户「你帮我选啊」事故：此前采纳只能手动勾。）
+
+    Args:
+        node_ids_json: 资产卡 node_id 数组 JSON（从画布摘要取），如 ["n_ab12_x"]；
+            传 "[]" 表示项目内所有有调研候选的资产。
+        per_node: 每个资产采纳到几张推荐参考（默认 3，已采纳的不重复计；
+            各出图模型参考上限最小为 4，留 1 席余量；上限 10）。
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return "无法定位当前项目：会话上下文缺少 thread_id"
+    pid = projects.project_id_of_thread(thread_id)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    try:
+        node_ids = json.loads(node_ids_json) if node_ids_json.strip() else []
+        if not isinstance(node_ids, list):
+            return "node_ids_json 必须是数组 JSON"
+    except json.JSONDecodeError as e:
+        return f"node_ids_json 不是合法 JSON：{e}"
+    per_node = max(1, min(int(per_node or 3), imgresearch.MAX_ADOPT_PER_NODE))
+    summary = imgresearch.candidate_summary(pid)
+    if not summary:
+        return "项目里还没有参考图候选——先调 research_asset_references 发起考据调研。"
+    targets = [s for s in summary if not node_ids or s["nodeId"] in node_ids]
+    if not targets:
+        return "给定资产卡没有调研候选（node_id 要从画布摘要取，或传 [] 全量采纳）。"
+    titles: dict[str, str] = {}
+    canvas = projects.load_canvas(pid)
+    for n in (canvas or {}).get("nodes", []):
+        titles[n.get("id")] = (n.get("data") or {}).get("title") or n.get("id")
+    lines = []
+    adopted_total = 0
+    for s in targets:
+        label = titles.get(s["nodeId"], s["nodeId"])
+        cands = [
+            c
+            for c in imgresearch.list_candidates(pid, s["nodeId"])
+            if c.get("recommended") and not c.get("adopted")
+        ]
+        cands.sort(key=lambda c: c.get("recRank") or 99)
+        # 总量语义：补齐到 per_node 张（自动采纳已带 3 张时，要 5 = 再补 2）
+        need = per_node - int(s["adopted"] or 0)
+        pick = cands[:need] if need > 0 else []
+        if not pick:
+            if need <= 0:
+                lines.append(f"- {label}：已采纳 {s['adopted']} 张（≥目标 {per_node}），无需补")
+            elif s["adopted"]:
+                lines.append(
+                    f"- {label}：已采纳 {s['adopted']} 张，剩余推荐不足补到 {per_node}（共 "
+                    f"{s['adopted'] + len(cands)} 张可采）"
+                )
+            else:
+                lines.append(f"- {label}：无模型推荐，建议用户在「找参考图」面板自行挑选")
+            continue
+        imgresearch.mark_adopted(pid, s["nodeId"], [c["id"] for c in pick])
+        adopted_total += len(pick)
+        lines.append(
+            f"- {label}：补采纳 {len(pick)} 张（现共 {s['adopted'] + len(pick)} 张）"
+            f"（{'、'.join((c.get('title') or '')[:20] for c in pick)}）"
+        )
+    head = (
+        f"已补采纳 {adopted_total} 张推荐参考图（总量补齐到每资产 {per_node} 张，按模型终选推荐序）。"
+        "「补资产图」批量出图会自动带上；用户可在资产卡「找参考图」面板改选。"
+    )
+    return "\n".join([head, *lines])
 
 
 @tool
@@ -468,6 +589,26 @@ async def get_research_result(job_id: str, config: RunnableConfig) -> str:
         "不要把 controversies 里的任何一个版本当成定论。"
     )
     return "\n".join(parts)
+
+
+@tool
+async def cancel_research(job_id: str) -> str:
+    """取消一个深度调研任务（仅运行中可取消）。
+
+    启动错了方向（如用户要的是资产参考图考据、你启动了史实深度调研）、
+    或用户改主意说"别查了"时立即调用——别让任务留在后台空跑烧搜索配额。
+    已集来源与事实会保留，之后可对它发起补研。
+    注：还在 planning 态（开题未确认）的任务直接弃置即可、无需取消——
+    未确认不会开始执行、不消耗搜索。
+
+    Args:
+        job_id: start_deep_research 返回的任务 id。
+    """
+    try:
+        research.cancel_research(job_id.strip())
+    except ValueError as e:
+        return str(e)
+    return f"已请求取消调研任务 {job_id}（轮间生效，状态会翻到已取消）；已集材料保留可补研。"
 
 
 # ---------- 技能手册（Agent Skills 规范，渐进披露：目录进系统提示，正文按需 read_skill）----------
@@ -641,7 +782,7 @@ def read_skill(name: str) -> str:
     return f.read_text(encoding="utf-8")
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, run_langflow_skill, read_skill, research_asset_references, get_reference_research_status, start_deep_research, confirm_research_plan, get_research_result]
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, run_langflow_skill, read_skill, research_asset_references, get_reference_research_status, adopt_asset_references, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
@@ -846,11 +987,18 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 {history_section}## 画布当前状态（ground truth，以此为准，忽略聊天历史里的旧状态）
 {canvas_summary}
 
+## 消息路由（先判类型再动手）
+- 只给素材（剧本/文档/图）没说做什么 → 一句话问意图，**问要带默认推荐**（如「我默认按 剧本落卡→拆资产→分镜表 做，出图等画风确认，只做前几步也行」），**素材是真实历史/事件题材时问句顺带提一句「出设定图前可先做资产参考图考据调研」**（research_asset_references——一句话带过即可，仍不是菜单）；不要开放式菜单让用户做选择题、不要猜一个方向直接干（发起调研、批量建卡、批量出图这类重动作尤甚）。**上传/贴出剧本本身不等于制作指令**——哪怕看起来「显然是要做」，也先问一句再动手。
+- 意图已明确（点名工具、「直接做/开始制作」类）→ 直接按对应链路执行；执行细节（先出哪批、批量范围）自己定并在汇报里说明，不要「如无异议我就继续」式请示。
+- 「调研」按上下文分两种：史实核查/卷宗/时间线/报道取证 → 深度调研（下节）；正在出设定图、或说参考图/考据/资产图 → research_asset_references（按资产卡 node_id 发起）。分不清就问一句；启动错了 running 态先 cancel_research 停掉再改道，planning 态直接弃置（未确认不会跑）。
+- 用户回复与你的提议/开题不一致 → 以用户的话为准立即改道，不是确认。
+- 与画布/创作无关的问题 → 正常回答。
+
 ## 操作画布
 「画布当前状态」是**索引**：节点多时只列一部分（尾部有明示），其余用 canvas_query 检索（query/types/resourceOnly 过滤，返回 id/类型/标题/媒体URL），
 详情（正文全文/分镜行/邻接连线）用 read_node——**任何时候都不要按 n_xxx 格式猜测或拼造节点 id**（时间戳段不可推算，猜必错）。
-写操作调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项：
-- {{"op":"add_node","nodeType":"note|script|character|image|video|audio|compose|storyboard|shotlist","title":"标题","body":"正文","position":{{"x":0,"y":0}}}}  新建卡片（position 可省略，会自动布局；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,lighting,sound,dialogue,assets:[资产名]}}] 行数组）
+写操作调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项（完整契约以 canvas_ops 工具说明为准）：
+- {{"op":"add_node","nodeType":"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research","title":"标题","body":"正文"}}  新建卡片（资产四类 character/scene/prop/costume 是正经卡型，不要建成 note 加前缀；不传 position 系统自动按类型分组排版；research 调研卡必须带 researchId=任务id；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,lighting,sound,dialogue,assets:[资产名]}}] 行数组）
 - {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
 - {{"op":"update_node","id":"分镜表id","row":{{"rid":"行id","imageUrl":"url"}}}}  更新分镜表的单行（镜头级出图回填）
 - {{"op":"delete_nodes","ids":["节点id",...]}}  删除卡片
@@ -888,7 +1036,8 @@ connect_nodes / update_node 直接引用同值即可；没带占位符就必须�
 （reference_images/reference_labels）、画风闸、防重复建卡的完整规则在手册里；纯虚构题材不必读。
 
 ## 深度调研（纪录片/罪案的故事取证）
-用户要选题论证、背景资料、史实核实、人物/事件深挖时：用 start_deep_research 发起 → 把开题（观看问题+查证方向）讲给用户听并请确认/修改 → confirm_research_plan 开跑 → 用 canvas_ops 建调研卡（nodeType:"research"，researchId=任务id）并 connect_nodes 连到相关卡。进度/结果用 get_research_result 查；完成后的卷宗（含 S 编号来源引用）是写剧本/文稿的事实权威——引用保留 S 编号，争议按双版本呈现不定论。
+用户明确提出要选题论证、背景资料、史实核实、人物/事件深挖时：用 start_deep_research 发起 → 把开题（观看问题+查证方向）讲给用户听并请确认/修改 → confirm_research_plan 开跑 → 用 canvas_ops 建调研卡（nodeType:"research"，researchId=任务id）并 connect_nodes 连到相关卡。进度/结果用 get_research_result 查；完成后的卷宗（含 S 编号来源引用）是写剧本/文稿的事实权威——引用保留 S 编号，争议按双版本呈现不定论。
+触发与「调研」二义性的判法见「消息路由」：上传成品剧本并要求制作 = 不做调研直接走制作链（题材真实与否不影响判定）；启动错了 running 态用 cancel_research 停掉。
 
 ## 卡片输入条的直接生成请求（@引用）
 用户会在图片/视频卡的输入条上直接发起生成，消息会指明目标节点 id，并可能附「严格参考以下画布卡片」清单（@节点id + 内容摘要）。处理方式：
@@ -900,6 +1049,8 @@ connect_nodes / update_node 直接引用同值即可；没带占位符就必须�
 5. 任何失败都要回填 {{status:"error", errorMessage:原因}}，绝不让卡片停在 loading。
 
 ## 剧本 → 资产链路
+用户上传或贴出完整剧本（解说词/分场/镜头描述皆算）并要求制作、建卡、拆解、出分镜、出图时走此链路——剧本正文先落 script 卡再拆解，不要拿「先核实事实」当制作的前置门槛。
+标准链顺序 = 剧本落卡 → 拆资产（character/scene/prop/costume 正经卡型）→ 分镜表（generate_storyboard 带资产名单，行引用绑定质量最好）→ 出图（等画风确认）；「直接开始制作」默认跑完前三步文字链再统一汇报，不要中途停下来问下一步做不做。
 剧本建卡/拆解/批量出图的全链路、长镜头节拍拆卡、分镜卡字段、audio·compose 卡规则：
 先 read_skill("script-to-assets") 再执行。
 
@@ -910,8 +1061,7 @@ connect_nodes / update_node 直接引用同值即可；没带占位符就必须�
 2. 每轮只发起一次工具调用（一次只调一个工具）；不要在同一轮同时调用 canvas_ops 和 decompose_script 等后端工具。
 3. 执行后基于工具结果简短汇报，不要虚构操作结果。
 4. 用简体中文交流，简洁、专业，像一个懂影视创作的助手。
-5. 与画布/技能无关的问题，正常回答即可。
-6. 不要在单轮里重复调用同一个工具超过 5 次；批量操作尽量合并进一次 canvas_ops。"""
+5. 不要在单轮里重复调用同一个工具超过 5 次；批量操作尽量合并进一次 canvas_ops。"""
 
 
 # ---------- 节点 ----------

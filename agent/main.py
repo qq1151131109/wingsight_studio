@@ -33,6 +33,7 @@ import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
 import dmx_routes  # noqa: E402
+import eventbus  # noqa: E402
 import events  # noqa: E402
 import usage_routes  # noqa: E402
 import entities  # noqa: E402
@@ -129,6 +130,17 @@ app.include_router(dmx_routes.router, prefix="/api/v1")
 app.include_router(usage_routes.router, prefix="/api/v1")
 # 按钮/操作埋点（数据分析）
 app.include_router(events.router, prefix="/api/v1")
+
+
+@app.get("/api/v1/events/stream")
+async def api_events_stream(user: auth.CurrentUser):
+    """后台任务事件流（SSE 常开通道）：调研/批量出图/拆解/审查的终态实时推送。
+
+    AG-UI 轮次流之外唯一的推送通道（断线自动重连在客户端）；事件不重放，
+    错过的终态由既有卡面状态轮询兜回。契约见 agent/eventbus.py 与
+    lib/agent-events.ts。
+    """
+    return eventbus.sse_response()
 
 
 agent = LangGraphAgent(
@@ -786,7 +798,9 @@ async def api_storyboard_images(req: dict, user: auth.CurrentUser):
             if isinstance(s, dict) and not str(s.get("aspect") or "").strip():
                 s["aspect"] = req_aspect
     try:
-        job_id = await skills.start_storyboard_image_job(shots, params=params)
+        job_id = await skills.start_storyboard_image_job(
+            shots, params=params, project_id=str(req.get("project_id") or "")
+        )
     except RuntimeError as exc:
         return Response(status_code=503, content=str(exc), media_type="text/plain")
     except ValueError as exc:
@@ -844,6 +858,7 @@ async def api_assets_decompose(req: dict, user: auth.CurrentUser):
             visual_style=visual_style,
             params=params,
             text_model=text_model or "",
+            project_id=str(req.get("project_id") or ""),
         )
     except RuntimeError as exc:
         return Response(status_code=502, content=str(exc)[:300], media_type="text/plain")
