@@ -144,6 +144,35 @@ export async function uploadAsset(
   return url;
 }
 
+/** 二进制文档（doc/docx/rtf/pdf）服务端文本提取：成功 {ok:true,text}；
+ *  失败 {ok:false,error}（中文原因：扫描件/加密/损坏/超限——浏览器读不了
+ *  这些格式，只有服务端 soffice/pdftotext/zip 直解能转，失败明报不静默） */
+export async function extractText(
+  file: Blob,
+  name?: string,
+): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+  const buf = await file.arrayBuffer();
+  const qs = name ? `?name=${encodeURIComponent(name)}` : "";
+  let r: Response;
+  try {
+    r = await apiFetch(`/agent-service/extract-text${qs}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+      body: buf,
+    });
+  } catch {
+    return { ok: false, error: "网络中断，提取失败，请重试" };
+  }
+  if (r.ok) {
+    const { text } = (await r.json()) as { text: string };
+    return { ok: true, text };
+  }
+  const reason = (await r.text().catch(() => "")).slice(0, 120);
+  return { ok: false, error: reason || `提取失败（HTTP ${r.status}）` };
+}
+
 // ---------- 聊天会话（多会话：threads；与画布同为服务端事实源） ----------
 
 export interface ChatThreadMeta {

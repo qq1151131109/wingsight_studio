@@ -7,7 +7,9 @@
  *    引用卡内容（id/类型/标题/正文摘要）拼进消息，agent 可直接按 id 操作
  *  - 附件：📎 选择 / 粘贴 / 拖放；图片视频音频上传后作为 AG-UI 多模态
  *    part（url source）随消息发送——换视觉模型后服务端自动透传；文本类
- *    文档（txt/md/json/csv/srt ≤64KB）直接内联进消息，纯文本模型也能用
+ *    文档（txt/md/json/csv/srt ≤64KB）直接内联进消息，纯文本模型也能用；
+ *    二进制文档（doc/docx/rtf/pdf）经服务端 /extract-text 提取文本后内联
+ *    （docx zip 直解、doc/rtf 走 soffice、pdf 走 pdftotext；失败明报原因）
  *  - Enter 发送 / Shift+Enter 换行 / IME 组合输入安全（composing 时不发送）
  *  - 运行中显示停止按钮；复用 stock 的 .copilotKitInput 系列样式保持原生观感
  */
@@ -37,6 +39,7 @@ import MentionInput, {
 } from "@/components/canvas/MentionInput";
 import {
   uploadAsset,
+  extractText,
   cancelChatRun,
   cancelChatJob,
   listChatJobs,
@@ -83,6 +86,8 @@ interface Attachment {
   mime: string;
   kind: AttachmentKind;
   status: "uploading" | "ready" | "error" | "inline";
+  /** 失败原因（提取/上传明报，chip tooltip 展示） */
+  errorMessage?: string;
   /** 上传完成后的同源 URL（inline 文本类没有） */
   url?: string;
   /** 图片本地预览（objectURL，仅展示用） */
@@ -92,8 +97,13 @@ interface Attachment {
 }
 
 const TEXT_LIKE_EXT = [".txt", ".md", ".json", ".csv", ".srt", ".xml", ".log"];
-const INLINE_TEXT_MAX = 64 * 1024; // 文件本体上限
-const INLINE_TEXT_CHARS = 8000; // 拼进消息正文的字符上限
+/** 二进制文档 → 服务端 /extract-text 提取后内联（docx zip 直解、doc/rtf 走
+ *  soffice、pdf 走 pdftotext——浏览器里读不了这些格式，只有服务端能转） */
+const EXTRACT_TEXT_EXT = [".doc", ".docx", ".rtf", ".pdf"];
+const INLINE_TEXT_MAX = 64 * 1024; // 纯文本文件本体上限（直读内联）
+// 拼进消息正文的字符上限：剧本文档动辄数万字，截 8000 会把剧本截残
+// （「全站不截断」口径）；超长由对话滚动压缩兜底
+const INLINE_TEXT_CHARS = 50000;
 
 const ACCEPT_ATTR =
   "image/*,video/*,audio/*,.pdf,.txt,.md,.json,.csv,.srt,.docx,.doc,.rtf,.xml,.log";
@@ -318,6 +328,26 @@ export default function ChatInput({
       added.push(a);
       setUploadingCount((n) => n + 1);
       const upload = (async () => {
+        const ext = a.name.includes(".")
+          ? a.name.slice(a.name.lastIndexOf(".")).toLowerCase()
+          : "";
+        // 二进制文档（doc/docx/rtf/pdf）：服务端提取文本后内联——浏览器读不了
+        // 这些格式，失败明报（扫描件/加密/损坏都会给原因）
+        if (kind === "document" && EXTRACT_TEXT_EXT.includes(ext)) {
+          const t = await extractText(f, a.name);
+          setAttachments((list) =>
+            list.map((x) =>
+              x.key === a.key
+                ? t === null
+                  ? x
+                  : t.ok
+                    ? { ...x, status: "inline", inlineText: t.text.slice(0, INLINE_TEXT_CHARS) }
+                    : { ...x, status: "error", errorMessage: t.error }
+                : x,
+            ),
+          );
+          return;
+        }
         // 文本类小文件：直接内联，不上传
         if (kind === "document" && f.size <= INLINE_TEXT_MAX) {
           const t = await f.text().catch(() => "");
@@ -443,7 +473,9 @@ export default function ChatInput({
           });
         }
       } else if (a.status === "error") {
-        attLines.push(`- ${KIND_LABEL[a.kind]}「${a.name}」上传失败，未附带`);
+        attLines.push(
+          `- ${KIND_LABEL[a.kind]}「${a.name}」上传失败，未附带${a.errorMessage ? `（原因：${a.errorMessage}）` : ""}`,
+        );
       }
     }
     const textPart = [
@@ -595,6 +627,7 @@ export default function ChatInput({
             {attachments.map((a) => (
               <span
                 key={a.key}
+                data-tip={a.status === "error" ? (a.errorMessage || "上传失败") : undefined}
                 className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
                   a.status === "error"
                     ? "border-danger/40 bg-danger/10 text-danger"
