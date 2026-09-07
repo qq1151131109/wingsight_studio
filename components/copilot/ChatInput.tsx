@@ -14,7 +14,7 @@
  *  - 运行中显示停止按钮；复用 stock 的 .copilotKitInput 系列样式保持原生观感
  */
 
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useAgent, useCopilotChatConfiguration, useCopilotKit } from "@copilotkit/react-core/v2";
 import { langgraphAgent } from "@/app/agent-provider";
 import {
@@ -167,6 +167,16 @@ export default function ChatInput({
   /** 进行中的上传（submit 时 await 全部完成；count 驱动按钮禁用态） */
   const uploadsRef = useRef<Map<string, Promise<void>>>(new Map());
   const [uploadingCount, setUploadingCount] = useState(0);
+  /** 附件镜像 ref（发送路径的唯一事实源）：submit 会 await 在途上传——await
+   *  归来后组件闭包里的 attachments 仍是点击那帧的快照（status 还是
+   *  "uploading"，三分支全匹配不上），2026-09-07 霸王龙项目实锤：用户传图
+   *  未等「上传中」消失就发送，五次全被静默降级成纯文本、agent 一张图都没
+   *  收到。状态更新一律走 writeAttachments（同步写 ref + setAttachments） */
+  const attachmentsRef = useRef<Attachment[]>([]);
+  const writeAttachments = useCallback((next: Attachment[]) => {
+    attachmentsRef.current = next;
+    setAttachments(next);
+  }, []);
 
   // 长任务条：轮询会话在途后端任务（出图/拆解/技能），可逐任务取消。
   // 聊天进度消息会滚走，这里常驻；无任务时整条隐藏
@@ -312,10 +322,10 @@ export default function ChatInput({
 
   // ---------- 附件：添加 / 上传 / 内联读取 ----------
 
-  const addFiles = (files: FileList | File[]) => {
+  const addFiles = useCallback((files: FileList | File[]) => {
     const added: Attachment[] = [];
     for (const f of Array.from(files)) {
-      if (attachments.length + added.length >= 6) break; // 一条消息最多 6 个附件
+      if (attachmentsRef.current.length + added.length >= 6) break; // 一条消息最多 6 个附件
       const kind = kindOf(f.type, f.name);
       const a: Attachment = {
         key: `att_${Date.now()}_${++attachSeq}`,
@@ -335,8 +345,8 @@ export default function ChatInput({
         // 这些格式，失败明报（扫描件/加密/损坏都会给原因）
         if (kind === "document" && EXTRACT_TEXT_EXT.includes(ext)) {
           const t = await extractText(f, a.name);
-          setAttachments((list) =>
-            list.map((x) =>
+          writeAttachments(
+            attachmentsRef.current.map((x) =>
               x.key === a.key
                 ? t === null
                   ? x
@@ -351,8 +361,8 @@ export default function ChatInput({
         // 文本类小文件：直接内联，不上传
         if (kind === "document" && f.size <= INLINE_TEXT_MAX) {
           const t = await f.text().catch(() => "");
-          setAttachments((list) =>
-            list.map((x) =>
+          writeAttachments(
+            attachmentsRef.current.map((x) =>
               x.key === a.key && t.trim()
                 ? { ...x, status: "inline", inlineText: t.slice(0, INLINE_TEXT_CHARS) }
                 : x,
@@ -361,8 +371,8 @@ export default function ChatInput({
           return;
         }
         const url = await uploadAsset(f, f.type, f.name);
-        setAttachments((list) =>
-          list.map((x) =>
+        writeAttachments(
+          attachmentsRef.current.map((x) =>
             x.key === a.key
               ? url
                 ? { ...x, status: "ready", url }
@@ -376,8 +386,8 @@ export default function ChatInput({
       });
       uploadsRef.current.set(a.key, upload);
     }
-    if (added.length > 0) setAttachments((list) => [...list, ...added]);
-  };
+    if (added.length > 0) writeAttachments([...attachmentsRef.current, ...added]);
+  }, [writeAttachments]);
 
   // 整个聊天侧栏都是文件落区（v2 aside 是它的 DOM，命令式挂监听）：
   // 拖到侧栏任意处即入附件，不再要求精确落到输入条。画布卡拖放（→ @ 引用）
@@ -426,7 +436,7 @@ export default function ChatInput({
   }, [addFiles]);
 
   const removeAttachment = (key: string) => {
-    setAttachments((list) => list.filter((x) => x.key !== key));
+    writeAttachments(attachmentsRef.current.filter((x) => x.key !== key));
   };
 
   // ---------- 发送 ----------
@@ -447,10 +457,13 @@ export default function ChatInput({
       setEditingMsg(null);
     }
 
-    // 等所有上传收尾（含失败的——失败项只进文本清单不阻塞发送）
+    // 等所有上传收尾（含失败的——失败项只进文本清单不阻塞发送）。
+    // 收尾后必须读 attachmentsRef：await 归来时组件闭包里的 attachments
+    // 仍是点击帧的快照（status="uploading"，ready/inline/error 三分支全
+    // 匹配不上，附件被静默丢弃——霸王龙项目「发了图 agent 没收到」实锤）
     await Promise.allSettled([...uploadsRef.current.values()]);
 
-    const current = attachments;
+    const current = attachmentsRef.current;
     const refLines = mentioned
       .map((r2) => {
         const label = NODE_TYPE_LABEL[r2.data.nodeType] ?? r2.data.nodeType;
@@ -502,7 +515,7 @@ export default function ChatInput({
       if (onSend) void onSend(textPart);
     }
     edRef.current?.setValue("");
-    setAttachments([]);
+    writeAttachments([]);
     setSlash(null);
   };
 
