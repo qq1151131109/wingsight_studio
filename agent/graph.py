@@ -183,6 +183,10 @@ _IMAGE_MODEL_LINE = (
 )
 _GEN_ASSETS_DOC = f"""为资产批量生成设定图（并发出图，每张完成会实时推送进度到聊天）。
 
+**资产正文是设定数据不是状态日志**：出图成败用聊天回复汇报、用卡上 status 字段表达，
+禁止把「已生成/出图失败/已标记」之类叙述写进资产卡的 description 或正文——
+正文会被后续出图当事实注入提示词，状态残留会永久污染生成（2026-09-07 实锤事故）。
+
 用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
 {{"type":"character|scene|prop|costume|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词","aspect":"9:16"}}
 （字段与 decompose_script 的输出一致；type=shot 是镜头剧照布局——

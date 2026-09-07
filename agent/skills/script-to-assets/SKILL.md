@@ -20,8 +20,12 @@ references，一句话带过）。
    canvas_ops 批量建资产卡并连回剧本卡（fromId=剧本卡id，新建卡带 id
    占位符即可同批连）。四类资产 character（角色）/scene（场景）/prop
    （道具）/costume（服饰）都是正经卡型、name 做标题——**不要建成 note
-   加「场景：」之类前缀**；description 与 visual_notes 写进 body；
-   **不传 position**（系统自动按类型分组排版）
+   加「场景：」之类前缀**；description 与 visual_notes 写进 body
+   （契约：description=本体外观事实，剧本没写的按类型/年龄感补全具体
+   外观，禁止剧情转述、禁止描述里出现其他角色；visual_notes=本体
+   色彩/材质/体态，不写光线氛围镜头调度——拆解 flow 已按此产出，
+   转述清单给用户时照抄别改写成剧情描述）；**不传 position**（系统
+   自动按类型分组排版）
 3. **生成分镜表**：调 generate_storyboard(剧本原文, assets_json=画布
    资产名单)。名单注入让每行自动引用名单内资产、名单外的幻觉名被剔除
    ——先拆资产再生成分镜，引用绑定质量最好。写回：画布已有分镜表卡用

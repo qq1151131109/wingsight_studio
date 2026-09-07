@@ -1275,6 +1275,7 @@ export default function CanvasAgentBridge() {
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
       "**布局：建卡一律不传 position**——系统自动在现有内容下方按类型分组排版（角色/场景/道具/服饰各收进同名组框、组内网格，与剧本拆解的资产带同款）；只有用户明确要求摆到特定位置时才传 position（此时不参与自动分组）。" +
+      "**卡面正文是设定数据不是状态日志**：资产卡的 body/description 只写外观与设定事实——出图成败用聊天回复汇报、用 status/errorMessage 字段表达，禁止把「已生成/出图失败/已标记」之类叙述追加进正文（正文会被后续出图当事实注入提示词，状态残留永久污染生成）。" +
       "复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，无 error 再应用。" +
       "可以在一批里执行多个操作。",
     available: "remote",

@@ -38,7 +38,13 @@ function summarize() {
   return lines.join("\n");
 }
 
-/** 模拟浏览器执行 canvas_ops */
+/** 模拟浏览器执行 canvas_ops（占位符语义与真实 applyOps 对齐：add_node
+ *  带的 id 是占位符，同批 connect_nodes 用它引用——映射到模拟真 id 后
+ *  记账，断言才能数到连线；agent 用不用占位符两种风格都过得去） */
+const idMap = new Map(); // 占位符 → 模拟真 id
+function resolveId(raw) {
+  return idMap.get(raw) ?? raw;
+}
 function execute(ops) {
   const createdIds = [];
   for (const op of ops) {
@@ -46,8 +52,9 @@ function execute(ops) {
       const id = `n_sim_${canvas.nodes.length + 1}`;
       canvas.nodes.push({ id, type: op.nodeType, title: op.title || "" });
       createdIds.push(id);
+      if (op.id) idMap.set(op.id, id);
     } else if (op.op === "connect_nodes") {
-      canvas.edges.push({ from: op.fromId, to: op.toId });
+      canvas.edges.push({ from: resolveId(op.fromId), to: resolveId(op.toId) });
     }
   }
   return { applied: ops.length, createdIds, errors: [] };

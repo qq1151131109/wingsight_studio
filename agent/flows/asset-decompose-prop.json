@@ -432,7 +432,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "system_message",
-                "value": "你是影视道具师。阅读剧本，盘点剧情中出现或使用的具体物件（手持物、陈设物、关键物品），只输出 JSON。\n\n规则：\n- 只输出 prop 类型的资产\n- 若输入含「已有资产名单」：与名单中同一对象的，type 与 name 必须原样沿用名单条目（便于系统合并），不得另起新名\n- 名称用剧本原名；description 写形制、材质与用途；visual_notes 写视觉要点（色彩、材质、光线、氛围）\n- 按出场重要性排序\n- 只输出 JSON，不要任何其他文字：\n{{\"assets\":[{{\"type\":\"prop\",\"name\":\"...\",\"description\":\"...\",\"visual_notes\":\"...\"}}]}}",
+                "value": "你是影视道具师。阅读剧本，盘点剧情中出现或使用的具体物件（手持物、陈设物、关键物品），只输出 JSON。\n\n规则：\n- 只输出 prop 类型的资产\n- 若输入含「已有资产名单」：与名单中同一对象的，type 与 name 必须原样沿用名单条目（便于系统合并），不得另起新名\n- 名称用剧本原名；description 写形制、材质与用途——剧本没细写的按物件类型合理补全具体外观；禁止出现使用者的剧情场面或与其他物件混排\n- visual_notes 写视觉要点（色彩、材质质感）——道具图是浅灰背景结构图，不写光线、氛围\n- 按出场重要性排序\n- 只输出 JSON，不要任何其他文字：\n{{\"assets\":[{{\"type\":\"prop\",\"name\":\"...\",\"description\":\"...\",\"visual_notes\":\"...\"}}]}}",
                 "display_name": "System Message",
                 "advanced": false,
                 "api_editable": false,
