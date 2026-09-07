@@ -107,8 +107,9 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 # 加平台见 bundles/platforms/README.md）：
 # - BigModel = 智谱官方（BIGMODEL_BASE_URL/BIGMODEL_API_KEY 全局变量）
 #   → glm-5.3-flash / glm-5.3
-# - DeepSeek = DeepSeek 平台（DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY；本部署
-#   指向智谱 coding 网关——无 api.deepseek.com 官方键，改 BASE_URL 即切官方）
+# - DeepSeek = DeepSeek 官方 API（DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY，
+#   2026-09-07 起指向 api.deepseek.com——此前种子曾指向智谱 coding 网关，
+#   而该网关只有 glm 系模型，DeepSeek 平台一用就 500「modelCode 不存在」）
 #   → deepseek-v4-flash / v4-pro / v4-flash-vision-exp
 # - DMX = DMXAPI 聚合网关（DMX_BASE_URL/DMX_API_KEY）
 #   → gpt-5.6-luna / gemini-3.7-flash / claude-sonnet-5
@@ -134,19 +135,19 @@ TEXT_MODELS: List[Dict[str, Any]] = [
     {
         "id": "deepseek-v4-flash",
         "label": "DeepSeek V4 Flash",
-        "tag": "快 · 便宜 · DeepSeek V4（智谱 coding 网关）",
+        "tag": "快 · 便宜 · DeepSeek V4 官方",
         "provider": "DeepSeek",
     },
     {
         "id": "deepseek-v4-pro",
         "label": "DeepSeek V4 Pro",
-        "tag": "深推理 · 质量档 · DeepSeek V4（智谱 coding 网关）",
+        "tag": "深推理 · 质量档 · DeepSeek V4 官方",
         "provider": "DeepSeek",
     },
     {
         "id": "deepseek-v4-flash-vision-exp",
         "label": "DeepSeek V4 Flash Vision",
-        "tag": "多模态 · 看图 · DeepSeek V4（智谱 coding 网关）",
+        "tag": "多模态 · 看图 · DeepSeek V4 官方",
         "provider": "DeepSeek",
     },
     {

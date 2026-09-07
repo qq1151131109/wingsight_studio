@@ -116,7 +116,7 @@ seeds = {
     "BIGMODEL_API_KEY": env.get("BIGMODEL_API_KEY", ""),
     "DMX_BASE_URL": "https://www.dmxapi.cn/v1",
     "DMX_API_KEY": env.get("DMX_API_KEY", ""),
-    "DEEPSEEK_BASE_URL": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "DEEPSEEK_BASE_URL": env.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     "DEEPSEEK_API_KEY": env.get("DEEPSEEK_API_KEY", ""),
 }
 for name, value in seeds.items():
