@@ -123,7 +123,12 @@ async def generate_image(
                 (f"ref_{i}{sfx}", io.BytesIO(data), "application/octet-stream")
                 for i, (data, sfx) in enumerate(zip(ref_files, ref_suffixes, strict=True))
             ]
-            response = await client.images.edit(image=files, **common)
+            # input_fidelity=high：保留输入图细节（脸/纹理/文字）只改要改的；
+            # 缺省 low = 整图重渲染，改图观感「脏污」（细节近似但不保真、
+            # 颗粒被重新演绎）。edit 通道专属参数（generate 不认）
+            response = await client.images.edit(
+                image=files, input_fidelity="high", **common
+            )
         else:
             response = await client.images.generate(**common)
     except Exception as exc:
