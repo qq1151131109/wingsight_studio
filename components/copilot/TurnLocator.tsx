@@ -17,7 +17,7 @@
  * 卸载时按轮次序位比例估滚，等挂载后再精跳。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { langgraphAgent } from "@/app/agent-provider";
 
@@ -57,11 +57,17 @@ function buildAnchors(messages: ChatMsg[]): Anchor[] {
 }
 
 /** 可视滚动区：从消息列表向上爬到第一个真正带溢出的祖先（v2 的滚动容器
- *  是无类名 DIV，类名不稳定不能当选择器；判据稳定） */
+ *  是无类名 DIV，类名不稳定不能当选择器；判据稳定）。高度超过视口 1.2 倍的
+ *  不是滚动视口而是内容级包装（流式重排帧里判据会瞬时翻脸匹配到它们），
+ *  跳过继续爬 */
 function findViewport(el: Element | null): HTMLElement | null {
   let cur: Element | null = el;
   for (let i = 0; i < 12 && cur && cur !== document.body; i++) {
-    if (i > 0 && cur.scrollHeight > cur.clientHeight + 2)
+    if (
+      i > 0 &&
+      cur.scrollHeight > cur.clientHeight + 2 &&
+      cur.clientHeight <= window.innerHeight * 1.2
+    )
       return cur as HTMLElement;
     cur = cur.parentElement;
   }
@@ -76,6 +82,18 @@ function flash(el: Element) {
   el.classList.add("ws-turn-flash");
 }
 
+/** 逃离 v2 贴底锁（use-stick-to-bottom）：该库只认「wheel 向上」为用户解除
+ *  贴底的意图（wheel 监听器同步翻转 isAtBottom），程序化 scrollIntoView 它
+ *  不认——流式期间内容持续增长，库把滚动事件当 resize 噪音忽略掉（resizeDifference
+ *  门控），继续逐帧把视图拽回底部，与跳转方向打架。跳转前在滚动容器上合成
+ *  一次向上的 wheel，让库先解锁（passive 监听器收得到合成事件，解锁后其
+ *  动画循环每帧查 isAtBottom 即自动中止）。 */
+function escapeStickToBottom(vp: HTMLElement | null) {
+  vp?.dispatchEvent(
+    new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }),
+  );
+}
+
 type Region = { top: number; height: number; right: number };
 
 export default function TurnLocator() {
@@ -83,13 +101,26 @@ export default function TurnLocator() {
   const [region, setRegion] = useState<Region | null>(null);
   // rAF 合并：订阅每帧都触发（流式），量 rect 不必跟着每帧走
   const measureScheduled = useRef(false);
+  /** 滚动视口元素 pin（2026-09-07「上下跳」事故的根因）：爬升判据
+   *  （scrollHeight>clientHeight）在流式重排帧里会瞬时翻脸——真滚动容器在
+   *  内容塌陷帧不满足判据、climb 落到内容级包装（rect 高达数千 px）上，rail
+   *  的 region 随之爆炸再翻回，点列被甩上甩下。真容器本身身份稳定（实测流式
+   *  全程 isConnected），解析一次认到底，只在断连（v2 重挂）时重解析 */
+  const vpRef = useRef<HTMLElement | null>(null);
+  // 只闭包 stable 的 ref，引用恒定——effect 依赖收得干净，无需 disable
+  const resolveViewport = useCallback((): HTMLElement | null => {
+    const cur = vpRef.current;
+    if (cur && cur.isConnected) return cur;
+    vpRef.current = findViewport(document.querySelector(".copilotKitMessages"));
+    return vpRef.current;
+  }, []);
 
-  const measure = () => {
+  const measure = useCallback(() => {
     if (measureScheduled.current) return;
     measureScheduled.current = true;
     window.requestAnimationFrame(() => {
       measureScheduled.current = false;
-      const vp = findViewport(document.querySelector(".copilotKitMessages"));
+      const vp = resolveViewport();
       if (!vp) {
         setRegion(null);
         return;
@@ -114,7 +145,7 @@ export default function TurnLocator() {
           : next;
       });
     });
-  };
+  }, [resolveViewport]);
 
   // 锚点清单：消息数据订阅（虚拟化时 DOM 不全，清单不能靠查 DOM）
   useEffect(() => {
@@ -127,7 +158,7 @@ export default function TurnLocator() {
     Promise.resolve().then(update);
     return agent.subscribe({ onMessagesChanged: update, onEvent: update })
       .unsubscribe;
-  }, []);
+  }, [measure]);
 
   // 几何订阅：滚动区自身的尺寸 + 拖宽侧栏（body 让位）/窗口变化 + 开关动画。
   // 无 region → 有 region 翻转时重挂（首轮 DOM 可能还没消息列表）
@@ -139,6 +170,10 @@ export default function TurnLocator() {
       ro.observe(target);
       ros.push(ro);
     };
+    // 观察对象含 pin 住的滚动视口本体（头部/输入区高度变化只动它的 rect，
+    //  list 是内容级、aside 是整体固定高，都探不到这类挪位）
+    const vp = resolveViewport();
+    if (vp) attach(vp);
     const list = document.querySelector(".copilotKitMessages");
     const aside = document.querySelector("aside.copilotKitSidebar");
     if (list) attach(list);
@@ -155,21 +190,23 @@ export default function TurnLocator() {
       aside?.removeEventListener("transitionend", measure);
       window.clearInterval(timer);
     };
-  }, [noRegion]);
+  }, [noRegion, measure, resolveViewport]);
 
   const jump = (id: string) => {
     const list = document.querySelector(".copilotKitMessages");
     const q = `[data-turn-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`;
     const el = list?.querySelector(q);
+    const vp = resolveViewport();
     if (el) {
+      escapeStickToBottom(vp);
       el.scrollIntoView({ behavior: "smooth", block: "start" });
       flash(el);
       return;
     }
     // >50 条消息 v2 虚拟化卸载了目标轮：按序位比例估滚 → 挂载后精跳
-    const vp = findViewport(list);
     const idx = anchors.findIndex((a) => a.id === id);
     if (!vp || idx < 0) return;
+    escapeStickToBottom(vp);
     vp.scrollTop = Math.round(
       (vp.scrollHeight - vp.clientHeight) *
         (idx / Math.max(anchors.length - 1, 1)),
