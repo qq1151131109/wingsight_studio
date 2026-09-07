@@ -1104,6 +1104,8 @@ async def generate_asset_images(
     done = [0]
     total = len(assets)
     recent: List[str] = []
+    # 结构化结果（name→ok/imageUrl）：聊天工具据此构造分镜落卡 ops
+    structured: List[Dict[str, Any]] = []
     last_emit = [0.0]
     thread_id = _thread_id_of_config(config)
     job_id = (
@@ -1137,8 +1139,19 @@ async def generate_asset_images(
         job_set_progress(job_id, done[0])
         if result.get("ok") and result.get("imageUrl"):
             line = f"✓ {name}｜image_url={result['imageUrl']}"
+            structured.append(
+                {
+                    "name": name,
+                    "ok": True,
+                    "imageUrl": str(result["imageUrl"]),
+                    "composedPrompt": str(result.get("composedPrompt") or ""),
+                }
+            )
         else:
             line = f"✗ {name}｜出图失败：{str(result.get('error') or '未知')[:100]}"
+            structured.append(
+                {"name": name, "ok": False, "error": str(result.get("error") or "未知")[:160]}
+            )
         # 节流播报：只在静默 ≥3s 或全部完成时推一条累计行（并发 30 张时逐张
         # 播报会把聊天刷成 30 条进度；AG-UI 桥的 message_id 单次认领，
         # 同 id 原地更新不可行，只能源头降频）
@@ -1167,7 +1180,7 @@ async def generate_asset_images(
     n_cancelled = sum(1 for r in results if not isinstance(r, str))
     if n_cancelled:
         lines.append(f"（已取消 {n_cancelled} 张，未计入结果）")
-    return "\n".join(lines)
+    return {"lines": "\n".join(lines), "results": structured}
 
 
 async def _emit_progress(config: Any, message: str) -> None:

@@ -11,10 +11,11 @@
 import base64
 import asyncio
 import json
+import math
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Iterator, List
+from typing import Any, Dict, Iterator, List, Tuple
 
 from langchain_core.messages import (
     AIMessage,
@@ -187,11 +188,17 @@ _GEN_ASSETS_DOC = f"""为资产批量生成设定图（并发出图，每张完�
 （字段与 decompose_script 的输出一致；type=shot 是镜头剧照布局——
 有人物有剧情的单幅画面，分镜/镜头类出图用 shot 而不是 scene；
 服饰卡出图用 costume——服装结构图三视图布局，不要改成 prop）。
+**分镜表的镜头出图必须带行绑定**：type=shot 且属于某分镜表行时，项里
+加 "shotlist_id"（画布摘要 [分镜表] 行的节点 id）与 "rid"（read_node 返回
+的分镜行清单里取）；返回会附带「分镜图落卡 ops」（每镜一张图卡摆分镜表
+右侧 + 分镜表/资产→图卡连线 + 行挂载）——**经 canvas_ops 原样应用整批
+ops，不要改写、也不要自己手写行 imageUrl**（行图要跟着图卡走才有版本/
+重跑/裁剪等操作层）。不带行绑定的自由单镜出图照旧返回 URL 自行落卡。
 aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：**只在用户明确对
 画幅提出要求**（竖版/横版/方图/宽幕，或重出带「画幅 N」标注的卡）时传。
 资产设定图一律不传 aspect——按类型默认（character/scene/costume=16:9、
-prop=4:3），与角色表「横版 16:9 四格构图」的布局提示词和资产卡 16:9
-媒体区配套；agent 不要自行替用户决定画幅（曾把角色表按 3:4 竖版出，
+prop=4:3），与角色表「横版 16:9 四格构图」的布局提示词和
+资产卡 16:9 媒体区配套；agent 不要自行替用户决定画幅（曾把角色表按 3:4 竖版出，
 四格构图被压变形、资产带格子高低不齐）。reference_images 可选（字符串数组）：一致性参考图的
 /agent-service/assets/ URL（从画布摘要里取带图卡的 imageUrl），配合
 reference_labels（[{{type,name}}]，type=character 时锁身份不继承白底
@@ -207,6 +214,125 @@ Args:
     assets_json: 资产数组 JSON 文本。
     model: 出图模型 id（上表之一），留空用默认 gpt-image-2-03。
     resolution: 清晰度档位（1K/2K/4K，须在该模型支持列表内），留空用模型默认。"""
+
+
+def _build_shot_card_ops(
+    bound: List[Dict[str, Any]],
+    results: List[Dict[str, Any]],
+    config: RunnableConfig,
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """为绑定分镜表的 shot 生成落卡 ops（与前端出图按钮同语义）：
+
+    每镜一张 image 卡（分镜表右侧 √n 网格）+ 分镜表→图卡 与 资产→图卡
+    连线 + 行挂 imageNodeId（行缩略图读卡上的图，重跑时行随卡刷新）。
+    参考资产按 reference_images URL 反查画布资产卡（URL 来自画布摘要，
+    basename 匹配即可）；ref_node_ids 显式指定优先。"""
+    thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    pid = projects.project_id_of_thread(thread_id) if thread_id else ""
+    if not pid:
+        return [], ["会话未绑定项目，无法生成分镜落卡 ops"]
+    canvas = projects.load_canvas(pid) or {}
+    nodes = canvas.get("nodes", [])
+    by_id = {str(n.get("id")): n for n in nodes}
+    # URL basename → 资产卡 id（反查连线用）
+    url_to_asset: Dict[str, str] = {}
+    for n in nodes:
+        d = n.get("data") or {}
+        if d.get("nodeType") in ("character", "scene", "prop", "costume") and d.get("imageUrl"):
+            url_to_asset[str(d["imageUrl"]).rsplit("/", 1)[-1]] = str(n.get("id"))
+
+    by_name = {r.get("name"): r for r in results if isinstance(r, dict)}
+    # 按分镜表分组（理论上一个 batch 只有一个表，但按表分组无伤）
+    ops: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    per_table: Dict[str, List[Dict[str, Any]]] = {}
+    for a in bound:
+        per_table.setdefault(str(a.get("shotlist_id")), []).append(a)
+    for sl_id, items in per_table.items():
+        sl = by_id.get(sl_id)
+        if not sl or (sl.get("data") or {}).get("nodeType") != "shotlist":
+            notes.append(f"shotlist_id={sl_id} 不是画布上的分镜表卡，本批落卡 ops 跳过")
+            continue
+        rows = (sl.get("data") or {}).get("rows") or []
+        row_by_rid = {str(r.get("rid")): (i, r) for i, r in enumerate(rows)}
+        style = str(skills._project_style_from_config(config) or "").strip()
+        # 右侧 √n 网格（同前端出图按钮：footprint 256×200 + 54 间距）；
+        # 整块与既有节点做粗碰撞：撞了就整块下移
+        fp_w, fp_h, gap = 256, 200, 54
+        sx, sy = sl.get("position", {}).get("x", 0), sl.get("position", {}).get("y", 0)
+        cols = max(1, math.ceil(math.sqrt(len(items))))
+        block_w = cols * (fp_w + gap) - gap
+        block_h = math.ceil(len(items) / cols) * (fp_h + gap) - gap
+        origin_x, origin_y = sx + 560 + 80, sy
+
+        def _bbox_hit(x: float, y: float) -> bool:
+            for n in nodes:
+                p = n.get("position") or {}
+                w = float((n.get("style") or {}).get("width") or 320)
+                h = float((n.get("style") or {}).get("height") or 220)
+                if x < p.get("x", 0) + w and p.get("x", 0) < x + block_w and \
+                   y < p.get("y", 0) + h and p.get("y", 0) < y + block_h:
+                    return True
+            return False
+
+        while _bbox_hit(origin_x, origin_y):
+            origin_y += fp_h + gap
+
+        for i, a in enumerate(items):
+            rid = str(a.get("rid"))
+            hit = row_by_rid.get(rid)
+            if hit is None:
+                notes.append(f"rid={rid} 不在分镜表 {sl_id} 的行清单里，该镜落卡跳过")
+                continue
+            seq, row = hit
+            r = by_name.get(str(a.get("name")))
+            if not (r and r.get("ok") and r.get("imageUrl")):
+                continue  # 失败镜不建卡；✗ 行已在结果文本里
+            ref_urls = [str(u) for u in (a.get("reference_images") or a.get("referenceImages") or []) if str(u).strip()]
+            ref_ids = [str(x) for x in (a.get("ref_node_ids") or []) if str(x) in by_id] or [
+                url_to_asset[u.rsplit("/", 1)[-1]] for u in ref_urls if u.rsplit("/", 1)[-1] in url_to_asset
+            ]
+            # 去重保序
+            ref_ids = list(dict.fromkeys(ref_ids))
+            card_id = f"shotimg_{rid}"
+            rel_refs = ["/agent-service/assets/" + u.rsplit("/", 1)[-1] for u in ref_urls]
+            gen_shot = {
+                "description": str(r.get("composedPrompt") or a.get("description") or ""),
+                "assetType": "shot",
+                "visualNotes": str(a.get("visual_notes") or a.get("visualNotes") or ""),
+                "referenceImages": rel_refs,
+            }
+            labels = a.get("reference_labels") or a.get("referenceLabels") or []
+            if ref_urls and labels:
+                gen_shot["referenceLabels"] = labels[: len(ref_urls)]
+            if a.get("aspect"):
+                gen_shot["aspect"] = str(a["aspect"])
+            ops.append({
+                "op": "add_node",
+                "id": card_id,
+                "nodeType": "image",
+                "position": {
+                    "x": origin_x + (i % cols) * (fp_w + gap),
+                    "y": origin_y + (i // cols) * (fp_h + gap),
+                },
+                "title": f"镜头{seq + 1:02d} 图",
+                "body": str(row.get("action") or "")[:500],
+                "imageUrl": r["imageUrl"],
+                "status": "ready",
+                "genPrompt": gen_shot["description"],
+                "genShot": gen_shot,
+                **({"refIds": ref_ids} if ref_ids else {}),
+                **({"styleSnapshot": f"全局视觉风格：{style}"} if style else {}),
+            })
+            ops.append({"op": "connect_nodes", "fromId": sl_id, "toId": card_id})
+            for aid in ref_ids:
+                ops.append({"op": "connect_nodes", "fromId": aid, "toId": card_id})
+            ops.append({
+                "op": "update_node",
+                "id": sl_id,
+                "row": {"rid": rid, "imageNodeId": card_id},
+            })
+    return ops, notes
 
 
 async def generate_asset_images(
@@ -227,7 +353,30 @@ async def generate_asset_images(
             )
         except ValueError as e:
             return str(e)
-    return await skills.generate_asset_images(assets, config=config, params=params)
+    res = await skills.generate_asset_images(assets, config=config, params=params)
+    if isinstance(res, str):
+        return res
+    out = res["lines"]
+    bound = [
+        a
+        for a in assets
+        if isinstance(a, dict)
+        and str(a.get("type") or a.get("assetType") or "") == "shot"
+        and str(a.get("shotlist_id") or "").strip()
+        and str(a.get("rid") or "").strip()
+    ]
+    if bound:
+        ops, notes = _build_shot_card_ops(bound, res.get("results") or [], config)
+        for n in notes:
+            out += f"\n⚠️ {n}"
+        if ops:
+            out += (
+                f"\n\n分镜图落卡 ops 已生成（{len(bound)} 镜 → 图卡 + 行挂载 + 连线，"
+                "位置已按分镜表右侧网格算好）——**经 canvas_ops 原样应用整批 ops**"
+                "（占位符 id 不要改、也不要另行手写行 imageUrl）：\n"
+                + json.dumps({"ops": ops}, ensure_ascii=False)
+            )
+    return out
 
 
 generate_asset_images.__doc__ = _GEN_ASSETS_DOC

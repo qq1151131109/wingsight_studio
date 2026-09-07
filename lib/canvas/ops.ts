@@ -13,6 +13,7 @@ import {
   findFreePosition,
   useCanvasStore,
   type ShotRow,
+  type WingNodeData,
   type WingNodeType,
 } from "./store";
 import type { CSSProperties } from "react";
@@ -63,6 +64,14 @@ export type AddNodeOp = {
   duration?: string;
   /** storyboard 卡：台词 / 旁白 */
   dialogue?: string;
+  /** 生成卡生命周期状态（聊天侧批量分镜图落卡用：出图已完成直接 ready） */
+  status?: "loading" | "error" | "ready";
+  /** 生成快照（聊天侧落卡与前端出图按钮同语义：重跑/面板预填吃真实载荷） */
+  genPrompt?: string;
+  genShot?: WingNodeData["genShot"];
+  /** 参考资产卡 id（连线即引用；资产→镜头图卡穿线） */
+  refIds?: string[];
+  styleSnapshot?: string;
 };
 
 export type UpdateNodeOp = {
@@ -80,7 +89,7 @@ export type UpdateNodeOp = {
   itemIds?: string[];
   locked?: boolean;
   errorMessage?: string;
-  /** 分镜表：按 rid 更新单行（常用：镜头级出图回填 imageUrl） */
+  /** 分镜表：按 rid 更新单行（常用：镜头级出图回填 imageUrl / 挂镜头图卡） */
   row?: {
     rid: string;
     shotSize?: string;
@@ -89,6 +98,8 @@ export type UpdateNodeOp = {
     action?: string;
     dialogue?: string;
     imageUrl?: string;
+    /** 该行关联的镜头图卡 id（行缩略图读卡上的图；前端出图按钮同款语义） */
+    imageNodeId?: string;
   };
   /** 分镜表：整表重写（agent 对话式「压缩到 N 行/重新生成」用），整组替换 */
   rows?: {
@@ -112,6 +123,11 @@ export type UpdateNodeOp = {
   cameraMove?: string;
   duration?: string;
   dialogue?: string;
+  /** 生成快照（补挂/修正用，字段同 add_node） */
+  genPrompt?: string;
+  genShot?: WingNodeData["genShot"];
+  refIds?: string[];
+  styleSnapshot?: string;
 };
 
 export type DeleteNodesOp = {
@@ -639,6 +655,17 @@ export function applyOps(rawOps: unknown): OpResult {
               ...(op.dialogue !== undefined
                 ? { dialogue: op.dialogue.slice(0, 500) }
                 : {}),
+              ...(op.status !== undefined ? { status: op.status } : {}),
+              ...(op.genPrompt !== undefined
+                ? { genPrompt: op.genPrompt.slice(0, 4000) }
+                : {}),
+              ...(op.genShot ? { genShot: op.genShot } : {}),
+              ...(Array.isArray(op.refIds)
+                ? { refIds: op.refIds.slice(0, 10).map(String) }
+                : {}),
+              ...(op.styleSnapshot !== undefined
+                ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
+                : {}),
             },
           });
           createdIds.push(id);
@@ -719,6 +746,16 @@ export function applyOps(rawOps: unknown): OpResult {
               : {}),
             ...(op.dialogue !== undefined
               ? { dialogue: op.dialogue.slice(0, 500) }
+              : {}),
+            ...(op.genPrompt !== undefined
+              ? { genPrompt: op.genPrompt.slice(0, 4000) }
+              : {}),
+            ...(op.genShot ? { genShot: op.genShot } : {}),
+            ...(Array.isArray(op.refIds)
+              ? { refIds: op.refIds.slice(0, 10).map(String) }
+              : {}),
+            ...(op.styleSnapshot !== undefined
+              ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
               : {}),
           });
           applied += 1;

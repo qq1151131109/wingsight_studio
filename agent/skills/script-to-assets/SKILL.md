@@ -40,8 +40,12 @@ references，一句话带过）。
 update_node 置 {imageUrl, status:"ready"}），不要另建 image 卡——独立
 图片卡只用于 1:N 造型图衍生物（命名「资产名·造型名」）或用户点名单独
 成卡，完整规则见 asset-aware-generation 手册。每张约需 1 分钟，调用前
-先告知用户预计耗时；出图前可为资产补充摄影质感描述。分镜镜头图走分镜
-表行级出图（参考资产设定图保持一致性）。
+先告知用户预计耗时；出图前可为资产补充摄影质感描述。**分镜镜头图**：
+调 generate_asset_images 时 shot 项必须带行绑定（"shotlist_id"=分镜表卡
+id、"rid" 从 read_node 分镜行清单取），参考资产设定图经 reference_images
+带入——返回会附「分镜图落卡 ops」（每镜一张图卡摆分镜表右侧 + 资产连线
++ 行挂载），**经 canvas_ops 原样应用整批 ops**，不要手写行 imageUrl
+（行图跟图卡走才有版本/重跑/裁剪等操作层）。
 
 ## 长镜头 / 多段动作计划
 
