@@ -995,6 +995,24 @@ def _thinking_enabled() -> bool:
     return "glm" in (os.environ.get("AGENT_MODEL") or "").lower()
 
 
+def _chat_reasoning_kwargs() -> dict:
+    """聊天主循环的思考档位（辅助小调用不在此列，仍 reasoning_effort=none
+    ——会话命名等小 max_tokens 调用会被 reasoning 烧光导致输出为空）：
+    - GLM 系：thinking:enabled（网关参数，无档位；AGENT_THINKING=0 可关）；
+    - luna（DMX）：必须显式 none——reasoning_effort 与 function tools 同发
+      即 400（"Function tools with reasoning_effort are not supported"），
+      GLM 关思考时同发 none（智谱网关容忍该参数，沿用旧姿势）；
+    - 其余（DeepSeek V4 官方）：medium（2026-09-07 用户拍板「打开中等思考」；
+      实测与工具同发兼容，reasoning_content 经兼容层透传 REASONING 事件）。
+    """
+    model = (os.environ.get("AGENT_MODEL") or "").lower()
+    if _thinking_enabled():
+        return {"extra_body": {"thinking": {"type": "enabled"}}}
+    if "luna" in model or "glm" in model:
+        return {"reasoning_effort": "none"}
+    return {"reasoning_effort": "medium"}
+
+
 class _OneShotToolArgsCompatChatOpenAI(ChatOpenAI):
     """工具调用流兼容层：把「name 与完整 arguments 同块到达」的工具调用
     拆成 先 START（仅 name）→ 再 ARGS（纯参数增量）两段。
@@ -1303,22 +1321,25 @@ def _tool_call_info(tc: Any) -> tuple[str | None, str | None]:
 
 
 def _unanswered_frontend_calls(messages: List[Any]) -> bool:
-    """历史里是否存在没有 tool 响应的前端工具调用。
+    """是否处于「等浏览器回传前端工具结果」状态：最后一条消息是 AIMessage
+    且含未应答的前端调用（模型刚发完前端调用，本轮结束等浏览器执行）。
 
-    覆盖混合调用场景：模型把 canvas_ops（前端）和后端工具放在同一条
-    assistant 消息里，后端工具被 ToolNode 执行后前端调用仍无响应——
-    此时必须结束本轮，等浏览器执行前端工具并回传，否则模型侧 400。
+    只看尾部——历史中部滞留的未应答前端调用是陈旧轮次（刷新/断流丢了
+    结果），据其中途 END 会把整条会话永久哑火（用户每发一条都被无声
+    吞掉）；陈旧调用交由 _sanitize_messages_for_model 补占位继续走模型。
     """
+    if not messages:
+        return False
+    last = messages[-1]
+    if not (isinstance(last, AIMessage) and getattr(last, "tool_calls", None)):
+        return False
     answered = {
         m.tool_call_id for m in messages if isinstance(m, ToolMessage)
     }
-    for m in messages:
-        if not isinstance(m, AIMessage):
-            continue
-        for tc in getattr(m, "tool_calls", None) or []:
-            tc_id, name = _tool_call_info(tc)
-            if tc_id and name not in backend_tool_names and tc_id not in answered:
-                return True
+    for tc in last.tool_calls:
+        tc_id, name = _tool_call_info(tc)
+        if tc_id and name not in backend_tool_names and tc_id not in answered:
+            return True
     return False
 
 
@@ -1368,36 +1389,41 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
                     }
                 }
             )
+        if isinstance(m, ToolMessage):
+            tc_id = getattr(m, "tool_call_id", None)
+            if tc_id and tc_id in pending:
+                result.append(m)
+                del pending[tc_id]
+            # 孤儿 tool 响应 → 跳过
+            continue
+        # 任何非 ToolMessage 消息（含下一条 AI(tool_calls)）都收口配对窗口：
+        # 占位响应必须补在 assistant(tool_calls) 与下一条 assistant 之间，
+        # 拖到序列末尾会留下非法交替（090702 凤临天下事故：混合调用
+        # canvas_ops+decompose_script 里后端调用被跳过、模型下轮重发，
+        # 占位补在结尾，中段 AI(mixed)→AI(reissue) 交替非法，会话 400 永久毒化）
+        if pending:
+            for tc_id, name in list(pending.items()):
+                result.append(
+                    ToolMessage(
+                        content=f"（工具 {name} 本轮未执行，已跳过）",
+                        tool_call_id=tc_id,
+                    )
+                )
+            pending.clear()
         if isinstance(m, AIMessage) and getattr(m, "tool_calls", None):
             result.append(m)
             for tc in m.tool_calls:
                 tc_id, name = _tool_call_info(tc)
                 if tc_id:
                     pending[tc_id] = name or ""
-        elif isinstance(m, ToolMessage):
-            tc_id = getattr(m, "tool_call_id", None)
-            if tc_id and tc_id in pending:
-                result.append(m)
-                del pending[tc_id]
-            # 孤儿 tool 响应 → 跳过
+        elif isinstance(m, HumanMessage) and isinstance(m.content, list):
+            result.append(
+                _embed_local_media(m)
+                if not flatten_media and i >= turn_start
+                else _flatten_media_message(m)
+            )
         else:
-            if pending:
-                for tc_id, name in list(pending.items()):
-                    result.append(
-                        ToolMessage(
-                            content=f"（工具 {name} 本轮未执行，已跳过）",
-                            tool_call_id=tc_id,
-                        )
-                    )
-                pending.clear()
-            if isinstance(m, HumanMessage) and isinstance(m.content, list):
-                result.append(
-                    _embed_local_media(m)
-                    if not flatten_media and i >= turn_start
-                    else _flatten_media_message(m)
-                )
-            else:
-                result.append(m)
+            result.append(m)
     for tc_id, name in pending.items():
         result.append(
             ToolMessage(
@@ -1446,15 +1472,10 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     if _unanswered_frontend_calls(messages):
         return Command(goto=END, update={})
 
-    # 思考/推理模式按通道二选一：GLM 系发 thinking:enabled（网关认该参数）；
-    # 其余（gpt-5 系等）显式 reasoning_effort="none"——DMX 上游给 luna 默认注入
-    # reasoning_effort，与 function tools 同发会被 400 拒绝（"Function tools with
-    # reasoning_effort are not supported"），报错给的建议就是显式设 none。
-    thinking_kwargs = (
-        {"extra_body": {"thinking": {"type": "enabled"}}}
-        if _thinking_enabled()
-        else {"reasoning_effort": "none"}
-    )
+    # 思考/推理档位见 _chat_reasoning_kwargs：GLM 系 thinking:enabled；
+    # luna 必须 none（DMX 的 reasoning_effort+function tools 即 400）；
+    # DeepSeek 官方 medium（用户拍板「打开中等思考」）
+    thinking_kwargs = _chat_reasoning_kwargs()
     model = _OneShotToolArgsCompatChatOpenAI(
         model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
