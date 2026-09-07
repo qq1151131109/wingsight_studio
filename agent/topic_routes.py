@@ -103,13 +103,15 @@ def put_schedule(payload: dict[str, Any], user: auth.CurrentUser):
 
 @router.post("/topics/{topic_id}/rescan")
 async def rescan_topic(topic_id: str, user: auth.CurrentUser):
-    """手动深挖一张观察卡：缺口导向小预算复查，异步任务 + 轮询（代理 30s 限制）。"""
+    """手动深挖一张观察卡：缺口导向小预算复查，异步任务 + 轮询（代理 30s 限制）。
+
+    不拦「策展刷新进行中」：全量喂入的刷新一轮数小时，单卡复查与它共享的
+    只有落库写入（SQLite 串行）与同卡互斥集（_rescan_inflight），无冲突。
+    """
     _ = user
     missing = _require_flow_ids(_RESCAN_FLOW_KEYS)
     if missing:
         return Response(status_code=503, content=f"未配置选题 flow id：{missing}", media_type="text/plain")
-    if SERVICE.refreshing:
-        return Response(status_code=409, content="策展刷新进行中，完成后可再试", media_type="text/plain")
     topic = store.get_topic(topic_id)
     if topic is None:
         return Response(status_code=404, content="选题不存在", media_type="text/plain")
@@ -134,13 +136,14 @@ def get_rescan(job_id: str, user: auth.CurrentUser):
 
 @router.post("/topics/{topic_id}/deep-dive")
 async def deep_dive_topic(topic_id: str, user: auth.CurrentUser):
-    """导演点名深挖一张生料卡：全流程取证（含市场实查），异步任务 + 轮询。"""
+    """导演点名深挖一张生料卡：全流程取证（含市场实查），异步任务 + 轮询。
+
+    不拦「策展刷新进行中」：同 rescan，单卡任务与长刷新无共享冲突。
+    """
     _ = user
     missing = _require_flow_ids(_DEEP_FLOW_KEYS)
     if missing:
         return Response(status_code=503, content=f"未配置选题 flow id：{missing}", media_type="text/plain")
-    if SERVICE.refreshing:
-        return Response(status_code=409, content="刷新进行中，完成后可再试", media_type="text/plain")
     topic = store.get_topic(topic_id)
     if topic is None:
         return Response(status_code=404, content="选题不存在", media_type="text/plain")

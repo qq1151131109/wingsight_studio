@@ -54,6 +54,7 @@ node scripts/chat-spacing-test.mjs               # 聊天间距回归（8 项：
 node scripts/turn-locator-test.mjs               # 对话轮次索引回归（juben TurnLocator：点数过滤系统通知/悬停面板/跳转滚动/闪圈/回底 10 项；自建项目+合成会话不跑 LLM，约 30s）
 node scripts/attach-race-test.mjs               # 附件回归（① 13 张一次拖入不截断 ② 上传中 Enter 发送不丢图：route 延迟制造竞态窗，落库带 WS_PARTS envelope+缩略图；真跑一轮 LLM，自删项目）
 cd agent && uv run python ../scripts/chat-alternation-guard-test.py   # 聊天历史交替守卫回归（混合调用毒历史/陈旧前端调用哑火；纯函数无 LLM）
+cd agent && uv run python test_topic_pool.py    # 选题池单测（store/生料管线/深挖复查 + 并发流水线：全量喂入/信号量限流/断点续跑/发散失败不喂；fake flow 无 LLM）
 python agent/auth-smoke-test.py                 # 认证冒烟
 ./scripts/setup-langflow.sh                     # langflow 环境重建/首个部署（装 venv → 起 7860 → 导 flows → flow id 回写 .env.local）
 ./scripts/update-flow.sh <flows/xx.json>        # flow 内容更新回写实例（setup 按名字幂等跳过，改 flow 后用它 PATCH）

@@ -26,6 +26,7 @@ import logging
 import os
 import random
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -218,6 +219,18 @@ SEEDS_PER_RUN_CAP = 160
 _SEED_ROTATE_KEY = "topic_pool_seed_rotate"
 
 
+def _int_env(name: str, default: int) -> int:
+    """整数型环境变量：缺省回默认值；坏值警告后按默认（不让配置笔误炸掉整个进程）。"""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("环境变量 %s=%r 不是整数，按默认 %d 处理", name, raw, default)
+        return default
+
+
 def verticals_payload() -> list[dict[str, str]]:
     """垂类清单（进研判载荷与前端下发，prompt 不写死垂类）。"""
     return [{"id": v.id, "label": v.label, "scope": v.scope, "color": v.color} for v in VERTICAL_SPECS.values()]
@@ -231,11 +244,17 @@ def verticals_payload() -> list[dict[str, str]]:
 DIVERGE_CLUES_PER_BATCH = 5  # 发散批：5 线索 × 6-10 方向 ≈ 2k token 输出，安全
 CONVERGE_DIRECTIONS_PER_BATCH = 24  # 收敛批：24 方向过三问闸，过闸率天然 <1，输出 8-16 题
 CONVERGE_ENTRIES_CAP = 20  # 单个收敛批的落卡上限（flow 违规刷屏时掐断）
-# 单轮刷新的发散调用上限（成本硬上界：≤16 次发散 + 各 ~2 次收敛）
-IDEATE_BATCHES_CAP = 16
+# 单轮刷新的发散调用上限（成本硬上界）。0 = 不设帽：当日线索一轮吃满
+# （2026-09-07 用户拍板「剩余线索都用上，快出量」；此前固定 16 批让每天
+# 3400 条语料只喂 80 条）。要回到保守档设 TOPIC_IDEATE_BATCHES_CAP=N。
+IDEATE_BATCHES_CAP = _int_env("TOPIC_IDEATE_BATCHES_CAP", 0)
+# 一轮内发散/收敛 flow 调用的并发在途上限（共用一个信号量；组题与深挖
+# 不受限）。8 路 ≈ 每小时百次级 flow 调用，DMX 通道常规负载；调大前先
+# 盯 langflow 日志与上游 429 表现。
+IDEATE_FLOW_CONCURRENCY = _int_env("TOPIC_IDEATE_CONCURRENCY", 8)
 # 组题（集合型题眼 → 检索收集候选单元 → 选集卡）单轮名额：每次组题 =
-# 1 次查询规划 + 2-3 条检索 + 1 次合成，帽住检索成本
-SERIES_ASSEMBLE_CAP = 6
+# 1 次查询规划 + 2-3 条检索 + 1 次合成，帽住检索成本（全量喂入轮放大）
+SERIES_ASSEMBLE_CAP = 12
 # 组题成功的最少候选单元数：凑不够不成卡（不做单片降级，明记 missed）
 SERIES_MIN_UNITS = 3
 # 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
@@ -245,9 +264,10 @@ IDEATE_CORPUS_KEY = "topic_pool_ideate_corpus"
 # 六源采集的通道级散账（每通道完成即落账，重启只补缺失通道）
 CORPUS_PARTIALS_KEY = "topic_pool_corpus_partials"
 # 当日已产选题的题眼清单（跨批跨轮去重注入收敛——指纹只挡完全同题，
-# 挡不住「军报到临安 vs 慢一步的军令」式同题异名）
+# 挡不住「军报到临安 vs 慢一步的军令」式同题异名）。全量喂入轮单日可产
+# 卡千级，120 条覆盖不住，放大到 400（≈12KB 注入，收敛载荷可承受）
 IDEATE_THEMES_KEY = "topic_pool_ideate_themes"
-THEMES_CAP = 120
+THEMES_CAP = 400
 IDEATE_SEEN_CAP = 4000
 
 # 已深挖层（导演点名才跑）：取证/verdict/市场实查的全流程，见 deep_dive_one。
@@ -1204,24 +1224,52 @@ class TopicCurator:
         result: IdeateResult,
         seen: set[str],
     ) -> None:
-        """两步生成：先发散（线索→方向清单，不筛选），再收敛（方向→过闸成片卡）。
+        """两步生成（并发流水线）：发散（线索→方向清单，不筛选）→ 收敛（方向→过闸成片卡）。
 
-        断点续跑顺序：先收敛上轮遗留的方向（最贵的发散已完成），再发散新线索。
-        线索在发散成功后才记 seen——发散中途被杀的线索下轮重喂，方向不丢。
+        当日线索一轮吃满（IDEATE_BATCHES_CAP=0 不设帽）：每 5 条线索一批，
+        批间并发跑（发散/收敛 flow 调用共用一个信号量限流），每批发散完成
+        即接管收敛自己产出的方向——长轮次里卡片随跑随落，不是攒到最后。
+
+        断点续跑账本：每批发散完成即落账（线索记喂过 + 方向入待收敛账本），
+        收敛每完成一块即从账本剔除；任意时刻被杀，重启后先收敛账本再继续
+        发散，不重喂不丢方向。发散失败的批不记喂过（下轮重喂）。
         发散批按垂类种子轮转混编：语料天然偏 history/military，不混批会让
         输出垂类跟着语料构成走。
         """
         pool = list(clues)  # 支撑池用入口快照：批循环逐批消耗，但任何批次的
         # 线索标题对后续批的收敛都还是支撑证据，不该随喂掉而消失
-        # 1) 收敛存量方向（上轮被杀时遗留的半成品）
+        sem = asyncio.Semaphore(max(1, IDEATE_FLOW_CONCURRENCY))
+        fed: set[str] = set()
+        pending: list[dict[str, Any]] = list(directions)  # 已发散未收敛（含上轮遗留）
+        # 账本全量序列化随线索/方向数涨到 MB 级，逐事件落账会把事件循环写卡顿
+        # ——按 5s 节流。丢窗无害：喂过指纹（seen）即时落账兜住重喂，方向重复
+        # 收敛由池内指纹去重兜底，幂等。
+        last_ckpt = 0.0
+
+        def checkpoint(*, force: bool = False) -> None:
+            nonlocal last_ckpt
+            now = time.monotonic()
+            if not force and now - last_ckpt < 5.0:
+                return
+            last_ckpt = now
+            remaining = [c for c in clues if fingerprint_of(c["title"]) not in fed]
+            self._save_day_state(remaining, pending)
+
+        def converge_done(chunk: list[dict[str, Any]]) -> None:
+            done = {id(d) for d in chunk}
+            pending[:] = [d for d in pending if id(d) not in done]
+            checkpoint()
+
+        # 1) 收敛存量方向（上轮被杀时遗留的半成品，chunk 并发）
         if directions:
-            await self._converge(directions, result, pool)
-            directions = []
-            self._save_day_state(clues, directions)
-        # 2) 发散新线索 → 逐轮收敛（分层混批）
-        for batch, remaining in _stratified_batches(clues, DIVERGE_CLUES_PER_BATCH):
-            if result.batches >= IDEATE_BATCHES_CAP:
-                break  # 发散调用次数到帽：剩余线索留在当日状态里，下轮续
+            await self._converge(directions, result, pool, sem=sem, on_chunk_done=converge_done)
+            checkpoint(force=True)  # 遗留账结算完，强制清账（节流失效窗最多 5s，代价是多收敛一遍已结算方向，指纹去重兜底）
+        # 2) 全量发散：每批完成即收敛自己的方向
+        batches = [batch for batch, _ in _stratified_batches(clues, DIVERGE_CLUES_PER_BATCH)]
+        if IDEATE_BATCHES_CAP > 0:
+            batches = batches[:IDEATE_BATCHES_CAP]
+
+        async def pipeline(batch: list[dict[str, Any]]) -> None:
             listing = [
                 {
                     "index": idx,
@@ -1232,21 +1280,29 @@ class TopicCurator:
                 for idx, item in enumerate(batch)
             ]
             try:
-                groups = await self._call_flow("diverge", {"corpus": listing})
+                async with sem:
+                    groups = await self._call_flow("diverge", {"corpus": listing})
             except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，继续下一批
                 logger.warning("选题发散本批失败: %s", str(exc)[:200])
-                continue
+                return
             fresh = self._parse_directions(groups, batch)
             result.batches += 1
-            seen.update(fingerprint_of(i["title"]) for i in batch)
+            for item in batch:
+                fp = fingerprint_of(item["title"])
+                fed.add(fp)
+                seen.add(fp)
             self._save_ideate_seen(seen)  # 发散成功即记喂过（空产出也算，贫瘠线索不反复重喂）
             if not fresh:
-                continue
+                checkpoint()
+                return
             result.directions += len(fresh)
             # 方向先落账再收敛：收敛中途被杀，重启后凭状态续收敛，不丢方向
-            self._save_day_state(remaining, fresh)
-            await self._converge(fresh, result, pool)
-            self._save_day_state(remaining, [])
+            pending.extend(fresh)
+            checkpoint()
+            await self._converge(fresh, result, pool, sem=sem, on_chunk_done=converge_done)
+
+        await asyncio.gather(*(pipeline(batch) for batch in batches))
+        checkpoint(force=True)  # 全量跑完强制清账：当日账本如实反映剩余/未收敛，不留节流脏窗
 
     def _parse_directions(
         self, groups: Any, batch: list[dict[str, Any]]
@@ -1287,39 +1343,68 @@ class TopicCurator:
         directions: list[dict[str, Any]],
         result: IdeateResult,
         clues: list[dict[str, Any]],
+        *,
+        sem: asyncio.Semaphore | None = None,
+        on_chunk_done: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> None:
         """方向分批过收敛 flow（成立性三问 + arc），产出的成片卡落库。
 
         clues 是当日语料全量（含未喂）：给每个方向匹配支撑线索标题——
-        收敛层升维母题后凭它判断切面的素材支撑面。
+        收敛层升维母题后凭它判断切面的素材支撑面。sem 给定时块间并发
+        （断点遗留的方向可能上千，串行收敛一恢复就是一天，必须并发）；
+        on_chunk_done 在每块结算完（含 flow 失败）回调，供断点账本剔除。
         """
         attach_support(directions, clues)
-        for i in range(0, len(directions), CONVERGE_DIRECTIONS_PER_BATCH):
-            chunk = directions[i : i + CONVERGE_DIRECTIONS_PER_BATCH]
-            payload = {
-                "directions": [
-                    {
-                        "index": j,
-                        "clue": d["title"],
-                        "clue_snippet": d.get("snippet") or "",
-                        "name": d["name"],
-                        "sketch": d["sketch"],
-                        "support": d.get("support") or [],
-                    }
-                    for j, d in enumerate(chunk)
-                ],
-                "verticals": verticals_payload(),
-            }
-            themes = self._load_day_themes()
-            if themes:
-                payload["existingThemes"] = themes  # 跨批同题材去重（指纹只挡完全同题）
-            try:
+        chunks = [
+            directions[i : i + CONVERGE_DIRECTIONS_PER_BATCH]
+            for i in range(0, len(directions), CONVERGE_DIRECTIONS_PER_BATCH)
+        ]
+        if sem is None:
+            for chunk in chunks:
+                await self._converge_chunk(chunk, result, on_chunk_done=on_chunk_done)
+        else:
+            await asyncio.gather(
+                *(self._converge_chunk(chunk, result, sem=sem, on_chunk_done=on_chunk_done) for chunk in chunks)
+            )
+
+    async def _converge_chunk(
+        self,
+        chunk: list[dict[str, Any]],
+        result: IdeateResult,
+        *,
+        sem: asyncio.Semaphore | None = None,
+        on_chunk_done: Callable[[list[dict[str, Any]]], None] | None = None,
+    ) -> None:
+        """单块收敛：过 flow → 逐条落卡/组题；失败与完成都回调账本剔除。"""
+        payload = {
+            "directions": [
+                {
+                    "index": j,
+                    "clue": d["title"],
+                    "clue_snippet": d.get("snippet") or "",
+                    "name": d["name"],
+                    "sketch": d["sketch"],
+                    "support": d.get("support") or [],
+                }
+                for j, d in enumerate(chunk)
+            ],
+            "verticals": verticals_payload(),
+        }
+        themes = self._load_day_themes()
+        if themes:
+            payload["existingThemes"] = themes  # 跨批同题材去重（指纹只挡完全同题；并发下尽力传播）
+        try:
+            if sem is None:
                 entries = await self._call_flow("ideate", payload)
-            except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，继续下一批
-                logger.warning("选题收敛本批失败: %s", str(exc)[:200])
-                continue
-            if not isinstance(entries, list):
-                continue
+            else:
+                async with sem:
+                    entries = await self._call_flow("ideate", payload)
+        except Exception as exc:  # noqa: BLE001 - 单批失败只记日志，方向按已结算丢弃
+            logger.warning("选题收敛本批失败: %s", str(exc)[:200])
+            if on_chunk_done is not None:
+                on_chunk_done(chunk)
+            return
+        if isinstance(entries, list):
             for entry in entries[:CONVERGE_ENTRIES_CAP]:
                 if (
                     isinstance(entry, dict)
@@ -1329,6 +1414,8 @@ class TopicCurator:
                     await self._assemble_series(entry, chunk, result)
                 else:
                     self._create_raw_card(entry, chunk, result)
+        if on_chunk_done is not None:
+            on_chunk_done(chunk)
 
     async def _assemble_series(
         self, entry: dict[str, Any], corpus: list[dict[str, Any]], result: IdeateResult

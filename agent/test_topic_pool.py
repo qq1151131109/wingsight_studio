@@ -699,6 +699,176 @@ check_support_pool()
 asyncio.run(run_ideate())
 
 
+# ---------- 并发流水线：全量喂入 / 并发限流 / 断点续跑 / 发散失败不喂 ----------
+
+
+def _clue(i: int, seed: str = "并发") -> dict:
+    return {
+        "title": f"{seed}线索{i}：某地发现第{i}号档案资料与口述整理",
+        "source": "测试源",
+        "snippet": f"线索{i}摘要",
+        "url": f"https://t.cn/{seed}/{i}",
+        "signal_type": "material",
+    }
+
+
+def _tracking_runner(stats: dict, *, sleep: float = 0.01):
+    """带真实让步点的最小 fake：发散每线索 1 方向、收敛每方向 1 合法卡。
+
+    sleep 让事件循环真正交错——并发限流与断点续跑要测的就是交错下的账本。
+    """
+    async def runner(flow_id: str, input_value: str, tweaks=None) -> str:
+        payload = json.loads(input_value)
+        stats["inflight"] += 1
+        stats["max"] = max(stats["max"], stats["inflight"])
+        try:
+            await asyncio.sleep(sleep)
+            if flow_id == "f-diverge":
+                return json.dumps(
+                    [
+                        {
+                            "sourceIndex": item["index"],
+                            "directions": [
+                                {"name": "方向", "sketch": f"题眼：{item['title']}的大主题；切口：{item['title']}"}
+                            ],
+                        }
+                        for item in payload["corpus"]
+                    ],
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                [
+                    {
+                        "title": f"选题：{d['sketch'][:24]}",
+                        "hook": "一条钩子",
+                        "vertical": "history",
+                        "arc": "题眼：档案里的大主题；素材：档案与口述可生成；呈现：相关当事人；弧线：从发现到呈现",
+                        "sourceIndex": j,
+                    }
+                    for j, d in enumerate(payload["directions"])
+                ],
+                ensure_ascii=False,
+            )
+        finally:
+            stats["inflight"] -= 1
+
+    return runner
+
+
+def _day_state() -> dict:
+    return json.loads(store.get_setting(topic_pool.IDEATE_CORPUS_KEY) or "{}")
+
+
+async def run_full_feed() -> None:
+    """全量喂入：90 条线索（18 批）一轮吃满，超过旧固定帽 16 也全部发散收敛。"""
+    n = 90
+    clues = [_clue(i) for i in range(n)]
+    stats = {"inflight": 0, "max": 0}
+    curator = TopicCurator(flow_runner=_tracking_runner(stats), search=fake_search)
+    result = topic_pool.IdeateResult()
+    await curator.ideate(clues, [], result, set())
+    expect(result.batches == (n + topic_pool.DIVERGE_CLUES_PER_BATCH - 1) // topic_pool.DIVERGE_CLUES_PER_BATCH,
+           f"不设帽应跑满 {n} 条线索的全部发散批：{result.batches}")
+    expect(result.directions == n and result.created == n, f"每线索 1 方向 1 卡应全量落库：{result}")
+    state = _day_state()
+    expect(state.get("clues") == [] and state.get("directions") == [], f"全量喂入后当日账本应清空：{state.get('day')}")
+    expect(stats["max"] > 1, f"应观察到并发在途（默认并发 >1）：{stats['max']}")
+    print("全量喂入 ✓")
+
+
+async def run_concurrency_limit() -> None:
+    """并发限流：信号量 2 时在途 flow 调用不得越界，且真实并发 ≥2。"""
+    old = topic_pool.IDEATE_FLOW_CONCURRENCY
+    topic_pool.IDEATE_FLOW_CONCURRENCY = 2
+    try:
+        stats = {"inflight": 0, "max": 0}
+        curator = TopicCurator(flow_runner=_tracking_runner(stats), search=fake_search)
+        result = topic_pool.IdeateResult()
+        await curator.ideate([_clue(i, "限流") for i in range(20)], [], result, set())
+        expect(stats["max"] >= 2, f"应观察到真实并发（≥2 在途）：{stats['max']}")
+        expect(stats["max"] <= 2, f"在途 flow 调用不得越过信号量：{stats['max']}")
+    finally:
+        topic_pool.IDEATE_FLOW_CONCURRENCY = old
+    print("并发限流 ✓")
+
+
+async def run_crash_resume() -> None:
+    """断点续跑：第二批发散中途被杀，账本留有未喂线索；续跑吃掉余量不重喂。"""
+    gate = asyncio.Event()
+    diverge_started = {"n": 0}
+    base = _tracking_runner({"inflight": 0, "max": 0})
+
+    async def gated(flow_id: str, input_value: str, tweaks=None) -> str:
+        if flow_id == "f-diverge":
+            diverge_started["n"] += 1
+            if diverge_started["n"] == 2:
+                await gate.wait()  # 第二批发散挂起 → 模拟进程被杀
+        return await base(flow_id, input_value, tweaks)
+
+    clues = [_clue(i, "续跑") for i in range(10)]
+    curator = TopicCurator(flow_runner=gated, search=fake_search)
+    task = asyncio.create_task(curator.ideate(clues, [], topic_pool.IdeateResult(), set()))
+    while diverge_started["n"] < 2:
+        await asyncio.sleep(0)
+    await asyncio.sleep(0.05)  # 让第一批的发散+收敛结算完、第二批稳定挂在门上
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    state = _day_state()
+    expect(len(state.get("clues") or []) == 5, f"被杀后账本应留未喂的 5 条线索：{len(state.get('clues') or [])}")
+    expect(len(state.get("directions") or []) in (0, 5), "账本方向只能是 0（已收敛）或 5（待收敛），不得丢批")
+    seen_fps = set(json.loads(store.get_setting(topic_pool.IDEATE_SEEN_KEY) or "{}").get("fps") or [])
+    expect(sum(topic_pool.fingerprint_of(c["title"]) in seen_fps for c in clues) == 5, "恰好第一批 5 条记喂过")
+
+    # 续跑：先收敛账本方向再发散余量（复刻 run() 的装载-过滤-续跑顺序）
+    stats2 = {"inflight": 0, "max": 0}
+    curator2 = TopicCurator(flow_runner=_tracking_runner(stats2), search=fake_search)
+    result2 = topic_pool.IdeateResult()
+    seen2 = set(seen_fps)
+    remaining = [c for c in state["clues"] if topic_pool.fingerprint_of(c["title"]) not in seen2]
+    await curator2.ideate(remaining, state.get("directions") or [], result2, seen2)
+    expect(result2.batches == 1, f"续跑只应发散剩余 1 批：{result2.batches}")
+    cards = store.list_topics(status="candidate", stage="raw", q="选题：题眼：续跑线索")
+    expect(len(cards) == 10, f"两轮合计应落 10 张卡（不重喂不丢批）：{len(cards)}")
+    state2 = _day_state()
+    expect(state2.get("clues") == [] and state2.get("directions") == [], "续跑后账本清空")
+    print("断点续跑 ✓")
+
+
+async def run_diverge_failure_not_fed() -> None:
+    """发散全败：线索不记喂过、账本原样保留，修复后重跑可续。"""
+    fail = {"on": True}
+    base = _tracking_runner({"inflight": 0, "max": 0})
+
+    async def flaky(flow_id: str, input_value: str, tweaks=None) -> str:
+        if flow_id == "f-diverge" and fail["on"]:
+            raise RuntimeError("（引擎错误：flow 不存在）")
+        return await base(flow_id, input_value, tweaks)
+
+    clues = [_clue(i, "失败") for i in range(10)]
+    curator = TopicCurator(flow_runner=flaky, search=fake_search)
+    curator._save_day_state(clues, [])  # 复刻 run() 采集后先落账
+    result = topic_pool.IdeateResult()
+    await curator.ideate(clues, [], result, set())
+    expect(result.batches == 0, f"发散全败不应记批：{result.batches}")
+    state = _day_state()
+    expect(len(state.get("clues") or []) == 10, f"失败批线索应原样留在账本等重试：{len(state.get('clues') or [])}")
+
+    fail["on"] = False
+    result2 = topic_pool.IdeateResult()
+    await curator.ideate([c for c in clues], [], result2, set())
+    expect(result2.batches == 2 and result2.created == 10, f"修复后重跑应吃满全部线索：{result2}")
+    print("发散失败不喂 ✓")
+
+
+asyncio.run(run_full_feed())
+asyncio.run(run_concurrency_limit())
+asyncio.run(run_crash_resume())
+asyncio.run(run_diverge_failure_not_fed())
+
+
 async def run_deep_dive() -> None:
     """点名深挖：证据足升级已深挖建议卡；证据薄底账留痕、卡仍是生料。"""
     cards = store.list_topics(status="candidate", stage="raw")
