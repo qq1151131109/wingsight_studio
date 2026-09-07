@@ -1387,10 +1387,12 @@ async def _generate_single_image(
     if shot.get("aspect"):
         payload["aspect"] = flat(shot["aspect"])
     # 完整提示词整体替换（用户可见/可编辑的真实提示词通道）：非空时不经
-    # flow 版式渲染原样出图。两种键名都收（前端 camelCase / 工具 snake_case）
+    # flow 版式渲染原样出图。两种键名都收（前端 camelCase / 工具 snake_case）。
+    # 与 description 同规拍平：langflow tweaks 会把 \n 反转义成裸换行，
+    # 组件 json.loads 报 Invalid control character（自由生图多段 final_prompt 实锤）
     final_prompt = str(shot.get("finalPrompt") or shot.get("final_prompt") or "").strip()
     if final_prompt:
-        payload["final_prompt"] = final_prompt[:3000]
+        payload["final_prompt"] = flat(final_prompt)[:3000]
     # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
     # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）。
     # 两种键名都收：前端批量出图传 camelCase referenceImages，聊天工具的

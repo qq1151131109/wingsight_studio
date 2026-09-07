@@ -61,6 +61,33 @@ const nextConfig: NextConfig = {
         source: "/api/v1/:path*",
         destination: "http://127.0.0.1:8123/api/v1/:path*",
       },
+      {
+        // novanova 竞品工作台（references/novanova-studio，basePath=/nova 的
+        // next dev :8200）挂在同源 /nova 下试用；其 /nova/api/v1/* 由它自己
+        // 的 dev rewrite 转发到 8080 的 Java server——必须排在本文件
+        // /api/v1 重写之后无关（前缀不同），但语义上 /nova 优先级独立
+        source: "/nova",
+        destination: "http://127.0.0.1:8200/nova",
+      },
+      {
+        source: "/nova/:path*",
+        destination: "http://127.0.0.1:8200/nova/:path*",
+      },
+      // novanova 的 public 静态资源在源码里是裸绝对路径（/logo /images
+      // /homepage /icons /fonts /github_images），不吃 basePath 前缀——
+      // 浏览器按根路径请求会落到本站 404。这些顶层目录本站 public 均未
+      // 使用（已核对零冲突），窄转发到 8200 并补 /nova 前缀
+      ...[
+        "logo",
+        "images",
+        "homepage",
+        "icons",
+        "fonts",
+        "github_images",
+      ].map((dir) => ({
+        source: `/${dir}/:path*`,
+        destination: `http://127.0.0.1:8200/nova/${dir}/:path*`,
+      })),
     ];
   },
 };

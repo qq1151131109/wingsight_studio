@@ -35,6 +35,7 @@ import compose  # noqa: E402
 import dmx_routes  # noqa: E402
 import eventbus  # noqa: E402
 import events  # noqa: E402
+import free_images  # noqa: E402
 import usage_routes  # noqa: E402
 import entities  # noqa: E402
 import entity_routes  # noqa: E402
@@ -863,6 +864,36 @@ async def api_text_models(user: auth.CurrentUser):
     """文本模型目录（DMX 网关 chat 探针验证，见 agent/models.py）。
     剧本/分镜表/拆解等文本生成的模型选择渲染。"""
     return {"models": models.text_models_payload(), "default": models.DEFAULT_TEXT_MODEL_ID}
+
+
+@app.post("/free-images")
+async def api_free_image_generate(req: dict, user: auth.CurrentUser):
+    """自由生图批次（juben ImageStudio 移植）：不受画风/资产约束，一次点击
+    多模型并行，每模型一行任务。立即返回 {batchId, items}；前端轮询 GET。
+
+    req: {project_id, prompt, aspect?, resolution?, models: [目录 id],
+          reference_images?: [/agent-service/assets/... url]}
+    校验失败 400 中文点名（模型/画幅/档位/参考上限），绝不静默换默认。
+    """
+    try:
+        return await free_images.create_batch(
+            str(req.get("project_id") or ""),
+            str(req.get("prompt") or ""),
+            str(req.get("aspect") or ""),
+            str(req.get("resolution") or ""),
+            [str(m) for m in (req.get("models") or []) if str(m).strip()],
+            [str(u) for u in (req.get("reference_images") or []) if str(u).strip()],
+            user,
+        )
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+
+
+@app.get("/free-images")
+def api_free_image_list(project_id: str, user: auth.CurrentUser):
+    """画廊数据源（3 秒轮询）：项目内批次倒序，含在途/失败/完成全态。"""
+    projects.assert_access(user, project_id)
+    return {"items": free_images.list_free_images(project_id)}
 
 
 @app.post("/storyboard/images")

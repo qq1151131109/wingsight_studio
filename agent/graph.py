@@ -35,6 +35,7 @@ from copilotkit import CopilotKitState
 from langgraph.prebuilt import ToolNode
 
 import camera
+import free_images
 import imgresearch
 import models
 import projects
@@ -958,7 +959,110 @@ def read_skill(name: str) -> str:
     return f.read_text(encoding="utf-8")
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, run_langflow_skill, read_skill, research_asset_references, get_reference_research_status, adopt_asset_references, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
+# f-string 不能作 docstring，正文进常量、def 后显式赋 __doc__ 再 tool() 包装。
+_GEN_FREE_IMAGE_DOC = """提交自由生图批次（自由生图工作台，不受项目画风与资产约束）。
+
+用户在自由生图页（左侧活动栏「生图」）聊天、或任何「帮我画/出一张图」且
+**不涉及画布资产设定图/分镜语义**的自由创作请求用这个工具：提示词
+**逐字直传**（KEEP 语义——禁止扩写/改写/加版式命令句，用户说什么发什么），
+不注入画风、不套版式模板；可多模型并行（models 传多个 = 同题各出一张对比）。
+结果落在自由生图画廊（生图页右侧实时可见，约 30-90 秒），不写画布、不进
+资产库；用户想把某张送上画布时：先 list_free_images 拿 URL，再 canvas_ops
+add_node（nodeType:"image", imageUrl:<url>）建图卡。
+
+Args:
+    prompt: 用户原话提示词，逐字直传。
+    models_json: 出图模型 id 数组 JSON，如 ["gpt-image-2-03","gemini-3.1-flash-image"]；
+        缺省 ["gpt-image-2-03"]；未知 id 会整批报错并列出可用清单。
+    aspect: 画幅 w:h（"16:9"/"9:16"/"1:1"/"4:3"/"3:4"/"21:9"），缺省 "16:9"。
+    resolution: 清晰度档位（"1K"/"2K"/"4K"），缺省跟随模型默认。
+    reference_images_json: 参考图 URL 数组 JSON（画布图卡的 imageUrl 或
+        /agent-service/assets/ 链接），按顺序为 图1/图2…；提示词里可用
+        「@图N 注解」指定某张参考的用法（如 @图1 锁定脸部）。
+"""
+
+
+async def generate_free_image(
+    prompt: str,
+    config: RunnableConfig,
+    models_json: str = '["gpt-image-2-03"]',
+    aspect: str = "16:9",
+    resolution: str = "",
+    reference_images_json: str = "[]",
+) -> str:
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    pid = projects.project_id_of_thread(thread_id) if thread_id else ""
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    try:
+        model_ids = json.loads(models_json)
+        ref_urls = json.loads(reference_images_json)
+        if not isinstance(model_ids, list) or not model_ids:
+            return "models_json 必须是非空字符串数组 JSON"
+        if not isinstance(ref_urls, list) or not all(isinstance(u, str) for u in ref_urls):
+            return "reference_images_json 必须是字符串数组 JSON"
+        batch = await free_images.create_batch(
+            pid, prompt, aspect, resolution, model_ids, ref_urls
+        )
+    except ValueError as exc:
+        return f"提交失败：{exc}"
+    except json.JSONDecodeError as exc:
+        return f"参数不是合法 JSON：{exc}"
+    names = []
+    for it in batch["items"]:
+        entry = next((m for m in models.IMAGE_MODELS if m["id"] == it["modelId"]), None)
+        names.append(str(entry["label"]) if entry else it["modelId"])
+    return (
+        f"已提交自由生图批次（{len(batch['items'])} 个模型并行：{'、'.join(names)}），"
+        "约 30-90 秒出图，结果实时出现在自由生图画廊（左侧活动栏「生图」页）；"
+        "用户问进度/想看结果时用 list_free_images 查。"
+    )
+
+
+generate_free_image.__doc__ = _GEN_FREE_IMAGE_DOC
+generate_free_image = tool(generate_free_image)
+
+
+@tool
+async def list_free_images(config: RunnableConfig, limit: int = 12) -> str:
+    """查自由生图画廊（最近批次，新在前）。
+
+    用户在自由生图页问「出了吗/刚才那张给我」、或要把自由生图结果送上画布
+    （拿 imageUrl 去 canvas_ops 建图卡）时调用。每行含状态/模型/画幅/提示词/
+    图片 URL；在途任务（queued/running）稍后再查。
+
+    Args:
+        limit: 返回条数（默认 12，上限 50）。
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    pid = projects.project_id_of_thread(thread_id) if thread_id else ""
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    items = free_images.list_free_images(pid)[: max(1, min(int(limit or 12), 50))]
+    if not items:
+        return "自由生图画廊还没有记录（生图页或本工具 generate_free_image 都可以出图）。"
+    status_word = {"queued": "排队中", "running": "生成中", "done": "已完成", "error": "失败"}
+    lines = []
+    for it in items:
+        entry = next((m for m in models.IMAGE_MODELS if m["id"] == it["modelId"]), None)
+        label = str(entry["label"]) if entry else it["modelId"]
+        line = f"- [{status_word.get(it['status'], it['status'])}] {label}"
+        if it.get("aspect"):
+            line += f" · {it['aspect']}"
+        line += f"：{(it.get('prompt') or '')[:60]}"
+        if it.get("imageUrl"):
+            line += f" → {it['imageUrl']}"
+        if it.get("error"):
+            line += f"（{it['error'][:80]}）"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, research_asset_references, get_reference_research_status, adopt_asset_references, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
@@ -1214,6 +1318,7 @@ SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在�
 - 意图已明确（点名工具、「直接做/开始制作」类）→ 直接按对应链路执行；执行细节（先出哪批、批量范围）自己定并在汇报里说明，不要「如无异议我就继续」式请示。
 - 「调研」按上下文分两种：史实核查/卷宗/时间线/报道取证 → 深度调研（下节）；正在出设定图、或说参考图/考据/资产图 → research_asset_references（按资产卡 node_id 发起）。分不清就问一句；启动错了 running 态先 cancel_research 停掉再改道，planning 态直接弃置（未确认不会跑）。
 - 用户回复与你的提议/开题不一致 → 以用户的话为准立即改道，不是确认。
+- 聊天里直接想出一张自由创作的图（不涉画布资产设定图/分镜语义）→ generate_free_image（提示词逐字直传，不扩写不套版式）；用户想把自由生图结果送上画布 → list_free_images 拿 imageUrl + canvas_ops 建图卡。
 - 与画布/创作无关的问题 → 正常回答。
 
 ## 操作画布
