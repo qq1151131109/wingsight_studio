@@ -5221,11 +5221,12 @@ async function fillAssetImages(sourceId: string): Promise<string | null> {
           rid: n.id,
           name: n.data.title as string,
           description: `${n.data.title}。${n.data.body}`,
-          // 服饰卡的设定图按道具契约（4:3 单件）出图
-          assetType:
-            n.data.nodeType === "costume"
-              ? "prop"
-              : (n.data.nodeType as "character" | "scene" | "prop"),
+          // 服饰是一等出图类型（2026-09-07 起 flow 有 costume 16:9 三视图契约）
+          assetType: n.data.nodeType as
+            | "character"
+            | "scene"
+            | "prop"
+            | "costume",
           visualNotes: `全局视觉风格：${projectStyle}`,
           referenceImages: refCards.map((m) => m.data.imageUrl as string),
           referenceLabels: refCards.map((m) => ({

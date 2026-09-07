@@ -58,8 +58,9 @@ _FLOW_TIMEOUTS = {"plan": 300, "extract": 240, "eval": 240, "dossier": 600}
 # 全链统一目录默认 gpt-5.6-luna（DMX 平台，见 models.TEXT_MODELS）：
 # 高频轻量环节（开题/提纯/评估，单次调用几十次）和卷宗撰写都用它，
 # FAST_MODEL_ID 保留名字方便以后单独给轻量环节换快模型。
-# 历史注：快模型曾用 BigModel 官方 glm-5.3-flash（本部署 DeepSeek 平台
-# BASE_URL 实指智谱 coding 网关，deepseek 系模型名会 1214 modelCode 不存在）。
+# 历史注：快模型曾用 BigModel 官方 glm-5.3-flash（DeepSeek 平台 BASE_URL
+# 曾实指智谱 coding 网关；2026-09-07 起已接官方 api.deepseek.com，
+# 网关同期下架了 deepseek-* 全系模型）。
 FAST_MODEL_ID = "gpt-5.6-luna"
 
 # 来源分类学（导演逐内容点索要出处的分类，extract flow 按它归档）

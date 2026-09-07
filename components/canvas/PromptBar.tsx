@@ -24,10 +24,14 @@ import {
 import { buildRefSequence } from "@/lib/canvas/refSequence";
 import { isLookCard } from "@/lib/canvas/shotRefs";
 import {
-  inferAssetType,
+  declaredAssetType,
+  recommendAssetType,
+  sheetSelectionLabel,
   SHEET_LABELS,
+  SHEET_NONE_TOOLTIP,
   SHEET_TOOLTIPS,
   type SheetAssetType,
+  type SheetSelection,
 } from "@/lib/canvas/genContract";
 import { createPortal } from "react-dom";
 import { assetThumbUrl } from "@/lib/asset-thumb";
@@ -127,7 +131,7 @@ export type GenerateDetail = {
   selfBodyOff?: boolean;
   /** 参与清单摘除语义：本次不带全局画风（画风 chip × 掉后的当次生效） */
   styleOff?: boolean;
-  /** 版式契约显式覆盖（版式 chip 手选）：缺省走 genContract 共享推断 */
+  /** 版式契约显式覆盖（版式 chip 手选）：缺省=声明上下文或原话直传（genContract） */
   assetType?: "character" | "scene" | "prop" | "costume" | "shot";
   /** 完整提示词整体替换（「实际提示词」编辑重跑）：原样出图 */
   finalPrompt?: string;
@@ -291,19 +295,18 @@ export default function PromptBar({
   const refSeqLabelOf = (id: string) =>
     refSeq?.entries.find((e) => e.node.id === id)?.label;
 
-  // 版式契约显式覆盖（P3 事前显性化）：chip 显示推断结果，点开可改成
-  // 定妆照/道具结构图/剧照等——2026-09-07 报纸事故（「道具图」被拍成剧照
-  // 版式）的知情权+否决权补丁；显式选择经 GENERATE_EVENT assetType 透传，
-  // 桥接层不再二次推断
+  // 版式契约显式覆盖（P3 事前显性化）：chip 显示生效值，点开可改成
+  // 定妆照/道具结构图/剧照/原话直传——显式选择经 GENERATE_EVENT assetType
+  // 透传，桥接层不再二次推断（2026-09-07 空镜事故：关键词推断猜错版式且
+  // 自动采用，无人风景被拍出人）
   const [sheetOverride, setSheetOverride] = useState<SheetAssetType | null>(null);
   const [sheetMenu, setSheetMenu] = useState<{ x: number; y: number } | null>(null);
   // 切卡复位：PromptBar 按 nodeId key 重挂载（NodeInputPanel），state 天然清零
   // 普通计算（React Compiler 自动记忆，手写 useMemo 反被跳过编译）
-  const inferredSheet =
+  const declaredSheet =
     kind === "image" && self
-      ? inferAssetType({
+      ? declaredAssetType({
           nodeType: String(self.data.nodeType),
-          prompt: `${self.data.title ?? ""} ${draft}`,
           fromShotlist: edges.some(
             (e) =>
               e.target === nodeId &&
@@ -315,6 +318,13 @@ export default function PromptBar({
               (m) => m.id === edges.find((e) => e.target === nodeId)?.source,
             )?.data.nodeType ?? "",
           ),
+        })
+      : null;
+  // 推荐仅做菜单标记，不参与生效（生效与桥接层同源：显式 > 声明 > 直传）
+  const recommendedSheet =
+    kind === "image" && self
+      ? recommendAssetType({
+          prompt: `${self.data.title ?? ""} ${draft}`,
           hasReferences: (refSeq?.entries.length ?? 0) > 0,
           editMode:
             Boolean(
@@ -322,9 +332,10 @@ export default function PromptBar({
             ) &&
             (refSeq?.entries.some((e) => e.kind === "self") ||
               (refSeq?.entries.length ?? 0) === 0),
+          declared: declaredSheet,
         })
       : null;
-  const activeSheet = sheetOverride ?? inferredSheet;
+  const activeSheet: SheetSelection = sheetOverride ?? declaredSheet ?? "none";
 
   // 死引用检测：@ImageN 式字面文本（外部工具的引用惯例）不会被解析成
   // 引用 token，软提示不拦截——真引用是打 @ 选 chip，提交时自动编号 图N
@@ -927,6 +938,7 @@ export default function PromptBar({
           maxHeight={floating ? 260 : 120}
           onChange={onEditorChange}
           onSubmit={submit}
+          enterToSubmit
         />
       </div>
       {kind === "image" && deadRefHint ? (
@@ -999,14 +1011,15 @@ export default function PromptBar({
                   URL 去重），与 directImagegen 同源——口径不一致曾让用户
                   以为参考没带上（罪案实录事故） */}
               {/* 版式契约 chip（P3 事前显性化）：这次出图按哪个版式渲染
-                  （定妆照/道具结构图/剧照…）事前可见、点击可改——
-                  「报纸道具图出成电影剧照」事故的知情权+否决权补丁 */}
+                  （原话直传/定妆照/道具结构图/剧照…）事前可见、点击可改；
+                  默认「原话直传」= 不套版式模板（空镜事故后与桥接层同源：
+                  显式点选 > 卡片声明 > 直传） */}
               {activeSheet ? (
                 <span className="relative shrink-0">
                   <button
                     type="button"
-                    data-tip={`${SHEET_TOOLTIPS[activeSheet]}；点击可更换版式`}
-                    aria-label={`版式：${SHEET_LABELS[activeSheet]}，点击更换`}
+                    data-tip={`${activeSheet === "none" ? SHEET_NONE_TOOLTIP : SHEET_TOOLTIPS[activeSheet]}；点击可更换版式`}
+                    aria-label={`版式：${sheetSelectionLabel(activeSheet)}，点击更换`}
                     className={`whitespace-nowrap rounded px-1 py-1 text-[11px] transition-colors ${
                       sheetOverride
                         ? "bg-accent-dim font-medium text-accent"
@@ -1017,7 +1030,7 @@ export default function PromptBar({
                       setSheetMenu({ x: r.left, y: r.top });
                     }}
                   >
-                    {SHEET_LABELS[activeSheet]}
+                    {sheetSelectionLabel(activeSheet)}
                     <span className="ml-0.5 opacity-60">▾</span>
                   </button>
                   {sheetMenu
@@ -1031,6 +1044,27 @@ export default function PromptBar({
                           }}
                           onPointerDown={(e) => e.stopPropagation()}
                         >
+                          <button
+                            type="button"
+                            className={`flex w-full flex-col items-start rounded-md px-2 py-1 text-left transition-colors ${
+                              activeSheet === "none" ? "bg-accent-dim" : "hover:bg-surface-2"
+                            }`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSheetOverride(null);
+                              setSheetMenu(null);
+                            }}
+                          >
+                            <span className="text-[11px] font-medium text-text">
+                              {sheetSelectionLabel("none")}
+                              {recommendedSheet === "none" ? (
+                                <span className="ml-1 text-[10px] text-text-4">（推荐）</span>
+                              ) : null}
+                            </span>
+                            <span className="text-[10px] leading-snug text-text-4">
+                              {SHEET_NONE_TOOLTIP}
+                            </span>
+                          </button>
                           {(["shot", "prop", "scene", "character", "costume"] as const).map(
                             (t) => (
                               <button
@@ -1041,13 +1075,13 @@ export default function PromptBar({
                                 }`}
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  setSheetOverride(t === inferredSheet ? null : t);
+                                  setSheetOverride(t);
                                   setSheetMenu(null);
                                 }}
                               >
                                 <span className="text-[11px] font-medium text-text">
                                   {SHEET_LABELS[t]}
-                                  {t === inferredSheet ? (
+                                  {t === recommendedSheet ? (
                                     <span className="ml-1 text-[10px] text-text-4">（推荐）</span>
                                   ) : null}
                                 </span>
@@ -1184,16 +1218,16 @@ export default function PromptBar({
           disabled={rwBusy}
           data-tip={
             kind === "text"
-              ? "让 AI 撰写（Ctrl+Enter）"
+              ? "让 AI 撰写（Enter，Shift+Enter 换行）"
               : kind === "shotlist"
-                ? "让 AI 修改分镜表（Ctrl+Enter）"
-                : "生成（Ctrl+Enter）；清空提示词=按卡片标题与正文重生成"
+                ? "让 AI 修改分镜表（Enter，Shift+Enter 换行）"
+                : "生成（Enter，Shift+Enter 换行）；清空提示词=按卡片标题与正文重生成"
           } aria-label={
             kind === "text"
-              ? "让 AI 撰写（Ctrl+Enter）"
+              ? "让 AI 撰写（Enter，Shift+Enter 换行）"
               : kind === "shotlist"
-                ? "让 AI 修改分镜表（Ctrl+Enter）"
-                : "生成（Ctrl+Enter）；清空提示词=按卡片标题与正文重生成"
+                ? "让 AI 修改分镜表（Enter，Shift+Enter 换行）"
+                : "生成（Enter，Shift+Enter 换行）；清空提示词=按卡片标题与正文重生成"
           }
           className={`flex shrink-0 items-center gap-1 bg-accent font-medium text-white transition-opacity hover:opacity-85 disabled:cursor-not-allowed disabled:opacity-50 ${
             floating ? "h-8 rounded-full px-4 text-xs" : "h-7 rounded-md px-2 text-[11px]"

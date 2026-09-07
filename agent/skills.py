@@ -1339,7 +1339,9 @@ async def _generate_single_image(
     # 兼容驼峰/下划线：直连端点历史用 visualNotes，flow 载荷用 visual_notes
     visual_flat = flat(shot.get("visual_notes") or shot.get("visualNotes"))
     description = flat(shot.get("description"))
-    shot_type = flat(shot.get("assetType") or "scene")
+    # "none" = 无版式直传（前端 KEEP 语义，2026-09-07 空镜事故）须原样透传；
+    # 真缺省（旧调用方不带类型）仍落 scene——与 flow 契约一致
+    shot_type = flat(shot.get("assetType")) or "scene"
     # 指令合成（智能编排）：短指令结合【设定文本】扩写成完整提示词；完整
     # 描述/改图指令 keep 原样逐字直传。失败明报不静默降级（铁律）；合成
     # 结果随任务项回传前端回显（composedPrompt）

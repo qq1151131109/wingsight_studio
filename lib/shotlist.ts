@@ -161,16 +161,16 @@ export async function decomposeAssets(
  *  referenceLabels 与 referenceImages 一一对应（{type,name}），flow 渲染
  *  逐张职责声明（juben build_reference_usage 范式：定妆照只锁身份不继承
  *  白底/多视图排版）；
- *  assetType 决定布局契约（角色 16:9 四格 / 道具 4:3 / 镜头单幅剧照，
- *  缺省 scene），aspect 覆写幅面（分镜图 9:16/21:9；资产卡经 data.gen.aspect
- *  也会落到这里）；params 为镜头级模型/档位/画幅覆盖（卡片级 data.gen，
- *  赢过请求级 params） */
+ *  assetType 决定布局契约（角色 16:9 四格 / 道具结构图 / 镜头单幅剧照 /
+ *  none=无版式直传，缺省 scene），aspect 覆写幅面（分镜图 9:16/21:9；
+ *  资产卡经 data.gen.aspect 也会落到这里）；params 为镜头级模型/档位/画幅
+ *  覆盖（卡片级 data.gen，赢过请求级 params） */
 export type ShotImageRequest = {
   rid: string;
   name: string;
   description: string;
   visualNotes?: string;
-  assetType?: "character" | "scene" | "prop" | "costume" | "shot";
+  assetType?: "character" | "scene" | "prop" | "costume" | "shot" | "none";
   referenceImages?: string[];
   referenceLabels?: { type: string; name: string }[];
   aspect?: string;

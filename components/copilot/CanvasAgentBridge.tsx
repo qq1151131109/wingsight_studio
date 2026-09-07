@@ -10,7 +10,7 @@ import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
-import { inferAssetType, type SheetAssetType } from "@/lib/canvas/genContract";
+import { declaredAssetType, type SheetAssetType } from "@/lib/canvas/genContract";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
 import { STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import {
@@ -270,14 +270,8 @@ async function directImagegen(
     st.nodes.find((m) => m.id === assetParentEdge?.source)?.data.nodeType ?? "",
   );
   const isLook = isLookCard(node as WingNode, st.nodes, st.edges);
-  // 契约推断 v2（罪案实录事故修正）：普通图片卡此前无参考落 scene 无人空镜、
-  // 带角色参考落四格定妆——「手动图片卡 + 图片设定图连线 + 有人物剧情的
-  // 提示词」这个最常用组合被渲染成无人空镜，参考职责也被弱化。现按语义分流：
-  //  改图（本卡有图且 @自己/无其他参考）→ 最小提示词模板（无版式措辞，
-  //    本卡原图 image 职责=保留构图只改要改的）
-  //  其余有参考/分镜派生/角色参考 → shot 剧照（人物严格锁定参考图）
-  //  纯文生且标题/提示词明确是场景设计 → scene 空镜；否则 shot（本工具
-  //  默认产出即电影剧照）——scene 不再是无参考默认值，冲突结构性消失
+  // 改图（本卡有图且 @自己/无其他参考）→ EDIT 最小提示词模板（无版式
+  // 措辞，本卡原图 image 职责=保留构图只改要改的）
   const editMode =
     !targetAssetType &&
     !fromShotlist &&
@@ -286,21 +280,20 @@ async function directImagegen(
     (Boolean(editSrc) ||
       selfMentioned ||
       (mentionedImgs.length === 0 && connectedNodes.length === 0));
-  // 版式契约推断走共享函数（genContract，与 PromptBar 事前展示同源）；
-  // 用户显式选择（PromptBar 版式 chip，经 GENERATE_EVENT detail.assetType）
-  // 永远最优先——2026-09-07 报纸事故：关键词只认场景词，「道具图」被拍成
-  // 剧照版式，且推断结果此前不可见不可改
-  const assetType: SheetAssetType =
+  // 版式来源（2026-09-07 空镜事故定案）：显式点选（PromptBar 版式 chip 经
+  // GENERATE_EVENT detail.assetType）> 声明上下文（资产卡自身类型/分镜派生/
+  // Look 父类型）> none 原话直传。关键词推断不再参与生效——「树木/草坪」
+  // 纯风景修改曾被猜成电影剧照、版式人物句把无人空镜拍出人；8 竞品共识=
+  // 模板只跟显式动作走，自由路径原话直传（novanova KEEP 范式）
+  const assetType: SheetAssetType | "none" =
     (opts.assetType as SheetAssetType | undefined) ??
-    inferAssetType({
+    declaredAssetType({
       nodeType: String(node.data.nodeType),
-      prompt: `${node.data.title ?? ""} ${opts.prompt}`,
       fromShotlist,
       isLook,
       parentType: assetParentType,
-      hasReferences: referenceImages.length > 0,
-      editMode,
-    });
+    }) ??
+    "none";
   // 逐张参考图职责标签（与 referenceImages 一一对应）：flow 渲染
   // 「参考图N（名）：只锁定什么/不继承什么」——juben build_reference_usage 范式。
   // 考据参考图（调研采纳落卡）按 reference 职责（锁形制材质），不是改图语义

@@ -247,8 +247,8 @@ await page.keyboard.press("Escape");
 await page.keyboard.press("Backspace");
 await page.waitForTimeout(200);
 
-// 提交：Ctrl+Enter → 捕获出图 payload
-await page.keyboard.press("Control+Enter");
+// 提交：裸 Enter（enterToSubmit 语义，2026-09-07 起）→ 捕获出图 payload
+await page.keyboard.press("Enter");
 await page.waitForTimeout(2500);
 const desc = String(genPayload?.shots?.[0]?.description ?? "");
 const refs = genPayload?.shots?.[0]?.referenceImages ?? [];
@@ -287,7 +287,7 @@ await page.locator('button[aria-label="候选 2 张"]').click();
 // 外点关弹窗并落焦编辑器（Escape 会连浮动面板一起关掉）
 await page.locator('[contenteditable="true"]').first().click();
 await page.keyboard.type("，夜色深沉");
-await page.keyboard.press("Control+Enter");
+await page.keyboard.press("Enter");
 await page.waitForTimeout(3500); // 轮询间隔 2.5s
 const bu = tgtNode.locator("button", { hasText: "补出 1 张" });
 check("M12 部分失败亮出「补出 1 张」", (await bu.count()) === 1);
@@ -308,7 +308,7 @@ check(
 jobMode = "running";
 await editor.click();
 await page.keyboard.type("再来一版");
-await page.keyboard.press("Control+Enter");
+await page.keyboard.press("Enter");
 await page.waitForTimeout(1000);
 const cancelBtn = tgtNode.locator("button", { hasText: "取消" });
 check("M15 生成中出现取消按钮", (await cancelBtn.count()) >= 1);

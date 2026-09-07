@@ -116,7 +116,8 @@ export interface WingNodeData {
   genPrompt?: string;
   genShot?: {
     description: string;
-    assetType: "character" | "scene" | "prop" | "costume" | "shot";
+    /** "none" = 无版式直传（2026-09-07 空镜事故：推断不再自动生效） */
+    assetType: "character" | "scene" | "prop" | "costume" | "shot" | "none";
     visualNotes: string;
     referenceImages: string[];
     referenceLabels?: { type: string; name: string }[];

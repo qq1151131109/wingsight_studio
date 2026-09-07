@@ -4,9 +4,9 @@
  *    标题剥成空名，用户真标题保留
  *  - @ 候选：已连线卡置顶组（带「已连线」标记）、同类型卡不再被截 3 条
  *  - 「参考 N/4」口径 = 实际发送序列（本卡原图 + 连线带图卡），非只数 token
- *  - 契约推断 v2：图片卡+带图参考 → shot（旧 scene 无人空镜）；@自己/无其他
- *    参考 → 改图最小模板 promptTemplate；无参考+场景关键词 → scene；
- *    角色卡参考 → shot 剧照（旧 character 四格）
+ *  - 版式显选 v3（2026-09-07 空镜事故）：关键词推断不再生效——带图参考/
+ *    角色参考/场景关键词等自由路径一律 none 原话直传；@自己/无其他参考 →
+ *    改图最小模板 promptTemplate；资产卡自身类型（声明语义）→ 对应版式
  * 出图任务 route mock，不消耗真实额度。前置：前端(8008)+agent(8123) 在跑。
  */
 import { readFileSync } from "node:fs";
@@ -82,8 +82,10 @@ const nodes = [
   img("editCard", { imageUrl: svg("E", "#6a5a3f"), genPrompt: "旧图快照" }),
   // 上传图：带图、无生成谱系（genShot/genPrompt 皆无）——提交应派生新卡
   img("upCard", { title: "上传图", imageUrl: svg("U", "#5a4a6a") }),
-  // 场景关键词卡：无图无线
+  // 场景关键词卡：无图无线（关键词不再触发版式——空镜事故定案）
   { id: "sceneCard", type: "image", position: pos(), data: { nodeType: "image", title: "山城夜景场景" } },
+  // 场景资产卡：声明语义（卡片类型=建卡声明的意图）→ scene 空镜契约
+  { id: "sceneAsset", type: "scene", position: pos(), data: { nodeType: "scene", title: "山城夜景", body: "霓虹与江面反光" } },
   // 角色卡参考的剧照卡
   { id: "charA", type: "character", position: pos(), data: { nodeType: "character", title: "张波", imageUrl: svg("Z", "#4a6a4a") } },
   img("charShot", {}),
@@ -279,12 +281,13 @@ try {
   );
   await page.keyboard.press("Escape");
 
-  // 4. 契约推断：图片卡 + 带图参考 + 人物剧情 → shot（旧 scene），无改图模板
+  // 4. 版式显选：图片卡 + 带图参考 + 人物剧情 → none 原话直传（推断不再
+  //    生效；参考职责段照常注入）
   await typePrompt("午后暖光，两人隔桌而坐");
   await submit();
   check(
-    "带图参考→shot 契约",
-    lastPayload?.shots?.[0]?.assetType === "shot" && !lastPayload?.shots?.[0]?.promptTemplate,
+    "带图参考→无版式直传",
+    lastPayload?.shots?.[0]?.assetType === "none" && !lastPayload?.shots?.[0]?.promptTemplate,
     `assetType=${lastPayload?.shots?.[0]?.assetType}`,
   );
   check(
@@ -300,8 +303,9 @@ try {
   await submit();
   const s5 = lastPayload?.shots?.[0];
   check(
-    "改图→最小模板",
-    typeof s5?.promptTemplate === "string" &&
+    "改图→最小模板+无版式",
+    s5?.assetType === "none" &&
+      typeof s5?.promptTemplate === "string" &&
       s5.promptTemplate.includes("{description}") &&
       s5.promptTemplate.includes("{_reference_note}") &&
       !s5.promptTemplate.includes("{layout}"),
@@ -309,26 +313,37 @@ try {
   );
   check("改图参考=仅本卡原图", (s5?.referenceImages ?? []).length === 1, `refs=${s5?.referenceImages?.length}`);
 
-  // 6. 场景关键词：无参考 + 标题含「场景」 → scene 空镜
+  // 6. 关键词不生效：无参考 + 标题含「场景」 → none 直传（旧推断落 scene）
   await select("sceneCard");
   await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
   await typePrompt("黄昏光线，暖色调");
   await submit();
   check(
-    "场景关键词→scene 空镜",
-    lastPayload?.shots?.[0]?.assetType === "scene" && (lastPayload?.shots?.[0]?.referenceImages ?? []).length === 0,
+    "场景关键词不再触发 scene",
+    lastPayload?.shots?.[0]?.assetType === "none" && (lastPayload?.shots?.[0]?.referenceImages ?? []).length === 0,
     `assetType=${lastPayload?.shots?.[0]?.assetType}`,
   );
 
-  // 7. 角色卡参考 → shot 剧照（旧 character 四格定妆）
+  // 6b. 场景资产卡：声明语义（卡片类型=建卡声明的意图）→ scene 空镜契约
+  await select("sceneAsset");
+  await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
+  await typePrompt("黄昏光线，暖色调");
+  await submit();
+  check(
+    "场景资产卡→scene 契约（声明）",
+    lastPayload?.shots?.[0]?.assetType === "scene",
+    `assetType=${lastPayload?.shots?.[0]?.assetType}`,
+  );
+
+  // 7. 角色卡参考 → none 直传（角色职责段锁定身份，不再套剧照版式）
   await select("charShot");
   await page.getByRole("button", { name: /^生成/ }).first().waitFor({ state: "visible", timeout: 5000 });
   await typePrompt("张波走进咖啡馆");
   await submit();
   const s7 = lastPayload?.shots?.[0];
   check(
-    "角色参考→shot 剧照（非四格）",
-    s7?.assetType === "shot" && s7?.referenceLabels?.[0]?.type === "character",
+    "角色参考→无版式直传（职责段锁定角色）",
+    s7?.assetType === "none" && s7?.referenceLabels?.[0]?.type === "character",
     `assetType=${s7?.assetType} label0=${s7?.referenceLabels?.[0]?.type}`,
   );
 
