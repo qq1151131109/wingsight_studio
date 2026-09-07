@@ -14,6 +14,7 @@ import json
 import math
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
@@ -1056,7 +1057,12 @@ def _flatten_media_message(m: Any) -> Any:
             texts.append(b["text"])
         elif btype in _MEDIA_BLOCK_LABELS:
             url = b.get("url") or (b.get("image_url") or {}).get("url") or ""
-            media.append(f"{_MEDIA_BLOCK_LABELS.get(btype, '媒体')} {url}".strip())
+            # data: URL 是内嵌降级时的图块——兆级串进文本清单会撑爆请求，
+            # 只标记不罗列（URL 清单的价值在可指代，不在可点开）
+            if url.startswith("data:"):
+                media.append(f"{_MEDIA_BLOCK_LABELS.get(btype, '媒体')}（历史内嵌图已省略）")
+            else:
+                media.append(f"{_MEDIA_BLOCK_LABELS.get(btype, '媒体')} {url}".strip())
     joined = "\n".join(t for t in texts if t)
     # 文本里已有的 URL 不重复罗列（前端消息本身就带附件清单）
     extra = [line for line in media if not (line.rsplit(" ", 1)[-1] and line.rsplit(" ", 1)[-1] in joined)]
@@ -1078,28 +1084,51 @@ def _flatten_media_message(m: Any) -> Any:
 # 视觉模型路径：本地附件嵌入（模型服务器够不着 /agent-service/assets/ 的本机路径，
 # 必须转成 base64 data URL；DeepSeek 视觉接口只收静态图，视频/音频块剔除）
 _LOCAL_ASSET_PREFIX = "/agent-service/assets/"
-_ASSET_IMAGE_MIME = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".gif": "image/gif",
-}
-_EMBED_IMAGE_MAX = 16 * 1024 * 1024  # API 单图上限 32MiB，留余量
+_EMBED_LONG_EDGE = 1280  # 视觉理解不需要原图分辨率（thumbs 512 太小，折中）
+_EMBED_JPEG_Q = 5  # mjpeg 质量档（≈85），1280 边单图典型 150-400KB
+# DMX 上游限制「单请求图片总量 ≤50MB」（2026-09-07 霸王龙项目 13 张设定图
+# 全量原图内嵌 63MB 把 run 打 400，且消息留在历史里令会话永久毒化——后续
+# 每轮重发同样的 63MB 全部失败）。降采样内嵌为主，总预算闸兜底：超预算的
+# 旧图退回 URL 清单（文本里仍可见、可提及），不再内嵌。
+_EMBED_TOTAL_MAX = 40 * 1024 * 1024
+# 原图文件名随机 hex、内容不可变 → 降采样结果按文件名缓存，历史重放不重编码
+_VISION_EMBED_CACHE: Dict[str, str] = {}
 
 
 def _local_asset_to_data_url(url: str) -> str | None:
     name = Path(url).name
-    mime = _ASSET_IMAGE_MIME.get(Path(name).suffix.lower())
-    if not mime:
+    cached = _VISION_EMBED_CACHE.get(name)
+    if cached is not None:
+        return cached
+    src = skills.ASSETS_DIR / name
+    if not src.is_file():
         return None
     try:
-        data = (skills.ASSETS_DIR / name).read_bytes()
-    except OSError:
+        r = subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error", "-i", str(src),
+                "-vf",
+                (
+                    "scale=w=if(gt(iw\\,ih)\\,min(iw\\,%d)\\,-2)"
+                    ":h=if(gt(iw\\,ih)\\,-2\\,min(ih\\,%d)):flags=lanczos"
+                )
+                % (_EMBED_LONG_EDGE, _EMBED_LONG_EDGE),
+                "-frames:v", "1", "-c:v", "mjpeg", "-q:v", str(_EMBED_JPEG_Q),
+                "-f", "image2pipe", "pipe:1",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        data = r.stdout if r.returncode == 0 and r.stdout else None
+    except (OSError, subprocess.TimeoutExpired):
+        data = None
+    if not data:
         return None
-    if not data or len(data) > _EMBED_IMAGE_MAX:
+    data_url = "data:image/jpeg;base64," + base64.b64encode(data).decode()
+    if len(data_url) > 1024 * 1024:  # 降采样后仍异常大（超长图等），弃嵌
         return None
-    return f"data:{mime};base64," + base64.b64encode(data).decode()
+    _VISION_EMBED_CACHE[name] = data_url
+    return data_url
 
 
 def _embed_local_media(m: Any) -> Any:
@@ -1333,6 +1362,38 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
     return result
 
 
+def _cap_embedded_media(messages: List[Any], budget: int) -> List[Any]:
+    """内嵌图片总量闸（DMX 上游限 50MB/请求）：从最新往旧累计 data URL 字节，
+    超预算的消息整体退回纯文本视图（图变 URL 清单/省略标记），旧图让位新图。
+    毒历史免疫：无论历史里堆了多少图消息，请求字节恒有上界。"""
+    total = 0
+    # 最新往旧决定「保留谁」
+    keep: Dict[int, int] = {}
+    for i in range(len(messages) - 1, -1, -1):
+        m = messages[i]
+        content = getattr(m, "content", None)
+        if not (isinstance(m, HumanMessage) and isinstance(content, list)):
+            continue
+        size = sum(
+            len((b.get("image_url") or {}).get("url", ""))
+            for b in content
+            if isinstance(b, dict) and str(b.get("type", "")) == "image_url"
+            and isinstance(b.get("image_url"), dict)
+        )
+        if not size:
+            continue
+        if total + size > budget:
+            break  # 再旧的一并放弃（旧消息的图对当前轮最不重要）
+        total += size
+        keep[i] = size
+    if not keep:
+        return messages
+    return [
+        m if i in keep else (_flatten_media_message(m) if isinstance(m, HumanMessage) else m)
+        for i, m in enumerate(messages)
+    ]
+
+
 async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     messages = list(state.get("messages") or [])
 
@@ -1399,6 +1460,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # 未压缩窗口 + 清洗交替（孤儿 tool / 缺响应的 call）防止模型侧 400。
     # 画布摘要只随 system prompt 注入一次（每轮重建，值恒为最新，无需末尾再放）
     trimmed = _sanitize_messages_for_model(messages[summary_count:])
+    trimmed = _cap_embedded_media(trimmed, _EMBED_TOTAL_MAX)
 
     # 流式聚合：必须用 astream 而非 ainvoke——ag-ui 桥的 TEXT_MESSAGE_CONTENT
     # 靠 on_chat_model_stream 事件逐 token 下发，ainvoke 是单次非流式请求，

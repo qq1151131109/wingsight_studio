@@ -1270,7 +1270,7 @@ export default function CanvasAgentBridge() {
     description:
       "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝），取值与形状：每个元素形如 " +
       '{op:"add_node",nodeType:"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（资产四类 character/scene/prop/costume 是正经卡型——场景/道具/服饰不要建成 note 加标题前缀；分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl；shotlist 可带 rows 行数组；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
-      '{op:"update_node",id,title,body}（分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
+      '{op:"update_node",id,title,body,imageUrl}（**给卡挂图片唯一通道 = imageUrl 字段**：用户上传的图/已有素材 URL 填进来即上卡显示，多图加 imageUrls 数组成候选；**禁止把图片 URL 写进 body 正文**——正文是设定文本，URL 混进去会被后续出图当事实注入提示词，卡面上也看不到图；分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
