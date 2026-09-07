@@ -184,6 +184,8 @@ export type ShotImageRequest = {
   instruction?: string;
   /** 智能编排的卡片设定文本（compose=true 时供扩写上下文） */
   setting?: string;
+  /** 完整提示词整体替换（「实际提示词」编辑重跑）：原样出图不经版式渲染 */
+  finalPrompt?: string;
   params?: ImagegenParams;
 };
 
@@ -195,6 +197,8 @@ export type ShotImageResult = {
   /** 智能编排合成后的最终提示词（compose=true 的任务项回传，回显用） */
   composedPrompt?: string;
   composeAction?: "keep" | "optimize";
+  /** 实际发送的完整提示词（服务端渲染或 final_prompt 原样） */
+  finalPrompt?: string;
 };
 
 /** 任务表在 agent 内存里：agent 重启后旧 jobId 查无此任务（区别于网络

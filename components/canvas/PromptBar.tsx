@@ -22,6 +22,14 @@ import {
   type WingNode,
 } from "@/lib/canvas/store";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
+import { isLookCard } from "@/lib/canvas/shotRefs";
+import {
+  inferAssetType,
+  SHEET_LABELS,
+  SHEET_TOOLTIPS,
+  type SheetAssetType,
+} from "@/lib/canvas/genContract";
+import { createPortal } from "react-dom";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import MentionInput, {
   type MentionInputHandle,
@@ -119,6 +127,10 @@ export type GenerateDetail = {
   selfBodyOff?: boolean;
   /** 参与清单摘除语义：本次不带全局画风（画风 chip × 掉后的当次生效） */
   styleOff?: boolean;
+  /** 版式契约显式覆盖（版式 chip 手选）：缺省走 genContract 共享推断 */
+  assetType?: "character" | "scene" | "prop" | "costume" | "shot";
+  /** 完整提示词整体替换（「实际提示词」编辑重跑）：原样出图 */
+  finalPrompt?: string;
 };
 
 const KIND_PLACEHOLDER: Record<GenerateDetail["kind"], string> = {
@@ -275,8 +287,44 @@ export default function PromptBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- self 的变化由 nodes 依赖承载
     [kind, lastRead, nodes, nodeId, connectedRefs, selfRefOff],
   );
+
   const refSeqLabelOf = (id: string) =>
     refSeq?.entries.find((e) => e.node.id === id)?.label;
+
+  // 版式契约显式覆盖（P3 事前显性化）：chip 显示推断结果，点开可改成
+  // 定妆照/道具结构图/剧照等——2026-09-07 报纸事故（「道具图」被拍成剧照
+  // 版式）的知情权+否决权补丁；显式选择经 GENERATE_EVENT assetType 透传，
+  // 桥接层不再二次推断
+  const [sheetOverride, setSheetOverride] = useState<SheetAssetType | null>(null);
+  const [sheetMenu, setSheetMenu] = useState<{ x: number; y: number } | null>(null);
+  // 切卡复位：PromptBar 按 nodeId key 重挂载（NodeInputPanel），state 天然清零
+  // 普通计算（React Compiler 自动记忆，手写 useMemo 反被跳过编译）
+  const inferredSheet =
+    kind === "image" && self
+      ? inferAssetType({
+          nodeType: String(self.data.nodeType),
+          prompt: `${self.data.title ?? ""} ${draft}`,
+          fromShotlist: edges.some(
+            (e) =>
+              e.target === nodeId &&
+              nodes.find((m) => m.id === e.source)?.data.nodeType === "shotlist",
+          ),
+          isLook: isLookCard(self, nodes, edges),
+          parentType: String(
+            nodes.find(
+              (m) => m.id === edges.find((e) => e.target === nodeId)?.source,
+            )?.data.nodeType ?? "",
+          ),
+          hasReferences: (refSeq?.entries.length ?? 0) > 0,
+          editMode:
+            Boolean(
+              selfRefOff ? undefined : (self.data.imageUrl as string | undefined),
+            ) &&
+            (refSeq?.entries.some((e) => e.kind === "self") ||
+              (refSeq?.entries.length ?? 0) === 0),
+        })
+      : null;
+  const activeSheet = sheetOverride ?? inferredSheet;
 
   // 死引用检测：@ImageN 式字面文本（外部工具的引用惯例）不会被解析成
   // 引用 token，软提示不拦截——真引用是打 @ 选 chip，提交时自动编号 图N
@@ -426,6 +474,7 @@ export default function PromptBar({
                 ...(selfRefOff ? { selfRefOff: true } : { editOf: nodeId }),
                 ...(selfBodyOff ? { selfBodyOff: true } : {}),
                 ...(styleOff ? { styleOff: true } : {}),
+                ...(sheetOverride ? { assetType: sheetOverride } : {}),
               }),
         },
       }),
@@ -483,6 +532,7 @@ export default function PromptBar({
           ...(kind === "image" && selfRefOff ? { selfRefOff: true } : {}),
           ...(kind === "image" && selfBodyOff ? { selfBodyOff: true } : {}),
           ...(kind === "image" && styleOff ? { styleOff: true } : {}),
+          ...(kind === "image" && sheetOverride ? { assetType: sheetOverride } : {}),
     },
       }),
     );
@@ -948,6 +998,81 @@ export default function PromptBar({
                   实际发送序列（@ 引用带图卡 + 本卡原图 + 连线带图卡，按图
                   URL 去重），与 directImagegen 同源——口径不一致曾让用户
                   以为参考没带上（罪案实录事故） */}
+              {/* 版式契约 chip（P3 事前显性化）：这次出图按哪个版式渲染
+                  （定妆照/道具结构图/剧照…）事前可见、点击可改——
+                  「报纸道具图出成电影剧照」事故的知情权+否决权补丁 */}
+              {activeSheet ? (
+                <span className="relative shrink-0">
+                  <button
+                    type="button"
+                    data-tip={`${SHEET_TOOLTIPS[activeSheet]}；点击可更换版式`}
+                    aria-label={`版式：${SHEET_LABELS[activeSheet]}，点击更换`}
+                    className={`whitespace-nowrap rounded px-1 py-1 text-[11px] transition-colors ${
+                      sheetOverride
+                        ? "bg-accent-dim font-medium text-accent"
+                        : "text-text-4 hover:bg-surface-2 hover:text-text-2"
+                    }`}
+                    onClick={(e) => {
+                      const r = e.currentTarget.getBoundingClientRect();
+                      setSheetMenu({ x: r.left, y: r.top });
+                    }}
+                  >
+                    {SHEET_LABELS[activeSheet]}
+                    <span className="ml-0.5 opacity-60">▾</span>
+                  </button>
+                  {sheetMenu
+                    ? createPortal(
+                        <div
+                          className="fixed z-[1250] w-60 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+                          style={{
+                            left: Math.min(sheetMenu.x, window.innerWidth - 256),
+                            top: Math.max(8, sheetMenu.y - 8),
+                            transform: "translateY(-100%)",
+                          }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                        >
+                          {(["shot", "prop", "scene", "character", "costume"] as const).map(
+                            (t) => (
+                              <button
+                                key={t}
+                                type="button"
+                                className={`flex w-full flex-col items-start rounded-md px-2 py-1 text-left transition-colors ${
+                                  t === activeSheet ? "bg-accent-dim" : "hover:bg-surface-2"
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSheetOverride(t === inferredSheet ? null : t);
+                                  setSheetMenu(null);
+                                }}
+                              >
+                                <span className="text-[11px] font-medium text-text">
+                                  {SHEET_LABELS[t]}
+                                  {t === inferredSheet ? (
+                                    <span className="ml-1 text-[10px] text-text-4">（推荐）</span>
+                                  ) : null}
+                                </span>
+                                <span className="text-[10px] leading-snug text-text-4">
+                                  {SHEET_TOOLTIPS[t]}
+                                </span>
+                              </button>
+                            ),
+                          )}
+                          <button
+                            type="button"
+                            className="mt-0.5 w-full rounded-md px-2 py-1 text-left text-[10px] text-text-4 hover:bg-surface-2"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSheetMenu(null);
+                            }}
+                          >
+                            取消
+                          </button>
+                        </div>,
+                        document.body,
+                      )
+                    : null}
+                </span>
+              ) : null}
               {(() => {
                 const cap =
                   findModelOption(

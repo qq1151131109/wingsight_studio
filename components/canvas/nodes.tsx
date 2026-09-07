@@ -385,6 +385,13 @@ export function NodeInfoModal({
             </>
           ) : null}
         </div>
+        {/* 实际发送提示词（genShot.finalPrompt）：flow 把版式契约+画风+描述
+            渲染后的最终提示词随结果回传落卡——提示词黑箱的知情权补丁
+            （2026-09-07 报纸事故：用户看到「道具图」被拍成剧照版式却无从
+            知晓）。可编辑 + 按此提示词重跑（final_prompt 整体替换通道） */}
+        {d.nodeType === "image" ? (
+          <FinalPromptBlock node={node} onClose={onClose} />
+        ) : null}
         {/* 上次生成实际注入的设定与画风（genShot 快照）：排查「图和设定
             打架」用的审计信息——从生成面板挪来这儿，面板只留创作相关 */}
         {(d.genShot?.visualNotes ?? "").trim() ? (
@@ -408,8 +415,85 @@ export function NodeInfoModal({
   );
 }
 
-/** 图片操作事件派发（顶部工具条/右键菜单两入口同源，弹窗侧统一接） */
-function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
+/** 实际发送提示词块（节点信息弹窗内）：查看 + 编辑 + 按此重跑。
+ *  差分提示（novanova 范式）：实际提示词与用户原文（genPrompt）不同时
+ *  亮「含版式契约」徽标——用户输入原样≠原样发送，这里把差别亮出来 */
+function FinalPromptBlock({ node, onClose }: { node: WingNode; onClose: () => void }) {
+  const shot = node.data.genShot;
+  const saved = String(shot?.finalPrompt ?? "").trim();
+  const [text, setText] = useState(saved);
+  if (!shot || !saved) return null;
+  const original = String(node.data.genPrompt ?? "").trim();
+  const differs = !!original && saved !== original;
+  const dirty = text.trim() !== saved;
+  const rerun = () => {
+    const t = text.trim();
+    if (!t) return;
+    window.dispatchEvent(
+      new CustomEvent<GenerateDetail>(GENERATE_EVENT, {
+        detail: {
+          nodeId: node.id,
+          kind: "image",
+          prompt: t,
+          refIds: ((node.data.refIds as string[]) ?? []).filter(Boolean),
+          finalPrompt: t,
+        },
+      }),
+    );
+    onClose();
+  };
+  return (
+    <details open className="rounded-md border border-hairline bg-surface-2 p-2 text-xs">
+      <summary className="cursor-pointer text-text-3">
+        实际发送提示词
+        {differs ? (
+          <span className="ml-1.5 rounded bg-amber-100 px-1 py-0.5 text-[10px] text-amber-700">
+            含版式契约，与原文不同
+          </span>
+        ) : null}
+      </summary>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={7}
+        // nodrag nowheel：弹窗内滚动/编辑不驱动画布
+        className="nodrag nowheel mt-1.5 w-full resize-y rounded border border-hairline bg-surface-1 p-1.5 font-mono text-[10px] leading-relaxed text-text-2 outline-none focus:border-accent"
+      />
+      <div className="mt-1 flex items-center gap-2">
+        <button
+          type="button"
+          disabled={!text.trim() || !dirty}
+          className="rounded border border-accent bg-accent-dim px-2 py-0.5 text-[11px] font-medium text-text transition-colors hover:bg-accent-soft disabled:cursor-not-allowed disabled:opacity-40"
+          data-tip="按编辑后的完整提示词原样出图（不经版式契约二次渲染）"
+          onClick={rerun}
+        >
+          按此提示词重跑
+        </button>
+        {dirty ? (
+          <button
+            type="button"
+            className="text-[11px] text-text-4 hover:text-text"
+            onClick={() => setText(saved)}
+          >
+            还原
+          </button>
+        ) : null}
+        <span className="flex-1" />
+        <button
+          type="button"
+          className="text-[11px] text-text-4 hover:text-text"
+          onClick={() =>
+            void navigator.clipboard?.writeText(saved).catch(() => undefined)
+          }
+        >
+          复制
+        </button>
+      </div>
+    </details>
+  );
+}
+
+/** 图片操作事件派发（顶部工具条/右键菜单两入口同源，弹窗侧统一接） */function dispatchImageTool(nodeId: string, tool: ImageToolDetail["tool"]) {
   window.dispatchEvent(
     new CustomEvent<ImageToolDetail>(IMAGE_TOOL_EVENT, {
       detail: { nodeId, tool },

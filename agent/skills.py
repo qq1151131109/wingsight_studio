@@ -1145,6 +1145,9 @@ async def generate_asset_images(
                     "ok": True,
                     "imageUrl": str(result["imageUrl"]),
                     "composedPrompt": str(result.get("composedPrompt") or ""),
+                    # 实际发送的完整提示词（版式渲染或 final_prompt 原样）：
+                    # 写卡 genShot.finalPrompt 的数据源（卡上查看/编辑重跑）
+                    "finalPrompt": str(result.get("finalPrompt") or ""),
                 }
             )
         else:
@@ -1228,6 +1231,20 @@ async def _extract_image_url(raw: str) -> Optional[str]:
     except (json.JSONDecodeError, IndexError, KeyError):
         pass
     return None
+
+
+def _extract_final_prompt(raw: str) -> Optional[str]:
+    """从单次出图 flow 结果里解析实际发送的完整提示词（final_prompt）。"""
+    obj_text = _extract_json_object(raw) or _extract_json_objects_loose(raw)
+    if not obj_text:
+        return None
+    try:
+        parsed = json.loads(obj_text)
+        r = parsed[0] if isinstance(parsed, list) else parsed
+        fp = str(r.get("final_prompt") or "").strip()
+        return fp or None
+    except (json.JSONDecodeError, IndexError, KeyError, AttributeError):
+        return None
 
 
 async def _format_asset_result(name: str, raw: str) -> str:
@@ -1367,6 +1384,11 @@ async def _generate_single_image(
     # 不合法会得到中文报错并落到该图卡的 error 上
     if shot.get("aspect"):
         payload["aspect"] = flat(shot["aspect"])
+    # 完整提示词整体替换（用户可见/可编辑的真实提示词通道）：非空时不经
+    # flow 版式渲染原样出图。两种键名都收（前端 camelCase / 工具 snake_case）
+    final_prompt = str(shot.get("finalPrompt") or shot.get("final_prompt") or "").strip()
+    if final_prompt:
+        payload["final_prompt"] = final_prompt[:3000]
     # 定妆照等一致性锚点：/agent-service/assets/ 相对路径 → agent 本机绝对
     # URL（langflow 经 http 下载；/assets 未鉴权，文件名为随机 hex）。
     # 两种键名都收：前端批量出图传 camelCase referenceImages，聊天工具的
@@ -1424,6 +1446,11 @@ async def _generate_single_image(
         # 用量计量（按用户）：模型取解析后的目录 id；发起者来自请求上下文
         usage.record_image(str((params or {}).get("model_name") or ""))
         out: Dict[str, Any] = {"ok": True, "imageUrl": url}
+        # 实际发送的完整提示词（版式渲染或 final_prompt 原样）随结果回传，
+        # 落卡 genShot.finalPrompt 供「实际提示词」查看/编辑重跑
+        fp = _extract_final_prompt(raw)
+        if fp:
+            out["finalPrompt"] = fp[:3000]
         if composed:
             out["composedPrompt"] = composed["prompt"][:2000]
             out["composeAction"] = composed["action"]

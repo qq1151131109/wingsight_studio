@@ -97,7 +97,9 @@ ops = []
 if "分镜图落卡 ops 已生成" in out:
     try:
         payload = out.split("：\n", 1)[1]
-        ops = json.loads(payload)["ops"]
+        # ops JSON 后可能跟「各资产实际发送提示词」附录（finalPrompt 通道）：
+        # raw_decode 只吃前缀 JSON
+        ops = json.JSONDecoder().raw_decode(payload)[0]["ops"]
     except Exception as exc:  # noqa: BLE001
         check("ops JSON 可解析", False, str(exc)[:80])
 
@@ -110,6 +112,7 @@ if adds:
     check("图卡带图与 ready", a.get("imageUrl", "").startswith("/agent-service/assets/") and a.get("status") == "ready")
     check("图卡标题=镜头01 图", a.get("title") == "镜头01 图", str(a.get("title")))
     check("genShot 快照齐全", a.get("genShot", {}).get("assetType") == "shot" and a.get("genShot", {}).get("referenceImages") == [ASSET_URL])
+    check("genShot.finalPrompt=实际发送提示词", bool(str(a.get("genShot", {}).get("finalPrompt") or "").strip()), str(a.get("genShot", {}).get("finalPrompt"))[:60])
     check("refIds URL 反查命中资产卡", a.get("refIds") == ["n_ch_probe"], str(a.get("refIds")))
     check("位置在分镜表右侧", a["position"]["x"] >= 400 + 560 and a["position"]["y"] >= 0, str(a.get("position")))
 check(

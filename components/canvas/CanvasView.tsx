@@ -77,6 +77,11 @@ import { trackEvent } from "@/lib/telemetry";
 import { ASSET_TYPES } from "@/lib/canvas/shotRefs";
 import { toggleFreeResize } from "@/lib/canvas/imageTools";
 import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
+import {
+  bundleZipName,
+  collectMediaEntries,
+  downloadMediaBundle,
+} from "@/lib/canvas/bundleDownload";
 import { findModelOption, useImageModels, type ImageModelOption } from "@/lib/imagegen";
 import { uploadAsset } from "@/lib/projects";
 import { useCanvasPref } from "@/lib/canvas/prefs";
@@ -1372,19 +1377,22 @@ const ALIGN_MENU: {
 
 function SelBtn({
   danger,
+  disabled,
   onClick,
   children,
 }: {
   danger?: boolean;
+  disabled?: boolean;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       className={`nodrag rounded-md px-2 py-1 text-xs transition-colors ${
         danger ? "text-danger hover:bg-danger/10" : "text-text-2 hover:bg-surface-2 hover:text-text"
-      }`}
+      } disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent`}
       onClick={onClick}
     >
       {children}
@@ -1392,9 +1400,46 @@ function SelBtn({
   );
 }
 
+/** 批量下载执行器：多选工具条与右键「下载全部媒体」共用。
+ *  进度经 onStage 汇报（工具条按钮内联显示），结束统一 toast；
+ *  单个媒体走 downloadMedia 快路径不打包（细节见 lib/canvas/bundleDownload.ts） */
+async function runMediaBundleDownload(
+  ids: string[] | undefined,
+  onStage?: (text: string | null) => void,
+): Promise<void> {
+  const st = useCanvasStore.getState();
+  const entries = collectMediaEntries(st.nodes, ids);
+  if (entries.length === 0) {
+    showToast(ids ? "选中的卡片没有可下载的媒体" : "画布上还没有可下载的媒体");
+    return;
+  }
+  trackEvent("canvas.bundle-download", { count: entries.length, scoped: Boolean(ids) });
+  const single = entries.length === 1;
+  onStage?.(single ? "下载中…" : `打包中 0/${entries.length}`);
+  if (!single) showToast(`正在打包 ${entries.length} 个媒体…`);
+  try {
+    const res = await downloadMediaBundle({
+      entries,
+      zipName: bundleZipName(st.projectName),
+      onProgress: (d, t) => onStage?.(d >= t ? "打包中…" : `打包中 ${d}/${t}`),
+    });
+    showToast(
+      res.failed.length
+        ? `已下载 ${res.ok} 个文件，${res.failed.length} 个拉取失败跳过`
+        : `已下载 ${res.ok} 个文件`,
+    );
+  } catch (exc) {
+    showToast(`下载失败：${exc instanceof Error ? exc.message : String(exc)}`);
+  } finally {
+    onStage?.(null);
+  }
+}
+
 function SelectionToolbar() {
   const nodes = useCanvasStore((s) => s.nodes);
   const [alignOpen, setAlignOpen] = useState(false);
+  // 批量下载进行中的按钮内联文案（「打包中 N/M」，viedeo ✓N 反馈范式）
+  const [bundleBusy, setBundleBusy] = useState<string | null>(null);
   // 多选等比缩放（轻量版：宽度与水平间距等比；高度只在卡上已显式设置时跟随）
   const scaleRef = useRef<{
     startX: number;
@@ -1404,6 +1449,7 @@ function SelectionToolbar() {
   } | null>(null);
   const sel = nodes.filter((n) => n.selected);
   const ids = sel.map((n) => n.id);
+  const mediaCount = sel.length >= 2 ? collectMediaEntries(nodes, ids).length : 0;
   const boxes = sel.length >= 2 ? selectionBoxes(nodes, ids) : [];
   const minX = boxes.length ? Math.min(...boxes.map((b) => b.x)) : 0;
   const maxX = boxes.length ? Math.max(...boxes.map((b) => b.x + b.w)) : 0;
@@ -1515,6 +1561,14 @@ function SelectionToolbar() {
         <SelBtn onClick={() => useCanvasStore.getState().groupNodes(ids)}>成组</SelBtn>
         <SelBtn onClick={() => useCanvasStore.getState().tidyNodes(ids)}>整理</SelBtn>
         <SelBtn onClick={() => useCanvasStore.getState().tidyNodesFlow(ids)}>按连线整理</SelBtn>
+        {mediaCount > 0 ? (
+          <SelBtn
+            disabled={Boolean(bundleBusy)}
+            onClick={() => void runMediaBundleDownload(ids, setBundleBusy)}
+          >
+            {bundleBusy ?? `下载 ${mediaCount}`}
+          </SelBtn>
+        ) : null}
         <SelBtn danger onClick={() => useCanvasStore.getState().deleteNodes(ids)}>
           删除
         </SelBtn>
@@ -1568,6 +1622,8 @@ export default function CanvasView() {
   const clipboardCount = useCanvasStore((s) => s.clipboardCount);
   const canUndo = useCanvasStore((s) => s.canUndoNow);
   const canRedo = useCanvasStore((s) => s.canRedoNow);
+  // 全画布可下载媒体数：右键菜单「下载全部媒体」的计数与禁用态
+  const allMediaCount = collectMediaEntries(nodes).length;
 
   // 画布视图偏好（localStorage，设备本地）：小地图 / 网格吸附 / 连线显隐
   const [minimapVisible] = useCanvasPref("minimap");
@@ -2366,6 +2422,18 @@ export default function CanvasView() {
                   onClick={() => {
                     setImportOpen(true);
                     closeCtx();
+                  }}
+                />
+                <CtxItem
+                  label={
+                    allMediaCount > 0
+                      ? `下载全部媒体（${allMediaCount}）`
+                      : "下载全部媒体"
+                  }
+                  disabled={allMediaCount === 0}
+                  onClick={() => {
+                    closeCtx();
+                    void runMediaBundleDownload(undefined);
                   }}
                 />
                 <CtxSep />

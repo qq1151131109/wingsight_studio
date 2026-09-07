@@ -10,6 +10,7 @@ import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from "lucide-react";
 import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
+import { inferAssetType, type SheetAssetType } from "@/lib/canvas/genContract";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
 import { STYLE_PRESETS } from "@/lib/canvas/style-presets";
 import {
@@ -81,6 +82,11 @@ async function directImagegen(
     selfBodyOff?: boolean;
     /** 参与清单摘除：本次不注入全局画风 */
     styleOff?: boolean;
+    /** 版式契约显式覆盖（PromptBar 版式 chip）：缺省走 genContract 推断 */
+    assetType?: SheetAssetType;
+    /** 完整提示词整体替换（「实际提示词」编辑重跑）：原样出图，不经版式
+     *  渲染与指令编排 */
+    finalPrompt?: string;
   },
 ) {
   const st = useCanvasStore.getState();
@@ -280,24 +286,21 @@ async function directImagegen(
     (Boolean(editSrc) ||
       selfMentioned ||
       (mentionedImgs.length === 0 && connectedNodes.length === 0));
-  const sceneKeyword = /(场景|空镜|环境)/.test(
-    `${node.data.title ?? ""} ${opts.prompt}`,
-  );
-  const assetType: "character" | "scene" | "prop" | "costume" | "shot" = targetAssetType
-    ? targetAssetType
-    : fromShotlist
-      ? "shot"
-      : isLook
-        ? assetParentType === "character"
-          ? "character"
-          : assetParentType === "scene"
-            ? "scene"
-            : "prop"
-        : editMode
-          ? "shot"
-          : !referenceImages.length && sceneKeyword
-            ? "scene"
-            : "shot";
+  // 版式契约推断走共享函数（genContract，与 PromptBar 事前展示同源）；
+  // 用户显式选择（PromptBar 版式 chip，经 GENERATE_EVENT detail.assetType）
+  // 永远最优先——2026-09-07 报纸事故：关键词只认场景词，「道具图」被拍成
+  // 剧照版式，且推断结果此前不可见不可改
+  const assetType: SheetAssetType =
+    (opts.assetType as SheetAssetType | undefined) ??
+    inferAssetType({
+      nodeType: String(node.data.nodeType),
+      prompt: `${node.data.title ?? ""} ${opts.prompt}`,
+      fromShotlist,
+      isLook,
+      parentType: assetParentType,
+      hasReferences: referenceImages.length > 0,
+      editMode,
+    });
   // 逐张参考图职责标签（与 referenceImages 一一对应）：flow 渲染
   // 「参考图N（名）：只锁定什么/不继承什么」——juben build_reference_usage 范式。
   // 考据参考图（调研采纳落卡）按 reference 职责（锁形制材质），不是改图语义
@@ -358,9 +361,10 @@ async function directImagegen(
     // 智能编排（novanova KEEP/OPTIMIZE 范式）：默认开（composeOpt 显式 false
     // 关）。开=出图前经「指令合成」flow 把 短指令+设定文本 扩写成完整提示词
     // （描述完整/改图指令自动 keep 原样）；空指令无编排对象，走原描述
-    const composeOn = node.data.composeOpt !== false;
+      const composeOn = node.data.composeOpt !== false;
     const instruction = opts.prompt.trim();
-    const useCompose = composeOn && !!instruction;
+    // finalPrompt（整体替换的完整提示词）语义 = 原样出图，绝不二次编排
+    const useCompose = composeOn && !!instruction && !opts.finalPrompt;
     const jobId = await startShotImageJob(
       Array.from({ length: count }, (_, i) => ({
         rid: `${nodeId}#${i}`,
@@ -371,7 +375,8 @@ async function directImagegen(
         referenceImages,
         referenceLabels,
         aspect: aspect || undefined,
-        ...(editMode ? { promptTemplate: EDIT_PROMPT_TEMPLATE } : {}),
+        ...(opts.finalPrompt?.trim() ? { finalPrompt: opts.finalPrompt.trim() } : {}),
+        ...(editMode && !opts.finalPrompt ? { promptTemplate: EDIT_PROMPT_TEMPLATE } : {}),
         ...(useCompose
           ? {
               compose: true,
@@ -401,18 +406,25 @@ async function directImagegen(
         referenceImages,
         referenceLabels,
         aspect: aspect || undefined,
-        promptTemplate: editMode ? EDIT_PROMPT_TEMPLATE : undefined,
+        promptTemplate: editMode && !opts.finalPrompt ? EDIT_PROMPT_TEMPLATE : undefined,
+        // 实际发送提示词：显式覆写时=覆写值（出图后轮询还会用服务端渲染
+        // 的 finalPrompt 校正）；否则出图后回填
+        ...(opts.finalPrompt?.trim() ? { finalPrompt: opts.finalPrompt.trim() } : {}),
       },
       failedCandidates: undefined,
     });
     const urls: string[] = [];
     let lastError = "";
     let composed: { prompt: string; action?: string } | null = null;
+    let serverFinalPrompt = "";
     const outcome = await pollShotImageJob(jobId, (item) => {
       if (item.ok && item.imageUrl) urls.push(item.imageUrl);
       else if (item.error) lastError = item.error;
       if (item.composedPrompt)
         composed = { prompt: item.composedPrompt, action: item.composeAction };
+      // 服务端渲染出的实际提示词（版式契约+画风+描述的合成结果）：回填
+      // genShot 供「实际提示词」查看/编辑重跑——报纸事故的知情权补丁
+      if (item.finalPrompt && !serverFinalPrompt) serverFinalPrompt = item.finalPrompt;
     });
     if (outcome === "cancelled") {
       // 用户已取消：卡回原态（有图 ready，无图占位），轮询尾包幂等
@@ -425,6 +437,8 @@ async function directImagegen(
     }
     if (urls.length > 0) {
       const failed = count - urls.length;
+      const curShot = useCanvasStore.getState().nodes.find((n) => n.id === nodeId)?.data
+        .genShot;
       useCanvasStore.getState().updateNodeData(nodeId, {
         status: "ready",
         imageUrl: urls[0],
@@ -435,6 +449,10 @@ async function directImagegen(
         // 智能编排合成结果回显（无编排/keep 时存 keep 原文，可追溯）
         composedPrompt:
           (composed as { prompt: string } | null)?.prompt ?? undefined,
+        // 实际发送提示词落快照（服务端渲染版覆盖提交时的覆写值，同值幂等）
+        ...(serverFinalPrompt && curShot
+          ? { genShot: { ...curShot, finalPrompt: serverFinalPrompt } }
+          : {}),
       });
     } else {
       useCanvasStore.getState().updateNodeData(nodeId, {
@@ -470,6 +488,7 @@ async function supplementCandidates(nodeId: string, count: number) {
         name: (node.data.title as string) || "图片",
         description: shot.description,
         assetType: shot.assetType,
+        ...(shot.finalPrompt ? { finalPrompt: shot.finalPrompt } : {}),
         visualNotes: shot.visualNotes,
         referenceImages: shot.referenceImages,
         referenceLabels: shot.referenceLabels,
@@ -1007,14 +1026,15 @@ export default function CanvasAgentBridge() {
   // 卡片输入条（PromptBar）→ 组装含 @引用 的生成指令发给 agent
   useEffect(() => {
     const onGenerate = (e: Event) => {
-      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs, editOf, selfBodyOff, styleOff } = (e as CustomEvent<GenerateDetail>)
-        .detail;
+      const { nodeId, kind, prompt, refIds, count, selfRefOff, noRefs, editOf, selfBodyOff, styleOff, assetType, finalPrompt } = (
+        e as CustomEvent<GenerateDetail>
+      ).detail;
       const st = useCanvasStore.getState();
       const node = st.nodes.find((n) => n.id === nodeId);
       if (!node) return;
       // 出图=确定性任务，直连 imagegen flow（不经聊天 LLM，不刷聊天屏）
       if (kind === "image") {
-        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs, editOf, selfBodyOff, styleOff });
+        void directImagegen(nodeId, { prompt, refIds, count, selfRefOff, noRefs, editOf, selfBodyOff, styleOff, assetType, finalPrompt });
         return;
       }
       // 连线即数据流：目标卡的入边上游自动进生成上下文（@ 手动引用过的不重复）

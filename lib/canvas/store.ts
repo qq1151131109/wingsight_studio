@@ -124,6 +124,9 @@ export interface WingNodeData {
     aspect?: string;
     /** 改图模式的最小提示词模板（无版式措辞）；非改图不带 */
     promptTemplate?: string;
+    /** 实际发送的完整提示词（版式契约+画风+描述的合成结果；final_prompt
+     *  覆写时=覆写值）。「实际提示词」查看/编辑重跑的数据源 */
+    finalPrompt?: string;
   };
   /** 出图参数卡片级覆盖（模型/档位/画幅，目录见 agent/models.py）：缺省
    *  跟随项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/

@@ -190,9 +190,13 @@ _GEN_ASSETS_DOC = f"""为资产批量生成设定图（并发出图，每张完�
 
 用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
 {{"type":"character|scene|prop|costume|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词","aspect":"9:16"}}
-（字段与 decompose_script 的输出一致；type=shot 是镜头剧照布局——
-有人物有剧情的单幅画面，分镜/镜头类出图用 shot 而不是 scene；
-服饰卡出图用 costume——服装结构图三视图布局，不要改成 prop）。
+（字段与 decompose_script 的输出一致；type 决定版式契约：shot=有人物
+有剧情的电影剧照，分镜/镜头类用 shot 而不是 scene；**单件物件的道具图
+（报纸/文件/告示/信件/包装等）必须用 prop——浅灰背景结构图布局，
+不要用 shot**，shot 版式会注入人物与环境把白底道具图带成剧情剧照；
+服饰卡用 costume——服装结构图三视图布局，不要改成 prop）。
+另可选 final_prompt 字段：用户给出完整提示词要求**原样出图**（不走版式
+契约）时传它——整体替换渲染，其余字段仍必填但只作记录。
 **分镜表的镜头出图必须带行绑定**：type=shot 且属于某分镜表行时，项里
 加 "shotlist_id"（画布摘要 [分镜表] 行的节点 id）与 "rid"（read_node 返回
 的分镜行清单里取）；返回会附带「分镜图落卡 ops」（每镜一张图卡摆分镜表
@@ -307,6 +311,10 @@ def _build_shot_card_ops(
                 "visualNotes": str(a.get("visual_notes") or a.get("visualNotes") or ""),
                 "referenceImages": rel_refs,
             }
+            # 实际发送提示词随卡（「实际提示词」查看/编辑重跑的数据源）
+            fp = str(r.get("finalPrompt") or r.get("final_prompt") or "").strip()
+            if fp:
+                gen_shot["finalPrompt"] = fp[:3000]
             labels = a.get("reference_labels") or a.get("referenceLabels") or []
             if ref_urls and labels:
                 gen_shot["referenceLabels"] = labels[: len(ref_urls)]
@@ -378,9 +386,23 @@ async def generate_asset_images(
             out += (
                 f"\n\n分镜图落卡 ops 已生成（{len(bound)} 镜 → 图卡 + 行挂载 + 连线，"
                 "位置已按分镜表右侧网格算好）——**经 canvas_ops 原样应用整批 ops**"
-                "（占位符 id 不要改、也不要另行手写行 imageUrl）：\n"
+                "（占位符 id 不要改、也不要另行手写行 imageUrl；ops 里 genShot"
+                ".finalPrompt 已带实际发送提示词）：\n"
                 + json.dumps({"ops": ops}, ensure_ascii=False)
             )
+    # 非分镜资产卡：把实际发送提示词交给 agent，写卡 genShot.finalPrompt
+    # 带上（卡上「实际提示词」查看/编辑重跑的数据源）
+    gen_meta = {
+        str(r.get("name")): {"finalPrompt": str(r.get("finalPrompt") or "")}
+        for r in (res.get("results") or [])
+        if isinstance(r, dict) and r.get("finalPrompt")
+    }
+    if gen_meta:
+        out += (
+            "\n\n各资产实际发送的完整提示词（版式契约渲染后的最终版）——用 canvas_ops "
+            "写资产卡时把对应 finalPrompt 放进 genShot 快照（卡上可查看/编辑重跑）：\n"
+            + json.dumps({"genShots": gen_meta}, ensure_ascii=False)
+        )
     return out
 
 
@@ -1300,6 +1322,23 @@ def _unanswered_frontend_calls(messages: List[Any]) -> bool:
     return False
 
 
+def _current_turn_start(messages: List[Any]) -> int:
+    """当前用户轮的起始下标：最后一条 HumanMessage 往前的连续 HumanMessage 区段。
+
+    工具往返中段（尾部是 AI tool_calls / ToolMessage）以最后一条 HumanMessage
+    定位轮起点，本轮图片保持内嵌不中途降级。
+    """
+    last_human = -1
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            last_human = i
+            break
+    start = last_human
+    while start > 0 and isinstance(messages[start - 1], HumanMessage):
+        start -= 1
+    return start
+
+
 def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
     """清洗历史，保证模型侧永不 400：
 
@@ -1307,13 +1346,19 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
       assistant 的 tool_call 缺响应时补占位响应
     - 纯文本模型：content 为多模态块数组的用户消息降级成纯文本
       （媒体块 → URL 清单，见 _flatten_media_message）
+    - 视觉内嵌只保留当前用户轮：历史轮次的图片一律退 URL 清单——19 张
+      历史内嵌图实测把模型拖进「素材投喂等指令」帧，连最新一条明示指令
+      都不认、逐轮复读「未检测到制作指令」（2026-09-07 霸王龙事故）；
+      URL 清单对模型完全够用（干活本来就靠清单里的 URL），当轮新到的
+      图才是视觉理解的刚需
     - AIMessage 的 reasoning_content 剥除：思考属本轮瞬态，回传给模型
       既浪费 token 也不被 API 接受
     """
     flatten_media = not _vision_enabled()
+    turn_start = _current_turn_start(messages)
     result: List[Any] = []
     pending: Dict[str, str] = {}
-    for m in messages:
+    for i, m in enumerate(messages):
         ak = getattr(m, "additional_kwargs", None)
         if isinstance(m, AIMessage) and isinstance(ak, dict) and "reasoning_content" in ak:
             m = m.model_copy(
@@ -1347,9 +1392,9 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
                 pending.clear()
             if isinstance(m, HumanMessage) and isinstance(m.content, list):
                 result.append(
-                    _flatten_media_message(m)
-                    if flatten_media
-                    else _embed_local_media(m)
+                    _embed_local_media(m)
+                    if not flatten_media and i >= turn_start
+                    else _flatten_media_message(m)
                 )
             else:
                 result.append(m)

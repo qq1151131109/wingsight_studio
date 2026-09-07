@@ -7,7 +7,7 @@ function extFromType(type: string): string {
   return t ? t.replace("jpeg", "jpg").split("+")[0] : "";
 }
 
-function sanitizeName(name: string): string {
+export function sanitizeName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, "_").trim();
 }
 
