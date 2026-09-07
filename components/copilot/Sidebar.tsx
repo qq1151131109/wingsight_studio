@@ -27,6 +27,7 @@ import "@copilotkit/react-core/v2/styles.css";
 import { Check, Copy, Music, Pencil, Sparkles, Video } from "lucide-react";
 import ChatInput from "./ChatInput";
 import CapabilitiesDialog from "./CapabilitiesDialog";
+import TurnLocator from "./TurnLocator";
 import { useChatSession } from "@/lib/chat/session";
 import ChatSidebarHeader from "./ThreadsBar";
 import { CHAT_EDIT_MESSAGE_EVENT } from "@/lib/canvas/events";
@@ -80,8 +81,19 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
   return (
     // 用户气泡的真实口径就在这里（px-3 py-2 / text-sm / leading-relaxed /
     // max-w-[88%]）；whitespace-pre-wrap 保住换行、break-words 折长 URL
-    // ——v2 原厂用户组件（含其 pre-wrap）被本槽位整个替换，漏了就是换行坍缩
-    <div className="group flex justify-end px-1">
+    // ——v2 原厂用户组件（含其 pre-wrap）被本槽位整个替换，漏了就是换行坍缩。
+    // data-turn-id：TurnLocator 轮次跳转的 DOM 锚（系统代发的通知不盖章）
+    <div
+      className="group flex justify-end px-1"
+      data-turn-id={
+        !isJobNotice &&
+        typeof message?.id === "string" &&
+        !message.id.startsWith("progress_") &&
+        text
+          ? message.id
+          : undefined
+      }
+    >
       <div className="relative max-w-[88%]">
         {media.length > 0 ? (
           <div className="mb-1 flex flex-wrap justify-end gap-1">
@@ -449,6 +461,8 @@ export default function ThemedSidebar() {
         }}
       />
       <CapabilitiesDialog />
+      {/* 对话轮次索引轨（juben TurnLocator 范式）：portal 挂 body 贴消息区右缘 */}
+      <TurnLocator />
     </div>
   );
 }

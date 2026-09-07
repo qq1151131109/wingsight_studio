@@ -755,6 +755,19 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     padding-inline: 20px !important;
 }
 
+/* 对话轮次索引（juben TurnLocator 范式，components/copilot/TurnLocator.tsx）：
+   跳转目标留出顶部呼吸位 + accent 描边闪一圈确认落点 */
+.copilotKitMessages [data-turn-id] {
+    scroll-margin-top: 10px;
+}
+@keyframes ws-turn-flash {
+    from { outline: 2px solid var(--color-accent); outline-offset: 3px; }
+    to { outline: 2px solid transparent; outline-offset: 3px; }
+}
+.copilotKitMessages [data-turn-id].ws-turn-flash {
+    animation: ws-turn-flash 1.2s ease-out;
+}
+
 /* 助手消息：文档流排版（无气泡底，deer-flow/ChatGPT 共识）——只给 user 气泡，
    助手长文贴纸面更透气；间距口径见下面「消息间距单一事实源」 */
 .copilotKitMessage.copilotKitAssistantMessage {
