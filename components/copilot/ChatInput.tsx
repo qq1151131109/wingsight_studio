@@ -325,7 +325,8 @@ export default function ChatInput({
   const addFiles = useCallback((files: FileList | File[]) => {
     const added: Attachment[] = [];
     for (const f of Array.from(files)) {
-      if (attachmentsRef.current.length + added.length >= 6) break; // 一条消息最多 6 个附件
+      // 不设张数上限（juben c28ab13a 同款裁决：批量设定图一次带齐）——附件是
+      // URL 型 part 无消息体积压力；上游视觉模型若有限制会明报，不在此静默预砍
       const kind = kindOf(f.type, f.name);
       const a: Attachment = {
         key: `att_${Date.now()}_${++attachSeq}`,
