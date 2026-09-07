@@ -1,8 +1,8 @@
 /**
  * E2E：文本类卡导出回归（txt / md / docx）。
- * A 文本卡：底栏导出菜单 → txt/md 正文原样；docx 标题+正文可解包；
- * B 剧本卡：footer 导出菜单 → md/docx（docx 含正文分段）；
- * C 分镜表卡：底栏导出菜单 → md/txt 每镜一节（字段+视觉风格）；
+ * A 文本卡：工具条导出菜单 → txt/md 正文原样；docx 标题+正文可解包；
+ * B 剧本卡：工具条导出菜单 → md/docx（docx 含正文分段）；
+ * C 分镜表卡：工具条导出菜单 → md/txt 每镜一节（字段+视觉风格）；
  *   docx 横版表格（landscape/9 列表头/跨页重复/行内容）；
  * D 空卡导出按钮禁用（文本卡无正文不可导出）。
  * docx 验证 = unzip 解包 word/document.xml 断言内容与版式标记。
@@ -156,17 +156,12 @@ const exportItem = async (cardTitle, itemLabel) => {
     });
   }, cardTitle);
   await page.waitForTimeout(500);
-  // 文本卡导出在卡内底栏（节点子树内）；剧本/分镜表的导出在悬浮工具条
-  // （react-flow__node-toolbar，节点子树外）——两处可见时不能点错卡
-  const inCard = c.getByRole("button", { name: "导出文件" });
-  if (await inCard.count()) {
-    await inCard.first().click();
-  } else {
-    await page
-      .locator('.react-flow__node-toolbar [aria-label="导出文件"]:visible')
-      .first()
-      .click();
-  }
+  // 三类卡的导出钮全在悬浮工具条（选中才渲染，react-flow__node-toolbar
+  // 在节点子树外）——文本卡曾走卡内底栏，管线动作上浮工具条后同源
+  await page
+    .locator('.react-flow__node-toolbar [aria-label="导出文件"]:visible')
+    .first()
+    .click();
   const dlPromise = page.waitForEvent("download");
   dlPromise.catch(() => undefined); // 菜单项点击失败时不让悬挂的 waitForEvent 崩掉进程
   try {

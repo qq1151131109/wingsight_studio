@@ -549,6 +549,75 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
     return true;
   }, [emitChange]);
 
+  /** 方向键整颗跨过 chip：chip 是 contenteditable=false 的复合元素（头像/
+   *  徽标 + 文字标签），浏览器默认 caret 移动会钻进 chip 内部（label 文本
+   *  或组件之间），之后打字插进 chip 里、正文打不出字（「光标跑到 @xxx
+   *  实体里」事故）。←/→ 遇 chip 边界一律整颗跳过；caret 已在 chip 内
+   *  （任何来历，含程序设置残留）也原地弹出。返回 true = 已接管 */
+  const skipChipCaret = (dir: "left" | "right"): boolean => {
+    const ed = edRef.current;
+    const sel = window.getSelection();
+    if (!ed || !sel || sel.rangeCount === 0 || !sel.isCollapsed) return false;
+    const an = sel.anchorNode;
+    if (!an || !ed.contains(an)) return false;
+    const place = (r: Range) => {
+      r.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(r);
+    };
+    // ① caret 在 chip 内（任何深度）：左=弹到 chip 前，右=弹到 chip 后
+    let cur: Node | null = an;
+    while (cur && cur !== ed) {
+      if (isMentionEl(cur)) {
+        const r = document.createRange();
+        if (dir === "left") r.setStartBefore(cur);
+        else r.setStartAfter(cur);
+        place(r);
+        return true;
+      }
+      cur = cur.parentNode;
+    }
+    // ② 文本节点边界：紧邻 chip 时跨过整颗（浏览器默认会一步钻进 chip）
+    if (an.nodeType === Node.TEXT_NODE) {
+      const t = an as Text;
+      if (
+        dir === "right" &&
+        sel.anchorOffset === (t.textContent?.length ?? 0) &&
+        isMentionEl(t.nextSibling)
+      ) {
+        const r = document.createRange();
+        r.setStartAfter(t.nextSibling);
+        place(r);
+        return true;
+      }
+      if (dir === "left" && sel.anchorOffset === 0 && isMentionEl(t.previousSibling)) {
+        const r = document.createRange();
+        r.setStartBefore(t.previousSibling);
+        place(r);
+        return true;
+      }
+      return false;
+    }
+    // ③ 宿主/行块的 childIndex 档位（placeCaret 同款形态）：恰指向 chip
+    //    前后时整颗跨过
+    if (an instanceof HTMLElement && (an === ed || an.parentElement === ed)) {
+      const kids = Array.from(an.childNodes);
+      const i = sel.anchorOffset;
+      const r = document.createRange();
+      if (dir === "right" && isMentionEl(kids[i] ?? null)) {
+        r.setStartAfter(kids[i]);
+        place(r);
+        return true;
+      }
+      if (dir === "left" && i > 0 && isMentionEl(kids[i - 1] ?? null)) {
+        r.setStartBefore(kids[i - 1]);
+        place(r);
+        return true;
+      }
+    }
+    return false;
+  };
+
   useImperativeHandle(
     ref,
     () => ({
@@ -669,6 +738,16 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
           // IME 组合中的 Enter 是选字确认，编辑器层面不抢
           if (e.nativeEvent.isComposing) return;
           if (trigger && handleNavKey(e)) return;
+          // 方向键在 chip 边界整颗跨过（弹层切组只在多组时消费 ←→，
+          // 单组/弹层关闭时落到这里——浏览器默认会把 caret 钻进 chip）
+          if (e.key === "ArrowLeft" && skipChipCaret("left")) {
+            e.preventDefault();
+            return;
+          }
+          if (e.key === "ArrowRight" && skipChipCaret("right")) {
+            e.preventDefault();
+            return;
+          }
           if (e.key === "Escape") {
             e.stopPropagation();
             setTrigger(null);

@@ -322,12 +322,17 @@ async function directImagegen(
     (opts.prompt ||
       `${node.data.title} ${bodyInDescription ? (node.data.body ?? "") : ""}`)
   ).trim();
-  // 画幅：卡片级覆盖（面板「画幅」选择，data.gen.aspect）；空=自动——
-  // 跟随首位参考图真实比例（吸附模型支持档），无参考图回空（flow 按资产
-  // 类型默认幅面——四格定妆 16:9 / 道具平铺 4:3）
+  // 画幅：卡片级覆盖（面板「画幅」选择，data.gen.aspect）优先；空=自动。
+  // 设定图语义（资产卡本尊 / 资产入边的 Look 卡）布局契约是横版——空时
+  // 直接回空走 flow 类型默认（一律 16:9），**不吸附参考图比例**：考据参考
+  // 常是网络竖图，吸附曾把「横版 16:9 四格构图」的定妆照带成竖版（2026-09-07
+  // 用户口径：设定图/场景图默认一律横屏 16:9）。其余（shot 剧照/改图）
+  // 照旧跟随首位参考图真实比例（吸附模型支持档），无参考图回空
+  const isSheetType = Boolean(targetAssetType) || isLook;
   const cardAspect = (cardGen?.aspect ?? "").trim();
   const aspect =
-    cardAspect || (await resolveAutoAspect(referenceImages[0], effectiveModel));
+    cardAspect ||
+    (isSheetType ? "" : await resolveAutoAspect(referenceImages[0], effectiveModel));
   const count = Math.max(1, Math.min(4, opts.count ?? 1));
   const first = st.nodes.find((n) => n.id === nodeId);
 

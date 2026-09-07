@@ -66,7 +66,7 @@ export function ApprovalCard() {
   const pending = useToolApproval((s) => s.pending);
   if (!pending) return null;
   return (
-    <div className="my-1 rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
+    <div className="rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
       <p className="flex items-center gap-1.5 font-medium text-text">
         <ShieldAlert className="h-3.5 w-3.5 text-accent" />
         允许助手修改画布？
@@ -110,7 +110,7 @@ export function ToolCard({
   children?: ReactNode;
 }) {
   return (
-    <div className="my-1 rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
+    <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
       <div
         className={`flex items-center gap-1.5 font-medium ${
           ok === false ? "text-warn" : ok ? "text-good" : "text-text-2"

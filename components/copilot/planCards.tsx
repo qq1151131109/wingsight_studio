@@ -109,7 +109,7 @@ function PlanCard({
   else if (executing) label = `执行中 · ${done}/${stepsN}`;
 
   return (
-    <div className="my-1 rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
+    <div className="rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
       <p className="flex items-center gap-1.5 font-medium text-text">
         <ClipboardList className="h-3.5 w-3.5 text-accent" />
         {label}：

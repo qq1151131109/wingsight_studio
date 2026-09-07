@@ -3,6 +3,7 @@
 /** 节点类型的图标映射：卡片徽标 / 工具条 / 双击选择器 / 右键菜单共用一份 */
 import {
   Clapperboard,
+  Columns2,
   Combine,
   Drama,
   Film,
@@ -35,4 +36,5 @@ export const TYPE_ICONS: Record<WingNodeType, LucideIcon> = {
   shotlist: Table,
   research: Search,
   group: Layers,
+  compare: Columns2,
 };

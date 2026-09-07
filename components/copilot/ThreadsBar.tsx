@@ -200,9 +200,9 @@ export default function ChatSidebarHeader() {
   return (
     <div
       ref={wrapRef}
-      className="copilotKitHeader relative flex w-full flex-col gap-1.5"
+      className="copilotKitHeader relative flex w-full flex-col gap-2"
     >
-      <div className="relative flex w-full items-center gap-1.5">
+      <div className="relative flex min-h-7 w-full items-center gap-2">
       <RunErrorBanner />
       {/* 当前会话标题（纯标签）：历史切换收进右侧 History 按钮——原来时钟
           粘在标题尾巴上，看着像排版事故；运行中亮黄点 */}
@@ -215,7 +215,7 @@ export default function ChatSidebarHeader() {
           : "Wingsight 助手"}
       </span>
 
-      <div className="ml-auto flex shrink-0 items-center gap-0.5">
+      <div className="ml-auto flex shrink-0 items-center gap-1">
         <button
           type="button"
           data-tip="全部会话（搜索/重命名）" aria-label="全部会话（搜索/重命名）"

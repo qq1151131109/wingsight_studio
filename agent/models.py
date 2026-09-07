@@ -10,7 +10,8 @@ OpenAI images 调用形态）：images/generations 与 images/edits（参考图
   最大档 3840x2160=8.3M 未超）
 - doubao-seedream-4-5：有最小像素约束（≥3686400 px）1K 档全灭、
   4:3 幅面 2K 档（1920x1440=2.76M）也不够——16:9 幅面 2K 档恰好
-  3686400 压线通过；收 2K/4K，道具/服饰（4:3）用此模型请选 4K
+  3686400 压线通过；收 2K/4K，方图/4:3 等显式窄幅画幅用此模型请选 4K
+  （资产设定图默认已是 16:9，不受此限）
 - 未收录（images 接口）：qwen-image 系 / seedream-5.0-lite / z-image / wan（404）
 - gemini-3.1-flash-image：DMX 走 v1beta generateContent 出图（Nano Banana 2，
   认证 x-goog-api-key——Authorization Bearer 会挂起），flow 侧
@@ -254,8 +255,9 @@ def resolve_imagegen_params(raw: Any) -> Optional[Dict[str, str]]:
 def resolve_aspect(raw: Any, model_id: str) -> Optional[str]:
     """校验画幅覆写（w:h 字符串，可空；请求级缺省 + 镜头级覆盖由调用方合并）。
 
-    空 → None（自动：flow 按资产类型默认幅面——四格定妆 16:9 / 道具平铺
-    4:3；带参考图的直连出图由前端吸附参考图比例后传具体值）；格式不对或
+    空 → None（自动：flow 按资产类型默认幅面——资产设定图一律横版 16:9；
+    带参考图的直连出图由前端吸附参考图比例后传具体值，但设定图语义
+    ——资产卡本尊/Look 卡——不吸附，恒走 16:9）；格式不对或
     模型不支持 → ValueError，端点转 400 中文报错，绝不静默回退（与模型/
     档位同一铁律）。幅面×档位像素组合级约束（seedream-4-5 最小像素等）
     不在这里复制 flow 的像素数学，仍由 flow/上游报错点名。"""

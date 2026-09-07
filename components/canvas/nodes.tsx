@@ -119,6 +119,7 @@ import { copyImageToClipboard, downloadMedia } from "@/lib/download";
 import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
 import { showToast } from "@/lib/toast";
 import { reportError } from "@/lib/error-dialog";
+import { trackEvent } from "@/lib/telemetry";
 import {
   dispatchFocusEdit,
   FOCUS_EDIT_EVENT,
@@ -1679,8 +1680,9 @@ function ExportMenuButton({
 
 /** 文本 / 剧本卡：紧凑文本卡 + 就地编辑（标题在卡外头部）。
  *  空卡 = 直接输入框 + AI 撰写输入条（对标 libtv 的"尝试"+输入区）。
- *  文本卡（非剧本）底部带字数徽标 + 「生图/生视频」快捷键（viedeo-workflow
- *  的 prompt 启动器模式）：右侧建媒体卡并连线，正文即提示词直接发起生成 */
+ *  文本卡（非剧本）的 生图/生视频/调研/导出 全在悬浮工具条（剧本卡同范式；
+ *  曾是 footer 小 chips——低缩放 LOD 整档消失，且与「管线动作上浮工具条」
+ *  不一致），footer 只留字数 */
 function TextCard({
   data,
   id,
@@ -1695,7 +1697,7 @@ function TextCard({
   editorial?: boolean;
   /** 卡底附加操作条（剧本卡的字数/导出用），渲染在正文之下 */
   footer?: React.ReactNode;
-  /** 卡专属工具（上浮到悬浮工具条，剧本卡的管线动作用） */
+  /** 卡专属工具（上浮到悬浮工具条）；不传时文本卡注入默认的 生图/生视频/调研/导出 */
   extraTools?: React.ReactNode;
 }) {
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
@@ -1734,23 +1736,6 @@ function TextCard({
       }),
     );
   };
-  const genBtn = (kind: "image" | "video", label: string) => {
-    const Icon = TYPE_ICONS[kind];
-    return (
-      <button
-        type="button"
-        className="nodrag nowheel flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-        data-tip={`以本文为提示词，右侧新建${label}卡并生成`} aria-label={`以本文为提示词，右侧新建${label}卡并生成`}
-        onClick={(e) => {
-          e.stopPropagation();
-          genFromText(kind);
-        }}
-      >
-        {Icon ? <Icon className="h-3 w-3" /> : null}
-        {label}
-      </button>
-    );
-  };
   /** 导出：txt/md 正文原样，docx = 标题+正文分段（文本卡与剧本卡同构） */
   const doExport = (format: ExportFormat) => {
     const text = (data.body ?? "").trim();
@@ -1760,56 +1745,88 @@ function TextCard({
     else exportTextFile(title, text, format);
   };
   /** 深度调研：正文作 brief 发起调研，右侧建调研卡连线（卡面轮询任务实况） */
-  const researchBtn = () => {
+  const researchFromText = async () => {
+    if (researching) return;
     const st = useCanvasStore.getState();
     const pid = st.projectId;
-    if (!pid || researching) return null;
-    return (
-      <button
-        type="button"
-        disabled={researching}
-        className="nodrag nowheel flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] text-text-3 transition-colors hover:bg-surface-2 hover:text-text disabled:opacity-50"
-        data-tip="以本文为背景发起深度调研，右侧新建调研卡" aria-label="深度调研"
-        data-track="script.deep-research"
-        onClick={async (e) => {
-          e.stopPropagation();
-          if (researching) return;
-          const src = useCanvasStore.getState().nodes.find((n) => n.id === id);
-          const text = (src?.data.body ?? "").trim();
-          if (!text) return;
-          setResearching(true);
-          try {
-            const topic =
-              (src?.data.title ?? "").trim() || text.replaceAll("\n", " ").slice(0, 30);
-            const job = await startResearch(pid, topic, text, "standard");
-            const nid = createConnectedNode(id, "research");
-            if (nid) {
-              useCanvasStore.getState().updateNodeData(nid, {
-                title: topic,
-                researchId: job.jobId,
-              });
-            }
-          } catch (exc) {
-            reportError(
-              "深度调研发起失败",
-              exc instanceof Error ? exc.message : String(exc),
-            );
-          } finally {
-            setResearching(false);
-          }
-        }}
-      >
-        {researching ? (
-          <Loader2 className="h-3 w-3 animate-spin" />
-        ) : (
-          <Search className="h-3 w-3" />
-        )}
-        调研
-      </button>
-    );
+    if (!pid) return;
+    const src = st.nodes.find((n) => n.id === id);
+    const text = (src?.data.body ?? "").trim();
+    if (!text) return;
+    setResearching(true);
+    try {
+      const topic =
+        (src?.data.title ?? "").trim() || text.replaceAll("\n", " ").slice(0, 30);
+      const job = await startResearch(pid, topic, text, "standard");
+      const nid = createConnectedNode(id, "research");
+      if (nid) {
+        st.updateNodeData(nid, {
+          title: topic,
+          researchId: job.jobId,
+        });
+      }
+    } catch (exc) {
+      reportError(
+        "深度调研发起失败",
+        exc instanceof Error ? exc.message : String(exc),
+      );
+    } finally {
+      setResearching(false);
+    }
   };
+  // 默认工具（extraTools 未传时注入，即文本卡）：生图/生视频/调研/导出
+  const GenIcon = TYPE_ICONS.image;
+  const VidIcon = TYPE_ICONS.video;
+  const textTools = editorial ? undefined : (
+    <>
+      <ToolBtn
+        title="以本文为提示词，右侧新建图片卡并生成"
+        label="生图"
+        disabled={empty}
+        onClick={() => genFromText("image")}
+      >
+        {GenIcon ? <GenIcon className="h-3.5 w-3.5" /> : null}
+      </ToolBtn>
+      <ToolBtn
+        title="以本文为提示词，右侧新建视频卡并生成"
+        label="生视频"
+        disabled={empty}
+        onClick={() => genFromText("video")}
+      >
+        {VidIcon ? <VidIcon className="h-3.5 w-3.5" /> : null}
+      </ToolBtn>
+      {useCanvasStore.getState().projectId ? (
+        <ToolBtn
+          title="以本文为背景发起深度调研，右侧新建调研卡"
+          label={researching ? "调研中…" : "调研"}
+          disabled={empty || researching}
+          onClick={() => {
+            void trackEvent("script.deep-research");
+            void researchFromText();
+          }}
+        >
+          {researching ? (
+            <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+          ) : (
+            <Search className="h-3.5 w-3.5" />
+          )}
+        </ToolBtn>
+      ) : null}
+      <ExportMenuButton
+        onExport={doExport}
+        disabled={empty}
+        track="card"
+        className="nodrag flex h-9 items-center gap-1.5 rounded-full px-3.5 text-text-3 transition-all hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+      />
+    </>
+  );
   return (
-    <CardShell id={id} data={data} selected={selected} extraTools={extraTools}>
+    <CardShell
+      id={id}
+      data={data}
+      selected={selected}
+      extraTools={extraTools ?? textTools}
+    >
       {lod === "full" ? (
         <>
           <div className="flex min-h-0 flex-1 flex-col">
@@ -1835,16 +1852,9 @@ function TextCard({
               选中卡片后可在下方输入区让 AI 撰写
             </p>
           ) : !editorial ? (
-            <div className="ws-detail mt-1.5 flex items-center gap-1">
-              <span className="text-[10px] tabular-nums text-text-4">
-                {(data.body ?? "").length} 字
-              </span>
-              <span className="flex-1" />
-              {genBtn("image", "生图")}
-              {genBtn("video", "生视频")}
-              {researchBtn()}
-              <ExportMenuButton onExport={doExport} disabled={empty} track="card" bare />
-            </div>
+            <span className="ws-detail mt-1.5 text-[10px] tabular-nums text-text-4">
+              {(data.body ?? "").length} 字
+            </span>
           ) : null}
           {footer}
         </>

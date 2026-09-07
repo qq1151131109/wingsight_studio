@@ -649,7 +649,7 @@ aside.copilotKitSidebar[aria-hidden="true"] {
 html.ws-chat-dragging .ws-chat-resizer {
     background: var(--color-accent-soft);
 }
-/* 拖拽态挂 html（Sidebar.tsS endDrag 任何收尾路径都复位）：整屏统一光标
+/* 拖拽态挂 html（Sidebar.tsx endDrag 任何收尾路径都复位）：整屏统一光标
    + 禁选中，替代曾用 ::after 全屏遮罩的写法 */
 html.ws-chat-dragging,
 html.ws-chat-dragging * {
@@ -692,8 +692,8 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 .copilotKitSidebar .copilotKitHeader {
     background-color: var(--color-surface-1);
     color: var(--color-text);
-    min-height: 52px;
-    padding: 0 12px;
+    min-height: 68px;
+    padding: 8px 16px 6px;
     font-family: var(--font-editorial);
     font-weight: 600;
     font-size: 0.95rem;
@@ -708,29 +708,60 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     transition: visibility 0s 300ms;
 }
 
-/* 用户气泡：米黄纸面 + 右上收口（v2 出厂是 muted 灰盒全圆角 + pt-10 工具栏位） */
-.copilotKitMessage.copilotKitUserMessage {
-    padding-top: 0 !important;
-    font-size: 0.8125rem;
+/* 用户气泡是 Sidebar.tsx 自绘组件（group flex justify-end px-1 → bg-accent
+   px-3 py-2 text-sm leading-relaxed），v2 原厂的 .copilotKitUserMessage 在本工程
+   0 命中（曾在此写一套 padding/字号/圆角，与自绘组件口径漂移且永不生效——
+   死配置已清）。改气泡外观去自绘组件改，别在这里加选择器 */
+
+/* 消息间距单一事实源（2026-09-05 间距走查）：容器 gap 说话。旧实现里间距是三层
+   叠出来的——用户行零 margin + 容器零 gap + Tailwind typography 的
+   p{margin:1.25em} 从 .cpk:prose 折叠出壳外（实测上/下各 16.25px 幻影），于是
+   连发两条用户消息 0px 贴死、助手连发 36.5px、工具卡混排 24px，五种值混排，且
+   消息边界(16.3)≈段内边界(16) 分不清哪段属于哪条回复。修法：gap 统一 20px +
+   掐掉首末子元素折叠出壳的幻影 + 消息壳垂直 padding 归零（助手壳原 2px 上下会
+   让文字消息比用户行多 4px）；段内 16px 仍归 space-y-4 管，与消息边界 20px 可分辨 */
+.copilotKitSidebar .copilotKitMessages {
+    gap: 20px;
 }
-.copilotKitMessage.copilotKitUserMessage .cpk\:prose {
-    background-color: color-mix(in oklab, var(--color-accent) 88%, transparent);
-    color: #fff;
-    border-radius: 14px 14px 4px 14px;
-    padding: 7px 12px;
-    font-size: 0.8125rem;
-    line-height: 1.65;
-    max-width: 88%;
-    overflow-wrap: anywhere;
+.copilotKitAssistantMessage .cpk\:prose > :first-child,
+.copilotKitAssistantMessage .cpk\:prose > :first-child > :first-child {
+    margin-top: 0;
+}
+.copilotKitAssistantMessage .cpk\:prose > :last-child,
+.copilotKitAssistantMessage .cpk\:prose > :last-child > :last-child {
+    margin-bottom: 0;
+}
+/* 纯工具卡消息里的空 prose 不占位（它里面是空的 space-y-4），否则卡消息顶部
+   多一个块槽，卡与邻消息的间距就比文字消息宽一截 */
+.copilotKitAssistantMessage .cpk\:prose:has(> :empty) {
+    display: none;
+}
+/* 消息内多块间距 10px：只给「有内容的正文」后面的块（工具卡）——纯卡消息里
+   prose 是空的（上面已 display:none），但 + 组合器照样把它算兄弟，若用
+   > * + * 会给卡开一个 10px 顶槽，卡消息就比文字消息宽一截；卡与卡堆叠
+   （同消息多工具调用）之间另给 10px */
+.copilotKitAssistantMessage .cpk\:prose:not(:has(> :empty, > :empty > :empty))
+    + *:not([data-testid="copilot-assistant-toolbar"]) {
+    margin-top: 10px;
+}
+.copilotKitAssistantMessage [class*="rounded-lg border"] + [class*="rounded-lg border"] {
+    margin-top: 10px;
+}
+
+/* 横向内缩：v2 在 sidebar 上下文给 px-8（32px/侧），叠滚动槽
+   scrollbar-gutter: stable both-edges 的 11px/侧，420px 侧栏里正文只剩 335px
+   （一行约 20 汉字）——收到 20px/侧（正文 358px）。!important 防 v2 样式表后加载同分盖回 */
+.copilotKitSidebar :has(> [data-testid="copilot-scroll-content"]) {
+    padding-inline: 20px !important;
 }
 
 /* 助手消息：文档流排版（无气泡底，deer-flow/ChatGPT 共识）——只给 user 气泡，
-   助手长文贴纸面更透气；悬浮工具栏与正文间距靠 padding 微调 */
+   助手长文贴纸面更透气；间距口径见下面「消息间距单一事实源」 */
 .copilotKitMessage.copilotKitAssistantMessage {
     background: transparent;
     border: none;
     border-radius: 0;
-    padding: 2px 2px 2px 0;
+    padding: 0 2px 0 0;
     max-width: 100%;
     min-width: 0;
 }
