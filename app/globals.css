@@ -365,6 +365,20 @@ body {
     stroke-width: 3;
 }
 
+/* 分集聚焦视图（底坞「分集」点某一集）：本集的卡与线保持原样，其余压暗——
+   集一多，画布上「这一集有哪些东西」肉眼分不出来。压暗只做视觉、不拦操作
+   （Esc 或再点该集退出） */
+.react-flow__node.ws-node-dimmed {
+    opacity: 0.22;
+    transition: opacity 0.2s ease;
+}
+.react-flow .react-flow__edge.ws-edge-dimmed .react-flow__edge-path {
+    opacity: 0.18;
+}
+.react-flow__node.ws-node-focus .ws-card {
+    box-shadow: 0 0 0 1px var(--color-accent);
+}
+
 /* 拖线中的落点反馈（对标 open-ai-canvas target 态 / AIGCCanvasFlow handle 变绿）：
    connectionindicator = 拖线期间全部可作落点的 handle（柔和光环提示「可以放」），
    connectingto = 正被拖到的落点（强调填充，提示「就这里」） */

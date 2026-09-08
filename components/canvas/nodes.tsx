@@ -84,6 +84,7 @@ import {
   NODE_META,
   SHOT_SIZES,
   absolutePosition,
+  episodeNoOf,
   episodeStatsLine,
   findFreePosition,
   inheritEpisodeId,
@@ -2083,6 +2084,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   const edges = useCanvasStore((s) => s.edges);
   // 本集产物统计（读时计算，不落字段）：多集项目里让「这张剧本卡 = 一集」看得见
   const epLine = useMemo(() => episodeStatsLine(nodes, id), [nodes, id]);
+  const epNo = episodeNoOf({ data: d });
   const scriptCount = useMemo(
     () => nodes.filter((n) => n.data.nodeType === "script").length,
     [nodes],
@@ -2363,6 +2365,14 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       footer={
         <>
           <div className="ws-detail nodrag nowheel mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-hairline-soft bg-surface-2/50 px-1.5 py-1 text-[10px] text-text-3">
+            {scriptCount >= 2 && epNo !== null ? (
+              <span
+                className="whitespace-nowrap rounded bg-accent/10 px-1 py-px font-medium tabular-nums text-accent"
+                data-tip="集号：分集面板（底坞「分集」）里可 ↑↓ 重排"
+              >
+                第 {epNo} 集
+              </span>
+            ) : null}
             <span
               className="whitespace-nowrap tabular-nums text-text-4"
               title={body.slice(0, 120)}

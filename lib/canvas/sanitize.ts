@@ -92,6 +92,19 @@ export function sanitizeCanvas(
       n = { ...n, data: { ...n.data, episodeId: undefined } };
       fixedEpisodes += 1;
     }
+    // 脏集号：只认剧本卡上的正整数（字符串/0/负数/挂错卡型一律清掉，
+    // 否则分集面板排序会拿脏值当集号）
+    const no = n.data.episodeNo;
+    if (
+      no !== undefined &&
+      (n.data.nodeType !== "script" ||
+        typeof no !== "number" ||
+        !Number.isInteger(no) ||
+        no < 1)
+    ) {
+      n = { ...n, data: { ...n.data, episodeNo: undefined } };
+      fixedEpisodes += 1;
+    }
     if (n.parentId && !ids.has(n.parentId)) {
       // 组框丢失的孤儿卡：脱离分组（坐标按绝对值近似处理，交给用户微调）
       const { parentId: _p, extent: _e, ...rest } = n;

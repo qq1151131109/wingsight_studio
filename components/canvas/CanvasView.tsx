@@ -28,6 +28,7 @@ import {
 import {
   Camera,
   ChevronRight,
+  Clapperboard,
   Image as ImageIcon,
   Info,
   Library,
@@ -52,6 +53,7 @@ import {
 import {
   selectionBoxes,
   NODE_META,
+  nodesOfEpisode,
   summarizeCanvas,
   useCanvasStore,
   type WingEdge,
@@ -98,6 +100,7 @@ import { nodeTypes, NodeInfoModal } from "./nodes";
 import DeletableEdge from "./edges";
 import CanvasShortcuts from "./CanvasShortcuts";
 import AssetTray, { AssetAutoRecorder } from "./AssetTray";
+import EpisodePanel from "./EpisodePanel";
 import NodeInputPanel from "./NodeInputPanel";
 import { prefillTextWrite } from "./PromptBar";
 import PromptLibraryPanel from "./PromptLibraryPanel";
@@ -874,15 +877,21 @@ function BottomDock({
   onOpenAssets,
   onOpenPrompts,
   onOpenOutline,
+  onOpenEpisodes,
 }: {
   onOpenAssets: () => void;
   onOpenPrompts: () => void;
   onOpenOutline: () => void;
+  onOpenEpisodes: () => void;
 }) {
   const canUndo = useCanvasStore((s) => s.canUndoNow);
   const canRedo = useCanvasStore((s) => s.canRedoNow);
   const saveState = useCanvasStore((s) => s.saveState);
   const zoom = useCanvasStore((s) => s.viewport.zoom);
+  // 分集入口只在多集项目出现（一张剧本卡 = 一集；单集项目没有「集目录」可言）
+  const scriptCount = useCanvasStore(
+    (s) => s.nodes.filter((n) => n.data.nodeType === "script").length,
+  );
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const imagegen = useCanvasStore((s) => s.imagegen);
   // 模型目录（模块级缓存，与出图面板/PromptBar 共享一次加载）：底坞只说人话，
@@ -994,6 +1003,18 @@ function BottomDock({
         <ListTree className="h-4 w-4" />
         导航
       </button>
+      {scriptCount >= 2 ? (
+        <button
+          type="button"
+          data-tip="分集目录：一张剧本卡 = 一集，点击聚焦本集（压暗其余）/ ↑↓ 调集序" aria-label="分集目录：一张剧本卡 = 一集，点击聚焦本集"
+          className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+          onClick={onOpenEpisodes}
+          data-track="dock.episodes"
+        >
+          <Clapperboard className="h-4 w-4" />
+          分集
+        </button>
+      ) : null}
       <span className="mx-0.5 h-5 w-px shrink-0 bg-hairline" />
       {/* 项目画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
           一处设定，注入所有出图与分镜生成；预设库移植自 juben 风格模板 */}
@@ -1773,6 +1794,20 @@ export default function CanvasView() {
   );
   const onNodeHoverEnd = useCallback(() => setHoverId(null), []);
 
+  // 分集面板与聚焦（面板在底坞打开；聚焦压暗其余卡，见 displayNodes）
+  const [episodesOpen, setEpisodesOpen] = useState(false);
+  const [focusEpisode, setFocusEpisode] = useState<string | null>(null);
+
+  /** 分集聚焦的本集成员 id 集合（null = 未聚焦）：本集的卡与线保持原样，
+   *  其余压暗——集一多，画布上「这一集有哪些东西」肉眼分不出来 */
+  const focusMembers = useMemo(
+    () =>
+      focusEpisode
+        ? new Set(nodesOfEpisode(nodes, focusEpisode).map((n) => n.id))
+        : null,
+    [nodes, focusEpisode],
+  );
+
   const displayEdges = useMemo(() => {
     const loading = new Set(loadingKey ? loadingKey.split(",") : []);
     // 折叠分组的边重接（对标 open-ai-canvas frame 折叠）：隐藏子卡的连线
@@ -1787,37 +1822,75 @@ export default function CanvasView() {
     return edges.map((e) => {
       const src = wire(e.source);
       const tgt = wire(e.target);
+      // 聚焦视图优先：压暗态下再叠相邻高亮会让 hover 的卡「半亮不亮」
+      const halo = !focusMembers && related ? src === related || tgt === related : false;
+      const dim = focusMembers
+        ? !(focusMembers.has(src) && focusMembers.has(tgt))
+        : false;
+      const cls = [halo ? "ws-edge-related" : "", dim ? "ws-edge-dimmed" : ""]
+        .filter(Boolean)
+        .join(" ");
       return {
         ...e,
         source: src,
         target: tgt,
         ...(loading.has(e.target) ? { animated: true } : {}),
-        ...(related
-          ? src === related || tgt === related
-            ? { className: "ws-edge-related" }
-            : {}
-          : {}),
+        ...(cls ? { className: cls } : {}),
       };
     });
-  }, [edges, loadingKey, nodes, related]);
+  }, [edges, loadingKey, nodes, related, focusMembers]);
 
   const displayNodes = useMemo(() => {
-    if (!related) {
-      const anyLocked = nodes.some((n) => n.data.locked);
-      if (!anyLocked) return nodes;
-      return nodes.map((n) => (n.data.locked ? { ...n, draggable: false } : n));
+    const anyLocked = nodes.some((n) => n.data.locked);
+    if (!related && !focusMembers && !anyLocked) return nodes;
+    const relatedIds = related ? new Set<string>([related]) : null;
+    if (relatedIds) {
+      for (const e of edges) {
+        if (e.source === related) relatedIds.add(e.target);
+        if (e.target === related) relatedIds.add(e.source);
+      }
     }
-    const relatedIds = new Set<string>([related]);
-    for (const e of edges) {
-      if (e.source === related) relatedIds.add(e.target);
-      if (e.target === related) relatedIds.add(e.source);
-    }
-    return nodes.map((n) =>
-      relatedIds.has(n.id)
-        ? { ...n, className: "ws-node-related", ...(n.data.locked ? { draggable: false } : {}) }
-        : { ...n, className: undefined, ...(n.data.locked ? { draggable: false } : {}) },
-    );
-  }, [nodes, edges, related]);
+    return nodes.map((n) => {
+      const cls = [
+        // 聚焦视图优先：压暗态下不再叠相邻高亮（半亮不亮反而更乱）
+        relatedIds && !focusMembers
+          ? relatedIds.has(n.id)
+            ? "ws-node-related"
+            : ""
+          : "",
+        focusMembers
+          ? focusMembers.has(n.id)
+            ? "ws-node-focus"
+            : "ws-node-dimmed"
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      return {
+        ...n,
+        className: cls || undefined,
+        ...(anyLocked && n.data.locked ? { draggable: false } : {}),
+      };
+    });
+  }, [nodes, edges, related, focusMembers]);
+
+  // 分集聚焦：Esc 退出（capture 先于面板自己的 Esc 监听，先退聚焦再关面板）
+  useEffect(() => {
+    if (!focusEpisode) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFocusEpisode(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [focusEpisode]);
+  // 聚焦的剧本卡被删/切项目：渲染期清掉（React adjust-state-during-render
+  // 范式）——不留「全压暗了却没有主角」的僵态
+  if (
+    focusEpisode &&
+    !nodes.some((n) => n.id === focusEpisode && n.data.nodeType === "script")
+  ) {
+    setFocusEpisode(null);
+  }
 
   // 连接校验：自环与重复边直接拒绝
   const isValidConnection = useCallback<IsValidConnection>((conn) => {
@@ -1918,7 +1991,7 @@ export default function CanvasView() {
   const [ctxMenu, setCtxMenu] = useState<CtxMenu | null>(null);
   const closeCtx = useCallback(() => setCtxMenu(null), []);
 
-  // 素材库 / 提示词库 / 大纲面板（底部坞 / 右键空白 打开，三者互斥）
+  // 素材库 / 提示词库 / 大纲 / 分集面板（底部坞 / 右键空白 打开，互斥）
   const [trayOpen, setTrayOpen] = useState(false);
   // 分镜表批量导入向导（右键空白菜单进入）
   const [importOpen, setImportOpen] = useState(false);
@@ -2296,16 +2369,25 @@ export default function CanvasView() {
             setTrayOpen(true);
             setPromptsOpen(false);
             setOutlineOpen(false);
+            setEpisodesOpen(false);
           }}
           onOpenPrompts={() => {
             setPromptsOpen(true);
             setTrayOpen(false);
             setOutlineOpen(false);
+            setEpisodesOpen(false);
           }}
           onOpenOutline={() => {
             setOutlineOpen(true);
             setTrayOpen(false);
             setPromptsOpen(false);
+            setEpisodesOpen(false);
+          }}
+          onOpenEpisodes={() => {
+            setEpisodesOpen(true);
+            setTrayOpen(false);
+            setPromptsOpen(false);
+            setOutlineOpen(false);
           }}
         />
         <SelectionGuard />
@@ -2319,6 +2401,16 @@ export default function CanvasView() {
       {importOpen ? <ImportStoryboardDialog onClose={() => setImportOpen(false)} /> : null}
       {promptsOpen ? <PromptLibraryPanel onClose={() => setPromptsOpen(false)} /> : null}
       {outlineOpen ? <OutlinePanel onClose={() => setOutlineOpen(false)} /> : null}
+      {episodesOpen ? (
+        <EpisodePanel
+          focusId={focusEpisode}
+          onFocus={setFocusEpisode}
+          onClose={() => {
+            setEpisodesOpen(false);
+            setFocusEpisode(null);
+          }}
+        />
+      ) : null}
       <ImageToolDialogs />
       {directorNode ? (
         <DirectorPanel node={directorNode} onClose={() => setDirectorNode(null)} />

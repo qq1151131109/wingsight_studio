@@ -77,6 +77,8 @@ export type AddNodeOp = {
   /** 归属集 = 所属剧本卡 nodeId（一张剧本卡 = 一集）。缺省时若同批
    *  connect_nodes 把本卡连到某张卡上，自动从那张卡继承（见 applyOps） */
   episodeId?: string;
+  /** 剧本卡：集号（1 起）。缺省时自动排到末尾（现有最大 + 1） */
+  episodeNo?: number;
 };
 
 export type UpdateNodeOp = {
@@ -137,6 +139,8 @@ export type UpdateNodeOp = {
   styleSnapshot?: string;
   /** 归属集 = 所属剧本卡 nodeId（改归属/补挂用；传空串清空归属） */
   episodeId?: string;
+  /** 剧本卡：集号（1 起，正整数；重排/纠正用） */
+  episodeNo?: number;
 };
 
 export type DeleteNodesOp = {
@@ -182,6 +186,23 @@ export interface OpIssue {
   index: number;
   severity: "error" | "warning";
   message: string;
+}
+
+/** 集号校验：只认正整数（1 起）。错值明报，不静默丢弃（静默丢会让
+ *   agent 以为「第 3 集」已生效、实际卡排在末尾）。 */
+export function episodeNoIssue(
+  op: { episodeNo?: number },
+  index: number,
+): OpIssue | null {
+  const v = op.episodeNo;
+  if (v === undefined) return null;
+  if (typeof v !== "number" || !Number.isInteger(v) || v < 1)
+    return {
+      index,
+      severity: "error",
+      message: `episodeNo 必须是正整数（1 起），收到 "${String(v)}"`,
+    };
+  return null;
 }
 
 /** 干跑校验（canvas_validate_ops 前端工具用；影策 validateCanvasOps 范式）：
@@ -256,6 +277,8 @@ export function validateOps(rawOps: unknown): {
             issues.push({ index, severity: "error", message: `add_node: 节点 ${op.id} 已存在` });
           liveIds.add(op.id);
         }
+        const addNoIssue = episodeNoIssue(op, index);
+        if (addNoIssue) issues.push(addNoIssue);
         checkRowsAssets(op.rows, index);
         break;
       }
@@ -266,6 +289,8 @@ export function validateOps(rawOps: unknown): {
             severity: "error",
             message: `update_node: 节点 ${op.id} 不存在（引用同批新增节点要用 add_node 的 id 占位符）`,
           });
+        const updNoIssue = episodeNoIssue(op, index);
+        if (updNoIssue) issues.push(updNoIssue);
         checkRowsAssets(op.rows, index);
         break;
       }
@@ -649,6 +674,11 @@ export function applyOps(rawOps: unknown): OpResult {
               }
             }
           }
+          const noIssue = episodeNoIssue(op, opIdx);
+          if (noIssue) {
+            errors.push(`add_node: ${noIssue.message}`);
+            break;
+          }
           const id = live.addNode({
             id: op.id,
             position: pos,
@@ -708,6 +738,8 @@ export function applyOps(rawOps: unknown): OpResult {
                 ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
                 : {}),
               ...(episodeId !== undefined ? { episodeId } : {}),
+              // 集号：显式给了就带上，缺省由 store.addNode 自动排到末尾
+              ...(op.episodeNo !== undefined ? { episodeNo: op.episodeNo } : {}),
             },
           });
           createdIds.push(id);
@@ -719,6 +751,11 @@ export function applyOps(rawOps: unknown): OpResult {
           const exists = live.nodes.some((n) => n.id === op.id);
           if (!exists) {
             errors.push(`update_node: 节点 ${op.id} 不存在`);
+            break;
+          }
+          const updNoIssue = episodeNoIssue(op, opIdx);
+          if (updNoIssue) {
+            errors.push(`update_node: ${updNoIssue.message}`);
             break;
           }
           // rows 截断守卫：同 add_node（整表写回被截曾只落 3 行 + 空壳）
@@ -802,6 +839,7 @@ export function applyOps(rawOps: unknown): OpResult {
             ...(op.episodeId !== undefined
               ? { episodeId: op.episodeId.slice(0, 40) }
               : {}),
+            ...(op.episodeNo !== undefined ? { episodeNo: op.episodeNo } : {}),
           });
           applied += 1;
           break;

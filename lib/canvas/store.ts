@@ -206,6 +206,10 @@ export interface WingNodeData {
    *  （分镜表/图片/视频/音频/合成/分镜）在创建时自动继承，资产卡不带
    *  （跨集共享）。见 EPISODE_MEMBER_TYPES / inheritEpisodeId */
   episodeId?: string;
+  /** 剧本卡的集号（1 起，显式字段——集序不再等于建卡顺序）。建卡自动排到
+   *  末尾，分集面板可重排（重排按当前顺序整体归一到 1..N）；缺号的老卡按
+   *  画布顺序兜底排在已编号卡之后。见 episodeList / nextEpisodeNo */
+  episodeNo?: number;
   [key: string]: unknown;
 }
 
@@ -285,6 +289,9 @@ interface CanvasState {
   chainConnect: (ids: string[]) => void;
   /** 原地复制一份选中节点（Cmd+D） */
   duplicateSelection: () => string[];
+  /** 分集重排：某张剧本卡与相邻集交换（dir=-1 上移 / +1 下移）。整表按
+   *  当前顺序归一到 1..N——缺号/重复号一次点击即得确定顺序 */
+  moveEpisode: (id: string, dir: -1 | 1) => void;
   /** 打组：把 ids 收进新建分组框（parentId+extent，坐标转相对），返回组 id */
   groupNodes: (ids: string[], title?: string) => string | null;
   /** 解组：解散分组框删除组节点，子节点回画布层（坐标转绝对），返回子节点数 */
@@ -721,6 +728,7 @@ export const useCanvasStore = create<CanvasState>()(
           source: idMap.get(e.source) ?? e.source,
           target: idMap.get(e.target) ?? e.target,
         }));
+        renumberClonedScripts(newNodes, get().nodes);
         set((state) => ({
           nodes: [
             ...state.nodes.map((n) => ({ ...n, selected: false })),
@@ -736,13 +744,23 @@ export const useCanvasStore = create<CanvasState>()(
         // React Flow 靠 node.type 选自定义渲染器；调用方只给 data.nodeType 时自动推导
         const type = node.type ?? node.data?.nodeType ?? "note";
         if (opts?.history !== "skip") get().commitHistory();
-        set((state) => ({
+        set((state) => {
           // 幂等防御：同 id 已存在（ops 重放/同批双发）不重复插入——
           // React key 冲突会让整棵渲染树错乱，宁可不加
-          nodes: state.nodes.some((n) => n.id === id)
-            ? state.nodes
-            : [...state.nodes, withDefaultSize({ ...node, id, type } as WingNode)],
-        }));
+          if (state.nodes.some((n) => n.id === id)) return state;
+          // 剧本卡建卡自动排到末尾（集号 = 现有最大 + 1）；显式给了就尊重
+          //（agent 的 canvas_ops / 选题池落卡可自带集号）
+          const data = { ...node.data };
+          if (data.nodeType === "script" && episodeNoOf({ data }) === null) {
+            data.episodeNo = nextEpisodeNo(state.nodes);
+          }
+          return {
+            nodes: [
+              ...state.nodes,
+              withDefaultSize({ ...node, id, type, data } as WingNode),
+            ],
+          };
+        });
         return id;
       },
 
@@ -1232,6 +1250,24 @@ export const useCanvasStore = create<CanvasState>()(
         return get().pasteClipboard();
       },
 
+      moveEpisode: (id, dir) => {
+        const list = episodeList(get().nodes);
+        const idx = list.findIndex((n) => n.id === id);
+        const target = idx + dir;
+        if (idx < 0 || target < 0 || target >= list.length) return;
+        const order = [...list];
+        [order[idx], order[target]] = [order[target], order[idx]];
+        const noById = new Map(order.map((n, i) => [n.id, i + 1] as const));
+        get().commitHistory();
+        set((s) => ({
+          nodes: s.nodes.map((n) =>
+            noById.has(n.id)
+              ? { ...n, data: { ...n.data, episodeNo: noById.get(n.id) } }
+              : n,
+          ),
+        }));
+      },
+
       beginAltDragClone: (draggedId) => {
         const state = get();
         const dragged = state.nodes.find((n) => n.id === draggedId);
@@ -1269,6 +1305,7 @@ export const useCanvasStore = create<CanvasState>()(
             source: idMap.get(e.source) ?? e.source,
             target: idMap.get(e.target) ?? e.target,
           }));
+        renumberClonedScripts(copies, state.nodes);
         altDragClone = idMap;
         // 克隆+移动合并为一次撤销：克隆前提交快照，并拦掉拖动首帧的重复提交
         get().commitHistory();
@@ -1525,6 +1562,59 @@ const EPISODE_STAT_LABEL: [WingNodeType, string][] = [
   ["storyboard", "分镜"],
 ];
 
+/** 剧本卡的集号：正整数才算数（老卡/外部数据缺号或脏值返回 null）。 */
+export function episodeNoOf(n: { data: WingNodeData }): number | null {
+  const v = n.data?.episodeNo;
+  return typeof v === "number" && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/** 下一个集号 = 现有最大集号 + 1（建卡自动排到末尾）。 */
+export function nextEpisodeNo(nodes: WingNode[]): number {
+  let max = 0;
+  for (const n of nodes) {
+    const v = episodeNoOf(n);
+    if (v !== null && v > max) max = v;
+  }
+  return max + 1;
+}
+
+/** 项目分集列表：剧本卡按集号升序；缺号排在有号之后，同号/缺号按画布顺序。
+ *  分集面板、重排、画布摘要共用同一口径。 */
+export function episodeList(nodes: WingNode[]): WingNode[] {
+  return nodes
+    .map((n, i) => ({ n, i }))
+    .filter((x) => (x.n.data as WingNodeData).nodeType === "script")
+    .sort((a, b) => {
+      const na = episodeNoOf(a.n);
+      const nb = episodeNoOf(b.n);
+      if (na !== nb) return (na ?? Number.MAX_SAFE_INTEGER) - (nb ?? Number.MAX_SAFE_INTEGER);
+      return a.i - b.i;
+    })
+    .map((x) => x.n);
+}
+
+/** 某集的显示名：「第 3 集 · 标题」（缺号只给标题，老卡不假装有集号）。 */
+export function episodeLabel(n: WingNode): string {
+  const no = episodeNoOf(n);
+  const title = (n.data as WingNodeData).title || "（未命名）";
+  return no === null ? title : `第 ${no} 集 · ${title}`;
+}
+
+/** 克隆出来的剧本卡重新排号（副本一律排到末尾）：集号必须唯一，
+ *  否则复制一张卡就出现两张「第 3 集」。粘贴 / Cmd+D / Alt 拖拽复制共用。 */
+function renumberClonedScripts(copies: WingNode[], existing: WingNode[]): void {
+  let max = 0;
+  for (const n of existing) {
+    const v = episodeNoOf(n);
+    if (v !== null && v > max) max = v;
+  }
+  for (const c of copies) {
+    if (c.data.nodeType !== "script") continue;
+    max += 1;
+    c.data = { ...c.data, episodeNo: max };
+  }
+}
+
 /** 某集（剧本卡）的全部卡：该剧本卡本身 + 所有 episodeId 指向它的产物卡。
  *  canvas_query 的 episodeId 过滤与「下载本集」共用。 */
 export function nodesOfEpisode(nodes: WingNode[], episodeId: string): WingNode[] {
@@ -1648,12 +1738,18 @@ export function summarizeCanvas(
       n.data.nodeType === "research" && n.data.researchId
         ? `（调研卷宗 ${n.data.researchId}）`
         : "";
-    // 集：剧本卡=集本体（给产物统计），产物卡带归属集名（多集项目才有信号）
+    // 集：剧本卡=集本体（多集项目给集号 + 本集产物统计），产物卡带归属集名
+    //（单集项目「第 1 集」是噪声，不给）
     const epNote =
       n.data.nodeType === "script"
         ? (() => {
+            const no = episodeTitles.size >= 2 ? episodeNoOf(n) : null;
             const s = episodeStatsLine(nodes, n.id);
-            return s ? `（本集：${s}）` : "";
+            const parts = [
+              no === null ? "" : `第 ${no} 集`,
+              s ? `本集：${s}` : "",
+            ].filter(Boolean);
+            return parts.length > 0 ? `（${parts.join(" · ")}）` : "";
           })()
         : "";
     const epMark =
