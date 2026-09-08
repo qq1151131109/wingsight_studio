@@ -4,7 +4,7 @@
 import { apiFetch } from "@/lib/auth";
 import { useCanvasStore } from "@/lib/canvas/store";
 import type { ShotRow } from "@/lib/canvas/store";
-import type { ImagegenParams } from "@/lib/imagegen";
+import type { ImagegenParams, VideogenParams } from "@/lib/imagegen";
 
 export async function generateShotlist(
   script: string,
@@ -307,4 +307,113 @@ export async function startCharacterImageJob(opts: {
     [{ ...shot, assetType: opts.assetType ?? "character" }],
     params,
   );
+}
+
+// ---------- 分镜行批量出视频（BigModel CogVideoX 直连，同出图 job 范式） ----------
+
+/** 出视频请求：prompt = 运动描述（运镜+画面动态，必填——视频提示词描述
+ *  「怎么动」而非重复首帧图已有的静态画面）；imageUrl = 首帧图（镜头图卡
+ *  主图，i2v 锚点；缺省纯文生视频）；params 镜头级覆盖（模型/时长/音效） */
+export type ShotVideoRequest = {
+  rid: string;
+  name: string;
+  prompt: string;
+  /** 首帧图（本服务资产 URL 或外链） */
+  imageUrl?: string;
+  params?: VideogenParams;
+};
+
+export type ShotVideoResult = {
+  rid: string;
+  ok: boolean;
+  videoUrl?: string;
+  error?: string;
+};
+
+export class VideoJobGoneError extends Error {}
+
+/** 轮询批量出视频任务：每条完成即回调 onItem（同 pollShotImageJob 的
+ *  无进展空转口径，窗口放宽到 15 分钟——视频单条比出图慢得多） */
+export async function pollShotVideoJob(
+  jobId: string,
+  onItem: (item: ShotVideoResult) => void,
+  stallMs = 15 * 60 * 1000,
+): Promise<"done" | "timeout" | "gone" | "cancelled"> {
+  let stallDeadline = Date.now() + stallMs;
+  const applied = new Set<string>();
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 3000));
+    let job;
+    try {
+      job = await getShotVideoJob(jobId);
+    } catch (exc) {
+      if (exc instanceof VideoJobGoneError) return "gone";
+      if (Date.now() > stallDeadline) return "timeout";
+      continue;
+    }
+    let fresh = 0;
+    for (const item of job.images) {
+      if (applied.has(item.rid) || (!item.ok && !item.error)) continue;
+      applied.add(item.rid);
+      fresh += 1;
+      onItem(item);
+    }
+    if (fresh > 0) stallDeadline = Date.now() + stallMs;
+    if (job.status === "done") return "done";
+    if (job.status === "cancelled") return "cancelled";
+    if (Date.now() > stallDeadline) return "timeout";
+  }
+}
+
+/** 启动批量出视频任务（Next 代理掐长请求，异步 job + 轮询）。服务端按
+ *  models.py 视频目录逐镜头校验模型/时长/音效组合，非法 400 点名 */
+export async function startShotVideoJob(
+  shots: ShotVideoRequest[],
+  params?: VideogenParams,
+): Promise<string> {
+  // 键名转 snake_case 对齐 agent resolve_video_params（withAudio → with_audio）
+  const agentParams = params?.model
+    ? {
+        model: params.model,
+        ...(params.duration ? { duration: params.duration } : {}),
+        ...(params.quality ? { quality: params.quality } : {}),
+        ...(params.withAudio !== undefined ? { with_audio: params.withAudio } : {}),
+      }
+    : undefined;
+  const r = await apiFetch("/agent-service/storyboard/videos", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      shots,
+      ...(agentParams ? { params: agentParams } : {}),
+      project_id: useCanvasStore.getState().projectId,
+    }),
+  });
+  if (!r.ok) {
+    const detail = (await r.text()).slice(0, 160);
+    throw new Error(detail || `批量出视频启动失败（${r.status}）`);
+  }
+  const data = (await r.json()) as { jobId?: string };
+  if (!data.jobId) throw new Error("批量出视频任务启动失败");
+  return data.jobId;
+}
+
+export async function cancelShotVideoJob(jobId: string): Promise<boolean> {
+  const r = await apiFetch(`/agent-service/storyboard/videos/${jobId}`, {
+    method: "DELETE",
+  });
+  return r.ok;
+}
+
+export async function getShotVideoJob(jobId: string): Promise<{
+  status: "running" | "done" | "cancelled";
+  images: ShotVideoResult[];
+}> {
+  const r = await apiFetch(`/agent-service/storyboard/videos/${jobId}`);
+  if (r.status === 404) throw new VideoJobGoneError("出视频任务不存在（agent 可能已重启）");
+  if (!r.ok) throw new Error(`出视频任务查询失败（${r.status}）`);
+  return (await r.json()) as {
+    status: "running" | "done" | "cancelled";
+    images: ShotVideoResult[];
+  };
 }

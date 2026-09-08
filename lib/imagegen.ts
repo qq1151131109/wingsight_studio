@@ -66,6 +66,83 @@ export function saneGen(raw: unknown): ImagegenParams | null {
   return v.model === src.model && v.resolution === src.resolution ? v : null;
 }
 
+// ---------- 视频模型目录（agent /models/video，BigModel CogVideoX 系实探验证） ----------
+
+export type VideoModelOption = {
+  id: string;
+  label: string;
+  tag: string;
+  /** 输出像素尺寸枚举（i2v 缺省不传：上游按原图比例自适配） */
+  sizes: string[];
+  /** 可选时长秒数（空数组 = 该模型不支持指定时长，固定约 5 秒） */
+  durations: number[];
+  qualities?: string[];
+  with_audio?: boolean;
+  default?: boolean;
+};
+
+export type VideogenParams = {
+  model: string;
+  duration?: number;
+  quality?: string;
+  withAudio?: boolean;
+};
+
+/** 分镜卡视频生成默认：免费档 flash（ cogvideox-flash，无时长/音效参数） */
+export const VIDEOGEN_DEFAULT: VideogenParams = { model: "cogvideox-flash" };
+
+async function fetchVideoModels(): Promise<VideoModelOption[]> {
+  const r = await apiFetch("/agent-service/models/video");
+  if (!r.ok) throw new Error(`视频模型目录加载失败（${r.status}）`);
+  const data = (await r.json()) as { models?: VideoModelOption[] };
+  if (!data.models?.length) throw new Error("视频模型目录为空（agent 未配置视频生成）");
+  return data.models;
+}
+
+let videoModelsPromise: Promise<VideoModelOption[]> | null = null;
+
+export function useVideoModels(): {
+  models: VideoModelOption[] | null;
+  error: string;
+  reload: () => void;
+} {
+  const [models, setModels] = useState<VideoModelOption[] | null>(null);
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    videoModelsPromise ??= fetchVideoModels();
+    videoModelsPromise
+      .then((m) => {
+        if (cancelled) return;
+        setModels(m);
+        setError("");
+      })
+      .catch((e: unknown) => {
+        videoModelsPromise = null;
+        if (!cancelled) setError(e instanceof Error ? e.message : "视频模型目录加载失败");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tick]);
+  return { models, error, reload: () => setTick((t) => t + 1) };
+}
+
+/** 分镜卡 data.videoGen 存值校验：模型不在目录（agent 改版）回默认，明报铁律在 agent 侧 */
+export function saneVideoGen(raw: unknown): VideogenParams {
+  const v = raw as Partial<VideogenParams> | null;
+  if (v && typeof v.model === "string" && v.model.trim()) {
+    return {
+      model: v.model,
+      ...(typeof v.duration === "number" ? { duration: v.duration } : {}),
+      ...(typeof v.quality === "string" && v.quality ? { quality: v.quality } : {}),
+      ...(typeof v.withAudio === "boolean" ? { withAudio: v.withAudio } : {}),
+    };
+  }
+  return VIDEOGEN_DEFAULT;
+}
+
 // ---------- 模型目录共享加载（出图设置面板 / PromptBar chips / 卡片 popover） ----------
 
 let modelsPromise: Promise<ImageModelOption[]> | null = null;

@@ -38,17 +38,32 @@ def _conn() -> sqlite3.Connection:
         " day TEXT NOT NULL, ts TEXT NOT NULL, user TEXT NOT NULL, model TEXT NOT NULL)"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_image_usage_day ON image_usage(day)")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS video_usage ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " day TEXT NOT NULL, ts TEXT NOT NULL, user TEXT NOT NULL, model TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_video_usage_day ON video_usage(day)")
     return conn
 
 
 def record_image(model: str, user: str | None = None) -> None:
     """成功出图记一行。user 缺省读请求上下文（后台任务沿用发起者快照）。"""
+    _record_usage("image_usage", model, user)
+
+
+def record_video(model: str, user: str | None = None) -> None:
+    """成功出视频记一行（videogen 落盘成功时计，表结构与出图同款）。"""
+    _record_usage("video_usage", model, user)
+
+
+def _record_usage(table: str, model: str, user: str | None = None) -> None:
     who = (user if user is not None else current_user.get()).strip() or "未知"
     model = (model or "").strip() or "未知"
     now = datetime.now(_TZ_BJ)
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO image_usage (day, ts, user, model) VALUES (?, ?, ?, ?)",
+            f"INSERT INTO {table} (day, ts, user, model) VALUES (?, ?, ?, ?)",
             (now.strftime("%Y-%m-%d"), now.isoformat(timespec="seconds"), who, model),
         )
 

@@ -71,3 +71,4 @@ doc/.benchmark-cache.json
 
 # 并行调试探针（临时脚本不入库）
 scripts/_tmp-*.mjs
+scripts/_tmp/

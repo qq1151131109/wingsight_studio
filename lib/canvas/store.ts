@@ -50,6 +50,8 @@ export interface ShotRow {
   imageUrl?: string;
   /** 批量出图物化的图片节点：缩略图读该节点实时数据，重生成=原节点重跑 */
   imageNodeId?: string;
+  /** 批量出视频物化的视频节点（图生视频产物）：成片链按连线收集 */
+  videoNodeId?: string;
   /** 结构化 @引用（资产卡 id）：改名不失联；文本 @名称 仅作展示与兜底匹配 */
   refIds?: string[];
   /** flow 一次性产出：该镜出现的资产名（生成时从名单逐字校验）。前端转成
@@ -171,6 +173,10 @@ export interface WingNodeData {
   textModel?: string;
   /** 分镜表：进行中的批量出图任务（出图中刷新页面后挂载续轮询收尾，完事即清） */
   imageJobId?: string;
+  /** 分镜表：进行中的批量出视频任务（同 imageJobId 续轮询语义） */
+  videoJobId?: string;
+  /** 分镜表：视频生成参数覆盖（VideoGenSettings 写入；缺省 cogvideox-flash） */
+  videoGen?: { model: string; duration?: number; quality?: string; withAudio?: boolean };
   /** 剧本卡/分镜表卡：进行中的批量调研参考图任务（卡片被 onlyRenderVisibleElements
    *  卸载或刷新后凭它续轮询、终态照弹审阅面板，完事即清） */
   refBatchJobId?: string;

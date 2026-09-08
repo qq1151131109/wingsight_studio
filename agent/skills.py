@@ -24,6 +24,7 @@ import imagejobs
 import models
 import thumbs
 import usage
+import videogen
 
 LANGFLOW_URL = os.environ.get("LANGFLOW_URL", "http://localhost:7860")
 LANGFLOW_API_KEY = os.environ.get("LANGFLOW_API_KEY", "")
@@ -1588,6 +1589,133 @@ def cancel_storyboard_image_job(job_id: str) -> bool:
     for t in job.get("tasks", []):
         t.cancel()
     return True
+
+
+# ---------- 分镜行批量出视频（videogen 直连 BigModel，同出图 job 范式） ----------
+
+STORYBOARD_VIDEO_JOBS: Dict[str, Dict[str, Any]] = {}
+
+VIDEO_JOB_CONCURRENCY = 4  # 视频单价高，并发压低（出图 30 / 视频 4）
+
+
+def _prune_storyboard_video_jobs() -> None:
+    done = [k for k, v in STORYBOARD_VIDEO_JOBS.items() if v["status"] == "done"]
+    for k in done[:-19]:  # 最多保留 19 个已完成任务
+        STORYBOARD_VIDEO_JOBS.pop(k, None)
+
+
+def get_storyboard_video_job(job_id: str) -> Optional[Dict[str, Any]]:
+    job = STORYBOARD_VIDEO_JOBS.get(job_id)
+    if job is not None:
+        return job
+    return imagejobs.load_job(job_id, table="video_jobs")
+
+
+def cancel_storyboard_video_job(job_id: str) -> bool:
+    """取消出视频任务：未开跑的镜头跳过，在途的取消底层 http 请求（不再计费）。"""
+    job = STORYBOARD_VIDEO_JOBS.get(job_id)
+    if not job or job["status"] != "running":
+        return False
+    job["cancelled"] = True
+    for t in job.get("tasks", []):
+        t.cancel()
+    return True
+
+
+async def start_storyboard_video_job(
+    shots: List[Dict[str, Any]],
+    params: Optional[Dict[str, Any]] = None,
+    project_id: str = "",
+) -> str:
+    """启动分镜行批量出视频任务（videogen 直连，并发 4，不经聊天）。
+
+    shots: [{rid, name, prompt(运动描述，必填), imageUrl?(首帧图——本服务
+    资产 URL 或外链，缺省纯文生), params?: {model, size?, duration?, fps?,
+    quality?, with_audio?}}]；params 请求级默认，镜头级覆盖，逐镜头合并
+    预校验（models.resolve_video_params）——任一组合不合法整批 ValueError
+    （端点 400 点名镜头）。i2v 不传 size 时 BigModel 按原图比例自适配。
+    project_id 仅供终态事件流路由。立即返回 jobId，前端轮询增量取走。
+    """
+    if not videogen.BIGMODEL_API_KEY:
+        raise RuntimeError("未配置 BIGMODEL_API_KEY，视频生成不可用")
+    resolved: Dict[str, Optional[Dict[str, Any]]] = {}
+    invalid: List[str] = []
+    for s in shots:
+        rid = str(s.get("rid", ""))
+        merged = {**(params or {}), **(s.get("params") or {})}
+        try:
+            resolved[rid] = models.resolve_video_params(merged or None)
+        except ValueError as exc:
+            invalid.append(f"「{str(s.get('name') or rid) or rid}」{exc}")
+        if not str(s.get("prompt") or "").strip():
+            invalid.append(f"「{str(s.get('name') or rid) or rid}」缺少运动提示词")
+    if invalid:
+        raise ValueError("；".join(invalid))
+    _prune_storyboard_video_jobs()
+
+    job_id = uuid.uuid4().hex[:12]
+    STORYBOARD_VIDEO_JOBS[job_id] = {
+        "status": "running",
+        "cancelled": False,
+        "images": {str(s.get("rid", "")): {"rid": str(s.get("rid", "")), "ok": False} for s in shots},
+    }
+    imagejobs.create_job(
+        job_id, [str(s.get("rid", "")) for s in shots], table="video_jobs"
+    )
+
+    sem = asyncio.Semaphore(VIDEO_JOB_CONCURRENCY)
+
+    async def one(shot: Dict[str, Any]) -> None:
+        rid = str(shot.get("rid", ""))
+        p = resolved.get(rid) or {}
+        try:
+            async with sem:
+                if STORYBOARD_VIDEO_JOBS[job_id]["cancelled"]:
+                    return
+                result = await videogen.generate_video(
+                    str(shot.get("prompt") or ""),
+                    model=p.get("model_name") or models.DEFAULT_VIDEO_MODEL_ID,
+                    image_url=str(shot.get("imageUrl") or "") or None,
+                    size=p.get("size"),
+                    fps=p.get("fps"),
+                    duration=p.get("duration"),
+                    quality=p.get("quality"),
+                    with_audio=p.get("with_audio"),
+                )
+        except asyncio.CancelledError:
+            result = {"ok": False, "error": "已取消", "cancelled": True}
+        STORYBOARD_VIDEO_JOBS[job_id]["images"][rid] = {"rid": rid, **result}
+        try:
+            imagejobs.save_item(job_id, rid, result, table="video_jobs")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[videojobs] 结果落库失败 job={job_id} rid={rid}: {exc}", flush=True)
+
+    async def run() -> None:
+        job = STORYBOARD_VIDEO_JOBS[job_id]
+        job["tasks"] = [asyncio.create_task(one(s)) for s in shots]
+        try:
+            await asyncio.gather(*job["tasks"], return_exceptions=True)
+        finally:
+            job["status"] = "cancelled" if job["cancelled"] else "done"
+            try:
+                imagejobs.finish_job(
+                    job_id, job["status"], job["images"], table="video_jobs"
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[videojobs] 终态落库失败 job={job_id}: {exc}", flush=True)
+            if job["status"] != "cancelled":
+                ok = sum(1 for r in job["images"].values() if r.get("ok"))
+                eventbus.publish_job_event(
+                    "shot_videos",
+                    project_id,
+                    job_id,
+                    job["status"],
+                    title="分镜批量出视频",
+                    summary=f"{ok}/{len(job['images'])} 条成功",
+                )
+
+    asyncio.create_task(run())
+    return job_id
 
 
 def _extract_json_objects_loose(text: str) -> Optional[str]:

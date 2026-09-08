@@ -100,6 +100,8 @@ export type UpdateNodeOp = {
     imageUrl?: string;
     /** 该行关联的镜头图卡 id（行缩略图读卡上的图；前端出图按钮同款语义） */
     imageNodeId?: string;
+    /** 该行关联的镜头视频卡 id（图生视频产物；行内视频状态读卡实时数据） */
+    videoNodeId?: string;
   };
   /** 分镜表：整表重写（agent 对话式「压缩到 N 行/重新生成」用），整组替换 */
   rows?: {
@@ -374,6 +376,8 @@ function normalizeRows(
     sound?: string;
     assets?: string[];
     imageUrl?: string;
+    imageNodeId?: string;
+    videoNodeId?: string;
   }[],
   ridPrefix: string,
 ): { rows: ShotRow[]; emptyIdx: number[] } {
@@ -392,6 +396,12 @@ function normalizeRows(
         ? { refIds: assetsToRefIds(r.assets.filter(Boolean).map(String)) }
         : {}),
       ...(r.imageUrl !== undefined ? { imageUrl: String(r.imageUrl) } : {}),
+      ...(r.imageNodeId !== undefined
+        ? { imageNodeId: String(r.imageNodeId).slice(0, 40) }
+        : {}),
+      ...(r.videoNodeId !== undefined
+        ? { videoNodeId: String(r.videoNodeId).slice(0, 40) }
+        : {}),
     };
     return norm;
   });

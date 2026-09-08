@@ -866,6 +866,63 @@ async def api_text_models(user: auth.CurrentUser):
     return {"models": models.text_models_payload(), "default": models.DEFAULT_TEXT_MODEL_ID}
 
 
+@app.get("/models/video")
+async def api_video_models(user: auth.CurrentUser):
+    """视频模型目录（BigModel CogVideoX 系实探验证，见 agent/models.py）。"""
+    return {"models": models.video_models_payload(), "default": models.DEFAULT_VIDEO_MODEL_ID}
+
+
+@app.post("/storyboard/videos")
+async def api_storyboard_videos(req: dict, user: auth.CurrentUser):
+    """分镜行批量出视频：异步任务立即返回 jobId（同批量出图范式，Next 代理
+    30s 掐长请求）。前端轮询 GET /storyboard/videos/{jobId}。
+
+    req: {shots: [{rid, name, prompt(运动描述，必填), imageUrl?(首帧图),
+                   params?: {model, size?, duration?, fps?, quality?, with_audio?}}],
+          params?: {model, size?, ...}, project_id}
+    params 请求级默认，镜头级覆盖；逐镜头合并预校验，非法组合 400 点名。
+    i2v（带 imageUrl）不传 size 时上游按原图比例自适配。
+    """
+    shots = req.get("shots") or []
+    if not isinstance(shots, list) or not shots:
+        return Response(status_code=400, content="shots 为空", media_type="text/plain")
+    if len(shots) > 60:
+        return Response(
+            status_code=400,
+            content=f"一次批量最多 60 条视频（收到 {len(shots)} 条），请分批生成",
+            media_type="text/plain",
+        )
+    try:
+        params = models.resolve_video_params(req.get("params"))
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    try:
+        job_id = await skills.start_storyboard_video_job(
+            shots, params=params, project_id=str(req.get("project_id") or "")
+        )
+    except RuntimeError as exc:
+        return Response(status_code=503, content=str(exc), media_type="text/plain")
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    return {"jobId": job_id}
+
+
+@app.get("/storyboard/videos/{job_id}")
+async def api_storyboard_videos_status(job_id: str, user: auth.CurrentUser):
+    job = skills.get_storyboard_video_job(job_id)
+    if job is None:
+        return Response(status_code=404, content="任务不存在", media_type="text/plain")
+    return {"status": job["status"], "images": list(job["images"].values())}
+
+
+@app.delete("/storyboard/videos/{job_id}")
+async def api_storyboard_videos_cancel(job_id: str, user: auth.CurrentUser):
+    """取消出视频任务：未开跑的镜头跳过，在途的中止底层请求（不再计费）。"""
+    if not skills.cancel_storyboard_video_job(job_id):
+        return Response(status_code=409, content="任务不存在或已结束", media_type="text/plain")
+    return {"ok": True}
+
+
 @app.post("/free-images")
 async def api_free_image_generate(req: dict, user: auth.CurrentUser):
     """自由生图批次（juben ImageStudio 移植）：不受画风/资产约束，一次点击
