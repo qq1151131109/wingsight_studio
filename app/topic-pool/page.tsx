@@ -16,6 +16,7 @@ import {
   X,
 } from "lucide-react";
 import AuthGate from "@/components/shell/AuthGate";
+import InsightsDialog from "@/components/topic-pool/InsightsDialog";
 import {
   adoptTopic,
   dismissTopic,
@@ -93,6 +94,7 @@ function TopicPoolInner() {
   const router = useRouter();
   const [topics, setTopics] = useState<Topic[] | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [insightsOpen, setInsightsOpen] = useState(false);
   const [lastRun, setLastRun] = useState<TopicRefreshRun>({});
   const [statusTab, setStatusTab] = useState<StatusTab>("candidate");
   const [vertical, setVertical] = useState<string>("all");
@@ -454,6 +456,14 @@ function TopicPoolInner() {
           </Link>
           <button
             type="button"
+            onClick={() => setInsightsOpen(true)}
+            data-track="topic-pool.insights"
+            className="rounded-md border border-hairline px-2.5 py-1.5 text-xs text-text-2 transition-colors hover:bg-surface-2"
+          >
+            标杆拆解
+          </button>
+          <button
+            type="button"
             onClick={() => void startRefresh()}
             disabled={refreshing}
             className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
@@ -658,6 +668,7 @@ function TopicPoolInner() {
           ) : null}
         </section>
       </main>
+      {insightsOpen ? <InsightsDialog onClose={() => setInsightsOpen(false)} /> : null}
     </div>
   );
 }

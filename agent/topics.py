@@ -92,6 +92,33 @@ def init_topics_db() -> None:
             )
             """
         )
+        # 标杆拆解知识库：热内容的「为什么火 + 什么可迁移」（insights.py 读写）。
+        # 只收内容侧可迁移因素，平台运营因素不入库（见 insights.py 模块注释）。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS insights (
+                id TEXT PRIMARY KEY,
+                source_title TEXT NOT NULL,
+                source_url TEXT NOT NULL DEFAULT '',
+                platform TEXT NOT NULL DEFAULT '',
+                metric TEXT NOT NULL DEFAULT '',
+                vertical TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                treatment TEXT NOT NULL DEFAULT '',
+                emotion TEXT NOT NULL DEFAULT '',
+                form TEXT NOT NULL DEFAULT '',
+                transferable TEXT NOT NULL DEFAULT '',
+                evidence TEXT NOT NULL DEFAULT '',
+                confidence INTEGER NOT NULL DEFAULT 1,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        # 用户手工修订标记：改过的条目不参与重拆覆盖（insights.update_insight 置 1）
+        icols = {r[1] for r in conn.execute("PRAGMA table_info(insights)").fetchall()}
+        if "edited" not in icols:
+            conn.execute("ALTER TABLE insights ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
         # 存量指纹回填：历史上 upgrade_card 改题未重算 title_fingerprint，去重键与
         # 标题脱钩（同题孪生卡由此漏进池内）。按当前标题重算；冲突（真同题行）
         # 跳过不动。幂等：回填后全部匹配，下次启动零写入。

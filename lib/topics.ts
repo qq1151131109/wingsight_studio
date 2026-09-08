@@ -253,3 +253,50 @@ export async function setSchedule(schedule: AutoRefreshSchedule): Promise<AutoRe
   const data = await r.json();
   return data.schedule as AutoRefreshSchedule;
 }
+
+/** 标杆拆解知识条目（热内容「为什么被接受」的结构化拆解，用户可改） */
+export interface TopicInsight {
+  id: string;
+  title: string;
+  url: string;
+  platform: string;
+  metric: string;
+  vertical: string;
+  subject: string;
+  treatment: string;
+  emotion: string;
+  form: string;
+  transferable: string;
+  evidence: string;
+  confidence: number;
+  useCount: number;
+  edited: boolean;
+  createdAt: string;
+}
+
+export async function listInsights(): Promise<{
+  insights: TopicInsight[];
+  distribution: Record<string, [string, number][]>;
+  statsLine: string;
+}> {
+  const r = await apiFetch(`${BASE}/insights`);
+  if (!r.ok) throw new Error(`读取标杆拆解失败：${r.status}`);
+  return r.json();
+}
+
+export async function updateInsight(
+  id: string,
+  fields: Partial<Pick<TopicInsight, "subject" | "treatment" | "emotion" | "form" | "transferable" | "evidence">>,
+): Promise<boolean> {
+  const r = await apiFetch(`${BASE}/insights/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  return r.ok;
+}
+
+export async function deleteInsight(id: string): Promise<boolean> {
+  const r = await apiFetch(`${BASE}/insights/${id}`, { method: "DELETE" });
+  return r.ok;
+}

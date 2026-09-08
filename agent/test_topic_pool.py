@@ -38,6 +38,20 @@ os.environ["LANGFLOW_TOPIC_TRIAGE_FLOW_ID"] = "f-triage"
 os.environ["LANGFLOW_TOPIC_PLAN_FLOW_ID"] = "f-plan"
 os.environ["LANGFLOW_TOPIC_FOLLOWUP_FLOW_ID"] = "f-followup"
 os.environ["LANGFLOW_TOPIC_VERDICT_FLOW_ID"] = "f-verdict"
+# 平台热榜通道：单测禁网——真网络会把 B 站榜单塞进线索池污染计数，全局按空计
+# （成功/缓存/失败语义由 run_platform_trends 内局部覆盖验证）
+async def _no_net_bili(_rid: int = 177) -> list[dict]:
+    raise RuntimeError("test: no network")
+
+
+topic_pool._fetch_bili_ranking = _no_net_bili
+
+
+async def _no_net_douban() -> list[dict]:
+    raise RuntimeError("test: no network")
+
+
+topic_pool._fetch_douban_documentaries = _no_net_douban
 os.environ["LANGFLOW_TOPIC_RESCAN_PLAN_FLOW_ID"] = "f-rescan-plan"
 os.environ["LANGFLOW_TOPIC_ANGLE_FLOW_ID"] = "f-angle"
 # 语料采集离线化：维基通道整体打空桩（不打网络/离线库）
@@ -1457,5 +1471,279 @@ def run_dynamic_layer():
 
 run_dynamic_layer()
 print("讲法动态层进水口 ✓")
+
+
+# ---------- 平台热度信号（B站纪录片热榜） ----------
+
+_BILI_FIXTURE = {
+    "code": 0,
+    "data": {
+        "list": [
+            {"bvid": "BV1x", "aid": 1, "title": "【纪录片】法医密档 07 白骨的倾诉",
+             "tname": "社会·美食·旅行", "stat": {"view": 2_084_962, "danmaku": 7032, "like": 15486}},
+            {"bvid": "BV2y", "aid": 2, "title": "《守护解放西2》一年不见，任罡警官的普通话进步了吗？",
+             "tname": "社会·美食·旅行", "stat": {"view": 123_456_789, "danmaku": 5000, "like": 88_888}},
+        ]
+    },
+}
+
+
+def run_platform_trends() -> None:
+    def expect(cond: bool, msg: str) -> None:
+        if not cond:
+            raise AssertionError(msg)
+
+    calls = {"n": 0}
+
+    async def fake_fetch(rid: int = 177) -> list[dict]:
+        expect(rid == 177, "应默认纪录片主分区 rid=177")
+        calls["n"] += 1
+        return _BILI_FIXTURE["data"]["list"]
+
+    curator = TopicCurator.__new__(TopicCurator)
+    original = topic_pool._fetch_bili_ranking
+    topic_pool._fetch_bili_ranking = fake_fetch
+    try:
+        sigs = asyncio.run(curator.collect_platform_trends())
+        expect(len(sigs) == 2, f"应产出 2 条：{len(sigs)}")
+        s0 = sigs[0]
+        expect(s0["signal_type"] == "platform", "signal_type 应为 platform")
+        expect(s0["platform"] == "bilibili" and s0["source"] == "B站纪录片热榜", "平台/来源字段")
+        expect(s0["url"] == "https://www.bilibili.com/video/BV1x", "url 应带 bvid")
+        expect("TOP1" in s0["snippet"] and "播放208.5万" in s0["snippet"],
+               f"snippet 应带名次与热度：{s0['snippet']}")
+        expect("1.2亿" in sigs[1]["snippet"], f"亿级计数短化：{sigs[1]['snippet']}")
+        # 当日缓存：第二次采集不重拉
+        sigs2 = asyncio.run(curator.collect_platform_trends())
+        expect(len(sigs2) == 2 and calls["n"] == 1, f"缓存应命中（fetch 仍 1 次：{calls['n']}）")
+    finally:
+        topic_pool._fetch_bili_ranking = original
+
+    # 失败路径：异常按空计，且不写当日缓存（下轮重试）
+    store.set_setting(topic_pool.PLATFORM_TRENDS_CACHE_KEY, "")
+
+    async def boom(_rid: int = 177) -> list[dict]:
+        raise RuntimeError("bilibili ranking code=-352")
+
+    topic_pool._fetch_bili_ranking = boom
+    try:
+        sigs = asyncio.run(curator.collect_platform_trends())
+        expect(sigs == [], "采集失败应按空计")
+        expect(store.get_setting(topic_pool.PLATFORM_TRENDS_CACHE_KEY) == "", "失败不应写当日缓存")
+    finally:
+        topic_pool._fetch_bili_ranking = original
+    store.set_setting(topic_pool.PLATFORM_TRENDS_CACHE_KEY, "")
+    print("平台热榜信号（B站纪录片分区）✓")
+
+
+run_platform_trends()
+
+
+# ---------- 豆瓣口碑信号（纪录片评分/评价人数） ----------
+
+_DOUBAN_FIXTURE = [
+    {"title": "河西走廊", "url": "https://movie.douban.com/subject/24736278/",
+     "rate": "9.7", "votes": None, "subtitle": "", "snippet": "", "source": "豆瓣纪录片·高分标杆"},
+    {"title": "纳达尔", "url": "https://movie.douban.com/subject/1/",
+     "rate": 9.1, "votes": 2583, "subtitle": "2026 / 美国 / 纪录片 运动", "snippet": "网球传奇",
+     "source": "豆瓣纪录片·在播新片"},
+    {"title": "河西走廊", "url": "https://movie.douban.com/subject/24736278/",  # 跨子源重复
+     "rate": "9.7", "votes": 12000, "subtitle": "", "snippet": "", "source": "豆瓣纪录片·在播新片"},
+    {"title": "蚝油的鲜味传奇", "url": "https://movie.douban.com/subject/2/",
+     "rate": 0, "votes": 0, "subtitle": "2026 / 中国大陆 / 纪录片", "snippet": "",
+     "source": "豆瓣纪录片·在播新片"},
+]
+
+
+def run_douban_reputation() -> None:
+    def expect(cond: bool, msg: str) -> None:
+        if not cond:
+            raise AssertionError(msg)
+
+    calls = {"n": 0}
+
+    async def fake_fetch() -> list[dict]:
+        calls["n"] += 1
+        return _DOUBAN_FIXTURE
+
+    curator = TopicCurator.__new__(TopicCurator)
+    original = topic_pool._fetch_douban_documentaries
+    topic_pool._fetch_douban_documentaries = fake_fetch
+    store.set_setting(topic_pool.DOUBAN_CACHE_KEY, "")
+    try:
+        sigs = asyncio.run(curator.collect_douban_reputation())
+        expect(len(sigs) == 3, f"跨子源同名应去重（4 → 3）：{len(sigs)}")
+        expect(all(s["signal_type"] == "reputation" for s in sigs), "signal_type 应为 reputation")
+        expect(all(s["platform"] == "douban" and s["provider"] == "douban" for s in sigs), "平台字段")
+        expect(sigs[0]["title"] == "河西走廊" and sigs[0]["url"].endswith("/24736278/"), "标题/链接透传")
+        expect("豆瓣 9.7 分" in sigs[0]["snippet"], f"评分进 snippet：{sigs[0]['snippet']}")
+        expect("评价 2583 人" in sigs[1]["snippet"] and "纪录片 运动" in sigs[1]["snippet"],
+               f"评价人数+副标题进 snippet：{sigs[1]['snippet']}")
+        expect("豆瓣暂无评分" in sigs[2]["snippet"], f"零分条目应明写暂无评分：{sigs[2]['snippet']}")
+        # 当日缓存：第二次不重拉
+        sigs2 = asyncio.run(curator.collect_douban_reputation())
+        expect(len(sigs2) == 3 and calls["n"] == 1, f"缓存应命中（fetch 仍 1 次：{calls['n']}）")
+    finally:
+        topic_pool._fetch_douban_documentaries = original
+
+    # 失败路径：异常按空计且不写缓存
+    store.set_setting(topic_pool.DOUBAN_CACHE_KEY, "")
+
+    async def boom() -> list[dict]:
+        raise RuntimeError("douban blocked")
+
+    topic_pool._fetch_douban_documentaries = boom
+    try:
+        expect(asyncio.run(curator.collect_douban_reputation()) == [], "采集失败按空计")
+        expect(store.get_setting(topic_pool.DOUBAN_CACHE_KEY) == "", "失败不应写当日缓存")
+    finally:
+        topic_pool._fetch_douban_documentaries = original
+    store.set_setting(topic_pool.DOUBAN_CACHE_KEY, "")
+    print("豆瓣口碑信号（纪录片评分/评价人数）✓")
+
+
+run_douban_reputation()
+
+
+# ---------- 标杆拆解知识库 ----------
+
+def run_teardown_insights() -> None:
+    """拆解采样/落库/去重/注入/热度/画像分布。"""
+    import insights as insight_store
+
+    def expect(cond: bool, msg: str) -> None:
+        if not cond:
+            raise AssertionError(msg)
+
+    # 表初始化 + 幂等 upsert（同标题重拆覆盖，use_count 保留）
+    insight_store.ensure_table()
+    entry = {"title": "法医密档", "url": "https://www.bilibili.com/video/BV1", "platform": "bilibili",
+             "metric": "B站纪录片热榜 TOP3 · 播放176.7万", "vertical": "crime",
+             "subject": "法医题材纪实", "treatment": "现场案件串联", "emotion": "猎奇与正义感",
+             "form": "单集一案、快节奏", "transferable": "把专业鉴定过程拆成一集一案，适合任何技术门槛高的行业题材",
+             "evidence": "B站热榜TOP3/播放176.7万", "confidence": 3}
+    expect(insight_store.upsert_insight(entry), "拆解应入库")
+    expect(insight_store.upsert_insight({**entry, "subject": "法医题材纪实（修订）"}), "同标题重拆应更新")
+    rows = insight_store.list_insights(limit=5)
+    hit = next((r for r in rows if r["title"] == "法医密档"), None)
+    expect(hit is not None and "修订" in hit["subject"], f"更新应生效：{hit}")
+    expect(hit["transferable"].startswith("把专业鉴定"), "可迁移结论应透传")
+    expect("id" in hit, "载荷应带 id（供使用计数）")
+    # 缺 subject 的拆解不入库（拆不出题材=没价值）
+    expect(not insight_store.upsert_insight({"title": "空拆解", "treatment": "x"}), "无题材拆解应拒绝")
+
+    # 采样：平台/豆瓣各取头部、单源配额 TEARDOWN_PER_SOURCE、已拆过跳过
+    calls = []
+
+    async def fake_flow(key: str, payload: dict) -> list[dict]:
+        calls.append(payload)
+        return [
+            {"index": i, "subject": f"题材{i}", "treatment": "讲法", "emotion": "情绪",
+             "form": "形式", "transferable": "可迁移", "evidence": "证据", "confidence": 2}
+            for i in range(len(payload["items"]))
+        ]
+
+    curator = TopicCurator.__new__(TopicCurator)
+    curator.flow_runner = None
+    curator._call_flow = fake_flow  # type: ignore[method-assign]
+    store.set_setting(topic_pool._TEARDOWN_SEEN_KEY, "")
+    clues = [
+        {"title": "豆瓣高分片", "signal_type": "reputation", "platform": "douban",
+         "snippet": "豆瓣 9.7 分", "url": "u1"},
+        {"title": "平台第2名", "signal_type": "platform", "platform": "bilibili",
+         "snippet": "B站纪录片热榜 TOP2 · 播放222万", "url": "u2"},
+        {"title": "平台第1名", "signal_type": "platform", "platform": "bilibili",
+         "snippet": "B站纪录片热榜 TOP1 · 播放208万", "url": "u3"},
+        {"title": "普通新闻线索", "signal_type": "material", "snippet": "", "url": "u4"},
+    ]
+    added = asyncio.run(curator._teardown_benchmarks(clues))
+    expect(added == 3, f"平台 TOP1/TOP2 + 豆瓣高分应拆 3 条（普通线索不收）：{added}")
+    sent = [i["title"] for i in calls[0]["items"]]
+    expect(sent[0] == "平台第1名" and sent[1] == "平台第2名", f"平台榜按位次升序：{sent}")
+    expect("普通新闻线索" not in sent, "非平台/豆瓣线索不进拆解")
+    # 去重：同批再跑不重复拆
+    calls.clear()
+    expect(asyncio.run(curator._teardown_benchmarks(clues)) == 0, "已拆过的条目不应重复拆解")
+    expect(not calls, "重复轮不应调用 flow")
+    # 单源配额：平台条数再多也只取 TEARDOWN_PER_SOURCE，豆瓣不因排序靠后饿死
+    store.set_setting(topic_pool._TEARDOWN_SEEN_KEY, "")
+    many = [
+        {"title": f"热片{i}", "signal_type": "platform", "snippet": f"B站纪录片热榜 TOP{i}", "url": f"u{i}"}
+        for i in range(1, 11)
+    ] + [
+        {"title": f"豆瓣片{i}", "signal_type": "reputation", "snippet": f"豆瓣 {9.9 - i * 0.1:.1f} 分", "url": f"d{i}"}
+        for i in range(1, 11)
+    ]
+    calls.clear()
+    asyncio.run(curator._teardown_benchmarks(many))
+    sent = [i["title"] for i in calls[0]["items"]]
+    expect(len(sent) == topic_pool.TEARDOWN_PER_SOURCE * 2,
+           f"平台+豆瓣各 {topic_pool.TEARDOWN_PER_SOURCE} 条：{len(sent)}")
+    expect(sum(1 for t in sent if t.startswith("热片")) == topic_pool.TEARDOWN_PER_SOURCE,
+           f"平台配额应生效：{sent}")
+    expect(sum(1 for t in sent if t.startswith("豆瓣片")) == topic_pool.TEARDOWN_PER_SOURCE,
+           f"豆瓣不应被平台挤掉：{sent}")
+
+    # 画像分布：样本不足不出结论，够了才出（清表保证断言不受前面用例影响）
+    store.set_setting(topic_pool._TEARDOWN_SEEN_KEY, "")
+    with store._conn() as conn:
+        conn.execute("DELETE FROM insights")
+    expect(insight_store.distribution() == {}, "样本 <5 条不出分布（少样本的规律是噪音）")
+    for i in range(6):
+        insight_store.upsert_insight({"title": f"分布样本{i}", "subject": f"题材{i}", "vertical": "crime",
+                                      "treatment": "账本视角" if i < 4 else "地图行军"})
+    dist = insight_store.distribution()
+    expect("讲法" in dist and dist["讲法"][0][0] == "账本视角", f"讲法分布应聚合：{dist}")
+    expect("账本视角" in insight_store.stats_line(), "画像摘要应含头部讲法")
+
+    # 使用计数：注入且产出卡才记
+    ids = [r["id"] for r in insight_store.list_insights(limit=3)]
+    insight_store.record_use(ids)
+    bumped = {r["id"]: r for r in insight_store.list_insights(limit=50)}
+    expect(all(bumped[i]["id"] for i in ids), "记录后条目仍在")
+
+    # 知识注入：收敛载荷必须带 benchmarkInsights（含 id）与画像摘要
+    captured: dict = {}
+
+    async def capture_flow(key: str, payload: dict):
+        captured[key] = payload
+        return []
+
+    curator2 = TopicCurator.__new__(TopicCurator)
+    curator2._call_flow = capture_flow  # type: ignore[method-assign]
+    chunk = [{"title": "线索", "snippet": "", "name": "方向", "sketch": "s",
+              "treatment": {"id": "archival", "name": "严肃档案系"}}]
+    asyncio.run(curator2._converge_chunk(chunk, topic_pool.IdeateResult()))
+    ideate_payload = captured.get("ideate") or {}
+    expect("benchmarkInsights" in ideate_payload, "收敛载荷应注入标杆知识")
+    expect(any(i.get("id") for i in ideate_payload["benchmarkInsights"]), "注入条目应带 id（供使用计数）")
+    expect("insightStats" in ideate_payload, "样本足够时应带画像摘要")
+    # 管理面板读写：用户修订打 edited 标记，重拆不覆盖
+    all_rows = insight_store.list_all()
+    expect(all_rows and "useCount" in all_rows[0] and "createdAt" in all_rows[0],
+           "管理列表应带 camelCase 字段")
+    target = all_rows[0]["id"]
+    expect(insight_store.update_insight(target, {"transferable": "用户手改的结论", "treatment": "手改讲法"}),
+           "修订应成功")
+    row = next(r for r in insight_store.list_all() if r["id"] == target)
+    expect(row["transferable"] == "用户手改的结论" and row["edited"], f"修订应落库并打标记：{row}")
+    # 重拆同一条：edited=1 不覆盖
+    insight_store.upsert_insight({"title": row["title"], "subject": "重拆覆盖测试",
+                                  "treatment": "重拆讲法", "transferable": "重拆结论"})
+    row2 = next(r for r in insight_store.list_all() if r["id"] == target)
+    expect(row2["transferable"] == "用户手改的结论", f"用户修订不应被重拆覆盖：{row2['transferable']}")
+    # 未修订的条目照常被重拆更新（挑一条非 target 的）
+    plain = next(r for r in insight_store.list_insights(limit=50) if r["title"] != row["title"])
+    insight_store.upsert_insight({"title": plain["title"], "subject": "重拆更新题材"})
+    row3 = next(r for r in insight_store.list_all() if r["title"] == plain["title"])
+    expect(row3["subject"] == "重拆更新题材", f"未修订条目应可被重拆更新：{row3['subject']}")
+    # 删除
+    expect(insight_store.delete_insight(target), "删除应成功")
+    expect(not any(r["id"] == target for r in insight_store.list_all()), "删除后不应再出现")
+    expect(not insight_store.delete_insight("不存在"), "删不存在的应返回 False")
+    print("标杆拆解知识库 ✓")
+
+
+run_teardown_insights()
 
 print("\n全部通过 ✓")

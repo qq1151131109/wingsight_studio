@@ -33,6 +33,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Awaitable, Callable
 
 import topics as store
+import insights as insight_store
 from treatments import (
     record_use,
     treatment_card_shape,
@@ -267,6 +268,116 @@ SERIES_MIN_UNITS = 3
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
 _FORMAT_EXTRACT_SEEN_KEY = "topic_pool_format_extract_seen"
 FORMAT_EXTRACT_FILMS_CAP = 5  # 每轮讲法雷达最多提取的新片数（增量控成本）
+# 标杆拆解：每天从平台/豆瓣热内容里采样几条做「为什么被接受」的结构化拆解，
+# 落 insights 表累积成知识（跨样本规律靠 insights.distribution 聚合）
+_TEARDOWN_SEEN_KEY = "topic_pool_teardown_seen"
+TEARDOWN_PER_SOURCE = 6  # 每源（平台/豆瓣）每轮拆解头部条数——单源挤满会让另一源永远排不上
+# 平台热度信号（P0：B站纪录片分区热榜；爱优腾无公开 API，P1 逐个探可行性）
+PLATFORM_TRENDS_CACHE_KEY = "topic_pool_platform_trends_day"
+PLATFORM_TRENDS_TOP = 40  # 榜单 73 条取前 40：后面的排名已无热度证据价值
+_BILI_RANK_URL = "https://api.bilibili.com/x/web-interface/ranking/v2"
+_BILI_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+def _fmt_cnt(n: Any) -> str:
+    """播放/弹幕等计数中文短化（1.2万/1.1亿），进 snippet 供模型直接引用。"""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return str(n)
+    if n >= 100_000_000:
+        return f"{n / 100_000_000:.1f}亿"
+    if n >= 10_000:
+        return f"{n / 10_000:.1f}万"
+    return str(n)
+
+
+async def _fetch_bili_ranking(rid: int = 177) -> list[dict[str, Any]]:
+    """B 站官方分区热榜（纪录片主分区 rid=177），直连。
+
+    必须先在主页暖 cookie（buvid）再打榜单接口——裸请求直接 -352 风控。
+    HTTP/JSON 失败抛异常，由调用方按空计 + 当日缓存缺省（下轮重试）。
+    """
+    import httpx
+
+    headers = {"User-Agent": _BILI_UA, "Referer": "https://www.bilibili.com/"}
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
+        await client.get("https://www.bilibili.com/", headers=headers)
+        resp = await client.get(_BILI_RANK_URL, params={"rid": rid, "type": "all"}, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"bilibili ranking code={data.get('code')} message={data.get('message')}")
+    return data["data"]["list"]
+
+
+# 豆瓣口碑信号（质量维度验证：评分+评价人数是累积量，按天缓存足够）
+DOUBAN_CACHE_KEY = "topic_pool_douban_day"
+DOUBAN_TOP = 30  # 在播新片 20 + 高分标杆 20 去重后截断
+_DOUBAN_COLLECTION_URL = "https://m.douban.com/rexxar/api/v2/subject_collection/tv_documentary/items"
+_DOUBAN_SEARCH_URL = "https://movie.douban.com/j/search_subjects"
+
+
+async def _fetch_douban_documentaries() -> list[dict[str, Any]]:
+    """豆瓣纪录片口碑双子源：在播新片（rexxar 集合，带评分+评价人数）+ 高分标杆（搜索接口 sort=rank）。
+
+    豆瓣无官方 API，这两个端点社区长期使用、实测直连可用（UA+Referer 即可，无需 cookie）。
+    单子源失败不影响另一子源；两个都失败抛异常由调用方按空计。
+    """
+    import httpx
+
+    headers = {
+        "User-Agent": _BILI_UA,
+        "Referer": "https://m.douban.com/tv/",
+        "Accept": "application/json",
+    }
+    out: list[dict[str, Any]] = []
+    async with httpx.AsyncClient(follow_redirects=True, timeout=20.0) as client:
+        try:
+            resp = await client.get(
+                _DOUBAN_COLLECTION_URL, params={"start": 0, "count": 20}, headers=headers
+            )
+            resp.raise_for_status()
+            for it in resp.json().get("subject_collection_items") or []:
+                rating = it.get("rating") or {}
+                out.append(
+                    {
+                        "title": str(it.get("title") or "").strip(),
+                        "url": str(it.get("url") or it.get("uri") or "").strip(),
+                        "rate": rating.get("value"),
+                        "votes": rating.get("count"),
+                        "subtitle": str(it.get("card_subtitle") or "").strip(),
+                        "snippet": str(it.get("comment") or "").strip(),
+                        "source": "豆瓣纪录片·在播新片",
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - 单子源失败不拖垮另一子源
+            logger.warning("豆瓣纪录片集合采集失败: %s", str(exc)[:160])
+        try:
+            resp = await client.get(
+                _DOUBAN_SEARCH_URL,
+                params={"type": "tv", "tag": "纪录片", "sort": "rank", "page_limit": 20, "page_start": 0},
+                headers={**headers, "Referer": "https://movie.douban.com/"},
+            )
+            resp.raise_for_status()
+            for it in resp.json().get("subjects") or []:
+                out.append(
+                    {
+                        "title": str(it.get("title") or "").strip(),
+                        "url": str(it.get("url") or "").strip(),
+                        "rate": it.get("rate"),
+                        "votes": None,  # 该端点不返评价人数
+                        "subtitle": "",
+                        "snippet": "",
+                        "source": "豆瓣纪录片·高分标杆",
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("豆瓣高分纪录片采集失败: %s", str(exc)[:160])
+    return out
 # 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
 IDEATE_CORPUS_KEY = "topic_pool_ideate_corpus"
 # 六源采集的通道级散账（每通道完成即落账，重启只补缺失通道）
@@ -370,6 +481,7 @@ FLOW_IDS = {
     "ideate": "LANGFLOW_TOPIC_IDEATE_FLOW_ID",
     "treatment": "LANGFLOW_TOPIC_TREATMENT_FLOW_ID",
     "format_extract": "LANGFLOW_TOPIC_FORMAT_EXTRACT_FLOW_ID",
+    "teardown": "LANGFLOW_TOPIC_TEARDOWN_FLOW_ID",
     "series_compose": "LANGFLOW_TOPIC_SERIES_COMPOSE_FLOW_ID",
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
@@ -1046,6 +1158,107 @@ class TopicCurator:
             for it in items
         ]
 
+    async def collect_platform_trends(self) -> list[dict[str, Any]]:
+        """平台热度信号（P0：B站纪录片分区热榜，官方接口直连）。
+
+        榜单 = 需求侧验证证据：条目带排名/播放/弹幕/点赞热度——「这个题材
+        正在被平台观众验证」，是客观事实而不是模型主观判断，供发散与收敛
+        作价值论据。当日缓存（有结果才写，网络抖动不毒化整天）。
+        后续 channel 同时喂讲法雷达（实时讲法进水口）。
+        """
+        import topics as settings_store
+
+        cached = json.loads(settings_store.get_setting(PLATFORM_TRENDS_CACHE_KEY) or "{}")
+        if cached.get("day") == date.today().isoformat():
+            return cached.get("items") or []
+        try:
+            items = await asyncio.wait_for(_fetch_bili_ranking(), timeout=30.0)
+        except Exception as exc:  # noqa: BLE001 - 平台榜失败不拖累其它通道（下轮重试）
+            logger.warning("B站纪录片热榜采集失败: %s", str(exc)[:160])
+            return []
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        signals = []
+        for rank, it in enumerate(items[:PLATFORM_TRENDS_TOP], start=1):
+            stat = it.get("stat") or {}
+            signals.append(
+                {
+                    "title": it["title"],
+                    "platform": "bilibili",
+                    "source": "B站纪录片热榜",
+                    "url": f"https://www.bilibili.com/video/{it.get('bvid') or ''}",
+                    "provider": "bilibili",
+                    "vertical_seed": None,
+                    "signal_type": "platform",
+                    "snippet": (
+                        f"B站纪录片热榜 TOP{rank} · {it.get('tname') or '纪录片'} · "
+                        f"播放{_fmt_cnt(stat.get('view'))} 弹幕{_fmt_cnt(stat.get('danmaku'))} "
+                        f"点赞{_fmt_cnt(stat.get('like'))}"
+                    ),
+                    "fetched_at": fetched_at,
+                }
+            )
+        if signals:
+            settings_store.set_setting(
+                PLATFORM_TRENDS_CACHE_KEY,
+                json.dumps({"day": date.today().isoformat(), "items": signals}, ensure_ascii=False),
+            )
+        return signals
+
+    async def collect_douban_reputation(self) -> list[dict[str, Any]]:
+        """豆瓣纪录片口碑信号：评分/评价人数——质量维度的需求侧验证。
+
+        与 B 站热榜（流量维度）互补：热榜说明「正在被看」，豆瓣说明「被认为好」。
+        注意豆瓣是累积型数据（评分随评价人数缓慢变化，榜单按天更新），
+        不提供实时热度——实时性由 B 站热搜/新闻 RSS 承担。
+        当日缓存（有结果才写，失败不毒化整天）。
+        """
+        import topics as settings_store
+
+        cached = json.loads(settings_store.get_setting(DOUBAN_CACHE_KEY) or "{}")
+        if cached.get("day") == date.today().isoformat():
+            return cached.get("items") or []
+        try:
+            items = await asyncio.wait_for(_fetch_douban_documentaries(), timeout=40.0)
+        except Exception as exc:  # noqa: BLE001 - 豆瓣失败不拖累其它通道（下轮重试）
+            logger.warning("豆瓣口碑采集失败: %s", str(exc)[:160])
+            return []
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        seen: set[str] = set()
+        signals: list[dict[str, Any]] = []
+        for it in items:
+            title = it.get("title") or ""
+            if not title or title in seen:
+                continue
+            seen.add(title)
+            rate = it.get("rate")
+            votes = it.get("votes")
+            bits = [f"豆瓣 {rate} 分" if rate else "豆瓣暂无评分"]
+            if votes:
+                bits.append(f"评价 {_fmt_cnt(votes)} 人")
+            if it.get("subtitle"):
+                bits.append(it["subtitle"])
+            signals.append(
+                {
+                    "title": title,
+                    "platform": "douban",
+                    "source": it.get("source") or "豆瓣纪录片口碑",
+                    "url": it.get("url") or "",
+                    "provider": "douban",
+                    "vertical_seed": None,
+                    "signal_type": "reputation",
+                    "snippet": " · ".join(bits)[:160],
+                    "fetched_at": fetched_at,
+                }
+            )
+            if len(signals) >= DOUBAN_TOP:
+                break
+        if signals:
+            settings_store.set_setting(
+                DOUBAN_CACHE_KEY,
+                json.dumps({"day": date.today().isoformat(), "items": signals}, ensure_ascii=False),
+            )
+        return signals
+
     async def collect_wiki_corpus(self) -> list[dict[str, Any]]:
         """维基类别页语料信号（结构性存量，检索免费；按天缓存不重拉）。"""
         import topics as settings_store
@@ -1070,8 +1283,8 @@ class TopicCurator:
         return signals
 
     async def collect_signals(self) -> list[dict[str, Any]]:
-        """聚合八源语料（材料/周年/已验证内容/对标/知乎高赞讨论/新闻RSS/热榜/维基语料）；全部失败才返回空。"""
-        material, anniversary, validated, benchmark, zhihu, news, hotboard, wiki = await asyncio.gather(
+        """聚合十源语料（材料/周年/已验证内容/对标/知乎高赞讨论/新闻RSS/热榜/平台热度/豆瓣口碑/维基语料）；全部失败才返回空。"""
+        material, anniversary, validated, benchmark, zhihu, news, hotboard, platform, douban, wiki = await asyncio.gather(
             self.collect_material_window(),
             self.collect_anniversaries(),
             self.collect_validated_content(),
@@ -1079,9 +1292,11 @@ class TopicCurator:
             self.collect_zhihu_discussions(),
             self.collect_news_feeds(),
             self.collect_hotboards(),
+            self.collect_platform_trends(),
+            self.collect_douban_reputation(),
             self.collect_wiki_corpus(),
         )
-        return material + anniversary + validated + benchmark + zhihu + news + hotboard + wiki
+        return material + anniversary + validated + benchmark + zhihu + news + hotboard + platform + douban + wiki
 
     # 八源的可续采集：每通道完成即落账——外部看护 ~20 分钟重启一次服务，
     # 采集又是最贵的阶段（冷启动可超一个重启窗），不落账会陷入"采集中被杀
@@ -1094,6 +1309,8 @@ class TopicCurator:
         ("zhihu", "collect_zhihu_discussions"),
         ("news", "collect_news_feeds"),
         ("hotboard", "collect_hotboards"),
+        ("platform", "collect_platform_trends"),
+        ("douban", "collect_douban_reputation"),
         ("wiki", "collect_wiki_corpus"),
     )
 
@@ -1165,17 +1382,25 @@ class TopicCurator:
             clues, directions = signals, []
             self._save_day_state(clues, directions)
         # 当日已喂过的线索不再发散：同日多轮刷新各喂新料，直到当日线索池耗尽
+        all_clues = clues  # 拆解/雷达吃全量当日热内容（喂过与否不影响它是否值得拆）
         seen = self._load_ideate_seen()
         clues = [c for c in clues if fingerprint_of(c["title"]) not in seen]
         result.collected = len(clues)
         result.directions = len(directions)
-        # 讲法雷达：当日新对标片 → 形态提取进讲法库动态层（软失败不拦刷新）
-        benchmark_clues = [c for c in clues if c.get("signal_type") == "benchmark"]
-        if benchmark_clues:
+        # 讲法雷达：当日新对标片+平台热榜片+豆瓣口碑片 → 形态提取进讲法库动态层（软失败不拦刷新）
+        radar_clues = [
+            c for c in all_clues if c.get("signal_type") in ("benchmark", "platform", "reputation")
+        ]
+        if radar_clues:
             try:
-                await self._radar_extract_formats(benchmark_clues)
+                await self._radar_extract_formats(radar_clues)
             except Exception as exc:  # noqa: BLE001 - 雷达失败不影响刷新
                 logger.warning("讲法雷达失败（不影响刷新）: %s", str(exc)[:160])
+        # 标杆拆解：热内容「为什么被接受」结构化进知识库（软失败不拦刷新）
+        try:
+            await self._teardown_benchmarks(all_clues)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("标杆拆解失败（不影响刷新）: %s", str(exc)[:160])
         if not clues and not directions:
             result.error = "当日语料已全部喂过（次日换片续喂），本轮无新料"
             return result
@@ -1468,6 +1693,85 @@ class TopicCurator:
         if added:
             logger.info("讲法雷达：新增 %d 条动态讲法", added)
 
+    async def _teardown_benchmarks(self, clues: list[dict[str, Any]]) -> int:
+        """标杆拆解：近期热内容 → 结构化知识落 insights 表。
+
+        采样纪律：平台/豆瓣**各取头部 N 条**（分源配额，防止单源挤满——平台榜
+        40 条全排在豆瓣前面过）、已拆过的记账号本跳过。热度会随时间衰减，
+        每日配额必须够覆盖当天的头部内容；知识库靠日积月累形成规律。
+        软失败不拦刷新（拆解是增值环节，不是主链）。
+        """
+        done = {
+            str(x)
+            for x in (json.loads(store.get_setting(_TEARDOWN_SEEN_KEY) or "[]") or [])[:800]
+        }
+
+        def _platform_rank(c: dict[str, Any]) -> int:
+            m = re.search(r"TOP(\d+)", c.get("snippet") or "")
+            return int(m.group(1)) if m else 99
+
+        def _douban_rank(c: dict[str, Any]) -> float:
+            m = re.search(r"豆瓣 ([\d.]+) 分", c.get("snippet") or "")
+            return -float(m.group(1)) if m else 0.0  # 高分在前
+
+        picked: list[dict[str, Any]] = []
+        for sig_type, key_fn in (("platform", _platform_rank), ("reputation", _douban_rank)):
+            bucket = sorted(
+                (c for c in clues if c.get("signal_type") == sig_type), key=key_fn
+            )
+            taken = 0
+            for c in bucket:
+                if taken >= TEARDOWN_PER_SOURCE:
+                    break
+                fp = fingerprint_of(c["title"])
+                if fp in done:
+                    continue
+                done.add(fp)
+                picked.append(c)
+                taken += 1
+        if not picked:
+            return 0
+        items = [
+            {
+                "index": i,
+                "title": c["title"],
+                "platform": c.get("platform") or "",
+                "metric": (c.get("snippet") or "")[:120],
+                "snippet": (c.get("snippet") or "")[:120],
+            }
+            for i, c in enumerate(picked)
+        ]
+        entries = await self._call_flow("teardown", {"items": items})
+        added = 0
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict) or e.get("skip"):
+                continue
+            idx = e.get("index")
+            if not isinstance(idx, int) or not 0 <= idx < len(picked):
+                continue
+            src = picked[idx]
+            if insight_store.upsert_insight(
+                {
+                    "title": src["title"],
+                    "url": src.get("url") or "",
+                    "platform": src.get("platform") or "",
+                    "metric": (src.get("snippet") or "")[:80],
+                    "vertical": src.get("vertical_seed") or "",
+                    "subject": e.get("subject"),
+                    "treatment": e.get("treatment"),
+                    "emotion": e.get("emotion"),
+                    "form": e.get("form"),
+                    "transferable": e.get("transferable"),
+                    "evidence": e.get("evidence"),
+                    "confidence": e.get("confidence"),
+                }
+            ):
+                added += 1
+        store.set_setting(_TEARDOWN_SEEN_KEY, json.dumps(list(done)[:800], ensure_ascii=False))
+        if added:
+            logger.info("标杆拆解：新增 %d 条知识", added)
+        return added
+
     def _attach_treatments(self, pairs: Any, chunk: list[dict[str, Any]]) -> None:
         """配对结果落回方向：注册表补全名称/机制 + 观众侧理由 + ≤2 备选。"""
         if not isinstance(pairs, list):
@@ -1555,6 +1859,13 @@ class TopicCurator:
         themes = self._load_day_themes()
         if themes:
             payload["existingThemes"] = themes  # 跨批同题材去重（指纹只挡完全同题；并发下尽力传播）
+        # 标杆拆解知识：热内容「为什么被接受 + 什么可迁移」，供价值判断与形态选择参考
+        known = insight_store.payload()
+        if known:
+            payload["benchmarkInsights"] = known
+            stats = insight_store.stats_line()
+            if stats:
+                payload["insightStats"] = stats
         try:
             if sem is None:
                 entries = await self._call_flow("ideate", payload)
@@ -1588,6 +1899,7 @@ class TopicCurator:
             except Exception as exc:  # noqa: BLE001 - 补写失败保留原产出
                 logger.warning("选题收敛分集补写失败（保留原产出）: %s", str(exc)[:160])
         if isinstance(entries, list):
+            before = result.created
             for entry in entries[:CONVERGE_ENTRIES_CAP]:
                 if (
                     isinstance(entry, dict)
@@ -1597,6 +1909,9 @@ class TopicCurator:
                     await self._assemble_series(entry, chunk, result)
                 else:
                     self._create_raw_card(entry, chunk, result)
+            # 本批产出了卡：注入过的标杆知识记一次使用（淘汰没被用上的，同讲法热度范式）
+            if result.created > before:
+                insight_store.record_use([i["id"] for i in known if i.get("id")])
         if on_chunk_done is not None:
             on_chunk_done(chunk)
 

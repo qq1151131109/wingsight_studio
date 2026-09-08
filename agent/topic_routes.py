@@ -14,6 +14,7 @@ from typing import Any
 from fastapi import APIRouter, Response
 
 import auth
+import insights as insight_store
 import projects
 import topics as store
 from topic_pool import (
@@ -101,6 +102,37 @@ def put_schedule(payload: dict[str, Any], user: auth.CurrentUser):
     except ValueError as exc:
         return Response(status_code=400, content=str(exc), media_type="text/plain")
     return {"schedule": cfg}
+
+
+@router.get("/topics/insights")
+def list_insights(user: auth.CurrentUser):
+    """标杆拆解知识库（管理面板）：条目 + 聚合画像。
+
+    声明在 /topics/{topic_id} 之前——否则 "insights" 会被当成 topic_id 吃掉。
+    """
+    _ = user
+    return {
+        "insights": insight_store.list_all(),
+        "distribution": insight_store.distribution(),
+        "statsLine": insight_store.stats_line(),
+    }
+
+
+@router.put("/topics/insights/{insight_id}")
+def update_insight(insight_id: str, payload: dict[str, Any], user: auth.CurrentUser):
+    """用户手工修订拆解（打 edited 标记，后续重拆不覆盖）。"""
+    _ = user
+    if not insight_store.update_insight(insight_id, payload):
+        return Response(status_code=404, content="知识条目不存在或无可改字段", media_type="text/plain")
+    return {"updated": True}
+
+
+@router.delete("/topics/insights/{insight_id}")
+def delete_insight(insight_id: str, user: auth.CurrentUser):
+    _ = user
+    if not insight_store.delete_insight(insight_id):
+        return Response(status_code=404, content="知识条目不存在", media_type="text/plain")
+    return {"deleted": True}
 
 
 @router.post("/topics/{topic_id}/rescan")
