@@ -141,7 +141,9 @@ export interface TopicListResult {
   refreshing: boolean;
   lastRun: TopicRefreshRun;
   verticals?: VerticalInfo[];
-  /** 池内计数（列表受 limit 截断时，区头仍能显示全量） */
+  /** 当前筛选下全量条数（滚动分页：topics 只是 offset 起的一页窗口） */
+  total: number;
+  /** 池内计数（区头显示全量） */
   counts?: { raw: number; verified: number };
 }
 
@@ -149,11 +151,15 @@ export async function listTopics(params?: {
   status?: TopicStatus | "all";
   vertical?: TopicVertical;
   q?: string;
+  limit?: number;
+  offset?: number;
 }): Promise<TopicListResult> {
   const qs = new URLSearchParams();
   if (params?.status) qs.set("status", params.status);
   if (params?.vertical) qs.set("vertical", params.vertical);
   if (params?.q?.trim()) qs.set("q", params.q.trim());
+  if (params?.limit != null) qs.set("limit", String(params.limit));
+  if (params?.offset != null) qs.set("offset", String(params.offset));
   const r = await apiFetch(`${BASE}?${qs.toString()}`);
   if (!r.ok) throw new Error(`读取选题池失败：${r.status}`);
   return r.json();

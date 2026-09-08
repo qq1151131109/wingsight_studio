@@ -30,11 +30,7 @@ BATCH = 30
 FID = os.environ.get("LANGFLOW_TOPIC_RETITLE_FLOW_ID", "").strip()
 
 
-def fingerprint_of(title: str) -> str:
-    keep = [ch for ch in title.lower() if ch.isalnum()]
-    import hashlib
-
-    return hashlib.sha256("".join(keep).encode("utf-8")).hexdigest()
+from topics import fingerprint_of  # 去重键单一事实源在 topics.py
 
 
 async def main() -> None:

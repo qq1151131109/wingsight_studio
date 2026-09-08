@@ -70,12 +70,33 @@ def init_topics_db() -> None:
         if "audience" not in cols:
             conn.execute("ALTER TABLE topics ADD COLUMN audience TEXT NOT NULL DEFAULT ''")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage)")
+        # 存量指纹回填：历史上 upgrade_card 改题未重算 title_fingerprint，去重键与
+        # 标题脱钩（同题孪生卡由此漏进池内）。按当前标题重算；冲突（真同题行）
+        # 跳过不动。幂等：回填后全部匹配，下次启动零写入。
+        for row in conn.execute("SELECT id, title, title_fingerprint FROM topics").fetchall():
+            fp = fingerprint_of(row["title"])
+            if fp == row["title_fingerprint"]:
+                continue
+            try:
+                conn.execute(
+                    "UPDATE topics SET title_fingerprint = ? WHERE id = ?", (fp, row["id"])
+                )
+            except sqlite3.IntegrityError:
+                pass
 
 
 def _now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).isoformat()
+
+
+def fingerprint_of(title: str) -> str:
+    """规范化标题的 sha256，作为池内幂等去重键（单一事实源，改题必须重算）。"""
+    import hashlib
+
+    keep = [ch for ch in title.lower() if ch.isalnum()]
+    return hashlib.sha256("".join(keep).encode("utf-8")).hexdigest()
 
 
 # ---------- 刷新状态（settings 键值） ----------
@@ -186,17 +207,16 @@ def get_topic(topic_id: str) -> dict[str, Any] | None:
     return _serialize(row) if row else None
 
 
-def list_topics(
+def _filter_where(
     *,
-    status: str | None = "candidate",
+    status: str | None = None,
     vertical: str | None = None,
     source: str | None = None,
     stage: str | None = None,
     q: str | None = None,
-    limit: int = 200,
-) -> list[dict[str, Any]]:
-    """status='all' 返回全部状态（前端按 status tab 自己分流）；stage 过滤生料/已深挖。"""
-    sql = "SELECT * FROM topics WHERE 1=1"
+) -> tuple[str, list[Any]]:
+    """列表与计数共用的 WHERE 构造（分页 total 与 topics 必须同口径）。"""
+    sql = ""
     params: list[Any] = []
     if status and status != "all":
         sql += " AND status = ?"
@@ -213,25 +233,44 @@ def list_topics(
     if q:
         sql += " AND (title LIKE ? OR summary LIKE ?)"
         params.extend([f"%{q}%", f"%{q}%"])
-    sql += " ORDER BY created_at DESC LIMIT ?"
-    params.append(limit)
+    return sql, params
+
+
+def list_topics(
+    *,
+    status: str | None = "candidate",
+    vertical: str | None = None,
+    source: str | None = None,
+    stage: str | None = None,
+    q: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """status='all' 返回全部状态（前端按 status tab 自己分流）；stage 过滤生料/已深挖。
+
+    排序带 id tiebreaker：同批生料卡 created_at 可能整批相同，加唯一列保证
+    OFFSET 翻页窗口确定、不重叠不漏行。
+    """
+    where, params = _filter_where(status=status, vertical=vertical, source=source, stage=stage, q=q)
+    sql = "SELECT * FROM topics WHERE 1=1" + where + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+    params.extend([max(limit, 0), max(offset, 0)])
     with _conn() as conn:
         rows = conn.execute(sql, params).fetchall()
     return [_serialize(r) for r in rows]
 
 
-def count_topics(status: str | None = None, stage: str | None = None) -> int:
-    """池内计数（生料区"共 M 条"展示用；全表 COUNT，无分页）。"""
-    sql = "SELECT COUNT(*) AS n FROM topics WHERE 1=1"
-    params: list[Any] = []
-    if status:
-        sql += " AND status = ?"
-        params.append(status)
-    if stage:
-        sql += " AND stage = ?"
-        params.append(stage)
+def count_topics(
+    *,
+    status: str | None = None,
+    stage: str | None = None,
+    vertical: str | None = None,
+    source: str | None = None,
+    q: str | None = None,
+) -> int:
+    """池内计数（生料区"共 M 条"与列表 total 展示用；全表 COUNT，无分页）。"""
+    where, params = _filter_where(status=status, vertical=vertical, source=source, stage=stage, q=q)
     with _conn() as conn:
-        row = conn.execute(sql, params).fetchone()
+        row = conn.execute("SELECT COUNT(*) AS n FROM topics WHERE 1=1" + where, params).fetchone()
     return int(row["n"]) if row else 0
 
 
@@ -256,22 +295,51 @@ def upgrade_card(
     angles: list[str],
     research: dict[str, Any],
 ) -> None:
-    """深挖升级为建议卡：补题目、概要与讲法角度，替换取证包；生料→已深挖。"""
+    """深挖升级为建议卡：补题目、概要与讲法角度，替换取证包；生料→已深挖。
+
+    改题必须同步重算 title_fingerprint（去重键）：指纹与标题脱钩后，刷新查重
+    看不见此卡，同题生料会再次入库成孪生卡（同题不同内容，界面上无从分辨）。
+    新题指纹已被占用时保留原题，只补内容。
+    """
     now = _now()
+    new_fp = fingerprint_of(title)
     with _conn() as conn:
-        conn.execute(
-            "UPDATE topics SET title = ?, summary = ?, angles_json = ?, research_json = ?,"
-            " stage = 'verified', last_progress_at = ?, updated_at = ? WHERE id = ?",
-            (
-                title,
-                summary,
-                json.dumps(angles, ensure_ascii=False),
-                json.dumps(research, ensure_ascii=False),
-                now,
-                now,
-                topic_id,
-            ),
-        )
+        row = conn.execute(
+            "SELECT title_fingerprint FROM topics WHERE id = ?", (topic_id,)
+        ).fetchone()
+        if row is None:
+            return
+        clash = new_fp != row["title_fingerprint"] and conn.execute(
+            "SELECT 1 FROM topics WHERE title_fingerprint = ? AND id != ?", (new_fp, topic_id)
+        ).fetchone() is not None
+        if clash:
+            conn.execute(
+                "UPDATE topics SET summary = ?, angles_json = ?, research_json = ?,"
+                " stage = 'verified', last_progress_at = ?, updated_at = ? WHERE id = ?",
+                (
+                    summary,
+                    json.dumps(angles, ensure_ascii=False),
+                    json.dumps(research, ensure_ascii=False),
+                    now,
+                    now,
+                    topic_id,
+                ),
+            )
+        else:
+            conn.execute(
+                "UPDATE topics SET title = ?, title_fingerprint = ?, summary = ?, angles_json = ?,"
+                " research_json = ?, stage = 'verified', last_progress_at = ?, updated_at = ? WHERE id = ?",
+                (
+                    title,
+                    new_fp,
+                    summary,
+                    json.dumps(angles, ensure_ascii=False),
+                    json.dumps(research, ensure_ascii=False),
+                    now,
+                    now,
+                    topic_id,
+                ),
+            )
 
 
 def dismiss_topic(topic_id: str) -> str:

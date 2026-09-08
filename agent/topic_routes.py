@@ -65,12 +65,14 @@ def list_topics(
     stage: str | None = None,
     q: str | None = None,
     limit: int = 200,
+    offset: int = 0,
 ):
     _ = user
+    filters = {"status": status, "vertical": vertical, "source": source, "stage": stage, "q": q}
     return {
-        "topics": store.list_topics(
-            status=status, vertical=vertical, source=source, stage=stage, q=q, limit=min(limit, 500)
-        ),
+        # 滚动分页：topics 是 offset 起的一页窗口，total 是同筛选下全量条数
+        "topics": store.list_topics(limit=min(limit, 500), offset=max(offset, 0), **filters),
+        "total": store.count_topics(**filters),
         "refreshing": SERVICE.refreshing,
         "lastRun": SERVICE.last_run(),
         "verticals": verticals_payload(),

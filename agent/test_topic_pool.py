@@ -1184,4 +1184,87 @@ except ValueError:
     pass
 
 print("每日定时刷新 ✓")
+
+# ---------- store：滚动分页（limit/offset 翻页窗口确定性 + total 同口径） ----------
+# 放在全部计数敏感断言之后：种子 25 张会污染上面「池内生料卡应 N 张」类断言
+
+_page_titles = [f"分页种子{i:03d}" for i in range(25)]
+for _t in _page_titles:
+    store.create_topic(
+        vertical="pagetest",
+        title=_t,
+        title_fingerprint=__import__("topic_pool").fingerprint_of(_t),
+        stage="raw",
+    )
+# 同批插入 created_at 可能整批相同，人为拉开成全序（模拟真实批次内微秒差）
+with store._conn() as conn:
+    for _i, _t in enumerate(_page_titles):
+        conn.execute(
+            "UPDATE topics SET created_at = ? WHERE title = ?",
+            (f"2026-09-07T00:{_i:02d}:00+00:00", _t),
+        )
+_paged = [t["id"] for t in store.list_topics(status="candidate", vertical="pagetest", limit=1000)]
+_full = []
+for _off in (0, 10, 20, 30):
+    _full.extend(t["id"] for t in store.list_topics(status="candidate", vertical="pagetest", limit=10, offset=_off))
+expect(_paged == _full, "分页拼接应与全量顺序一致（id tiebreaker 下窗口确定不重叠）")
+expect(len(set(_full)) == 25, "翻页不应重复/漏行")
+expect(
+    store.count_topics(status="candidate", vertical="pagetest") == 25,
+    "total 计数应与 list 全量同口径",
+)
+expect(
+    store.count_topics(status="candidate", vertical="pagetest", q="分页种子01") == 10,
+    "total 计数应吃 q 过滤（010-019 命中 10 条）",
+)
+expect(store.list_topics(status="candidate", vertical="pagetest", limit=10, offset=9999) == [], "越界 offset 应返空页")
+print("store 滚动分页 ✓")
+
+# ---------- 分集构想不设上限（4 集起步口径，2026-09-08） ----------
+
+_many = [{"title": f"第{i}集", "focus": "推进一截"} for i in range(9)]
+expect(len(topic_pool._sanitize_pairs(_many, "focus")) == 9, "分集清洗默认不设上限（cap=None 不再截 5）")
+expect(len(topic_pool._sanitize_pairs(_many, "focus", 3)) == 3, "显式 cap 仍生效（对标片 cap=3 不受影响）")
+print("分集构想不设上限 ✓")
+
+# ---------- upgrade_card 改题重算指纹 + 存量指纹回填 ----------
+
+_up = store.create_topic(
+    vertical="crime",
+    title="升级前原标题",
+    title_fingerprint=topic_pool.fingerprint_of("升级前原标题"),
+)
+store.upgrade_card(_up["id"], title="深挖后的全新标题", summary="s", angles=[], research={})
+_up2 = store.get_topic(_up["id"])
+expect(
+    store.exists_by_any_fingerprint([topic_pool.fingerprint_of("深挖后的全新标题")]),
+    "upgrade_card 改题必须重算 title_fingerprint（否则刷新查重看不见它）",
+)
+expect(
+    store.exists_by_any_fingerprint([topic_pool.fingerprint_of("升级前原标题")]) is False,
+    "旧题指纹应让位给新指纹",
+)
+# 新题指纹被占用：保留原题，只补内容
+_uc = store.create_topic(
+    vertical="crime",
+    title="被冲突的原题",
+    title_fingerprint=topic_pool.fingerprint_of("被冲突的原题"),
+)
+store.upgrade_card(_uc["id"], title="升级前原标题2", summary="s2", angles=[], research={"x": 1})
+store.upgrade_card(_uc["id"], title="深挖后的全新标题", summary="s3", angles=[], research={"y": 2})
+_uc2 = store.get_topic(_uc["id"])
+expect(_uc2["title"] == "升级前原标题2", "新题指纹被占用应保留原题")
+expect(_uc2["research"].get("y") == 2, "保留原题时其余字段照常更新")
+# 存量回填：指纹脱钩行按当前标题重算
+with store._conn() as conn:
+    conn.execute(
+        "UPDATE topics SET title_fingerprint = 'deadbeef' WHERE id = ?", (_up["id"],)
+    )
+store.init_topics_db()
+expect(
+    store.exists_by_any_fingerprint([topic_pool.fingerprint_of("深挖后的全新标题")]),
+    "init_topics_db 应回填脱钩的存量指纹",
+)
+print("upgrade_card 指纹重算与存量回填 ✓")
+
 print("\n全部通过 ✓")

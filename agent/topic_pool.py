@@ -454,14 +454,11 @@ def _stratified_batches(
     return out
 
 
-def fingerprint_of(title: str) -> str:
-    """规范化标题的 sha256，作为池内幂等去重键。"""
-    keep = [ch for ch in title.lower() if ch.isalnum()]
-    return hashlib.sha256("".join(keep).encode("utf-8")).hexdigest()
+from topics import fingerprint_of  # 去重键单一事实源在 topics.py（改题必须重算）
 
 
-def _sanitize_pairs(items: Any, note_key: str, cap: int) -> list[dict[str, str]]:
-    """策划案子项（分集/对标片）清洗：[{title, <note_key>}]，去空串、限上限。"""
+def _sanitize_pairs(items: Any, note_key: str, cap: int | None = None) -> list[dict[str, str]]:
+    """策划案子项（分集/对标片）清洗：[{title, <note_key>}]，去空串；cap=None 不设上限。"""
     out: list[dict[str, str]] = []
     if not isinstance(items, list):
         return out
@@ -472,7 +469,7 @@ def _sanitize_pairs(items: Any, note_key: str, cap: int) -> list[dict[str, str]]
         note = str(it.get(note_key) or "").strip()
         if title and note:
             out.append({"title": title[:40], note_key: note[:160]})
-        if len(out) >= cap:
+        if cap is not None and len(out) >= cap:
             break
     return out
 
@@ -1499,7 +1496,7 @@ class TopicCurator:
         if "单元选集" not in tags and "系列网格" not in tags:
             tags = ((tags + ["单元选集"])[:4] if len(tags) < 4 else tags[:3] + ["单元选集"])
         # 收敛层已产出的策划案三件随选集卡透传（分集=规划的单元槽位，units=检索到的候选）
-        episodes = _sanitize_pairs(entry.get("episodes"), "focus", 5)
+        episodes = _sanitize_pairs(entry.get("episodes"), "focus")
         benchmarks = _sanitize_pairs(entry.get("benchmarks"), "note", 3)
         audience = str(entry.get("audience") or "").strip()[:80]
         try:
@@ -1562,7 +1559,7 @@ class TopicCurator:
             return  # 锚不到真实原型的选题不落库（不编造）
         tags = [str(t).strip() for t in (entry.get("tags") or []) if str(t).strip()][:4]
         # 迷你策划案三件：分集构想/对标片/目标观众（导演评估凭据，缺失不拦卡）
-        episodes = _sanitize_pairs(entry.get("episodes"), "focus", 5)
+        episodes = _sanitize_pairs(entry.get("episodes"), "focus")
         benchmarks = _sanitize_pairs(entry.get("benchmarks"), "note", 3)
         audience = str(entry.get("audience") or "").strip()[:80]
         try:

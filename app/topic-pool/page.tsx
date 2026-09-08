@@ -29,6 +29,7 @@ import {
   startRescan,
   type AutoRefreshSchedule,
   type Topic,
+  type TopicListResult,
   type TopicRefreshRun,
   type VerticalInfo,
 } from "@/lib/topics";
@@ -42,6 +43,9 @@ import {
  */
 
 type StatusTab = "candidate" | "adopted" | "dismissed";
+
+/** 单页条数（与服务端默认同款）；左列表滚动到底自动翻下一页 */
+const PAGE_SIZE = 200;
 
 /** 垂类标签/圆点色从 GET /topics 的 verticals 下发（后端注册表唯一事实源） */
 const FALLBACK_COLOR = "var(--color-text-4)";
@@ -101,6 +105,13 @@ function TopicPoolInner() {
   const [rescanJob, setRescanJob] = useState<{ jobId: string; topicId: string } | null>(null);
   const [deepJob, setDeepJob] = useState<{ jobId: string; topicId: string } | null>(null);
   const [counts, setCounts] = useState<{ raw: number; verified: number } | null>(null);
+  const [total, setTotal] = useState(0);
+  const [loadingMore, setLoadingMore] = useState(false);
+  // 已加载窗口长度（轮询/动作后重拉按它取窗口，不回缩到第一页）
+  const topicsLenRef = useRef(0);
+  const loadingMoreRef = useRef(false);
+  const listRef = useRef<HTMLElement | null>(null);
+  const detailRef = useRef<HTMLElement | null>(null);
   const pollRef = useRef<number | null>(null);
 
   const notify = (msg: string, tone: "danger" | "good" = "danger") => {
@@ -108,50 +119,62 @@ function TopicPoolInner() {
     setNoticeTone(tone);
   };
 
+  const fetchPage = useCallback(
+    (limit: number, offset: number) =>
+      listTopics({
+        status: statusTab,
+        vertical: vertical === "all" ? undefined : vertical,
+        q,
+        limit,
+        offset,
+      }),
+    [statusTab, vertical, q],
+  );
+
+  const applyData = useCallback((data: TopicListResult) => {
+    setRefreshing(data.refreshing);
+    setLastRun(data.lastRun);
+    if (data.verticals?.length) setVerticals(data.verticals);
+    if (data.counts) setCounts(data.counts);
+    setTotal(data.total);
+  }, []);
+
   const load = useCallback(
     async (opts?: { keepSelection?: boolean }) => {
       try {
-        const data = await listTopics({
-          status: statusTab,
-          vertical: vertical === "all" ? undefined : vertical,
-          q,
-        });
+        const data = await fetchPage(Math.max(PAGE_SIZE, topicsLenRef.current), 0);
+        topicsLenRef.current = data.topics.length;
         setTopics(data.topics);
-        setRefreshing(data.refreshing);
-        setLastRun(data.lastRun);
-        if (data.verticals?.length) setVerticals(data.verticals);
-        if (data.counts) setCounts(data.counts);
+        applyData(data);
         setSelectedId((prev) =>
           opts?.keepSelection === true && prev && data.topics.some((t) => t.id === prev)
             ? prev
             : (data.topics[0]?.id ?? null),
         );
       } catch {
+        topicsLenRef.current = 0;
         notify("选题池加载失败（服务未连接？）");
         setTopics([]);
       }
     },
-    [statusTab, vertical, q],
+    [fetchPage, applyData],
   );
 
+  // 筛选/搜索变化：回第一页
   useEffect(() => {
     let alive = true;
+    topicsLenRef.current = 0;
     void (async () => {
       try {
-        const data = await listTopics({
-          status: statusTab,
-          vertical: vertical === "all" ? undefined : vertical,
-          q,
-        });
+        const data = await fetchPage(PAGE_SIZE, 0);
         if (!alive) return;
+        topicsLenRef.current = data.topics.length;
         setTopics(data.topics);
-        setRefreshing(data.refreshing);
-        setLastRun(data.lastRun);
-        if (data.verticals?.length) setVerticals(data.verticals);
-        if (data.counts) setCounts(data.counts);
+        applyData(data);
         setSelectedId(data.topics[0]?.id ?? null);
       } catch {
         if (alive) {
+          topicsLenRef.current = 0;
           notify("选题池加载失败（服务未连接？）");
           setTopics([]);
         }
@@ -160,7 +183,37 @@ function TopicPoolInner() {
     return () => {
       alive = false;
     };
-  }, [statusTab, vertical, q]);
+  }, [fetchPage, applyData]);
+
+  // 滚动到底翻下一页（按 id 去重合并：刷新插入新卡会平移 offset 窗口）
+  const loadMore = async () => {
+    if (loadingMoreRef.current || topics === null || topics.length === 0 || topics.length >= total) return;
+    const base = topics;
+    loadingMoreRef.current = true;
+    setLoadingMore(true);
+    try {
+      const data = await fetchPage(PAGE_SIZE, base.length);
+      applyData(data);
+      const seen = new Set(base.map((t) => t.id));
+      const fresh = data.topics.filter((t) => !seen.has(t.id));
+      if (fresh.length === 0) {
+        setTotal(base.length); // 翻到头了：钉住总数，停住不再请求
+      } else {
+        setTopics([...base, ...fresh]);
+        topicsLenRef.current = base.length + fresh.length;
+      }
+    } catch {
+      notify("加载更多失败");
+    } finally {
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
+    }
+  };
+
+  const onListScroll = (e: React.UIEvent<HTMLElement>) => {
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 320) void loadMore();
+  };
 
   // 刷新期间轮询（3s），完成后重拉一次拿到产出统计
   useEffect(() => {
@@ -305,6 +358,74 @@ function TopicPoolInner() {
   const rawCards = (topics ?? []).filter((t) => t.stage === "raw");
   const strong = (topics ?? []).filter((t) => t.stage === "verified" && isStrong(t));
   const thin = (topics ?? []).filter((t) => t.stage === "verified" && !isStrong(t));
+  // 可见顺序的扁平清单（与左列表渲染顺序一致），键盘切换沿它走
+  const visibleTopics =
+    statusTab === "candidate" ? [...rawCards, ...strong, ...thin] : (topics ?? []);
+
+  // 键盘切换：↑↓ / J K 沿可见列表移动选中（j/k 与 ↑↓ 等价，Gmail 式单手导航）
+  const moveTo = (delta: 1 | -1) => {
+    const list = visibleTopics;
+    if (list.length === 0) return;
+    const idx = list.findIndex((t) => t.id === selectedId);
+    // 选中卡不在视野内（手动滚走后）：本次按键先锚定到视野内首/末张，
+    // 不从视口外的老选中位起算——否则视口会被拉回去，像「快捷键和高亮对不上」
+    const sec = listRef.current;
+    if (sec && idx >= 0) {
+      const selEl = sec.querySelector(`[data-topic-id="${selectedId}"]`);
+      const box = sec.getBoundingClientRect();
+      const r = selEl?.getBoundingClientRect();
+      const offscreen = !r || r.bottom < box.top + 1 || r.top > box.bottom - 1;
+      if (offscreen) {
+        const inView = [...sec.querySelectorAll<HTMLElement>("[data-topic-id]")].filter((c) => {
+          const cr = c.getBoundingClientRect();
+          return cr.top >= box.top - 1 && cr.bottom <= box.bottom + 1;
+        });
+        const anchor = delta === 1 ? inView[0] : inView[inView.length - 1];
+        const anchorId = anchor?.getAttribute("data-topic-id") ?? null;
+        const aIdx = list.findIndex((t) => t.id === anchorId);
+        if (aIdx >= 0 && aIdx !== idx) {
+          setSelectedId(anchorId);
+          requestAnimationFrame(() => anchor?.focus({ preventScroll: true }));
+          return;
+        }
+      }
+    }
+    const next = idx === -1 ? 0 : Math.min(list.length - 1, Math.max(0, idx + delta));
+    const id = list[next].id;
+    if (id === selectedId) return; // 已在头/尾
+    setSelectedId(id);
+    requestAnimationFrame(() => {
+      const el = listRef.current?.querySelector<HTMLElement>(`[data-topic-id="${id}"]`);
+      // 焦点跟选中走：不留在上次点击的老卡上，否则浏览器焦点圈画在别的卡上
+      el?.focus({ preventScroll: true });
+      el?.scrollIntoView({ block: "nearest" });
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+      const key = e.key;
+      if (key !== "ArrowUp" && key !== "ArrowDown" && key !== "j" && key !== "J" && key !== "k" && key !== "K")
+        return;
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (target?.isContentEditable || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (target instanceof HTMLInputElement) {
+        if (["checkbox", "radio", "time", "date", "range"].includes(target.type)) return; // 原生调值不劫持
+        if (key !== "ArrowUp" && key !== "ArrowDown") return; // 文本框里 j/k 是打字
+      }
+      e.preventDefault();
+      moveTo(key === "ArrowDown" || key === "j" || key === "J" ? 1 : -1);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  // 切换选中时右侧详情回到顶部，避免停留在上一题的滚动深度
+  useEffect(() => {
+    detailRef.current?.scrollTo({ top: 0 });
+  }, [selectedId]);
 
   return (
     <div className="flex h-dvh flex-col bg-bg">
@@ -432,7 +553,7 @@ function TopicPoolInner() {
 
       {/* 主体：左列表 + 右详情 */}
       <main className="mx-auto grid w-full max-w-6xl flex-1 grid-cols-1 gap-4 overflow-hidden px-6 py-4 lg:grid-cols-[380px_1fr]">
-        <section className="min-h-0 space-y-4 overflow-y-auto pb-4 pr-1">
+        <section ref={listRef} className="min-h-0 space-y-4 overflow-y-auto pb-4 pr-1" onScroll={onListScroll}>
           {topics === null ? (
             <div className="flex items-center gap-2 px-1 py-8 text-xs text-text-3">
               <Loader2 className="h-4 w-4 motion-safe:animate-spin" />
@@ -448,10 +569,7 @@ function TopicPoolInner() {
           ) : (
             <>
               {statusTab === "candidate" && rawCards.length > 0 ? (
-                <TopicSection
-                  title={`生料选题（${counts ? counts.raw : rawCards.length}）`}
-                  hint={counts && counts.raw > rawCards.length ? `显示最新 ${rawCards.length} 条` : undefined}
-                >
+                <TopicSection title={`生料选题（${counts ? counts.raw : rawCards.length}）`}>
                   {rawCards.map((t) => (
                     <TopicCard
                       key={t.id}
@@ -505,11 +623,25 @@ function TopicPoolInner() {
                     />
                   ))
                 : null}
+              <div className="pt-1 text-center text-[11px] text-text-4">
+                {loadingMore ? (
+                  <span className="inline-flex items-center gap-1.5">
+                    <Loader2 className="h-3 w-3 motion-safe:animate-spin" />
+                    加载更多…
+                  </span>
+                ) : topics.length < total ? (
+                  `已显示 ${topics.length} / 共 ${total} 条 · 滚动加载更多 · ↑↓ 或 J K 切换`
+                ) : total > PAGE_SIZE ? (
+                  `已加载全部 ${total} 条 · ↑↓ 或 J K 切换`
+                ) : (
+                  "↑↓ 或 J K 切换选题"
+                )}
+              </div>
             </>
           )}
         </section>
 
-        <section className="min-h-0 overflow-y-auto pb-4">
+        <section ref={detailRef} className="min-h-0 overflow-y-auto pb-4">
           {selected ? (
             <TopicDetail
               topic={selected}
@@ -529,20 +661,11 @@ function TopicPoolInner() {
   );
 }
 
-function TopicSection({
-  title,
-  hint,
-  children,
-}: {
-  title: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
+function TopicSection({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
       <h2 className="mb-1.5 flex items-baseline gap-2 px-1 text-[11px] font-medium uppercase tracking-wide text-text-4">
         {title}
-        {hint ? <span className="font-normal normal-case text-text-4/70">{hint}</span> : null}
       </h2>
       <div className="space-y-2">{children}</div>
     </div>
@@ -570,10 +693,9 @@ function TopicCard({
   return (
     <button
       type="button"
+      data-topic-id={topic.id}
       onClick={onSelect}
-      className={`ws-card block w-full cursor-pointer p-3 text-left transition-shadow ${
-        selected ? "ring-1 ring-accent" : "hover:shadow-md"
-      }`}
+      className={`ws-card block w-full cursor-pointer p-3 text-left outline-none ${selected ? "selected" : ""}`}
     >
       <div className="flex items-center gap-1.5">
         <span className="h-2 w-2 shrink-0 rounded-full" style={{ background: v?.color ?? FALLBACK_COLOR }} />
