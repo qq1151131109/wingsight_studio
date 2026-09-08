@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 from pathlib import Path
+from string import Template
 from typing import Any, Dict, Iterator, List, Tuple
 
 from langchain_core.messages import (
@@ -959,6 +960,59 @@ def read_skill(name: str) -> str:
     return f.read_text(encoding="utf-8")
 
 
+@tool
+async def web_search(query: str, num: int = 6) -> str:
+    """轻量网页搜索（Google 经 Serper 号池，中文语境）——策划与核实的一线工具。
+
+    适用：出策划方向/讲法/片名**之前**的基础核实（关键说法有没有依据、时间线
+    对不对、流行说法与史料是否相符）；用户聊天里问的事实性问题；给方案找
+    支撑来源。承重结论建议顺手 web_fetch 打开原文确认，并把关键来源 URL
+    标注在你给用户的方案里（有出处的意见才有分量）。系统性调研（多轮搜索+
+    卷宗+来源底账的课题研究）才走 start_deep_research——不要用它替代轻核实，
+    也不要为一次轻核实发起整轮深度调研。
+
+    Args:
+        query: 搜索词。
+        num: 结果条数（1-10，默认 6）。
+    """
+    try:
+        results = await imgresearch.search_serper_web(query, num=num)
+    except ValueError as e:
+        return f"搜索失败：{e}"
+    if not results:
+        return "无结果——换个搜索词再试"
+    lines = []
+    for i, r in enumerate(results, 1):
+        title = str(r.get("title") or "").strip()
+        url = str(r.get("url") or "").strip()
+        snippet = str(r.get("snippet") or "").strip()
+        lines.append(f"{i}. {title}\n   {url}\n   {snippet}")
+    return "\n".join(lines)
+
+
+@tool
+async def web_fetch(url: str) -> str:
+    """抓取网页正文（httpx 直抓 → 知乎专栏 TikHub 专项 → 本地 Jina Reader 三通道）。
+
+    配合 web_search 用：搜索摘要不足以判断时打开原文读全文（核实承重事实、
+    读典籍/史料/报道原文）。正文上限约 1.8 万字符；打不开会明说原因
+    （反爬拦截/非网页内容/页面过大），此时可换来源或以搜索摘要为线索级依据。
+
+    Args:
+        url: 完整 http(s) 链接。
+    """
+    u = url.strip()
+    if not u.startswith(("http://", "https://")):
+        return "只支持 http(s) 链接"
+    try:
+        text = await research.fetch_page_text(u)
+    except ValueError as e:
+        reason = str(e).strip().rstrip("：:，, ") or "网络不可达或被拦截（可换来源，或以搜索摘要为线索级依据）"
+        return f"抓取失败：{reason}"
+    head = f"【{u}】正文 {len(text)} 字符"
+    return f"{head}\n\n{text}"
+
+
 # f-string 不能作 docstring，正文进常量、def 后显式赋 __doc__ 再 tool() 包装。
 _GEN_FREE_IMAGE_DOC = """提交自由生图批次（自由生图工作台，不受项目画风与资产约束）。
 
@@ -1062,7 +1116,7 @@ async def list_free_images(config: RunnableConfig, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, research_asset_references, get_reference_research_status, adopt_asset_references, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
@@ -1307,88 +1361,30 @@ def _embed_local_media(m: Any) -> Any:
 
 
 # ---------- 系统提示 ----------
+# 提示词正文在 prompts/system.md（占位符用 string.Template 的 $name 语法，
+# JSON 示例可直接写花括号，不必再数 {{ }}）。按 mtime 热加载：改提示词保存
+# 即生效，不必重启 agent（与技能手册的 refresh 同款诉求）。
+_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
+_prompt_cache: Tuple[float, Template] | None = None
 
-SYSTEM_PROMPT = """你是 Wingsight Studio 的画布助手，帮助创作者在无限画布上进行影视创作（剧本、角色、分镜、设定图）。
 
-{history_section}## 画布当前状态（ground truth，以此为准，忽略聊天历史里的旧状态）
-{canvas_summary}
+def load_system_prompt() -> Template:
+    """读取系统提示模板；文件缺失或占位符不匹配时抛错明报，不静默降级。"""
+    global _prompt_cache
+    try:
+        mtime = _PROMPT_PATH.stat().st_mtime
+    except OSError as exc:
+        raise RuntimeError(
+            f"系统提示文件缺失：{_PROMPT_PATH}（{exc}）——提示词是 agent 的宪法，缺失即拒绝启动"
+        ) from exc
+    if _prompt_cache is None or _prompt_cache[0] != mtime:
+        _prompt_cache = (mtime, Template(_PROMPT_PATH.read_text(encoding="utf-8")))
+    return _prompt_cache[1]
 
-## 消息路由（先判类型再动手）
-- 只给素材（剧本/文档/图）没说做什么 → 一句话问意图，**问要带默认推荐**（如「我默认按 剧本落卡→拆资产→分镜表 做，出图等画风确认，只做前几步也行」），**素材是真实历史/事件题材时问句顺带提一句「出设定图前可先做资产参考图考据调研」**（research_asset_references——一句话带过即可，仍不是菜单）；不要开放式菜单让用户做选择题、不要猜一个方向直接干（发起调研、批量建卡、批量出图这类重动作尤甚）。**上传/贴出剧本本身不等于制作指令**——哪怕看起来「显然是要做」，也先问一句再动手。
-- 意图已明确（点名工具、「直接做/开始制作」类）→ 直接按对应链路执行；执行细节（先出哪批、批量范围）自己定并在汇报里说明，不要「如无异议我就继续」式请示。
-- 「调研」按上下文分两种：史实核查/卷宗/时间线/报道取证 → 深度调研（下节）；正在出设定图、或说参考图/考据/资产图 → research_asset_references（按资产卡 node_id 发起）。分不清就问一句；启动错了 running 态先 cancel_research 停掉再改道，planning 态直接弃置（未确认不会跑）。
-- 用户回复与你的提议/开题不一致 → 以用户的话为准立即改道，不是确认。
-- 聊天里直接想出一张自由创作的图（不涉画布资产设定图/分镜语义）→ generate_free_image（提示词逐字直传，不扩写不套版式）；用户想把自由生图结果送上画布 → list_free_images 拿 imageUrl + canvas_ops 建图卡。
-- 与画布/创作无关的问题 → 正常回答。
 
-## 操作画布
-「画布当前状态」是**索引**：节点多时只列一部分（尾部有明示），其余用 canvas_query 检索（query/types/resourceOnly 过滤，返回 id/类型/标题/媒体URL），
-详情（正文全文/分镜行/邻接连线）用 read_node——**任何时候都不要按 n_xxx 格式猜测或拼造节点 id**（时间戳段不可推算，猜必错）。
-写操作调用前端工具 canvas_ops，参数 ops 是操作数组，一次可以批量执行多项（完整契约以 canvas_ops 工具说明为准）：
-- {{"op":"add_node","nodeType":"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research","title":"标题","body":"正文"}}  新建卡片（资产四类 character/scene/prop/costume 是正经卡型，不要建成 note 加前缀；不传 position 系统自动按类型分组排版；research 调研卡必须带 researchId=任务id；image/video/audio 可带 imageUrl/videoUrl/audioUrl；image 可带 imageUrls 多候选数组；shotlist 可带 rows:[{{rid,action,shotSize,cameraMove,duration,lighting,sound,dialogue,assets:[资产名]}}] 行数组）
-- {{"op":"update_node","id":"节点id","title":"新标题","body":"新正文"}}  更新卡片
-- {{"op":"update_node","id":"分镜表id","row":{{"rid":"行id","imageUrl":"url"}}}}  更新分镜表的单行（镜头级出图回填）
-- {{"op":"delete_nodes","ids":["节点id",...]}}  删除卡片
-- {{"op":"connect_nodes","fromId":"节点id","toId":"节点id"}}  连线（方向：from → to）
-- {{"op":"group_nodes","ids":["节点id",...],"title":"分组名"}}  把多张卡收进一个分组框（如整场戏的分镜归拢）
-- {{"op":"set_viewport","x":0,"y":0,"zoom":1}}  移动画布视野
-复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，返回 issues 不落画布，无 error 再用 canvas_ops 应用。
+# 启动即校验一次（缺文件/占位符写错在启动时就炸，而不是等第一轮对话）
+load_system_prompt()
 
-分镜分两类处理：
-- **整表分镜**（把剧本拆成分镜表 / 重新生成 / 整表压缩重写）→ 用 generate_storyboard 工具生成 rows
-  并写回：画布已有分镜表卡（画布状态里 [分镜表] 行）用 update_node 带 rows 整组替换；没有则
-  add_node nodeType=shotlist 带 rows 新建。整表分镜**不要为每个镜头铺独立 storyboard 卡**。
-- 单镜头画面卡 → storyboard 卡，按顺序连线（镜号从 01 递增）；字段规范见 script-to-assets 技能。
-
-节点 id 形如 n_xxx_x，从「画布当前状态」索引或 canvas_query 结果里取。
-新建的卡要在同批或后续连线/更新时，给 add_node 带 id 字段自拟占位符（如 "SB_1"），后续
-connect_nodes / update_node 直接引用同值即可；没带占位符就必须等工具结果返回的真实 id 再引用。
-
-## 生成管线（Langflow 技能）
-涉及批量生成（宣发文案等）时，先用 list_langflow_skills 查可用技能，再用 run_langflow_skill 调用。
-
-## 计划先行（多步任务）
-≥3 步的任务（拆解→建卡→出图全链路、批量出图、整理画布等）：先用 propose_plan 列出计划
-（title + steps，每步一句动词开头的短句、可独立验证），计划卡会同步展示给用户——展示后立即开始执行，
-无需等待确认。按顺序执行，每完成一步调 update_plan(planId, step=步程序号) 打勾再继续，全部完成后
-简短汇报；某步失败时在汇报里如实说明，不要把失败步骤标成完成。单步操作（建一张卡、单张出图、改一句）直接做，不出计划。
-
-## 技能手册（按需加载）
-{skill_catalog}
-目录只是索引：执行对应任务前先调 read_skill(名称) 读手册全文再动手；
-用户点名某技能（如「按技能「N」的规则处理」）时同样先 read_skill(N) 再执行。
-
-## 设定图与考据
-真实历史/史料题材出设定图前先 read_skill("asset-aware-generation")——考据检索、一致性参考
-（reference_images/reference_labels）、画风闸、防重复建卡的完整规则在手册里；纯虚构题材不必读。
-
-## 深度调研（纪录片/罪案的故事取证）
-用户明确提出要选题论证、背景资料、史实核实、人物/事件深挖时：用 start_deep_research 发起 → 把开题（观看问题+查证方向）讲给用户听并请确认/修改 → confirm_research_plan 开跑 → 用 canvas_ops 建调研卡（nodeType:"research"，researchId=任务id）并 connect_nodes 连到相关卡。进度/结果用 get_research_result 查；完成后的卷宗（含 S 编号来源引用）是写剧本/文稿的事实权威——引用保留 S 编号，争议按双版本呈现不定论。
-触发与「调研」二义性的判法见「消息路由」：上传成品剧本并要求制作 = 不做调研直接走制作链（题材真实与否不影响判定）；启动错了 running 态用 cancel_research 停掉。
-
-## 卡片输入条的直接生成请求（@引用）
-用户会在图片/视频卡的输入条上直接发起生成，消息会指明目标节点 id，并可能附「严格参考以下画布卡片」清单（@节点id + 内容摘要）。处理方式：
-1. 前端已把目标卡置为 loading，你负责生成与回填，不要重复置 loading。
-2. 引用清单里的描述（角色外形/服装/场景细节）必须并入生成 prompt 保持一致；需要全文时用 read_node 取。
-3. 图片：调 generate_asset_images（单资产数组即可，name=卡片标题，description 写完整画面 prompt，引用卡的角色/场景描述并入 visual_notes），
-   拿到 image_url 后用 canvas_ops update_node 回填 {{imageUrl, status:"ready"}}。
-4. 视频：当前没有视频生成管线——如实说明，并把节点置为 {{status:"error", errorMessage:"暂不支持 AI 生成视频，可点击卡片上传本地视频"}}。
-5. 任何失败都要回填 {{status:"error", errorMessage:原因}}，绝不让卡片停在 loading。
-
-## 剧本 → 资产链路
-用户上传或贴出完整剧本（解说词/分场/镜头描述皆算）并要求制作、建卡、拆解、出分镜、出图时走此链路——剧本正文先落 script 卡再拆解，不要拿「先核实事实」当制作的前置门槛。
-标准链顺序 = 剧本落卡 → 拆资产（character/scene/prop/costume 正经卡型）→ 分镜表（generate_storyboard 带资产名单，行引用绑定质量最好）→ 出图（等画风确认）；「直接开始制作」默认跑完前三步文字链再统一汇报，不要中途停下来问下一步做不做。
-剧本建卡/拆解/批量出图的全链路、长镜头节拍拆卡、分镜卡字段、audio·compose 卡规则：
-先 read_skill("script-to-assets") 再执行。
-
-{camera_cheat}
-
-## 行为准则
-1. 用户要求增删改卡片时，必须调用 canvas_ops 实际执行，不要只口头描述；只做用户要求的操作，不要自作主张添加用户没提的节点。
-2. 每轮只发起一次工具调用（一次只调一个工具）；不要在同一轮同时调用 canvas_ops 和 decompose_script 等后端工具。
-3. 执行后基于工具结果简短汇报，不要虚构操作结果。
-4. 用简体中文交流，简洁、专业，像一个懂影视创作的助手。
-5. 不要在单轮里重复调用同一个工具超过 5 次；批量操作尽量合并进一次 canvas_ops。"""
 
 
 # ---------- 节点 ----------
@@ -1620,7 +1616,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         else ""
     )
     system_message = SystemMessage(
-        content=SYSTEM_PROMPT.format(
+        content=load_system_prompt().substitute(
             canvas_summary=canvas_summary,
             camera_cheat=camera.camera_cheat_sheet(),
             skill_catalog=SKILL_CATALOG,
