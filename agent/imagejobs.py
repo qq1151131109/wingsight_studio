@@ -104,14 +104,7 @@ def load_job(job_id: str, table: str = "image_jobs") -> Optional[Dict[str, Any]]
         status = str(row["status"])
         items = json.loads(row["items"] or "{}")
         if status == "running":
-            finalized = {
-                rid: (
-                    item
-                    if item.get("ok") or item.get("error")
-                    else {"rid": rid, "ok": False, "error": INTERRUPTED_ERROR}
-                )
-                for rid, item in items.items()
-            }
+            finalized = _finalize_items(items)
             conn.execute(
                 f"UPDATE {table} SET status = 'done', items = ?, updated_at = ? WHERE job_id = ?",
                 (json.dumps(finalized, ensure_ascii=False), _now(), job_id),
@@ -119,6 +112,44 @@ def load_job(job_id: str, table: str = "image_jobs") -> Optional[Dict[str, Any]]
             status = "done"
             items = finalized
     return {"status": status, "images": items}
+
+
+def _finalize_items(items: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """孤儿终态化：已完成（ok/error）原样保留，未完成标中断（计费已发生的
+    完成项不丢，未知状态的在途项不自动重跑——重试即重复计费）。"""
+    return {
+        rid: (
+            item
+            if item.get("ok") or item.get("error")
+            else {"rid": rid, "ok": False, "error": INTERRUPTED_ERROR}
+        )
+        for rid, item in items.items()
+    }
+
+
+def finalize_running_orphans() -> int:
+    """启动清扫：两张表所有 running 孤儿批量终态化（main lifespan 调用）。
+
+    agent 重启后进程内任务表全空，running 行必然是孤儿——就地终态化免得
+    用户不回来轮询就一直装活。返回清扫行数（观测用）。"""
+    n = 0
+    with _conn() as conn:
+        for table in _TABLES:
+            rows = conn.execute(
+                f"SELECT job_id, items FROM {table} WHERE status = 'running'"
+            ).fetchall()
+            for row in rows:
+                items = json.loads(row["items"] or "{}")
+                conn.execute(
+                    f"UPDATE {table} SET status = 'done', items = ?, updated_at = ? WHERE job_id = ?",
+                    (
+                        json.dumps(_finalize_items(items), ensure_ascii=False),
+                        _now(),
+                        row["job_id"],
+                    ),
+                )
+                n += 1
+    return n
 
 
 def _cutoff() -> str:

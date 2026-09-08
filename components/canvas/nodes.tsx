@@ -4640,7 +4640,8 @@ async function runAssetDecompose(opts: {
     // 拆解只建卡不出图（流程重排）：后续走「调研参考图 → 审阅采纳 →
     // 补资产图（带参考序列）」，调研结果才赶得上进出图参考序列；
     // 原 autoLooks 自动链（画风已选即自动出定妆照）停用
-    const { assets, errors: decompErrors, imagesNote } = await decomposeAssets(
+    const { assets, errors: decompErrors, imagesNote, interrupted } =
+      await decomposeAssets(
       scriptSource,
       existing,
       {
@@ -4962,10 +4963,12 @@ async function runAssetDecompose(opts: {
             (existed ? `，${existed} 项已存在跳过` : "") +
             (failNote ? `｜部分类型失败：${failNote}` : "") +
             styleNote +
-            imageNote
+            imageNote +
+            (interrupted ? `｜⚠ ${interrupted}（已生成的图已落卡，缺的可重试补齐）` : "")
         : `${existed} 项资产均已存在，未新建` +
             (failNote ? `｜部分类型失败：${failNote}` : "") +
-            styleNote,
+            styleNote +
+            (interrupted ? `｜⚠ ${interrupted}` : ""),
     );
   } catch (exc) {
     opts.onError(exc instanceof Error ? exc.message : "拆解失败");

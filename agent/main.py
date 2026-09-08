@@ -41,6 +41,8 @@ import entities  # noqa: E402
 import entity_routes  # noqa: E402
 import graph  # noqa: E402
 import imgresearch  # noqa: E402
+import imagejobs  # noqa: E402
+import jobstore  # noqa: E402
 import models  # noqa: E402
 import projects  # noqa: E402
 import prompt_presets  # noqa: E402
@@ -87,6 +89,14 @@ async def _lifespan(_app: FastAPI):
     script_review.report_interrupted_jobs()
     # 艺术评审同理
     image_review.report_interrupted_jobs()
+    # 出图/出视频批量任务（item 表）与拆解/分镜生成（jobstore）的 running
+    # 孤儿批量终态化：进程都换了不可能还在跑，完成项保留、在途项标中断，
+    # 不留僵尸 running 行装活（萧燕燕事故的启动侧补刀）
+    try:
+        imagejobs.finalize_running_orphans()
+        jobstore.sweep_orphans()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[startup] 任务孤儿清扫失败（不阻塞启动）: {exc}", flush=True)
     # 选题池每日定时刷新（进程内 asyncio 轮询；关停随事件循环取消）
     scheduler = asyncio.create_task(topic_pool.auto_refresh_loop())
     try:
@@ -1063,7 +1073,15 @@ async def api_assets_decompose_status(job_id: str, user: auth.CurrentUser):
     if job is None:
         return Response(status_code=404, content="任务不存在", media_type="text/plain")
     if job["status"] == "done" and job.get("error"):
-        return {"status": "done", "phase": "done", "error": job["error"], "assets": None}
+        # 中断也带回 partial assets（agent 重启孤儿 checkpoint 过的设定图）：
+        # 前端把已生成的图照常落卡、错误如实转达——不是全有或全无；
+        # 拆解期普通失败 assets 本就是 None，行为不变
+        return {
+            "status": "done",
+            "phase": "done",
+            "error": job["error"],
+            "assets": job.get("assets"),
+        }
     return {
         "status": job["status"],
         "phase": job.get("phase"),

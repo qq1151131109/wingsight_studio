@@ -13,7 +13,7 @@ import shutil
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
@@ -21,6 +21,7 @@ from typing_extensions import Literal
 
 import eventbus
 import imagejobs
+import jobstore
 import models
 import thumbs
 import usage
@@ -97,7 +98,12 @@ STORYBOARD_GEN_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 def get_storyboard_gen_job(job_id: str) -> Optional[Dict[str, Any]]:
-    return STORYBOARD_GEN_JOBS.get(job_id)
+    job = STORYBOARD_GEN_JOBS.get(job_id)
+    if job is not None:
+        return job
+    # 内存 miss：查持久层（agent 重启丢内存任务表）——孤儿就地终态化
+    # （生成中断），不再 404 让用户盲猜
+    return jobstore.load_job(job_id)
 
 
 async def run_storyboard_flow(
@@ -183,6 +189,9 @@ async def start_storyboard_gen_job(
     """
     job_id = uuid.uuid4().hex[:12]
     STORYBOARD_GEN_JOBS[job_id] = {"status": "running", "rows": None, "error": None}
+    # 任务落库（jobstore）：flow 单次调用最长 15 分钟，agent 重启后轮询端
+    # 凭 jobId 照常命中（孤儿标「生成中断」），不再 404
+    jobstore.create_job(job_id, "shotlist_gen", {"rows": None, "error": None})
 
     async def run() -> None:
         state = STORYBOARD_GEN_JOBS[job_id]
@@ -199,6 +208,7 @@ async def start_storyboard_gen_job(
             state["error"] = str(e)[:300]
         finally:
             state["status"] = "done"
+            jobstore.finish_job(job_id, {"rows": state["rows"], "error": state["error"]})
         # 清理历史任务（保留最近 49 个已完成）
         done = [k for k, v in STORYBOARD_GEN_JOBS.items() if v["status"] == "done"]
         for k in done[:-49]:
@@ -493,7 +503,19 @@ DECOMPOSE_JOBS: Dict[str, Dict[str, Any]] = {}
 
 
 def get_decompose_job(job_id: str) -> Optional[Dict[str, Any]]:
-    return DECOMPOSE_JOBS.get(job_id)
+    job = DECOMPOSE_JOBS.get(job_id)
+    if job is not None:
+        return job
+    # 内存 miss：查持久层（agent 重启丢内存任务表）。拆解/自动出图链中断时
+    # 已 checkpoint 的产物（assets/image_url）原样收回——已花钱生成的设定图
+    # 不随进程蒸发，只有没跑完的部分标中断
+    return jobstore.load_job(job_id)
+
+
+def _decompose_state_snapshot(job_id: str) -> Dict[str, Any]:
+    """拆解任务内存态的落库镜像（剥 status——终态以 jobstore 列为准权威）。"""
+    state = DECOMPOSE_JOBS.get(job_id) or {}
+    return {k: v for k, v in state.items() if k != "status"}
 
 
 async def start_decompose_job(
@@ -523,6 +545,16 @@ async def start_decompose_job(
         "errors": None,
         "error": None,
     }
+    # 任务落库（jobstore）：全自动出图链可达 12 分钟，agent 重启后轮询照常
+    # 命中——自动链逐图 checkpoint（_auto_asset_images 的 persist 回调），
+    # 中断时已生成的设定图随 partial assets 收回（计费已发生的不丢）
+    jobstore.create_job(job_id, "decompose", _decompose_state_snapshot(job_id))
+
+    def persist() -> None:
+        try:
+            jobstore.save_state(job_id, _decompose_state_snapshot(job_id))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[jobstore] 拆解 checkpoint 失败 job={job_id}: {exc}", flush=True)
 
     async def run() -> None:
         state = DECOMPOSE_JOBS[job_id]
@@ -532,6 +564,7 @@ async def start_decompose_job(
             )
             state["assets"] = assets
             state["errors"] = errors
+            persist()
             if auto_looks and IMAGEGEN_FLOW_ID and DMX_API_KEY:
                 # 画风闸兜底（前端已拦，这里防 API 直调绕过）：无画风不自动出图
                 if not visual_style.strip():
@@ -563,12 +596,17 @@ async def start_decompose_job(
                         assets, state, visual_style, existed, params=params,
                         existing_imgs=existing_imgs,
                         existing_look_labels=existing_look_labels,
+                        persist=persist,
                     )
         except Exception as e:  # noqa: BLE001
             state["error"] = str(e)[:300]
         finally:
             state["phase"] = "done"
             state["status"] = "done"
+            try:
+                jobstore.finish_job(job_id, _decompose_state_snapshot(job_id))
+            except Exception as exc:  # noqa: BLE001
+                print(f"[jobstore] 拆解终态落库失败 job={job_id}: {exc}", flush=True)
             # 终态事件流：拆解（含全自动出图链）可能数分钟，用户切走后靠这条通道知道完成
             n_assets = len(state.get("assets") or [])
             eventbus.publish_job_event(
@@ -605,6 +643,7 @@ async def _auto_asset_images(
     params: Optional[Dict[str, str]] = None,
     existing_imgs: Optional[Dict[tuple, str]] = None,
     existing_look_labels: Optional[Dict[str, set]] = None,
+    persist: Optional[Callable[[], None]] = None,
 ) -> str:
     """资产图自动链（juben collect_pending_character_materials 泛化）：
     ① 服饰结构图先行（Look 的一致性锚点之二）
@@ -614,7 +653,9 @@ async def _auto_asset_images(
     身份锚点），只出画布还没有的造型（existing_look_labels 对名跳过）
     结果写回 asset 条目（image_url / looks[i].image_url）；单张失败记 error
     不拖累其他。并发 30；每类上限 8、每角色 Look 上限 4（防成本失控）。
-    existed：画布已有 (type, name) 集合，命中跳过。返回汇报 note。"""
+    existed：画布已有 (type, name) 集合，命中跳过。返回汇报 note。
+    persist：逐图 checkpoint 回调（jobstore 落库）——agent 重启后已生成的
+    图随 partial assets 收回，计费已发生的不丢；None = 无持久化（直调场景）。"""
     existed = existed or set()
     existing_imgs = existing_imgs or {}
     sem = asyncio.Semaphore(30)
@@ -652,6 +693,8 @@ async def _auto_asset_images(
             a["image_url"] = r["imageUrl"]
         else:
             a["error"] = str(r.get("error") or "出图失败")[:200]
+        if persist:
+            persist()
 
     async def one_costume(a: Dict[str, Any]) -> None:
         # 服饰结构图走本名布局（flow LAYOUT_SPECS 已有 costume：16:9 三视图；
@@ -718,6 +761,8 @@ async def _auto_asset_images(
             l["image_url"] = r["imageUrl"]
         else:
             l["error"] = str(r.get("error") or "出图失败")[:200]
+        if persist:
+            persist()
 
     # 已存在角色的 Look 补齐计划：卡上定妆照做身份锚点，跳过画布已有的造型
     look_backfill: List[tuple] = []

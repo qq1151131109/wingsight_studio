@@ -100,6 +100,9 @@ export async function decomposeAssets(
   assets: DecomposedAsset[];
   errors: Record<string, string>;
   imagesNote?: string;
+  /** 任务中断（agent 重启）但带回了部分产物：assets 里已生成的图照常落卡，
+   *  调用方须把这句错误如实转达给用户 */
+  interrupted?: string;
 }> {
   // 异步任务 + 轮询（代理 30s 掐断长请求，三路拆解 flow 并发也常超 30s）
   const start = await apiFetch("/agent-service/assets/decompose", {
@@ -144,7 +147,19 @@ export async function decomposeAssets(
       opts?.onPhase?.({ phase: data.phase, progress: data.progress ?? undefined });
     }
     if (data.status === "done") {
-      if (data.error) throw new Error(data.error);
+      if (data.error) {
+        // 中断（agent 重启等）带部分产物：已花钱生成的设定图随 assets 收回
+        // （照常落卡），错误如实转达——不是全有或全无
+        const partial = data.assets ?? [];
+        if (partial.length > 0)
+          return {
+            assets: partial,
+            errors: data.errors ?? {},
+            imagesNote: data.images_note,
+            interrupted: data.error,
+          };
+        throw new Error(data.error);
+      }
       return {
         assets: data.assets ?? [],
         errors: data.errors ?? {},
