@@ -69,7 +69,29 @@ def init_topics_db() -> None:
             conn.execute("ALTER TABLE topics ADD COLUMN benchmarks_json TEXT NOT NULL DEFAULT '[]'")
         if "audience" not in cols:
             conn.execute("ALTER TABLE topics ADD COLUMN audience TEXT NOT NULL DEFAULT ''")
+        # 讲法（treatment）：内容×形态两轴的形态轴（注册表见 treatments.py）
+        if "treatment_json" not in cols:
+            conn.execute("ALTER TABLE topics ADD COLUMN treatment_json TEXT NOT NULL DEFAULT '{}'")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_topics_stage ON topics(stage)")
+        # 讲法动态层：对标片形态提取 + 配对时模型的 new-* 提案沉淀（核心层在
+        # treatments.py 代码里，永不离场；本表只存动态条目与使用热度）
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS treatments (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                mechanism TEXT NOT NULL DEFAULT '',
+                reference TEXT NOT NULL DEFAULT '',
+                fit_hint TEXT NOT NULL DEFAULT '',
+                archive_required INTEGER NOT NULL DEFAULT 0,
+                compliance_note TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'proposal',
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_used TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
         # 存量指纹回填：历史上 upgrade_card 改题未重算 title_fingerprint，去重键与
         # 标题脱钩（同题孪生卡由此漏进池内）。按当前标题重算；冲突（真同题行）
         # 跳过不动。幂等：回填后全部匹配，下次启动零写入。
@@ -138,6 +160,7 @@ def _serialize(row: sqlite3.Row) -> dict[str, Any]:
         "benchmarks": json.loads(row["benchmarks_json"]),
         "audience": row["audience"],
         "tags": json.loads(row["tags_json"]),
+        "treatment": json.loads(row["treatment_json"] or "{}"),
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "lastProgressAt": row["last_progress_at"],
@@ -161,6 +184,7 @@ def create_topic(
     episodes: list[dict[str, str]] | None = None,
     benchmarks: list[dict[str, str]] | None = None,
     audience: str = "",
+    treatment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     tid = uuid.uuid4().hex[:12]
     now = _now()
@@ -168,9 +192,9 @@ def create_topic(
         conn.execute(
             "INSERT INTO topics (id, vertical, source, title, title_fingerprint, summary,"
             " angles_json, heat_evidence_json, research_json, status, stage, tags_json, arc,"
-            " episodes_json, benchmarks_json, audience,"
+            " episodes_json, benchmarks_json, audience, treatment_json,"
             " last_progress_at, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'candidate', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 tid,
                 vertical,
@@ -187,6 +211,7 @@ def create_topic(
                 json.dumps(episodes or [], ensure_ascii=False),
                 json.dumps(benchmarks or [], ensure_ascii=False),
                 audience,
+                json.dumps(treatment or {}, ensure_ascii=False),
                 now,
                 now,
                 now,

@@ -83,6 +83,7 @@ function lastRunSummary(run: TopicRefreshRun): string {
   if (typeof run.seriesCreated === "number" && run.seriesCreated > 0) parts.push(`组系列 ${run.seriesCreated}`);
   if (typeof run.duplicates === "number" && run.duplicates > 0) parts.push(`去重 ${run.duplicates}`);
   if (typeof run.rejected === "number" && run.rejected > 0) parts.push(`拦下新闻稿式 ${run.rejected}`);
+  if (typeof run.anchorRewrites === "number" && run.anchorRewrites > 0) parts.push(`分集补写 ${run.anchorRewrites}`);
   if (run.rescanned) parts.push(`复查 ${run.rescanned}${run.rescanUpgraded ? `（升级 ${run.rescanUpgraded}）` : ""}`);
   const prefix = run.error ? `上次刷新中断（${run.error}）` : `上次刷新：${parts.join(" · ") || "无产出"}`;
   return `${prefix} · ${formatTime(run.finishedAt)}`;
@@ -704,6 +705,9 @@ function TopicCard({
         {raw ? (
           <span className="rounded bg-surface-2 px-1 py-px text-[9px] text-text-4">生料</span>
         ) : null}
+        {topic.treatment?.id && topic.treatment.id !== "archival" ? (
+          <span className="rounded bg-accent/10 px-1 py-px text-[9px] text-accent">{topic.treatment.name}</span>
+        ) : null}
         {deepBusy ? (
           <Loader2 className="ml-auto h-3 w-3 text-accent motion-safe:animate-spin" />
         ) : busy ? (
@@ -817,6 +821,29 @@ function TopicDetail({
       {topic.summary ? <p className="mt-2 text-xs leading-relaxed text-text-2">{topic.summary}</p> : null}
 
       <div className="mt-4 space-y-3.5">
+        {topic.treatment?.name ? (
+          <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
+            <h4 className="text-[11px] font-medium text-text-4">
+              讲法{!topic.treatment.id || topic.treatment.id === "archival" ? " · 默认" : ""}
+            </h4>
+            <p className="font-editorial mt-0.5 text-sm text-text">
+              {topic.treatment.name}
+              {topic.treatment.mechanism ? `：${topic.treatment.mechanism}` : ""}
+            </p>
+            {topic.treatment.why ? (
+              <p className="mt-1 text-xs leading-relaxed text-text-3">适配理由：{topic.treatment.why}</p>
+            ) : null}
+            {topic.treatment.alternates && topic.treatment.alternates.length > 0 ? (
+              <p className="mt-1 text-[11px] leading-relaxed text-text-4">
+                备选讲法：
+                {topic.treatment.alternates
+                  .filter((a) => a.name)
+                  .map((a) => `${a.name}（${a.why}）`)
+                  .join("；")}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
         {raw && topic.summary ? (
           <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
             <h4 className="text-[11px] font-medium text-text-4">情绪钩子</h4>

@@ -33,6 +33,12 @@ from datetime import date, datetime, timezone
 from typing import Any, Awaitable, Callable
 
 import topics as store
+from treatments import (
+    record_use,
+    treatment_card_shape,
+    treatments_payload,
+    upsert_dynamic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +265,8 @@ SERIES_ASSEMBLE_CAP = 12
 SERIES_MIN_UNITS = 3
 # 当日已喂语料指纹的落账键与上限（同日多轮刷新各喂新料；次日自动换日重置）
 IDEATE_SEEN_KEY = "topic_pool_ideate_seen"
+_FORMAT_EXTRACT_SEEN_KEY = "topic_pool_format_extract_seen"
+FORMAT_EXTRACT_FILMS_CAP = 5  # 每轮讲法雷达最多提取的新片数（增量控成本）
 # 当日语料缓存键（采集结果落账，服务重启后凭缓存续跑剩余批次，不重新采集）
 IDEATE_CORPUS_KEY = "topic_pool_ideate_corpus"
 # 六源采集的通道级散账（每通道完成即落账，重启只补缺失通道）
@@ -360,6 +368,8 @@ ZHIHU_MIN_VOTES = 100
 FLOW_IDS = {
     "diverge": "LANGFLOW_TOPIC_DIVERGE_FLOW_ID",
     "ideate": "LANGFLOW_TOPIC_IDEATE_FLOW_ID",
+    "treatment": "LANGFLOW_TOPIC_TREATMENT_FLOW_ID",
+    "format_extract": "LANGFLOW_TOPIC_FORMAT_EXTRACT_FLOW_ID",
     "series_compose": "LANGFLOW_TOPIC_SERIES_COMPOSE_FLOW_ID",
     "triage": "LANGFLOW_TOPIC_TRIAGE_FLOW_ID",
     "plan": "LANGFLOW_TOPIC_PLAN_FLOW_ID",
@@ -474,6 +484,32 @@ def _sanitize_pairs(items: Any, note_key: str, cap: int | None = None) -> list[d
     return out
 
 
+_EP_ANCHOR_RE = re.compile(
+    r"\d{3,4}\s*年|《[^》]{1,40}》|[A-Za-z]{2,}"
+    r"|(大学|研究院|研究所|实验室|博物馆|档案馆|纪念馆|遗址|条约|战役|战争|事变|王朝|帝国|工程|试验场|试验站|报告)"
+)
+
+
+def episode_anchor_ratio(entries: Any) -> tuple[int, int]:
+    """收敛产物分集 focus 的具名锚点率（工艺闸度量：落点不具名 = 不可拍可考据）。"""
+    total = hit = 0
+    if not isinstance(entries, list):
+        return 0, 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        eps = entry.get("episodes")
+        if not isinstance(eps, list):
+            continue
+        for ep in eps:
+            if not isinstance(ep, dict):
+                continue
+            total += 1
+            if _EP_ANCHOR_RE.search(str(ep.get("focus") or "")):
+                hit += 1
+    return hit, total
+
+
 def _year_anchor() -> str:
     """种子年份锚：查询词拼上当年年份，避免同一批旧结果反复命中。"""
     return str(date.today().year)
@@ -576,6 +612,7 @@ class IdeateResult:
     series_missed: int = 0  # 组题失败/候选不足/超名额的次数（明记不做单片降级）
     duplicates: int = 0  # 指纹去重跳过的条数
     rejected: int = 0  # 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题）
+    anchor_rewrites: int = 0  # 分集缺具名锚点触发反馈重写并被采用的批数
     error: str = ""
 
 
@@ -611,6 +648,9 @@ class TopicCurator:
         self.flow_runner = flow_runner
         self.search = search
         self.market_probe = market_probe
+        # 线索标题 → 证据条目（ideate() 建索引；_create_raw_card 把方向的
+        # support 线索落进原型出处，单信号源卡从源头变厚）
+        self._support_index: dict[str, dict[str, Any]] = {}
 
     # --- flow 调用 -----------------------------------------------------------
 
@@ -1129,6 +1169,13 @@ class TopicCurator:
         clues = [c for c in clues if fingerprint_of(c["title"]) not in seen]
         result.collected = len(clues)
         result.directions = len(directions)
+        # 讲法雷达：当日新对标片 → 形态提取进讲法库动态层（软失败不拦刷新）
+        benchmark_clues = [c for c in clues if c.get("signal_type") == "benchmark"]
+        if benchmark_clues:
+            try:
+                await self._radar_extract_formats(benchmark_clues)
+            except Exception as exc:  # noqa: BLE001 - 雷达失败不影响刷新
+                logger.warning("讲法雷达失败（不影响刷新）: %s", str(exc)[:160])
         if not clues and not directions:
             result.error = "当日语料已全部喂过（次日换片续喂），本轮无新料"
             return result
@@ -1235,6 +1282,16 @@ class TopicCurator:
         """
         pool = list(clues)  # 支撑池用入口快照：批循环逐批消耗，但任何批次的
         # 线索标题对后续批的收敛都还是支撑证据，不该随喂掉而消失
+        # 证据索引：方向 support 标题 → 线索条目（收敛落卡时拼进原型出处）
+        self._support_index = {
+            c["title"]: {
+                "title": c["title"],
+                "url": c.get("url") or "",
+                "snippet": c.get("snippet") or "",
+                "source": c.get("source") or "",
+            }
+            for c in clues
+        }
         sem = asyncio.Semaphore(max(1, IDEATE_FLOW_CONCURRENCY))
         fed: set[str] = set()
         pending: list[dict[str, Any]] = list(directions)  # 已发散未收敛（含上轮遗留）
@@ -1364,6 +1421,94 @@ class TopicCurator:
                 *(self._converge_chunk(chunk, result, sem=sem, on_chunk_done=on_chunk_done) for chunk in chunks)
             )
 
+    async def _radar_extract_formats(self, benchmark_clues: list[dict[str, Any]]) -> None:
+        """讲法雷达：当日新对标片 → 提取可迁移的讲法装置进动态层。
+
+        片子讲了什么不重要，怎么讲的才重要——对标片单通道从「引用源」升级为
+        「讲法雷达」，库跟着行业片单滚动更新。增量：已提取过的片记账号本。
+        """
+        done_fps = {
+            str(x)
+            for x in (json.loads(store.get_setting(_FORMAT_EXTRACT_SEEN_KEY) or "[]") or [])[:500]
+        }
+        films = []
+        for c in benchmark_clues:
+            fp = fingerprint_of(c["title"])
+            if fp in done_fps:
+                continue
+            done_fps.add(fp)
+            films.append({"title": c["title"], "snippet": (c.get("snippet") or "")[:200]})
+        films = films[:FORMAT_EXTRACT_FILMS_CAP]
+        if not films:
+            return
+        entries = await self._call_flow(
+            "format_extract", {"films": films, "library": treatments_payload()}
+        )
+        added = 0
+        for e in entries if isinstance(entries, list) else []:
+            if not isinstance(e, dict) or e.get("skip"):
+                continue
+            tid = "x-" + fingerprint_of(str(e.get("name") or ""))[:12]
+            if upsert_dynamic(
+                {
+                    "id": tid,
+                    "name": str(e.get("name") or "").strip(),
+                    "mechanism": str(e.get("mechanism") or "").strip(),
+                    "reference": str(e.get("title") or "").strip()[:80],
+                    "fit": str(e.get("fit") or "").strip(),
+                    "archive_required": bool(e.get("archive_required")),
+                    "compliance_note": str(e.get("reference_note") or "").strip()[:120],
+                },
+                source="extracted",
+            ):
+                added += 1
+        store.set_setting(
+            _FORMAT_EXTRACT_SEEN_KEY, json.dumps(list(done_fps)[:500], ensure_ascii=False)
+        )
+        if added:
+            logger.info("讲法雷达：新增 %d 条动态讲法", added)
+
+    def _attach_treatments(self, pairs: Any, chunk: list[dict[str, Any]]) -> None:
+        """配对结果落回方向：注册表补全名称/机制 + 观众侧理由 + ≤2 备选。"""
+        if not isinstance(pairs, list):
+            return
+        for p in pairs:
+            if not isinstance(p, dict):
+                continue
+            idx = p.get("sourceIndex")
+            if not isinstance(idx, int) or not 0 <= idx < len(chunk):
+                continue
+            tid = str(p.get("treatment") or "")
+            shape = treatment_card_shape(tid, str(p.get("why") or ""), p.get("alternates"))
+            if not shape and tid.startswith("new-"):
+                # 库外原创提案：沉淀进动态层（模型在真实配对场景觉得库里缺一格，
+                # 正是库该扩充的信号；采用次数就是市场检验）
+                name = str(p.get("newName") or "").strip()
+                mechanism = str(p.get("newMechanism") or "").strip()
+                if name and mechanism:
+                    if upsert_dynamic(
+                        {
+                            "id": tid,
+                            "name": name,
+                            "mechanism": mechanism,
+                            "reference": "",
+                            "fit": "",
+                            "archive_required": False,
+                            "compliance_note": "",
+                        },
+                        source="proposal",
+                    ):
+                        shape = {
+                            "id": tid,
+                            "name": name,
+                            "mechanism": mechanism,
+                            "why": str(p.get("why") or "").strip()[:120],
+                            "alternates": [],
+                        }
+            if shape:
+                chunk[idx]["treatment"] = shape
+                record_use(shape["id"])
+
     async def _converge_chunk(
         self,
         chunk: list[dict[str, Any]],
@@ -1373,6 +1518,25 @@ class TopicCurator:
         on_chunk_done: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> None:
         """单块收敛：过 flow → 逐条落卡/组题；失败与完成都回调账本剔除。"""
+        # 讲法配对：为每条方向挑适配讲法（注册表 treatments.py；失败按默认
+        # 严肃档案系走，不拦卡）。断点续跑恢复的方向自带讲法时跳过。
+        if not all(d.get("treatment") for d in chunk):
+            try:
+                pair_payload = {
+                    "directions": [
+                        {"index": j, "name": d["name"], "sketch": d["sketch"]}
+                        for j, d in enumerate(chunk)
+                    ],
+                    "treatments": treatments_payload(),
+                }
+                if sem is None:
+                    pairs = await self._call_flow("treatment", pair_payload)
+                else:
+                    async with sem:
+                        pairs = await self._call_flow("treatment", pair_payload)
+                self._attach_treatments(pairs, chunk)
+            except Exception as exc:  # noqa: BLE001 - 配对失败按默认讲法走
+                logger.warning("讲法配对失败（按默认严肃档案系）: %s", str(exc)[:160])
         payload = {
             "directions": [
                 {
@@ -1382,6 +1546,7 @@ class TopicCurator:
                     "name": d["name"],
                     "sketch": d["sketch"],
                     "support": d.get("support") or [],
+                    "treatment": d.get("treatment") or None,
                 }
                 for j, d in enumerate(chunk)
             ],
@@ -1401,6 +1566,27 @@ class TopicCurator:
             if on_chunk_done is not None:
                 on_chunk_done(chunk)
             return
+        # 分集具名率工艺闸：落点不具名的分集不可拍可考据，而模型常无视提示词
+        # 里的具名要求——低于 50% 带反馈重写一次，重写更好才采用（不引入抖动）
+        hit, total = episode_anchor_ratio(entries)
+        if total >= 6 and hit / total < 0.5:
+            feedback = (
+                "上一批多数分集 focus 缺具名锚点：每集必须落到具体人名/机构/装置/"
+                "「地名+年代」/事件名/书名号原文，删掉「以XX为切面观察YY」这类架空句式；"
+                "标题同样按硬标准重写，禁止生造四字代号。"
+            )
+            try:
+                if sem is None:
+                    retry_entries = await self._call_flow("ideate", {**payload, "pipelineFeedback": feedback})
+                else:
+                    async with sem:
+                        retry_entries = await self._call_flow("ideate", {**payload, "pipelineFeedback": feedback})
+                retry_hit, retry_total = episode_anchor_ratio(retry_entries)
+                if retry_total and retry_hit / retry_total >= hit / max(total, 1):
+                    entries = retry_entries
+                    result.anchor_rewrites += 1
+            except Exception as exc:  # noqa: BLE001 - 补写失败保留原产出
+                logger.warning("选题收敛分集补写失败（保留原产出）: %s", str(exc)[:160])
         if isinstance(entries, list):
             for entry in entries[:CONVERGE_ENTRIES_CAP]:
                 if (
@@ -1557,25 +1743,37 @@ class TopicCurator:
         proto = corpus[source_index] if isinstance(source_index, int) and 0 <= source_index < len(corpus) else None
         if proto is None:
             return  # 锚不到真实原型的选题不落库（不编造）
+        treatment = proto.get("treatment") if isinstance(proto.get("treatment"), dict) else None
         tags = [str(t).strip() for t in (entry.get("tags") or []) if str(t).strip()][:4]
         # 迷你策划案三件：分集构想/对标片/目标观众（导演评估凭据，缺失不拦卡）
         episodes = _sanitize_pairs(entry.get("episodes"), "focus")
         benchmarks = _sanitize_pairs(entry.get("benchmarks"), "note", 3)
         audience = str(entry.get("audience") or "").strip()[:80]
+        # 证据厚度：方向自带的线索之外，把 support（同库其他线索）落进原型出处
+        # ——「一篇文章扩成策划案」从源头变厚；深挖层的取证候选按此厚度预筛
+        evidence = [
+            {
+                "title": proto["title"],
+                "url": proto.get("url") or "",
+                "snippet": proto.get("snippet") or "",
+                "source": proto.get("source") or "",
+            }
+        ]
+        seen_titles = {proto["title"]}
+        for s in proto.get("support") or []:
+            e = self._support_index.get(str(s).strip())
+            if e and e["title"] not in seen_titles:
+                seen_titles.add(e["title"])
+                evidence.append(dict(e))
+            if len(evidence) >= 6:
+                break
         try:
             store.create_topic(
                 vertical=vertical,
                 title=title,
                 title_fingerprint=fingerprint,
                 summary=hook,
-                heat_evidence=[
-                    {
-                        "title": proto["title"],
-                        "url": proto.get("url") or "",
-                        "snippet": proto.get("snippet") or "",
-                        "source": proto.get("source") or "",
-                    }
-                ],
+                heat_evidence=evidence,
                 research={},
                 source=str(proto.get("signal_type") or "corpus"),
                 stage="raw",
@@ -1584,6 +1782,7 @@ class TopicCurator:
                 episodes=episodes,
                 benchmarks=benchmarks,
                 audience=audience,
+                treatment=treatment,
             )
             result.created += 1
             self._add_day_theme(arc)  # 记题眼：后续批次的同题材去重清单

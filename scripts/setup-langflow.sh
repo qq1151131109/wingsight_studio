@@ -194,6 +194,8 @@ FLOWS = {
     "topic-diverge.json": "LANGFLOW_TOPIC_DIVERGE_FLOW_ID",
     "topic-series-compose.json": "LANGFLOW_TOPIC_SERIES_COMPOSE_FLOW_ID",
     "topic-retitle.json": "LANGFLOW_TOPIC_RETITLE_FLOW_ID",
+    "topic-treatment.json": "LANGFLOW_TOPIC_TREATMENT_FLOW_ID",
+    "topic-format-extract.json": "LANGFLOW_TOPIC_FORMAT_EXTRACT_FLOW_ID",
     "topic-upscale.json": "LANGFLOW_TOPIC_UPSCALE_FLOW_ID",
     "topic-enrich.json": "LANGFLOW_TOPIC_ENRICH_FLOW_ID",
     "promo-copy.json": None,

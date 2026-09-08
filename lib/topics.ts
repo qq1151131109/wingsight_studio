@@ -90,6 +90,16 @@ export interface Topic {
   episodes: TopicEpisode[];
   /** 对标片与差异 */
   benchmarks: TopicBenchmark[];
+  /** 讲法（treatment）：「怎么讲」的形态轴——注册表见 agent/treatments.py，空 = 默认严肃档案系 */
+  treatment?: {
+    id?: string;
+    name?: string;
+    /** 观众体验的核心装置 */
+    mechanism?: string;
+    /** 配对理由：为什么这个讲法适配这个题 */
+    why?: string;
+    alternates?: { id?: string; name?: string; why?: string }[];
+  };
   /** 目标观众与平台定位（一句话） */
   audience: string;
   createdAt: string;
@@ -112,6 +122,8 @@ export interface TopicRefreshRun {
   duplicates?: number;
   /** 未过成立性闸被拒的条数（无 arc 成片推演 = 新闻稿式选题） */
   rejected?: number;
+  /** 分集缺具名锚点触发反馈重写并被采用的批数（工艺闸） */
+  anchorRewrites?: number;
   /** 刷新尾部顺带轮转复查观察卡的产出 */
   rescanned?: number;
   rescanUpgraded?: number;

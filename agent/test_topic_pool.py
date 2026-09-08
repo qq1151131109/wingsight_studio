@@ -17,6 +17,7 @@ import topics as store
 import entities as entity_store
 import tikhub
 import topic_pool
+import treatments
 import wikiday
 import wikicategory
 import podcastfeed
@@ -30,6 +31,7 @@ store.init_topics_db()
 entity_store.DB_PATH = _tmp / "test.db"
 entity_store.init_entities_db()
 os.environ["LANGFLOW_TOPIC_IDEATE_FLOW_ID"] = "f-ideate"
+os.environ["LANGFLOW_TOPIC_TREATMENT_FLOW_ID"] = "f-treatment"
 os.environ["LANGFLOW_TOPIC_DIVERGE_FLOW_ID"] = "f-diverge"
 os.environ["LANGFLOW_TOPIC_SERIES_COMPOSE_FLOW_ID"] = "f-series"
 os.environ["LANGFLOW_TOPIC_TRIAGE_FLOW_ID"] = "f-triage"
@@ -1266,5 +1268,194 @@ expect(
     "init_topics_db 应回填脱钩的存量指纹",
 )
 print("upgrade_card 指纹重算与存量回填 ✓")
+
+# ---------- 分集具名锚点率（工艺闸度量） ----------
+
+_anchored = [
+    {"episodes": [
+        {"title": "一", "focus": "以 1881 年达尔文在唐恩的蚯蚓研究为切面"},
+        {"title": "二", "focus": "以 1859 年黎曼论文为切面"},
+        {"title": "三", "focus": "落在 Rothamsted 长期试验"},
+    ]},
+    {"episodes": [{"title": "四", "focus": "观察相关矛盾与发展"}]},
+]
+_hit, _total = topic_pool.episode_anchor_ratio(_anchored)
+expect((_hit, _total) == (3, 4), f"锚点率应 3/4：{_hit}/{_total}")
+expect(topic_pool.episode_anchor_ratio("bad") == (0, 0), "非列表应返 0/0")
+print("分集锚点率 ✓")
+
+
+async def run_anchor_rewrite():
+    """收敛批分集缺锚点 → 带反馈重写一次；重写更好才采用。"""
+
+    class _FakeCurator(topic_pool.TopicCurator):
+        def __init__(self, outputs):
+            self._outputs = list(outputs)
+            self.search = None
+            self.flow_runner = self._fake
+
+        async def _fake(self, fid, payload, tweaks=None):
+            return json.dumps(self._outputs.pop(0), ensure_ascii=False)
+
+    result = topic_pool.IdeateResult()
+    directions = [{"title": "线索甲", "source": "rss", "snippet": "", "name": "方向一", "sketch": "s", "support": []}]
+    no_anchor = [
+        {"title": "卡A", "hook": "h", "arc": "题眼：x；素材：y；呈现：z；弧线：w", "vertical": "history",
+         "tags": ["t"], "sourceIndex": 0,
+         "episodes": [{"title": f"第{i}集", "focus": "观察相关发展"} for i in range(4)]},
+        {"title": "卡B", "hook": "h", "arc": "题眼：x；素材：y；呈现：z；弧线：w", "vertical": "history",
+         "tags": ["t"], "sourceIndex": 0,
+         "episodes": [{"title": f"章{i}", "focus": "呈现相关变化"} for i in range(4)]},
+    ]
+    with_anchor = json.loads(json.dumps(no_anchor))
+    for card in with_anchor:
+        for i, ep in enumerate(card["episodes"]):
+            ep["focus"] = f"以 1900 年第{i}代巴拿马运河船闸工程为切面"
+    pairs = [{"sourceIndex": 0, "treatment": "archival", "why": "档案可得", "alternates": []}]
+    fake = _FakeCurator([pairs, no_anchor, with_anchor])
+    await fake._converge_chunk(directions, result)
+    expect(result.anchor_rewrites == 1, f"重写更好应采用并计数：{result.anchor_rewrites}")
+    cards = [c for c in store.list_topics(status="candidate", stage="raw") if c["title"] in ("卡A", "卡B")]
+    expect(len(cards) == 2, f"本批应落 2 张卡：{len(cards)}")
+    expect(all("1900 年" in e["focus"] for c in cards for e in c["episodes"]), "落库的应是重写后的分集")
+    # 重写更差：保留原产出，不计数
+    fake2 = _FakeCurator([with_anchor, no_anchor])
+    result2 = topic_pool.IdeateResult()
+    await fake2._converge_chunk(directions, result2)
+    expect(result2.anchor_rewrites == 0, "重写更差不应采用")
+
+
+asyncio.run(run_anchor_rewrite())
+print("分集反馈重写 ✓")
+
+
+def run_support_evidence():
+    """方向的 support 线索应落进原型出处（证据厚度：单源卡从源头变厚）。"""
+
+    class _C(topic_pool.TopicCurator):
+        def __init__(self):
+            self.search = None
+            self.flow_runner = None
+            self.market_probe = None
+            self._support_index = {
+                "线索乙": {"title": "线索乙", "url": "http://e2", "snippet": "乙", "source": "rss"},
+                "线索丙": {"title": "线索丙", "url": "", "snippet": "丙", "source": "wiki"},
+            }
+
+    result = topic_pool.IdeateResult()
+    entry = {
+        "title": "证据厚度测试卡",
+        "hook": "一句话钩子",
+        "arc": "题眼：测试用母题；素材：档案与影像；呈现：过程；弧线：从哪到哪",
+        "vertical": "history",
+        "tags": [],
+        "sourceIndex": 0,
+        "episodes": [
+            {"title": "一", "focus": "以 1900 年某工程为切面"},
+            {"title": "二", "focus": "以某档案馆档案为切面"},
+            {"title": "三", "focus": "以某战役调查为切面"},
+            {"title": "四", "focus": "以某遗址发掘为切面"},
+        ],
+    }
+    chunk = [{"title": "线索甲", "source": "rss", "snippet": "甲", "support": ["线索乙", "线索丙", "线索甲", "线索乙"]}]
+    _C()._create_raw_card(entry, chunk, result)
+    expect(result.created == 1, "卡应落库")
+    card = next(c for c in store.list_topics(status="candidate", stage="raw") if c["title"] == "证据厚度测试卡")
+    ev_titles = [e["title"] for e in card["heatEvidence"]]
+    expect(ev_titles == ["线索甲", "线索乙", "线索丙"], f"原型出处应为主线索+去重后的 support：{ev_titles}")
+
+
+run_support_evidence()
+print("证据厚度接线 ✓")
+
+
+async def run_treatment_pairing():
+    """讲法注册表 + 收敛前配对：方向挂讲法、卡片落 treatment、失败按默认走。"""
+    # 注册表 sanity
+    expect(len(treatments.TREATMENTS) >= 12, f"讲法库应 ≥12 条：{len(treatments.TREATMENTS)}")
+    ids = [t.id for t in treatments.TREATMENTS]
+    expect(len(ids) == len(set(ids)), "讲法 id 应唯一")
+    expect(treatments.treatment_by_id("archival") is not None, "默认讲法 archival 必须在库")
+    expect(topic_pool.treatments_payload()[0]["id"] == treatments.TREATMENTS[0].id, "payload 应可生成")
+
+    class _FakeCurator(topic_pool.TopicCurator):
+        def __init__(self, outputs):
+            self._outputs = list(outputs)
+            self.search = None
+            self.flow_runner = self._fake
+
+        async def _fake(self, fid, payload, tweaks=None):
+            # 按调用顺序弹输出（讲法配对 → 收敛 → 重写…）
+            return json.dumps(self._outputs.pop(0), ensure_ascii=False)
+
+    result = topic_pool.IdeateResult()
+    directions = [
+        {"title": "王朝线索", "source": "rss", "snippet": "", "name": "大众王朝史", "sketch": "s", "support": []},
+    ]
+    pairs = [
+        {"sourceIndex": 0, "treatment": "moe_cats", "why": "大众熟知+喜剧降门槛",
+         "alternates": [{"id": "listicle", "why": "单元多"}]},
+    ]
+    cards = [
+        {"title": "萌化测试卡", "hook": "钩子", "arc": "题眼：测试母题；素材：猫化角色设定与史实清单；呈现：猫演君臣；弧线：从厌恶到亲近",
+         "vertical": "history", "tags": [], "sourceIndex": 0, "treatment": "moe_cats",
+         "episodes": [{"title": f"第{i}集", "focus": "以 1900 年猫史影像为锚点"} for i in range(4)]},
+    ]
+    fake = _FakeCurator([pairs, cards])
+    await fake._converge_chunk(directions, result)
+    expect(result.created == 1, "卡应落库")
+    card = next(c for c in store.list_topics(status="candidate", stage="raw") if c["title"] == "萌化测试卡")
+    t = card["treatment"]
+    expect(t.get("id") == "moe_cats" and t.get("name") == "萌化拟人", f"卡应带注册表补全的讲法：{t}")
+    expect(t.get("why") == "大众熟知+喜剧降门槛", "配对理由应落卡")
+    expect(t.get("alternates") and t["alternates"][0]["name"] == "榜单体", "备选讲法应补全名称")
+
+    # 配对失败：不拦卡，treatment 为空（默认严肃档案系语义）
+    cards2 = json.loads(json.dumps(cards))
+    for c in cards2:
+        c["title"] = "萌化测试卡二号"
+    fake2 = _FakeCurator(["坏输出一", "坏输出二", cards2])  # 配对两次尝试都失败
+    result2 = topic_pool.IdeateResult()
+    fresh_dirs = [{"title": "王朝线索二号", "source": "rss", "snippet": "", "name": "大众王朝史", "sketch": "s", "support": []}]
+    await fake2._converge_chunk(fresh_dirs, result2)
+    expect(result2.created == 1, "配对失败不应拦卡")
+    card2 = next(c for c in store.list_topics(status="candidate", stage="raw") if c["title"] == "萌化测试卡二号")
+    expect(card2["treatment"] == {}, "配对失败的卡 treatment 应为空（默认严肃档案系）")
+
+
+asyncio.run(run_treatment_pairing())
+print("讲法配对与落卡 ✓")
+
+
+def run_dynamic_layer():
+    """讲法动态层：提取/提案进水口 + 热度浮沉 + 配对沉淀。"""
+    # 提取入库（同 id 幂等）
+    entry = {"id": None, "name": "AI 复活访谈", "mechanism": "用档案语句驱动数字人让历史人物开口",
+             "reference": "某访谈纪录片", "fit": "有充足语录档案的人物", "archive_required": True}
+    expect(treatments.upsert_dynamic({"**id**": None, **entry, "id": "x-abc123"}, source="extracted"), "提取条目应入库")
+    expect(treatments.upsert_dynamic({**entry, "id": "x-abc123", "mechanism": "用档案语句驱动数字人，让历史人物『亲口』回答今人提问"}, source="extracted"), "同 id 应更新")
+    payload = {p["id"]: p for p in treatments.treatments_payload()}
+    expect("x-abc123" in payload and "AI 复活访谈" in payload["x-abc123"]["name"], "动态层应进配对 payload")
+    expect("archival" in payload, "核心层应常驻 payload")
+    # 配对采纳 new-* 提案 → 沉淀 proposal + 热度
+    chunk = [{"title": "线索", "source": "rss", "snippet": "", "name": "方向", "sketch": "s"}]
+    curator = topic_pool.TopicCurator.__new__(topic_pool.TopicCurator)
+    curator._attach_treatments(
+        [{"sourceIndex": 0, "treatment": "new-xyz", "newName": "碎片拼图",
+          "newMechanism": "每集从一件残件出发拼回完整史事", "why": "库内都是整体叙事，缺残件视角",
+          "alternates": []}],
+        chunk,
+    )
+    row = treatments.treatment_by_id("new-xyz")
+    expect(row is not None and row.name == "碎片拼图", "new-* 提案应沉淀进动态层")
+    expect(chunk[0]["treatment"]["id"] == "new-xyz", "提案应挂到方向")
+    topic_pool.record_use("new-xyz")
+    topic_pool.record_use("new-xyz")
+    hot = treatments.dynamic_treatments(limit=5)
+    expect(hot[0].id == "new-xyz" and hot[0].use_count == 3, f"挂接自带 1 次 + 显式 2 次 = 3：{[(h.id, h.use_count) for h in hot]}")
+
+
+run_dynamic_layer()
+print("讲法动态层进水口 ✓")
 
 print("\n全部通过 ✓")
