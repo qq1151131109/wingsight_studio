@@ -958,9 +958,20 @@ async def api_free_image_generate(req: dict, user: auth.CurrentUser):
 
 @app.get("/free-images")
 def api_free_image_list(project_id: str, user: auth.CurrentUser):
-    """画廊数据源（3 秒轮询）：项目内批次倒序，含在途/失败/完成全态。"""
+    """画廊数据源（3 秒轮询）：项目内批次倒序，含在途/失败/完成全态。
+    不带 finalPrompt（每行最多 3000 字，随轮询下发是纯流量浪费）。"""
     projects.assert_access(user, project_id)
     return {"items": free_images.list_free_images(project_id)}
+
+
+@app.get("/free-images/{item_id}")
+def api_free_image_item(item_id: str, user: auth.CurrentUser):
+    """单条详情（含 finalPrompt「实际发送的提示词」）：Lightbox 打开时按条拉。"""
+    item = free_images.get_item(item_id)
+    if item is None:
+        return Response(status_code=404)
+    projects.assert_access(user, str(item.get("projectId") or ""))
+    return item
 
 
 @app.post("/storyboard/images")

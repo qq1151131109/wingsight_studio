@@ -4,6 +4,7 @@ import { apiFetch } from "@/lib/auth";
 
 export interface FreeImageItem {
   id: string;
+  projectId?: string;
   batchId: string;
   prompt: string;
   aspect: string;
@@ -12,7 +13,8 @@ export interface FreeImageItem {
   referenceUrls: string[];
   status: "queued" | "running" | "done" | "error";
   imageUrl: string | null;
-  finalPrompt: string | null;
+  /** 仅详情端点返回（列表轮询不带——每行最多 3000 字是纯流量浪费） */
+  finalPrompt?: string | null;
   error: string | null;
   createdAt: string;
   updatedAt: string;
@@ -41,6 +43,13 @@ export async function generateFreeImages(req: {
   if (!r.ok) {
     throw new Error((await r.text()) || `提交失败（HTTP ${r.status}）`);
   }
+  return r.json();
+}
+
+/** 单条详情（含 finalPrompt）：Lightbox 打开时按条拉，不随轮询下发 */
+export async function getFreeImageDetail(id: string): Promise<FreeImageItem> {
+  const r = await apiFetch(`/agent-service/free-images/${encodeURIComponent(id)}`);
+  if (!r.ok) throw new Error(`详情加载失败（HTTP ${r.status}）`);
   return r.json();
 }
 

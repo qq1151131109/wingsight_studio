@@ -158,6 +158,7 @@ if (realImage) {
   ).json();
   let phase = "empty";
   let lastPost = null;
+  let lastListHadFinalPrompt = null;
   await page.route("**/agent-service/free-images*", async (route) => {
     const req = route.request();
     if (req.method() === "POST") {
@@ -176,6 +177,7 @@ if (realImage) {
     }
     const item = (status) => ({
       id: "m1",
+      projectId: "p1",
       batchId: "batchmock",
       prompt: "霓虹雨夜的便利店门口",
       aspect: "16:9",
@@ -184,12 +186,18 @@ if (realImage) {
       referenceUrls: [],
       status,
       imageUrl: realImage,
-      finalPrompt: "参考图编号：图1=《a.png》。\n霓虹雨夜的便利店门口",
       error: null,
       createdAt: "2026-09-07T12:00:00",
       updatedAt: "2026-09-07T12:01:00",
     });
+    // 详情（GET /free-images/{id}）：带 finalPrompt；列表轮询不带（瘦身契约）
+    const u = new URL(req.url());
+    if (/\/free-images\/[^/]+$/.test(u.pathname)) {
+      await route.fulfill({ json: { ...item("done"), finalPrompt: "参考图编号：图1=《a.png》。\n霓虹雨夜的便利店门口" } });
+      return;
+    }
     const items = phase === "empty" ? [] : [item("done")];
+    lastListHadFinalPrompt = items.length > 0 && "finalPrompt" in items[0];
     await route.fulfill({ json: { items } });
   });
 
@@ -301,6 +309,27 @@ if (realImage) {
       .locator("#free-image-prompt")
       .evaluate((el) => el.value.slice(el.selectionStart, el.selectionEnd));
     check("B10c Backspace 选中整颗实体", sel === "@图2", `sel=${sel}`);
+
+    // B11 大图渐进加载：点开先显缩略、原图到货换 src；finalPrompt 走详情不随列表
+    await page.getByRole("button", { name: "放大查看" }).first().click();
+    const bigImg = page.locator('div[role="dialog"] img');
+    await bigImg.waitFor({ timeout: 5000 });
+    const srcFirst = await bigImg.getAttribute("src");
+    await page
+      .locator('div[role="dialog"] img[src*="/agent-service/assets/"]')
+      .waitFor({ timeout: 8000 });
+    const srcNow = await bigImg.getAttribute("src");
+    check(
+      "B11a 大图渐进（缩略秒显→原图换上）",
+      (srcFirst ?? "").includes("/thumbs/") && (srcNow ?? "").includes("/assets/"),
+      `${(srcFirst ?? "").slice(-24)} → ${(srcNow ?? "").slice(-24)}`,
+    );
+    const detailReq = await page.evaluate(
+      () => performance.getEntriesByType("resource").some((r) => /\/free-images\/m1/.test(r.name)),
+    );
+    const listHadFinal = lastListHadFinalPrompt ?? null;
+    check("B11b finalPrompt 走详情端点", detailReq && listHadFinal === false, `detail=${detailReq} listHasFp=${listHadFinal}`);
+    await page.keyboard.press("Escape");
 
     // B9 活动栏「画布」互导：回画布工作台（同项目）
     await page.getByRole("button", { name: "画布", exact: true }).click();

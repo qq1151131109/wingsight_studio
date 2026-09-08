@@ -69,9 +69,13 @@ def _cutoff() -> str:
     return (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
 
 
-def _row_to_item(row: sqlite3.Row) -> Dict[str, Any]:
-    return {
+def _row_to_item(row: sqlite3.Row, with_final_prompt: bool = False) -> Dict[str, Any]:
+    """画廊行序列化。finalPrompt（每行最多 3000 字）默认不带——画廊列表
+    3s 轮询下发它是纯流量浪费（用户隧道下图片请求全排在它后面），详情
+    按条拉取（GET /free-images/{id}）。"""
+    item = {
         "id": row["id"],
+        "projectId": row["project_id"],
         "batchId": row["batch_id"],
         "prompt": row["prompt"],
         "aspect": row["aspect"],
@@ -80,11 +84,22 @@ def _row_to_item(row: sqlite3.Row) -> Dict[str, Any]:
         "referenceUrls": json.loads(row["reference_urls"] or "[]"),
         "status": row["status"],
         "imageUrl": row["image_url"],
-        "finalPrompt": row["final_prompt"],
         "error": row["error"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
+    if with_final_prompt:
+        item["finalPrompt"] = row["final_prompt"]
+    return item
+
+
+def get_item(item_id: str) -> Optional[Dict[str, Any]]:
+    """单条详情（含 finalPrompt），Lightbox 打开时拉取；不存在返回 None。"""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM free_images WHERE id = ?", (item_id,)
+        ).fetchone()
+    return _row_to_item(row, with_final_prompt=True) if row else None
 
 
 def _reconcile_orphans(conn: sqlite3.Connection) -> None:

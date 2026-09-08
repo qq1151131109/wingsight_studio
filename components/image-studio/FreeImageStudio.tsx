@@ -56,6 +56,7 @@ import { uploadAsset } from "@/lib/projects";
 import { useImageModels, findModelOption, type ImageModelOption } from "@/lib/imagegen";
 import {
   generateFreeImages,
+  getFreeImageDetail,
   listFreeImages,
   type FreeImageItem,
 } from "@/lib/freeImages";
@@ -158,6 +159,9 @@ function StudioPane({
 
   const [items, setItems] = useState<FreeImageItem[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
+  // 首屏限量：只渲染最近 2 批（隧道/弱网下全量缩略图排队是「图片一张张
+  // 冒出来」的主因），往回翻历史再加载——新批次永远在头部立即可见
+  const [visibleBatches, setVisibleBatches] = useState(2);
   const [busy, setBusy] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -620,7 +624,7 @@ function StudioPane({
           </div>
         ) : (
           <div className="space-y-6">
-            {groups.map((g) => (
+            {groups.slice(0, visibleBatches).map((g) => (
               <section key={g.batchId}>
                 <div className="mb-2 flex items-center gap-2">
                   <h3
@@ -658,6 +662,16 @@ function StudioPane({
                 </div>
               </section>
             ))}
+            {groups.length > visibleBatches ? (
+              <button
+                type="button"
+                onClick={() => setVisibleBatches((v) => v + 5)}
+                data-track="freeimage.load-more"
+                className="w-full rounded-md border border-hairline bg-surface-2 py-2.5 text-xs text-text-2 transition-colors hover:border-accent hover:text-accent"
+              >
+                加载更早的批次（还有 {groups.length - visibleBatches} 批）
+              </button>
+            ) : null}
           </div>
         )}
       </section>
@@ -1003,6 +1017,11 @@ function Lightbox({
   modelText: string;
   onClose: () => void;
 }) {
+  // 渐进加载：先秒显缩略图（已在缓存），原图（2K/4K 可达数 MB）后台加载
+  // 完成再换上；finalPrompt 不随轮询下发，打开时按条拉详情
+  // 派生式状态（不在 effect 里同步重置）：已加载原图的 url 匹配当前项才算就绪
+  const [loadedUrl, setLoadedUrl] = useState<string | null>(null);
+  const [detailState, setDetailState] = useState<{ id: string; item: FreeImageItem } | null>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -1010,7 +1029,30 @@ function Lightbox({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  if (!item.imageUrl) return null;
+  const url = item.imageUrl ?? "";
+  useEffect(() => {
+    if (!url) return;
+    let alive = true;
+    const img = new window.Image();
+    img.onload = () => {
+      if (alive) setLoadedUrl(url);
+    };
+    img.src = url;
+    void getFreeImageDetail(item.id)
+      .then((d) => {
+        if (alive) setDetailState({ id: item.id, item: d });
+      })
+      .catch(() => {
+        /* 详情拉失败：图片与参数仍可见，只是没有「实际提示词」块 */
+      });
+    return () => {
+      alive = false;
+      img.onload = null;
+    };
+  }, [item.id, url]);
+  const hiResReady = loadedUrl === url && url !== "";
+  const detail = detailState?.id === item.id ? detailState.item : null;
+  if (!url) return null;
   return (
     <div
       className="fixed inset-0 z-[1300] flex flex-col items-center justify-center gap-3 bg-black/80 p-6"
@@ -1020,9 +1062,11 @@ function Lightbox({
     >
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={item.imageUrl}
+        src={hiResReady ? url : assetThumbUrl(url)}
         alt={(item.prompt ?? "").slice(0, 50)}
-        className="max-h-[70vh] max-w-full rounded-lg object-contain"
+        className={`max-h-[70vh] max-w-full rounded-lg object-contain transition-opacity ${
+          hiResReady ? "opacity-100" : "opacity-90"
+        }`}
         onClick={(e) => e.stopPropagation()}
       />
       <div
@@ -1033,10 +1077,10 @@ function Lightbox({
           {[modelText, item.aspect, item.resolution].filter(Boolean).join(" · ")}
         </p>
         <p className="m-0 mb-2 whitespace-pre-wrap text-text-2">{item.prompt}</p>
-        {item.finalPrompt ? (
+        {detail?.finalPrompt ? (
           <details>
             <summary className="cursor-pointer select-none text-text-3">实际发送的提示词</summary>
-            <p className="m-0 mt-1 whitespace-pre-wrap text-text-3">{item.finalPrompt}</p>
+            <p className="m-0 mt-1 whitespace-pre-wrap text-text-3">{detail.finalPrompt}</p>
           </details>
         ) : null}
         {item.referenceUrls.length > 0 ? (
