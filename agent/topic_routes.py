@@ -218,6 +218,127 @@ def dismiss_topic(topic_id: str, user: auth.CurrentUser):
     return {"ok": True}
 
 
+def _is_series_topic(topic: dict[str, Any]) -> bool:
+    """系列选题判定：深挖卡的 research.scale 是权威；生料系列卡（_assemble_series
+    产出）只有「单元选集/系列网格」标签可认。单片/普通生料卡的 episodes 是
+    段落节拍，不是集——不按集落卡。"""
+    research = topic.get("research") or {}
+    if str(research.get("scale") or "").strip().lower() in ("series", "anthology"):
+        return True
+    return any(t in ("单元选集", "系列网格") for t in (topic.get("tags") or []))
+
+
+def _series_overview_body(topic: dict[str, Any]) -> str:
+    """系列总纲（一张 note 卡）：母题/钩子/成片推演/对标/观众/原型出处。
+    每集剧本卡只带本集要点——共性内容集中在这里，不逐卡复制。"""
+    research = topic.get("research") or {}
+    lines = [f"【母题】{topic.get('title', '')}"]
+    if topic.get("summary"):
+        lines.append(f"【情绪钩子】{topic['summary']}")
+    if topic.get("arc"):
+        lines.append(f"【成片推演】{topic['arc']}")
+    thread = str(research.get("series_thread") or "").strip()
+    scale = str(research.get("scale") or "series").strip().lower()
+    lines.append(
+        f"【体量】{'系列' if scale == 'series' else scale}"
+        + (f"（串珠问题：{thread}）" if thread else "")
+    )
+    benchmarks = topic.get("benchmarks") or []
+    if benchmarks:
+        lines.append("【对标与差异】")
+        lines.extend(
+            f"- 《{b.get('title', '')}》{b.get('note', '')}" for b in benchmarks
+        )
+    if topic.get("audience"):
+        lines.append(f"【目标观众】{topic['audience']}")
+    evidence = topic.get("heatEvidence") or []
+    if evidence:
+        lines.append("【原型出处】")
+        lines.extend(
+            f"- {h.get('title', '')}{'（' + h['url'] + '）' if h.get('url') else ''}"
+            for h in evidence
+            if h.get("title")
+        )
+    lines.append("【下一步】逐集拆资产 → 分镜表 → 出图出视频（一张剧本卡 = 一集）")
+    return "\n".join(lines)
+
+
+def _episode_card_body(
+    topic: dict[str, Any], ep: dict[str, Any], idx: int, total: int
+) -> str:
+    """单集剧本卡正文：本集要点 + 母题指路（共性在总纲卡）。"""
+    lines = [
+        f"【本集】第 {idx + 1} 集（共 {total} 集）：{ep.get('title', '')}",
+        f"【本集要点】{ep.get('focus', '')}",
+        f"【母题】{topic.get('title', '')}（系列总纲见画布《{topic.get('title', '')}·总纲》卡）",
+    ]
+    research = topic.get("research") or {}
+    if research.get("viewing_question"):
+        lines.append(f"【观看问题】{research['viewing_question']}")
+    lines.append("【下一步】拆资产 → 分镜表 → 出图出视频")
+    return "\n".join(lines)
+
+
+# 按集落卡的排布：总纲在最上，剧本卡两列网格（与 NODE_FOOTPRINT.script 560×420 对齐）
+_EPISODE_COLS = 2
+_EPISODE_COL_W = 620
+_EPISODE_ROW_H = 480
+_EPISODE_TOP = 520
+
+
+def _adopt_nodes(topic: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    """认领落卡：single=一张剧本卡（原行为）；episodes=系列按分集落卡
+    （总纲 note + 每集一张剧本卡，集号 1..N，两列网格）。"""
+    if mode == "episodes":
+        episodes = topic.get("episodes") or []
+        nodes: list[dict[str, Any]] = [
+            {
+                "id": uuid.uuid4().hex[:12],
+                "type": "note",
+                "position": {"x": 0, "y": 0},
+                "style": {"width": 560, "height": 420},
+                "data": {
+                    "nodeType": "note",
+                    "title": f"{topic['title']}·总纲",
+                    "body": _series_overview_body(topic),
+                    "locked": True,
+                },
+            }
+        ]
+        for i, ep in enumerate(episodes):
+            nodes.append(
+                {
+                    "id": uuid.uuid4().hex[:12],
+                    "type": "script",
+                    "position": {
+                        "x": (i % _EPISODE_COLS) * _EPISODE_COL_W,
+                        "y": _EPISODE_TOP + (i // _EPISODE_COLS) * _EPISODE_ROW_H,
+                    },
+                    "data": {
+                        "nodeType": "script",
+                        "title": str(ep.get("title") or "")[:80],
+                        "body": _episode_card_body(topic, ep, i, len(episodes)),
+                        "episodeNo": i + 1,
+                        "locked": True,
+                    },
+                }
+            )
+        return nodes
+    return [
+        {
+            "id": uuid.uuid4().hex[:12],
+            "type": "script",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "nodeType": "script",
+                "title": topic["title"],
+                "body": _topic_card_body(topic),
+                "locked": True,
+            },
+        }
+    ]
+
+
 def _topic_card_body(topic: dict[str, Any]) -> str:
     """选题内容落画布剧本卡的正文：生料卡写全迷你策划案，建议卡写立项建议，观察卡写观察记录。"""
     research = topic.get("research") or {}
@@ -294,38 +415,41 @@ def _rollback_project(pid: str) -> None:
 
 
 @router.post("/topics/{topic_id}/adopt")
-async def adopt_topic(topic_id: str, user: auth.CurrentUser):
-    """认领选题：建项目 + 选题快照落画布（剧本卡）+ 状态转 adopted。
+async def adopt_topic(
+    topic_id: str, user: auth.CurrentUser, mode: str = "single"
+):
+    """认领选题：建项目 + 选题快照落画布 + 状态转 adopted。
+
+    mode=single（默认）落一张剧本卡；mode=episodes 按分集落卡（系列选题：
+    总纲 note + 每集一张剧本卡，集号 1..N）——分集构想从正文一段文本变成
+    真卡片，此后「一张剧本卡 = 一集」的整套链路（归属/按集下载/分集面板）生效。
 
     终态翻转用条件 UPDATE（仅 candidate 可转）防并发双认领；选题状态翻转
     失败（被并发认领）时回滚新建项目。
     """
+    if mode not in ("single", "episodes"):
+        return Response(status_code=400, content="mode 只能是 single / episodes", media_type="text/plain")
     topic = store.get_topic(topic_id)
     if topic is None:
         return Response(status_code=404, content="选题不存在", media_type="text/plain")
     if topic["status"] != "candidate":
         return Response(status_code=409, content="仅候选状态可认领", media_type="text/plain")
+    if mode == "episodes" and not (topic.get("episodes") or []):
+        return Response(status_code=400, content="该选题没有分集构想，不能按集落卡", media_type="text/plain")
 
     project = projects.create_project(topic["title"], user)
     pid = project["id"]
     try:
-        node = {
-            "id": uuid.uuid4().hex[:12],
-            "type": "script",
-            "position": {"x": 0, "y": 0},
-            "data": {
-                "nodeType": "script",
-                "title": topic["title"],
-                "body": _topic_card_body(topic),
-                "locked": True,
-            },
-        }
+        nodes = _adopt_nodes(topic, mode)
         result = projects.save_canvas(
             pid,
-            [node],
+            nodes,
             [],
             {"x": 0, "y": 0, "zoom": 1},
-            meta={"sourceTopic": {"id": topic["id"], "title": topic["title"], "vertical": topic["vertical"]}},
+            meta={
+                "sourceTopic": {"id": topic["id"], "title": topic["title"], "vertical": topic["vertical"]},
+                "adoptMode": mode,
+            },
             viewer=user,
         )
         if result is None or not result[0]:

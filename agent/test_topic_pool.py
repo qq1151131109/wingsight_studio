@@ -1424,7 +1424,7 @@ async def run_treatment_pairing():
     expect(t.get("why") == "大众熟知+喜剧降门槛", "配对理由应落卡")
     expect(t.get("alternates") and t["alternates"][0]["name"] == "榜单体", "备选讲法应补全名称")
 
-    # 配对失败：不拦卡，treatment 为空（默认严肃档案系语义）
+    # 配对失败：不拦卡，明确挂注册表默认讲法（卡片显示「讲法 · 默认」）
     cards2 = json.loads(json.dumps(cards))
     for c in cards2:
         c["title"] = "萌化测试卡二号"
@@ -1434,7 +1434,25 @@ async def run_treatment_pairing():
     await fake2._converge_chunk(fresh_dirs, result2)
     expect(result2.created == 1, "配对失败不应拦卡")
     card2 = next(c for c in store.list_topics(status="candidate", stage="raw") if c["title"] == "萌化测试卡二号")
-    expect(card2["treatment"] == {}, "配对失败的卡 treatment 应为空（默认严肃档案系）")
+    t2 = card2["treatment"]
+    expect(
+        t2.get("id") == treatments.ARCHIVAL and t2.get("name") == "严肃档案系",
+        f"配对失败应明确挂默认讲法：{t2}",
+    )
+
+    # 库外 id（非 new- 提案）：该配对丢弃，方向同样落默认讲法
+    cards3 = json.loads(json.dumps(cards))
+    for c in cards3:
+        c["title"] = "萌化测试卡三号"
+    fake3 = _FakeCurator([[{"sourceIndex": 0, "treatment": "不存在的讲法", "why": "x"}], cards3])
+    result3 = topic_pool.IdeateResult()
+    fresh_dirs3 = [{"title": "王朝线索三号", "source": "rss", "snippet": "", "name": "大众王朝史", "sketch": "s", "support": []}]
+    await fake3._converge_chunk(fresh_dirs3, result3)
+    card3 = next(c for c in store.list_topics(status="candidate", stage="raw") if c["title"] == "萌化测试卡三号")
+    expect(
+        card3["treatment"].get("id") == treatments.ARCHIVAL,
+        f"库外 id 应被丢弃并落默认讲法：{card3['treatment']}",
+    )
 
 
 asyncio.run(run_treatment_pairing())
@@ -1743,6 +1761,60 @@ def run_teardown_insights() -> None:
     expect(not insight_store.delete_insight("不存在"), "删不存在的应返回 False")
     print("标杆拆解知识库 ✓")
 
+
+# ---------- 认领落卡：按分集落卡（系列选题） ----------
+
+def run_adopt_episodes() -> None:
+    import topic_routes
+
+    def expect(cond: bool, msg: str) -> None:
+        if not cond:
+            raise AssertionError(msg)
+
+    topic = {
+        "id": "t-series", "title": "橡胶园百年", "vertical": "history", "stage": "raw",
+        "summary": "钩子一句话", "arc": "题眼：…素材：…呈现：…弧线：…",
+        "episodes": [
+            {"title": f"第{i}单元", "focus": f"第{i}集的具名锚点"} for i in range(1, 4)
+        ],
+        "benchmarks": [{"title": "对标片", "note": "差异一句话"}],
+        "audience": "对近代史感兴趣的观众",
+        "heatEvidence": [{"title": "原型报道", "url": "https://example.com/a"}],
+        "research": {}, "tags": ["单元选集"], "angles": [], "status": "candidate",
+        "source": "corpus", "adoptedPid": None,
+    }
+    expect(topic_routes._is_series_topic(topic), "标签「单元选集」应判为系列")
+
+    single = topic_routes._adopt_nodes(topic, "single")
+    expect(len(single) == 1 and single[0]["data"]["nodeType"] == "script", "single 仍落一张剧本卡")
+    expect("episodeNo" not in single[0]["data"], "single 卡不带集号")
+    expect("【分集构想】" in single[0]["data"]["body"], "single 卡正文保留分集构想文本")
+
+    nodes = topic_routes._adopt_nodes(topic, "episodes")
+    expect(len(nodes) == 4, f"系列按集落卡 = 总纲 + 3 集，实得 {len(nodes)}")
+    expect(
+        nodes[0]["data"]["nodeType"] == "note" and "总纲" in nodes[0]["data"]["title"],
+        "首卡是总纲 note",
+    )
+    scripts = nodes[1:]
+    expect([n["data"]["episodeNo"] for n in scripts] == [1, 2, 3], "集号按分集构想顺序 1..N")
+    expect(all(n["data"]["nodeType"] == "script" for n in scripts), "每集一张剧本卡")
+    expect(all(n["type"] == "script" for n in scripts), "type 与 nodeType 一致（渲染器选择）")
+    expect("【本集要点】" in scripts[0]["data"]["body"], "每集正文带本集要点")
+    expect("总纲" in scripts[0]["data"]["body"], "每集正文指路总纲卡")
+    expect(scripts[0]["position"]["x"] == 0 and scripts[1]["position"]["x"] > 0, "前两集并排")
+    expect(scripts[2]["position"]["y"] > scripts[0]["position"]["y"], "第 3 集换行到第二排")
+    expect(len({n["id"] for n in nodes}) == len(nodes), "节点 id 不重复")
+
+    # 深挖卡（无系列标签）看 research.scale；单片不判系列
+    verified = {**topic, "tags": [], "research": {"scale": "series", "series_thread": "串珠"}}
+    expect(topic_routes._is_series_topic(verified), "research.scale=series 应判为系列")
+    plain = {**topic, "tags": [], "research": {"scale": "single"}}
+    expect(not topic_routes._is_series_topic(plain), "单片不判系列")
+    print("选题池按分集落卡 ✓")
+
+
+run_adopt_episodes()
 
 run_teardown_insights()
 

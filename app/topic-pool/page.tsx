@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   BookOpen,
   Check,
+  Clapperboard,
   ExternalLink,
   Eye,
   Film,
@@ -23,6 +24,7 @@ import {
   getDeepDiveJob,
   getRescanJob,
   getSchedule,
+  isSeriesTopic,
   listTopics,
   refreshTopics,
   setSchedule,
@@ -344,10 +346,10 @@ function TopicPoolInner() {
     setBusyId(null);
   };
 
-  const doAdopt = async (t: Topic) => {
+  const doAdopt = async (t: Topic, mode: "single" | "episodes" = "single") => {
     setBusyId(t.id);
     notify("");
-    const r = await adoptTopic(t.id);
+    const r = await adoptTopic(t.id, mode);
     setBusyId(null);
     if (!r) {
       notify("认领失败（可能已被认领）");
@@ -660,7 +662,7 @@ function TopicPoolInner() {
               rescanBusy={rescanJob?.topicId === selected.id}
               deepBusy={deepJob?.topicId === selected.id}
               verticals={verticals}
-              onAdopt={() => void doAdopt(selected)}
+              onAdopt={(mode) => void doAdopt(selected, mode)}
               onDismiss={() => void doDismiss(selected)}
               onRescan={() => void doRescan(selected)}
               onDeepDive={() => void doDeepDive(selected)}
@@ -798,7 +800,7 @@ function TopicDetail({
   rescanBusy: boolean;
   deepBusy: boolean;
   verticals: VerticalInfo[];
-  onAdopt: () => void;
+  onAdopt: (mode: "single" | "episodes") => void;
   onDismiss: () => void;
   onRescan: () => void;
   onDeepDive: () => void;
@@ -807,6 +809,24 @@ function TopicDetail({
   const strong = isStrong(topic);
   const raw = topic.stage === "raw";
   const v = verticals.find((x) => x.id === topic.vertical);
+  // 系列选题可「按分集落卡」：分集构想从正文一段文本变成真卡片
+  const canEpisodes = isSeriesTopic(topic) && topic.episodes.length > 0;
+  const episodesBtn = canEpisodes ? (
+    <button
+      type="button"
+      onClick={() => onAdopt("episodes")}
+      disabled={busy}
+      data-tip={`按分集落卡：总纲卡 + ${topic.episodes.length} 张剧本卡（一张剧本卡 = 一集），之后拆资产/分镜/出图按集走`}
+      className="flex items-center gap-1.5 rounded-md border border-accent px-3 py-2 text-xs text-accent transition-colors hover:bg-accent-dim disabled:opacity-50"
+    >
+      {busy ? (
+        <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+      ) : (
+        <Clapperboard className="h-3.5 w-3.5" />
+      )}
+      按分集落卡（{topic.episodes.length} 集）
+    </button>
+  ) : null;
   const rescanNote =
     topic.status === "candidate" && topic.stage === "verified" && !strong
       ? topic.lastRescanAt
@@ -874,9 +894,13 @@ function TopicDetail({
             </div>
           </div>
         ) : null}
-        {raw && topic.episodes.length > 0 ? (
+        {topic.episodes.length > 0 ? (
           <div className="rounded-lg border border-hairline-soft bg-surface-2/70 p-3">
-            <h4 className="text-[11px] font-medium text-text-4">分集构想（{topic.episodes.length} 集/节拍）</h4>
+            <h4 className="text-[11px] font-medium text-text-4">
+              {isSeriesTopic(topic)
+                ? `分集构想（${topic.episodes.length} 集）· 认领时可按集落卡`
+                : `段落节拍（${topic.episodes.length} 个）· 单片不分集`}
+            </h4>
             <ol className="mt-1.5 space-y-1.5">
               {topic.episodes.map((e, i) => (
                 <li key={i} className="text-xs leading-relaxed text-text-2">
@@ -1059,7 +1083,7 @@ function TopicDetail({
               </button>
               <button
                 type="button"
-                onClick={onAdopt}
+                onClick={() => onAdopt("single")}
                 disabled={busy}
                 data-tip="不取证直接立项：画布剧本卡只带选题钩子与原型出处"
                 className="flex items-center gap-1.5 rounded-md border border-hairline px-3 py-2 text-xs text-text-2 transition-colors hover:bg-surface-2 disabled:opacity-50"
@@ -1067,6 +1091,7 @@ function TopicDetail({
                 {busy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                 直接认领
               </button>
+              {episodesBtn}
               <button
                 type="button"
                 onClick={onDismiss}
@@ -1085,13 +1110,14 @@ function TopicDetail({
             <>
               <button
                 type="button"
-                onClick={onAdopt}
+                onClick={() => onAdopt("single")}
                 disabled={busy}
                 className="flex items-center gap-1.5 rounded-md bg-accent px-3.5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
               >
                 {busy ? <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" /> : <Check className="h-3.5 w-3.5" />}
                 认领立项
               </button>
+              {episodesBtn}
               {!strong ? (
                 <button
                   type="button"

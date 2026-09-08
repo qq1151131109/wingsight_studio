@@ -191,11 +191,23 @@ export async function dismissTopic(id: string): Promise<boolean> {
   return r.ok;
 }
 
-/** 认领：建项目 + 选题落画布剧本卡；返回项目 id 供跳转 */
-export async function adoptTopic(id: string): Promise<{ pid: string; name: string } | null> {
-  const r = await apiFetch(`${BASE}/${id}/adopt`, { method: "POST" });
+/** 认领：建项目 + 选题落画布；mode=episodes 按分集落卡（系列：总纲 note +
+ *  每集一张剧本卡，集号 1..N）。返回项目 id 供跳转 */
+export async function adoptTopic(
+  id: string,
+  mode: "single" | "episodes" = "single",
+): Promise<{ pid: string; name: string } | null> {
+  const r = await apiFetch(`${BASE}/${id}/adopt?mode=${mode}`, { method: "POST" });
   if (!r.ok) return null;
   return r.json();
+}
+
+/** 系列选题（可「按分集落卡」）：深挖卡看 research.scale，生料系列卡看标签
+ *  （_assemble_series 产出）。单片/普通生料卡的 episodes 是段落节拍不是集。 */
+export function isSeriesTopic(t: Topic): boolean {
+  const scale = t.research?.scale;
+  if (scale === "series" || scale === "anthology") return true;
+  return t.tags.some((x) => x === "单元选集" || x === "系列网格");
 }
 
 /** 手动深挖一张观察卡（后台复查：缺口导向取证 → 证据变硬自动升级）；返回 jobId 轮询用 */
