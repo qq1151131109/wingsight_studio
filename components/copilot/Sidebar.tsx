@@ -173,6 +173,27 @@ function NullSlot(): null {
  *  页面让位宽度由 v2 实测 aside 宽度后回灌 body margin，无需我们同步） */
 const WS_WIDTH_KEY = "wingsight_sidebar_width";
 
+/** 侧栏开合记忆键：默认展开（用户拍板 2026-09-08「3」），用户手动收起后记住，
+ *  下次加载仍收起——v2 的 defaultOpen 只在挂载时当初始值，运行时没有受控
+ *  open 属性，所以持久化只能自己接（见 AssistantFab 里的观察 effect）。
+ *  ThemedSidebar 由 AuthGate 门控、只在客户端挂载，读 localStorage 无 SSR 问题 */
+const WS_OPEN_KEY = "wingsight_chat_open";
+function readChatOpenPref(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(WS_OPEN_KEY) !== "0";
+  } catch {
+    return true; // 隐私模式/禁用存储：按默认展开，不拦
+  }
+}
+function writeChatOpenPref(open: boolean): void {
+  try {
+    window.localStorage.setItem(WS_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    /* 写不进去就只影响记忆，不影响当次开合 */
+  }
+}
+
 /** 默认宽度：必须经内联 style 落地，不能只靠 globals.css 的兜底——
  *  v2 自己的 adopted stylesheet 按 `--sidebar-width`（= 它量回来的实测值）
  *  写宽度且层叠在后，文档层同分规则赢不了它；不传 width prop 后它的初值
@@ -266,6 +287,14 @@ function EmptyStateSuggestions({
 /** 关闭态的"助手"显性入口（v2 toggleButton 槽位；开着时让位给 Header 关闭钮） */
 function AssistantFab() {
   const config = useCopilotChatConfiguration();
+  const open = config?.isModalOpen;
+  // 开合记忆：这个槽位在侧栏开/关两种状态下都挂着（v2 把 toggleButton 渲染在
+  // aside 之外），所以由它观察 isModalOpen 落盘——展开/收起的所有路径（FAB、
+  // header 关闭钮、Esc、抽屉）都经 setModalOpen，一处收口
+  useEffect(() => {
+    if (typeof open !== "boolean") return;
+    writeChatOpenPref(open);
+  }, [open]);
   if (config?.isModalOpen !== false) return null;
   return (
     <button
@@ -281,6 +310,16 @@ function AssistantFab() {
 }
 
 export default function ThemedSidebar() {
+  // 外层 v2 配置（<CopilotKit> 的上下文桥）：v2 的 sidebar provider 会采纳
+  // 父级 isModalOpen（父级默认 true），所以「上次收起」必须推到父级才生效
+  const outerConfig = useCopilotChatConfiguration();
+  useEffect(() => {
+    if (!outerConfig || typeof outerConfig.isModalOpen !== "boolean") return;
+    const pref = readChatOpenPref();
+    if (outerConfig.isModalOpen !== pref) outerConfig.setModalOpen(pref);
+    // 只在挂载时推一次：之后的开合以用户操作为准（FAB/关闭钮都会同步父级）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   // 空态建议喂进 v2 core（视图经 suggestionView 槽位消费）
   const suggestionsConfig = useMemo(() => ({ suggestions: SUGGESTIONS }), []);
   useConfigureSuggestions(suggestionsConfig);
@@ -421,7 +460,8 @@ export default function ThemedSidebar() {
       <div ref={resizerRef} className="ws-chat-resizer" aria-hidden="true" />
       <CopilotSidebar
         agentId="default"
-        defaultOpen={false}
+        // 默认展开；上次手动收起过则保持收起（localStorage 记忆，见 WS_OPEN_KEY）
+        defaultOpen={readChatOpenPref()}
         position="right"
         // 故意不传 width：v2 只在 width 缺省时才挂 ResizeObserver 量 aside 实测
         // 宽度、再据此写 body 的 margin-inline-end（页面让位）。传了就把让位

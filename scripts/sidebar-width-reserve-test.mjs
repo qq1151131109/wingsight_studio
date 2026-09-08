@@ -92,7 +92,7 @@ await context.addInitScript(
   ["wingsight_studio_token", TOKEN],
 );
 const page = await context.newPage();
-await page.goto(`${WEB}/project/${PID}`, { waitUntil: "networkidle" });
+await page.goto(`${WEB}/project/${PID}`, { waitUntil: "load" });
 await page.waitForTimeout(2500);
 
 // 打开侧栏（CopilotKit 会持久化开合态，所以先探测再点关闭态入口）
@@ -228,7 +228,7 @@ const putCanvas = await api(`/projects/${PID}/canvas`, {
   }),
 });
 if (putCanvas.status !== 200) throw new Error(`PUT canvas 失败 ${putCanvas.status}`);
-await page.reload({ waitUntil: "networkidle" });
+await page.reload({ waitUntil: "load" });
 await page.waitForTimeout(2500);
 await ensureOpen();
 await page.evaluate(() =>
@@ -430,7 +430,7 @@ console.log("· 拖宽后截图 /tmp/sidebar-reserve-wide.png");
 await page.route("**/agent-service/models/image", (r) =>
   r.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
 );
-await page.reload({ waitUntil: "networkidle" });
+await page.reload({ waitUntil: "load" });
 await page.waitForTimeout(2500);
 await ensureOpen();
 const broken = await measure();
@@ -451,6 +451,55 @@ check(
 );
 await page.screenshot({ path: "/tmp/sidebar-reserve-broken-catalog.png" });
 console.log("· 目录失败态截图 /tmp/sidebar-reserve-broken-catalog.png");
+
+// ⑧ 侧栏开合记忆（默认展开；用户手动收起后跨刷新保持收起——2026-09-08 拍板）
+await page.unroute("**/agent-service/models/image");
+const OPEN_KEY = "wingsight_chat_open";
+const asideHidden = () =>
+  page.evaluate(
+    () => document.querySelector("aside.copilotKitSidebar")?.getAttribute("aria-hidden") ?? null,
+  );
+
+// ⑧a 首次访问（无记忆键）→ 默认展开
+await page.evaluate((k) => window.localStorage.removeItem(k), OPEN_KEY);
+await page.reload({ waitUntil: "load" });
+await page.waitForTimeout(2200);
+check("⑧a 无记忆时默认展开侧栏", (await asideHidden()) === "false", `aria-hidden=${await asideHidden()}`);
+
+// ⑧b 手动关闭 → 落盘 "0"
+await page.getByRole("button", { name: "关闭", exact: true }).click();
+await page.waitForTimeout(700);
+const storedClosed = await page.evaluate((k) => window.localStorage.getItem(k), OPEN_KEY);
+check(
+  "⑧b 手动关闭落盘记忆=0 且侧栏收起",
+  storedClosed === "0" && (await asideHidden()) === "true",
+  `存储=${storedClosed} aria-hidden=${await asideHidden()}`,
+);
+
+// ⑧c 刷新 → 仍收起（助手 FAB 在）
+await page.reload({ waitUntil: "load" });
+await page.waitForTimeout(2200);
+const fabVisible = await page
+  .locator('[aria-label="打开画布助手"]')
+  .isVisible()
+  .catch(() => false);
+check(
+  "⑧c 收起状态跨刷新保持（助手 FAB 在）",
+  (await asideHidden()) === "true" && fabVisible,
+  `aria-hidden=${await asideHidden()} fab=${fabVisible}`,
+);
+
+// ⑧d 点 FAB 展开 → 落盘 "1"，刷新后仍展开
+await page.locator('[aria-label="打开画布助手"]').click();
+await page.waitForTimeout(1200);
+const storedOpen = await page.evaluate((k) => window.localStorage.getItem(k), OPEN_KEY);
+await page.reload({ waitUntil: "load" });
+await page.waitForTimeout(2200);
+check(
+  "⑧d 展开落盘记忆=1 且跨刷新保持展开",
+  storedOpen === "1" && (await asideHidden()) === "false",
+  `存储=${storedOpen} aria-hidden=${await asideHidden()}`,
+);
 
 await browser.close();
 await dropProject();
