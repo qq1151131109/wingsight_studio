@@ -79,7 +79,15 @@ const mockNodes = [];
 async function respondFrontendTools() {
   // 前端工具由 LangGraph 以 END 收敛等待回传（与浏览器同契约）——
   // 探针补工具结果进消息，返回是否有待答调用（有则外层续跑下一波）。
-  const pending = toolOrder.filter((id) => !toolCalls.get(id).answered);
+  // **只答前端工具**：后端工具（read_skill/decompose_script/generate_storyboard…）
+  // 由服务端自己执行，浏览器没有它们的 handler——混发轮次里服务端 END 等前端，
+  // 后端调用当轮不执行、下一轮由 sanitize 补「本轮未执行」占位；探针若也去
+  // 答它们（旧版落到 else 分支回 {ok:true}），模型会把假结果当真
+  //（「decompose_script 只返回了 ok」就是这么来的）。
+  const isFrontend = (name) => frontendTools.some((t) => t.name === name);
+  const pending = toolOrder.filter(
+    (id) => !toolCalls.get(id).answered && isFrontend(toolCalls.get(id).name),
+  );
   for (const id of pending) {
     const tc = toolCalls.get(id);
     tc.answered = true;
@@ -87,12 +95,20 @@ async function respondFrontendTools() {
     if (tc.name === "canvas_ops") {
       let ops = [];
       try { ops = JSON.parse(tc.args).ops ?? []; } catch { /* 流式残片 */ }
-      const adds = ops.filter((o) => o.op === "add_node");
-      const createdIds = adds.map((o, i) => o.id ?? `n_probe_${++seq}_${i}`);
-      for (const [i, o] of adds.entries()) {
-        mockNodes.push({ id: createdIds[i], nodeType: o.nodeType ?? "note", title: o.title ?? "" });
+      // 保真：真实 applyOps 的 normalizeOps 拒绝缺 op 的操作（模型偶发把键
+      // 写成 type），探针不校验就等于把错 op 当成功——模型一路错到底、
+      // 断言才报「没执行」。这里照契约回错，模型下一轮能自纠
+      const bad = ops.findIndex((o) => !o || typeof o.op !== "string");
+      if (bad >= 0) {
+        result = { applied: 0, createdIds: [], errors: [`#${bad}: 缺少 op 字段`] };
+      } else {
+        const adds = ops.filter((o) => o.op === "add_node");
+        const createdIds = adds.map((o, i) => o.id ?? `n_probe_${++seq}_${i}`);
+        for (const [i, o] of adds.entries()) {
+          mockNodes.push({ id: createdIds[i], nodeType: o.nodeType ?? "note", title: o.title ?? "" });
+        }
+        result = { applied: ops.length, createdIds, errors: [] };
       }
-      result = { applied: ops.length, createdIds, errors: [] };
       agent.canvasSummary = mockNodes
         .map((n) => `- ${n.id} [${n.nodeType}] ${n.title}`)
         .join("\n");
@@ -135,14 +151,16 @@ async function respondFrontendTools() {
   return pending.length > 0;
 }
 
-async function run(userContent, label, maxWaves = 8) {
+async function run(userContent, label, maxWaves = 30) {
   if (userContent)
     agent.addMessage({ id: `u_${Date.now()}`, role: "user", content: userContent });
   text = "";
   toolCalls.clear();
   toolOrder.length = 0;
   console.log(`—— ${label} ——`);
+  let waves = 0;
   for (let wave = 0; wave < maxWaves; wave++) {
+    waves += 1;
     await agent.runAgent({
       threadId,
       tools: frontendTools,
@@ -153,6 +171,9 @@ async function run(userContent, label, maxWaves = 8) {
     const continued = await respondFrontendTools();
     if (!continued) break;
   }
+  // 波次打点：模型逐张 read_node 读资产详情时波次会涨——预算吃紧导致的
+  // 「没轮到发起调研」是探针容量问题，不是行为退化（上限 8 时 S5 曾因此假红）
+  console.log(`  （${waves}/${maxWaves} 波）`);
   console.log("  文字:", (text || "（无）").replace(/\n+/g, " ").slice(0, 260));
   return { text, calls: toolOrder.map((id) => toolCalls.get(id)) };
 }
@@ -208,6 +229,10 @@ const prefixedNotes = addNodes.filter((o) => o.nodeType === "note" && /^(场景|
 check("轮2 资产用正经卡型", assetAdds.length >= 3 && prefixedNotes.length === 0, `${assetAdds.length} 张四类卡，${prefixedNotes.length} 张前缀 note`);
 const storyboardDone = r2Names.includes("generate_storyboard") || addNodes.some((o) => o.nodeType === "shotlist") || r2Ops.some((o) => o.op === "update_node" && Array.isArray(o.rows));
 check("轮2 文字链跑到分镜表", storyboardDone, "标准链第三步 generate_storyboard/shotlist 应落地");
+// 项目自有画布快照（轮2 模型自建的卡）：S5 的「全量」断言用它们。
+// 换一组新 id 等于把画布掉包——模型按矛盾对质规则会停下问「和我建的对不上」，
+// 夹具不能制造真实产品造不出的状态（同一项目画布是持久的）
+const projectCanvas = mockNodes.map((n) => ({ ...n }));
 
 // —— S3：调研二义（资产上下文里问「走调研了吗」）——
 // a768423e2069 事故防回归：应问一句或走资产参考考据，不许抢答史实深度调研
@@ -238,27 +263,43 @@ check("S4b 不确认被放弃的调研", !r4bNames.includes("confirm_research_pl
 const madeScript4 = r4b.calls.some((c) => {
   if (c.name !== "canvas_ops") return false;
   try {
-    return JSON.parse(c.args).ops.some((o) => o.op === "add_node" && o.nodeType === "script" && (o.title ?? "").includes("曾侯乙编钟"));
-  } catch { return false; }
+    const ops = JSON.parse(c.args).ops ?? [];
+    // add_node 直接带标题，或先建空卡再 update_node 补标题都算「执行了新指令」
+    return (
+      ops.some(
+        (o) =>
+          o.op === "add_node" &&
+          o.nodeType === "script" &&
+          (o.title ?? "").includes("曾侯乙编钟"),
+      ) || ops.some((o) => o.op === "update_node" && (o.title ?? "").includes("曾侯乙编钟"))
+    );
+  } catch {
+    return false;
+  }
 });
-check("S4b 改道执行新指令", madeScript4);
+check(
+  "S4b 改道执行新指令",
+  madeScript4,
+  madeScript4
+    ? ""
+    : `canvas_ops args: ${r4b.calls
+        .filter((c) => c.name === "canvas_ops")
+        .map((c) => c.args.slice(0, 200))
+        .join(" || ") || "（无 canvas_ops 调用）"}`,
+);
 
 // —— S5：考据调研范围默认全量 ——
 // 090602 事故防回归：画布 55 个资产 agent 只挑 16 个「重点」调研，用户以为
-// 全做了。不点名范围时 research_asset_references 必须一次带上画布全部资产卡
+// 全做了。不点名范围时 research_asset_references 必须一次带上画布全部资产卡。
+// 夹具 = 轮2 模型自建的画布（同项目持久画布的真实语义）：此前用另一组
+// n_s5_* 节点掉包，模型按矛盾对质规则停下问「画布和我建的对不上」——
+// 真实产品里画布是持久的，夹具不能制造不可能状态把模型带出戏。
 mockNodes.length = 0;
-mockNodes.push(
-  { id: "n_s5_ch1", nodeType: "character", title: "黄志恒" },
-  { id: "n_s5_ch2", nodeType: "character", title: "郑林" },
-  { id: "n_s5_sc1", nodeType: "scene", title: "八仙饭店" },
-  { id: "n_s5_sc2", nodeType: "scene", title: "黑沙海滩" },
-  { id: "n_s5_pr1", nodeType: "prop", title: "司法卷宗" },
-  { id: "n_s5_co1", nodeType: "costume", title: "监狱囚服" },
+mockNodes.push(...projectCanvas.map((n) => ({ ...n })));
+agent.canvasSummary = mockNodes.map((n) => `- ${n.id} [${n.nodeType}] ${n.title}`).join("\n");
+const s5Assets = mockNodes.filter((n) =>
+  ["character", "scene", "prop", "costume"].includes(String(n.nodeType)),
 );
-agent.canvasSummary = [
-  "- n_s5_script [剧本] 八仙饭店",
-  ...mockNodes.map((n) => `- ${n.id} [${n.nodeType}] ${n.title}`),
-].join("\n");
 const r5 = await run("好，给画布上的资产做参考图考据调研吧", "S5 调研范围全量");
 const r5Research = r5.calls.filter((c) => c.name === "research_asset_references");
 const r5Ids = new Set();
@@ -268,8 +309,9 @@ for (const c of r5Research) {
   const normalized = c.args.replace(/\\"/g, '"');
   for (const m of normalized.matchAll(/"node_id"\s*:\s*"([^"]+)"/g)) r5Ids.add(m[1]);
 }
-const allSix = ["n_s5_ch1", "n_s5_ch2", "n_s5_sc1", "n_s5_sc2", "n_s5_pr1", "n_s5_co1"].every((id) => r5Ids.has(id));
-check("S5 未点名范围 → 一次带全部资产", allSix, `覆盖 ${r5Ids.size}/6（${[...r5Ids].join(",")}；args 长度 ${r5Research.map((c) => c.args.length).join(",") || "无调用"}）——不许自挑「重点」子集`);
+const wantIds = s5Assets.map((n) => n.id);
+const allCovered = wantIds.length >= 3 && wantIds.every((id) => r5Ids.has(id));
+check("S5 未点名范围 → 一次带全部资产", allCovered, `覆盖 ${wantIds.filter((id) => r5Ids.has(id)).length}/${wantIds.length}（${[...r5Ids].join(",")}；args 长度 ${r5Research.map((c) => c.args.length).join(",") || "无调用"}）——不许自挑「重点」子集`);
 
 const pass = results.every((r) => r.ok);
 console.log(`\n${pass ? "✓✓ 意图路由实测通过" : "✗ 意图路由有环节未过"}（${results.filter((r) => r.ok).length}/${results.length}）`);

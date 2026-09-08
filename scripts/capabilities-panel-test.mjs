@@ -84,11 +84,11 @@ check("聊天 header「技能」按钮可见", await btn.isVisible().catch(() =>
 await btn.click();
 check("技能面板打开", await page.getByText("技能", { exact: true }).first().isVisible({ timeout: 5000 }).catch(() => false));
 
-// 2) 纯技能列表：3 份 SKILL.md；生成管线（工具）不再进列表
+// 2) 纯技能列表：SKILL.md 手册；生成管线（工具）不再进列表
 const waitVisible = (loc, ms = 6000) =>
   loc.waitFor({ state: "visible", timeout: ms }).then(() => true).catch(() => false);
 check("技能在列（asset-aware-generation）", await waitVisible(page.getByText("asset-aware-generation")));
-check("技能在列（canvas-editing）", await waitVisible(page.getByText("canvas-editing")));
+check("技能在列（canvas-context）", await waitVisible(page.getByText("canvas-context")));
 check("类型徽标已移除（无「手册」「指令」标签）",
   (await page.getByText("手册", { exact: true }).count()) === 0 && (await page.getByText("指令", { exact: true }).count()) === 0);
 
@@ -170,11 +170,11 @@ if (await createBtn.isVisible().catch(() => false)) {
     force: true,
   });
   // 通知 agent 重扫（调一次编辑端点触发 refresh 即可）
-  await fetch(`${BASE}/agent-service/capabilities/skills/canvas-editing`, {
+  await fetch(`${BASE}/agent-service/capabilities/skills/canvas-context`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
     body: JSON.stringify({
-      body: readFileSync(new URL("../agent/skills/canvas-editing/SKILL.md", import.meta.url), "utf8"),
+      body: readFileSync(new URL("../agent/skills/canvas-context/SKILL.md", import.meta.url), "utf8"),
     }),
   });
 }

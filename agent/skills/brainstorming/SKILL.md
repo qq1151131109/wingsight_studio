@@ -90,7 +90,7 @@ description: 把模糊的创作想法打磨成设计与规格——开新片、�
 6. **写规格** —— 落到画布上一张《片名·策划》卡（见「设计之后」）
 7. **规格自审** —— 快速过一遍占位符、矛盾、含糊、范围（见下）
 8. **导演审规格** —— 继续之前请导演过目策划卡内容
-9. **交接执行** —— 后续按 canvas-editing / asset-aware-generation 等手册铺开
+9. **交接执行** —— 后续按 canvas-context / asset-aware-generation 等手册铺开
 
 ## 流程图
 
@@ -224,7 +224,7 @@ digraph brainstorming {
 
 **执行：**
 
-- 交接执行：按 canvas-editing / asset-aware-generation 等手册，剧本 →
+- 交接执行：按 canvas-context / asset-aware-generation 等手册，剧本 →
   分镜 → 资产 → 出图逐步铺开
 - 不要跳步直接批量出图
 
