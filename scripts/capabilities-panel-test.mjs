@@ -87,13 +87,17 @@ check("技能面板打开", await page.getByText("技能", { exact: true }).firs
 // 2) 纯技能列表：SKILL.md 手册；生成管线（工具）不再进列表
 const waitVisible = (loc, ms = 6000) =>
   loc.waitFor({ state: "visible", timeout: ms }).then(() => true).catch(() => false);
-check("技能在列（asset-aware-generation）", await waitVisible(page.getByText("asset-aware-generation")));
-check("技能在列（canvas-context）", await waitVisible(page.getByText("canvas-context")));
+// 行按钮可访问名 = 技能名 + 描述；描述里常引用别的技能名（character-design 提到
+// asset-aware-generation），裸文本会撞多行 → 锚定行首匹配
+const skillRow = (name) =>
+  page.getByRole("button", { name: new RegExp(`^${name}\\b`) });
+check("技能在列（asset-aware-generation）", await waitVisible(skillRow("asset-aware-generation")));
+check("技能在列（canvas-context）", await waitVisible(skillRow("canvas-context")));
 check("类型徽标已移除（无「手册」「指令」标签）",
   (await page.getByText("手册", { exact: true }).count()) === 0 && (await page.getByText("指令", { exact: true }).count()) === 0);
 
 // 3) 展开看手册全文
-await page.getByRole("button", { name: /asset-aware-generation/ }).click();
+await skillRow("asset-aware-generation").click();
 check("展开显示 SKILL.md 全文", await waitVisible(page.getByText("# 资产感知生成"), 3000));
 
 // 4)「按此技能处理」→ 面板关 + 点名文本进输入条
