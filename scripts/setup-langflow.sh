@@ -20,9 +20,16 @@ command -v uv >/dev/null 2>&1 || { echo "✗ 需要 uv（https://docs.astral.sh/
 mkdir -p logs
 
 # ---------- 1) 环境 ----------
-if [ ! -x langflow/.venv/bin/langflow ]; then
-  echo "… uv sync 建 langflow/.venv（首次较慢）"
-  (cd langflow && uv sync)
+# venv 钉 3.12：flow 内嵌代码按 3.12 语法写（与 agent/本地一致）。服务器
+# 首装时 uv 曾挑系统默认 3.10，PEP 701 嵌套引号 f-string 本地全绿、服务器
+# 加载即语法错整 flow 500（2026-09-08 全线出图事故）——存量 3.10 venv
+# 在此强制重建对齐
+if [ ! -x langflow/.venv/bin/langflow ] \
+   || ! langflow/.venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' \
+   || [ "$(langflow/.venv/bin/python -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')" != "3.12" ]; then
+  echo "… uv sync 建 langflow/.venv（--python 3.12，首次/重建较慢）"
+  rm -rf langflow/.venv
+  (cd langflow && uv sync --python 3.12)
 fi
 
 # ---------- 1.5) 平台扩展包（wingsight 自有 bundle，editable 安装） ----------
