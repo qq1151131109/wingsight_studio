@@ -13,6 +13,7 @@ import {
   NODE_META,
   findFreePosition,
   inheritEpisodeId,
+  noteFootprintFor,
   useCanvasStore,
   type ShotRow,
   type WingNodeData,
@@ -487,22 +488,30 @@ function planBatchLayout(ops: CanvasOp[]): BatchLayout {
 
   let groupLeft = anchor.x;
   let rowY = anchor.y;
+  /** 建卡实际足迹：note 按正文长度分档（与 add_node 落卡尺寸同源）——布局
+   *  格子必须与实际卡面同尺寸，否则长文 note 会压到邻卡身上 */
+  const footprintOf = (op: Extract<CanvasOp, { op: "add_node" }>) =>
+    op.nodeType === "note"
+      ? noteFootprintFor(op.body ?? "")
+      : (NODE_FOOTPRINT[op.nodeType] ?? NODE_FOOTPRINT.note);
   /** 混类型网格用批内最大占位做统一单元格（不同 footprint 逐卡错位会散） */
+  const maxFootprint = (adds: Extract<CanvasOp, { op: "add_node" }>[]) => {
+    const fps = adds.map(footprintOf);
+    return {
+      w: Math.max(...fps.map((f) => f.w)),
+      h: Math.max(...fps.map((f) => f.h)),
+    };
+  };
   const placeGrid = (
-    items: { i: number; nodeType: WingNodeType }[],
+    items: { i: number }[],
     origin: { x: number; y: number },
     cols: number,
+    fp: { w: number; h: number },
   ) => {
-    const w = Math.max(
-      ...items.map((it) => (NODE_FOOTPRINT[it.nodeType] ?? NODE_FOOTPRINT.note).w),
-    );
-    const h = Math.max(
-      ...items.map((it) => (NODE_FOOTPRINT[it.nodeType] ?? NODE_FOOTPRINT.note).h),
-    );
     items.forEach((it, k) => {
       positions.set(it.i, {
-        x: origin.x + (k % cols) * (w + 60),
-        y: origin.y + Math.floor(k / cols) * (h + 54),
+        x: origin.x + (k % cols) * (fp.w + 60),
+        y: origin.y + Math.floor(k / cols) * (fp.h + 54),
       });
     });
   };
@@ -510,7 +519,7 @@ function planBatchLayout(ops: CanvasOp[]): BatchLayout {
   for (const kind of LAYOUT_KIND_ORDER) {
     const items = autoAdds.filter((a) => a.op.nodeType === kind);
     if (items.length === 0) continue;
-    const fp = NODE_FOOTPRINT[kind];
+    const fp = maxFootprint(items.map((it) => it.op));
     const cols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(items.length))));
     const kw = cols * (fp.w + 60) - 60;
     const kh = Math.ceil(items.length / cols) * (fp.h + 54) - 54;
@@ -536,20 +545,20 @@ function planBatchLayout(ops: CanvasOp[]): BatchLayout {
   }
 
   // 非资产卡：带尾普通网格（无边框——笔记/媒体等不是「一格一资产」的语义）
-  const others = autoAdds
-    .filter((a) => !LAYOUT_KIND_ORDER.includes(a.op.nodeType))
-    .map((a) => ({ i: a.i, nodeType: a.op.nodeType }));
-  if (others.length > 0) {
-    const fp0 = NODE_FOOTPRINT[others[0].nodeType] ?? NODE_FOOTPRINT.note;
-    const cols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(others.length))));
+  const otherAdds = autoAdds.filter(
+    (a) => !LAYOUT_KIND_ORDER.includes(a.op.nodeType),
+  );
+  if (otherAdds.length > 0) {
+    const fp0 = maxFootprint(otherAdds.map((a) => a.op));
+    const cols = Math.min(3, Math.max(1, Math.ceil(Math.sqrt(otherAdds.length))));
     const kw = cols * (fp0.w + 60) - 60;
-    const kh = Math.ceil(others.length / cols) * (fp0.h + 54) - 54;
+    const kh = Math.ceil(otherAdds.length / cols) * (fp0.h + 54) - 54;
     const origin = findFreePosition(
       useCanvasStore.getState().nodes,
       { x: groupLeft, y: rowY },
       { w: kw, h: kh },
     );
-    placeGrid(others, origin, cols);
+    placeGrid(otherAdds.map((a) => ({ i: a.i })), origin, cols, fp0);
   }
   return { positions, groupedKinds };
 }
@@ -679,18 +688,22 @@ export function applyOps(rawOps: unknown): OpResult {
             errors.push(`add_node: ${noIssue.message}`);
             break;
           }
+          // 建卡初始尺寸三来源必须合并成一个 style 对象（分开 spread 会互相
+          // 覆盖）：分组框给显式默认（否则零尺寸不可见）；note 按正文长度分档
+          // （策划案/资料全文别挤在便签框里）；stagger 只加级联入场 CSS 变量
+          const noteFp =
+            op.nodeType === "note" ? noteFootprintFor(op.body ?? "") : null;
+          const nodeStyle: CSSProperties = {
+            ...(op.nodeType === "group" ? { width: 480, height: 360 } : {}),
+            ...(noteFp ? { width: noteFp.w, height: noteFp.h } : {}),
+            ...(stagger > 0
+              ? ({ "--ws-stagger": `${stagger}ms` } as CSSProperties)
+              : {}),
+          };
           const id = live.addNode({
             id: op.id,
             position: pos,
-            // agent 直接建空分组时给默认尺寸，否则零尺寸不可见
-            ...(op.nodeType === "group"
-              ? { style: { width: 480, height: 360 } }
-              : {}),
-            ...(stagger > 0
-              ? {
-                  style: { "--ws-stagger": `${stagger}ms` } as CSSProperties,
-                }
-              : {}),
+            ...(Object.keys(nodeStyle).length ? { style: nodeStyle } : {}),
             data: {
               nodeType: op.nodeType,
               // 标题缺省留空：占位文案当真名会污染资产名单/@引用（agent

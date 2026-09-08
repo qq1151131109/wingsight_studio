@@ -123,5 +123,34 @@ const s9 = node("S_9");
 check("显式 position 按坐标放且不进组框", g2.errors.length === 0 && s9?.position.x === 5000 && s9?.parentId === undefined,
   `pos=${JSON.stringify(s9?.position)} parent=${s9?.parentId}`);
 
+// —— 文本卡建卡尺寸分档（2026-09-09 090803 事故：1302 字策划挤在 280×170 便签框）——
+// note 足迹是便签时代的尺寸，现在 note 承载策划案/上传文档全文 → 按正文长度分档；
+// 布局格子必须与落卡尺寸同源，否则长文 note 会互相压
+const longBody = "字".repeat(500);
+const hugeBody = "字".repeat(2500);
+const d1 = applyOps([
+  { op: "add_node", nodeType: "note", id: "N_short", title: "短便签", body: "三行以内" },
+  { op: "add_node", nodeType: "note", id: "N_long", title: "策划稿", body: longBody },
+  { op: "add_node", nodeType: "note", id: "N_huge", title: "长资料", body: hugeBody },
+]);
+check("三张 note 全部应用", d1.applied === 3 && d1.errors.length === 0, d1.errors.join("|"));
+const sizeOf = (id) => {
+  const n = node(id);
+  return { w: Number(n?.style?.width), h: Number(n?.style?.height) };
+};
+check("短便签保持便签尺寸 280×170", sizeOf("N_short").w === 280 && sizeOf("N_short").h === 170, JSON.stringify(sizeOf("N_short")));
+check("长文 note 落文档尺寸 480×360", sizeOf("N_long").w === 480 && sizeOf("N_long").h === 360, JSON.stringify(sizeOf("N_long")));
+check("超长 note 落 560×480", sizeOf("N_huge").w === 560 && sizeOf("N_huge").h === 480, JSON.stringify(sizeOf("N_huge")));
+// 批量布局按分档尺寸排格：三张长文 note 的 y 或 x 间距不得小于卡高/卡宽（不叠卡）
+const ys = ["N_long", "N_huge"].map((id) => node(id).position.y);
+const xs = ["N_long", "N_huge"].map((id) => node(id).position.x);
+check("分档 note 的布局格子跟着尺寸走（不叠卡）",
+  new Set(ys).size === 2 || new Set(xs).size === 2, `x=${xs.join(",")} y=${ys.join(",")}`);
+// style 三来源合并：批量建卡（stagger>0）的卡不得丢掉分档尺寸（分开 spread 会覆盖）
+const longNode = node("N_long");
+check("批量建卡（stagger>0）分档尺寸与级联变量共存",
+  sizeOf("N_long").w === 480 && typeof longNode?.style?.["--ws-stagger"] === "string",
+  JSON.stringify(longNode?.style));
+
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

@@ -418,6 +418,17 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   group: { w: 480, h: 360 },
 };
 
+/** 文本卡（note）的建卡尺寸分档（2026-09-09 090803 项目事故：策划案/上传文档
+ *  全文挤在 280×170 的便签框里滚动——足迹是便签时代的，用途已是文档）。
+ *  按正文长度给文档尺寸；短便签保持原样。只影响**建卡初始尺寸**：已有卡片、
+ *  用户手动缩放、agent update_node 都不动。 */
+export function noteFootprintFor(body: string): { w: number; h: number } {
+  const n = (body ?? "").trim().length;
+  if (n >= 2000) return { w: 560, h: 480 };
+  if (n >= 300) return { w: 480, h: 360 };
+  return NODE_FOOTPRINT.note;
+}
+
 /** 卡片创建/装载时的默认尺寸（resize 前提：包装层有显式宽高，卡片内容撑满）。
  *  宽高缺一个补一个：老卡只有宽没有高，会塌成一条（内容高度） */
 function withDefaultSize(n: WingNode): WingNode {

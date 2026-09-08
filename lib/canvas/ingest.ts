@@ -11,6 +11,7 @@ import {
   findFreePosition,
   NODE_FOOTPRINT,
   nodeSize,
+  noteFootprintFor,
   useCanvasStore,
   type WingNode,
   type WingNodeData,
@@ -29,26 +30,37 @@ export function belowContentAnchor(nodes: WingNode[]): { x: number; y: number } 
   return { x: minLeft, y: maxBottom + 48 };
 }
 
-/** 在锚点找空位建卡；无项目（离线/未激活）返回 null，调用方静默跳过 */
+/** 在锚点找空位建卡；无项目（离线/未激活）返回 null，调用方静默跳过。
+ *  size 缺省用类型足迹；传了就按它落位（长文档走文档尺寸，见 noteFootprintFor） */
 export function addCardAt(
   anchor: { x: number; y: number },
   data: WingNodeData,
+  size?: { w: number; h: number },
 ): string | null {
   const st = useCanvasStore.getState();
   if (!st.projectId) return null;
-  const fp = NODE_FOOTPRINT[data.nodeType] ?? NODE_FOOTPRINT.note;
+  const fp = size ?? NODE_FOOTPRINT[data.nodeType] ?? NODE_FOOTPRINT.note;
   const pos = findFreePosition(st.nodes, anchor, { w: fp.w, h: fp.h });
-  return st.addNode({ position: pos, data });
+  return st.addNode({
+    position: pos,
+    data,
+    ...(size ? { style: { width: size.w, height: size.h } } : {}),
+  });
 }
 
-/** 聊天上传的文档（doc/pdf/rtf/文本）→ 资料卡：正文=提取全文，标题=文件名 */
+/** 聊天上传的文档（doc/pdf/rtf/文本）→ 资料卡：正文=提取全文，标题=文件名。
+ *  长文按分档给文档尺寸——全文要塞得进卡（此前 280×170 便签框装 150KB 剧本） */
 export function addDocCard(name: string, text: string): string | null {
   const title = name.replace(/\.[^.]+$/, "").trim().slice(0, 60) || "资料";
-  return addCardAt(belowContentAnchor(useCanvasStore.getState().nodes), {
-    nodeType: "note",
-    title,
-    body: text,
-  });
+  return addCardAt(
+    belowContentAnchor(useCanvasStore.getState().nodes),
+    {
+      nodeType: "note",
+      title,
+      body: text,
+    },
+    noteFootprintFor(text),
+  );
 }
 
 /** 媒体（聊天上传成功 / 素材库拖入）→ image/video/audio 卡 */
