@@ -8,7 +8,7 @@ import {
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from "lucide-react";
-import { summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
+import { nodesOfEpisode, summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
 import { declaredAssetType, type SheetAssetType } from "@/lib/canvas/genContract";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
@@ -831,30 +831,35 @@ export default function CanvasAgentBridge() {
   useCopilotAction({
     name: "canvas_query",
     description:
-      "检索画布节点，返回 id/类型/标题/状态/媒体URL 索引行。摘要没列出或不知道节点 id 时用（不要按 n_xxx 格式猜 id）。出图找参考图用 resourceOnly:true（返回带图/视频/音频卡及其 URL）。",
+      "检索画布节点，返回 id/类型/标题/状态/媒体URL 索引行。摘要没列出或不知道节点 id 时用——节点 id 只能取自画布摘要或本工具返回，n_xxx 的时间戳段不可推算，猜必错。出图找参考图用 resourceOnly:true（返回带图/视频/音频卡及其 URL）。多集项目用 episodeId=剧本卡 id 查本集全部卡（含该剧本卡本身）。",
     available: "remote",
     parameters: [
       { name: "query", type: "string", required: false, description: "标题/正文关键词（模糊匹配）" },
       { name: "types", type: "string[]", required: false, description: "节点类型过滤，如 [\"character\",\"shotlist\"]" },
       { name: "status", type: "string", required: false, description: "状态过滤：loading / error / ready" },
       { name: "resourceOnly", type: "boolean", required: false, description: "只回带媒体的卡（图/视频/音频）" },
+      { name: "episodeId", type: "string", required: false, description: "只回该集（剧本卡 id）的卡" },
     ],
     handler: ({
       query,
       types,
       status,
       resourceOnly,
+      episodeId,
     }: {
       query?: string;
       types?: string[];
       status?: string;
       resourceOnly?: boolean;
+      episodeId?: string;
     }) => {
       const st = useCanvasStore.getState();
       const q = (query ?? "").trim().toLowerCase();
+      const ep = (episodeId ?? "").trim();
       const typeSet = Array.isArray(types) && types.length > 0 ? new Set(types.map(String)) : null;
       const LIMIT = 50;
-      const hit = st.nodes.filter((n) => {
+      const pool = ep ? nodesOfEpisode(st.nodes, ep) : st.nodes;
+      const hit = pool.filter((n) => {
         if (typeSet && !typeSet.has(String(n.data.nodeType))) return false;
         if (status && String(n.data.status ?? "") !== status) return false;
         const hasMedia = Boolean(n.data.imageUrl || n.data.videoUrl || n.data.audioUrl);
@@ -1283,11 +1288,12 @@ export default function CanvasAgentBridge() {
     description:
       "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝），取值与形状：每个元素形如 " +
       '{op:"add_node",nodeType:"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（资产四类 character/scene/prop/costume 是正经卡型——场景/道具/服饰不要建成 note 加标题前缀；分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl（多图候选加 imageUrls 数组）；shotlist 可带 rows 行数组（行字段 rid/action/shotSize/cameraMove/duration/lighting/sound/dialogue/assets:[资产名]）；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
-      '{op:"update_node",id,title,body,imageUrl}（**给卡挂图片唯一通道 = imageUrl 字段**：用户上传的图/已有素材 URL 填进来即上卡显示，多图加 imageUrls 数组成候选；**禁止把图片 URL 写进 body 正文**——正文是设定文本，URL 混进去会被后续出图当事实注入提示词，卡面上也看不到图；分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
+      '{op:"update_node",id,title,body,imageUrl,episodeId}（**给卡挂图片唯一通道 = imageUrl 字段**：用户上传的图/已有素材 URL 填进来即上卡显示，多图加 imageUrls 数组成候选；**禁止把图片 URL 写进 body 正文**——正文是设定文本，URL 混进去会被后续出图当事实注入提示词，卡面上也看不到图；分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
       "**布局：建卡一律不传 position**——系统自动在现有内容下方按类型分组排版（角色/场景/道具/服饰各收进同名组框、组内网格，与剧本拆解的资产带同款）；只有用户明确要求摆到特定位置时才传 position（此时不参与自动分组）。" +
+      "**多集项目（一张剧本卡 = 一集）**：每集一张 script 卡；该集的分镜表/镜头图/视频/成片用 episodeId=该剧本卡 id 归属（分镜表出图/出视频落卡自动继承，不必逐卡手写；update_node 传 episodeId 可改归属）。**资产卡不要带 episodeId**——角色/场景/道具/服饰跨集共享，只拆一次。画布摘要里剧本卡行显示「本集：…」统计、产物卡行尾带 ⟨集名⟩。" +
       "**卡面正文是设定数据不是状态日志**：资产卡的 body/description 只写外观与设定事实——出图成败用聊天回复汇报、用 status/errorMessage 字段表达，禁止把「已生成/出图失败/已标记」之类叙述追加进正文（正文会被后续出图当事实注入提示词，状态残留永久污染生成）。" +
       "复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，无 error 再应用。" +
       "可以在一批里执行多个操作。",

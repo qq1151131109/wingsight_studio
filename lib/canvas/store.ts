@@ -202,6 +202,10 @@ export interface WingNodeData {
   duration?: string;
   /** storyboard 卡：台词 / 旁白 */
   dialogue?: string;
+  /** 归属的「集」= 所属剧本卡的 nodeId（一张剧本卡 = 一集）。产物卡
+   *  （分镜表/图片/视频/音频/合成/分镜）在创建时自动继承，资产卡不带
+   *  （跨集共享）。见 EPISODE_MEMBER_TYPES / inheritEpisodeId */
+  episodeId?: string;
   [key: string]: unknown;
 }
 
@@ -1482,6 +1486,71 @@ export const NODE_META: Record<
   compare: { label: "对比", dot: "var(--color-accent-2)", hint: "两张图滑杆对比（连线上游）" },
 };
 
+/** 「集内产物」卡型：这些卡可归属到某张剧本卡（一张剧本卡 = 一集）。
+ *  资产四类不在此列（跨集共享，纪录片一致性的关键）；note/script/research
+ *  也不归属（剧本卡自己就是集）。 */
+export const EPISODE_MEMBER_TYPES = new Set<WingNodeType>([
+  "shotlist",
+  "image",
+  "video",
+  "audio",
+  "compose",
+  "storyboard",
+]);
+
+/** 卡的归属集 id：剧本卡自己就是集（返回自身 id）；产物卡取 data.episodeId。 */
+export function episodeIdOf(n: WingNode): string | null {
+  const d = n.data as WingNodeData;
+  if (d.nodeType === "script") return n.id;
+  const e = typeof d.episodeId === "string" ? d.episodeId : "";
+  return e || null;
+}
+
+/** 出生继承：从来源卡推导新建卡的归属集（用户/agent 都不用声明）。
+ *  来源是剧本卡 → 它自己；来源是产物卡 → 它的集；非产物卡型不归属。 */
+export function inheritEpisodeId(
+  src: WingNode | undefined,
+  type: WingNodeType,
+): string | undefined {
+  if (!src || !EPISODE_MEMBER_TYPES.has(type)) return undefined;
+  return episodeIdOf(src) ?? undefined;
+}
+
+const EPISODE_STAT_LABEL: [WingNodeType, string][] = [
+  ["shotlist", "分镜表"],
+  ["image", "镜头图"],
+  ["video", "视频"],
+  ["audio", "音频"],
+  ["compose", "成片"],
+  ["storyboard", "分镜"],
+];
+
+/** 某集（剧本卡）的全部卡：该剧本卡本身 + 所有 episodeId 指向它的产物卡。
+ *  canvas_query 的 episodeId 过滤与「下载本集」共用。 */
+export function nodesOfEpisode(nodes: WingNode[], episodeId: string): WingNode[] {
+  const ep = (episodeId ?? "").trim();
+  if (!ep) return [];
+  return nodes.filter(
+    (n) => n.id === ep || (n.data as WingNodeData).episodeId === ep,
+  );
+}
+
+/** 本集产物统计（读时计算，不落字段）：剧本卡 footer 与画布摘要共用。
+ *  空集返回空串（单集项目不显示噪声）。 */
+export function episodeStatsLine(nodes: WingNode[], episodeId: string): string {
+  const counts = new Map<string, number>();
+  for (const n of nodes) {
+    const d = n.data as WingNodeData;
+    if (d.episodeId !== episodeId) continue;
+    const t = String(d.nodeType ?? "");
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  }
+  const parts = EPISODE_STAT_LABEL.filter(([t]) => (counts.get(t) ?? 0) > 0).map(
+    ([t, label]) => `${label} ${counts.get(t)}`,
+  );
+  return parts.join(" · ");
+}
+
 /** 画布摘要（给 agent 的读通道，索引+按需拉取范式：头部计数/警告/版本恒在，
  * 锚点卡置顶永不丢，节点多时超预算部分明示走 canvas_query——影策
  * canvas-context 的 buildCanvasContext 同款思路，避免大画布丢行失明） */
@@ -1524,6 +1593,15 @@ export function summarizeCanvas(
   const rank = (n: WingNode) =>
     anchorTypes.has(n.data.nodeType) ? 0 : selectedIds.includes(n.id) ? 1 : 2;
   const ordered = [...nodes].sort((a, b) => rank(a) - rank(b));
+
+  // 集归属（一张剧本卡 = 一集）：剧本卡行给「本集产物」统计，产物卡行尾带
+  // ⟨集名⟩ 标记——agent 不用额外查询就知道哪张卡属于哪一集
+  const episodeTitles = new Map<string, string>();
+  for (const n of nodes) {
+    if (n.data.nodeType === "script") {
+      episodeTitles.set(n.id, (n.data.title ?? "").slice(0, 6) || "未命名");
+    }
+  }
 
   // 行构造（withBody=false 用于超预算降级：先全省正文再保留行）
   const nodeLine = (n: WingNode, withBody: boolean): string => {
@@ -1570,7 +1648,21 @@ export function summarizeCanvas(
       n.data.nodeType === "research" && n.data.researchId
         ? `（调研卷宗 ${n.data.researchId}）`
         : "";
-    return `- ${n.id} [${meta.label}] ${title}${genNote}${panoNote}${mediaTag}${researchNote}${shot}${rowCount}${kids}${body}${sel}`;
+    // 集：剧本卡=集本体（给产物统计），产物卡带归属集名（多集项目才有信号）
+    const epNote =
+      n.data.nodeType === "script"
+        ? (() => {
+            const s = episodeStatsLine(nodes, n.id);
+            return s ? `（本集：${s}）` : "";
+          })()
+        : "";
+    const epMark =
+      n.data.nodeType !== "script" &&
+      typeof n.data.episodeId === "string" &&
+      episodeTitles.has(n.data.episodeId)
+        ? `⟨${episodeTitles.get(n.data.episodeId)}⟩`
+        : "";
+    return `- ${n.id} [${meta.label}] ${title}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${body}${sel}`;
   };
 
   // 连线列清单设上限：大画布连线行会吃光预算（旧版连线永不丢行，

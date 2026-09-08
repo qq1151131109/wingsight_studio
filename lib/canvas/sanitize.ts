@@ -19,6 +19,8 @@ export interface SanitizeResult {
   removedNodes: number;
   removedEdges: number;
   fixedParents: number;
+  /** 悬空 episodeId（所属剧本卡已删）清空归属的卡数 */
+  fixedEpisodes: number;
   /** 遗留 looks[] 迁移拆出的 Look 图片卡数（一张卡一张图） */
   migratedLooks: number;
   /** 存量镜头图补参考：补写 refIds 的图卡数（参考连线另计） */
@@ -68,17 +70,28 @@ export function sanitizeCanvas(
   const seenIds = new Set<string>();
   let removedNodes = 0;
   let fixedParents = 0;
-  for (const n of nodes) {
-    if (!n || typeof n.id !== "string" || typeof n.data?.nodeType !== "string") {
+  let fixedEpisodes = 0;
+  for (const raw of nodes) {
+    if (!raw || typeof raw.id !== "string" || typeof raw.data?.nodeType !== "string") {
       removedNodes += 1;
       continue;
     }
-    if (seenIds.has(n.id)) {
+    if (seenIds.has(raw.id)) {
       // 重复 id（多会话竞态/重放）：React key 唯一性要求，保留首个
       removedNodes += 1;
       continue;
     }
-    seenIds.add(n.id);
+    seenIds.add(raw.id);
+    let n = raw;
+    // 悬空 episodeId（所属剧本卡已删）：清归属——否则摘要/按集下载指向不存在的集
+    if (
+      typeof n.data.episodeId === "string" &&
+      n.data.episodeId &&
+      !ids.has(n.data.episodeId)
+    ) {
+      n = { ...n, data: { ...n.data, episodeId: undefined } };
+      fixedEpisodes += 1;
+    }
     if (n.parentId && !ids.has(n.parentId)) {
       // 组框丢失的孤儿卡：脱离分组（坐标按绝对值近似处理，交给用户微调）
       const { parentId: _p, extent: _e, ...rest } = n;
@@ -399,6 +412,7 @@ export function sanitizeCanvas(
     removedNodes,
     removedEdges,
     fixedParents,
+    fixedEpisodes,
     migratedLooks,
     fixedShotRefs,
     strippedTitles,

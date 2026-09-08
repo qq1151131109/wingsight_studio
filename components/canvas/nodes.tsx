@@ -84,8 +84,11 @@ import {
   NODE_META,
   SHOT_SIZES,
   absolutePosition,
+  episodeStatsLine,
   findFreePosition,
+  inheritEpisodeId,
   nodeSize,
+  nodesOfEpisode,
   useCanvasStore,
   type NodeDataUpdateOpts,
   type ShotRow,
@@ -116,6 +119,11 @@ import {
 } from "@/lib/canvas/shotRefs";
 import { findModelOption, saneGen, saneVideoGen, useImageModels, useVideoModels } from "@/lib/imagegen";
 import { copyImageToClipboard, downloadMedia } from "@/lib/download";
+import {
+  bundleZipName,
+  collectMediaEntries,
+  downloadMediaBundle,
+} from "@/lib/canvas/bundleDownload";
 import { downloadBlobFile, mergeImagesToGrid } from "@/lib/canvas/gridMerge";
 import { showToast } from "@/lib/toast";
 import { reportError } from "@/lib/error-dialog";
@@ -228,10 +236,17 @@ function createConnectedNode(sourceId: string, type: WingNodeType) {
     { x: abs.x + nodeSize(src).w + 80, y: abs.y },
     { w: fp.w, h: fp.h },
   );
+  const ep = inheritEpisodeId(src, type);
   const id = st.addNode({
     position: pos,
     // 标题留空（占位符引导输入）：hint 文案当真名会污染资产名单/@引用/全名匹配
-    data: { nodeType: type, title: "", body: "" },
+    data: {
+      nodeType: type,
+      title: "",
+      body: "",
+      // 出生继承：从剧本卡建产物卡（分镜表/图/视频…）自动挂到本集
+      ...(ep ? { episodeId: ep } : {}),
+    },
   });
   st.connect({ source: sourceId, target: id });
   useCanvasStore.getState().selectNodes([id]);
@@ -254,9 +269,10 @@ function createUpstreamNode(targetId: string, type: WingNodeType) {
     { x: abs.x - 80 - fp.w, y: abs.y },
     { w: fp.w, h: fp.h },
   );
+  const ep = inheritEpisodeId(tgt, type);
   const id = st.addNode({
     position: pos,
-    data: { nodeType: type, title: "", body: "" },
+    data: { nodeType: type, title: "", body: "", ...(ep ? { episodeId: ep } : {}) },
   });
   st.connect({ source: id, target: targetId });
   useCanvasStore.getState().selectNodes([id]);
@@ -2065,6 +2081,12 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   const d = data as WingNodeData;
   const nodes = useCanvasStore((s) => s.nodes);
   const edges = useCanvasStore((s) => s.edges);
+  // 本集产物统计（读时计算，不落字段）：多集项目里让「这张剧本卡 = 一集」看得见
+  const epLine = useMemo(() => episodeStatsLine(nodes, id), [nodes, id]);
+  const scriptCount = useMemo(
+    () => nodes.filter((n) => n.data.nodeType === "script").length,
+    [nodes],
+  );
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
   const [fillingAssets, setFillingAssets] = useState(false);
@@ -2203,6 +2225,8 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     // 本卡选的文本模型一并带过去（分镜表卡可再改）
     useCanvasStore.getState().updateNodeData(tid, {
       autoGenerate: true,
+      // 本卡就是「集」：分镜表出生即归属本集（一张剧本卡 = 一集）
+      episodeId: id,
       ...((d.textModel ?? "").trim() ? { textModel: d.textModel } : {}),
     });
     window.dispatchEvent(
@@ -2217,6 +2241,34 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     const title = (d.title || "").trim() || "剧本";
     if (format === "docx") void exportDocxFile(title, textToDocxBlocks(title, text));
     else exportTextFile(title, text, format);
+  };
+
+  /** 下载本集媒体：归属本集（episodeId=本卡）的图/视频/音频打包成 zip。
+   *  多集项目按集交付（一集一个包），不混进其他集。 */
+  const downloadEpisode = () => {
+    const st = useCanvasStore.getState();
+    const ids = nodesOfEpisode(st.nodes, id).map((n) => n.id);
+    const entries = collectMediaEntries(st.nodes, ids);
+    if (entries.length === 0) {
+      showToast("本集还没有可下载的媒体（先出图/出视频）");
+      return;
+    }
+    void trackEvent("canvas.episode-download", { count: entries.length });
+    showToast(`正在打包本集 ${entries.length} 个媒体…`);
+    void downloadMediaBundle({
+      entries,
+      zipName: bundleZipName(`${st.projectName}-${(d.title || "本集").slice(0, 20)}`),
+    })
+      .then((r) =>
+        showToast(
+          r.failed.length
+            ? `已下载 ${r.ok} 个文件，${r.failed.length} 个拉取失败跳过`
+            : `已下载 ${r.ok} 个文件`,
+        ),
+      )
+      .catch((exc: unknown) =>
+        showToast(`下载失败：${exc instanceof Error ? exc.message : String(exc)}`),
+      );
   };
 
   // 管线动作上浮到悬浮工具条（图片/资产卡同范式），footer 只留 字数+导出
@@ -2281,6 +2333,16 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       >
         <Maximize2 className="h-3.5 w-3.5" />
       </ToolBtn>
+      {scriptCount >= 2 ? (
+        <ToolBtn
+          title="下载本集媒体：只打包归属本集的图/视频/成片（多集项目按集交付，不混集）"
+          label="下载本集"
+          track="episode.download"
+          onClick={() => downloadEpisode()}
+        >
+          <Download className="h-3.5 w-3.5" />
+        </ToolBtn>
+      ) : null}
       <ExportMenuButton
         onExport={doExport}
         disabled={empty}
@@ -2308,6 +2370,14 @@ function ScriptCard({ data, id, selected }: NodeProps) {
               {body.length} 字
               {sceneCount > 0 ? ` · ${sceneCount} 场` : ""}
             </span>
+            {epLine ? (
+              <span
+                className="whitespace-nowrap text-text-3"
+                data-tip="本集产物：归属这张剧本卡的分镜表/镜头图/视频/成片（一张剧本卡 = 一集）"
+              >
+                {epLine}
+              </span>
+            ) : null}
             <span className="flex-1" />
           </div>
           {decomposeMsg ? (
@@ -6129,6 +6199,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           status: "loading",
           styleSnapshot: styleStack.join("；"),
           ...(refIds.length > 0 ? { refIds } : {}),
+          // 集继承：镜头图跟着分镜表归属本集（按集打包/统计靠它）
+          ...(typeof d.episodeId === "string" && d.episodeId
+            ? { episodeId: d.episodeId }
+            : {}),
         },
       });
       st.connect({ source: id, target: nid });
@@ -6355,6 +6429,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           // 首帧图兼作 poster：loading overlay 压在首帧上（LoadingOverMedia）
           imageUrl: firstFrame,
           genPrompt: prompt,
+          // 集继承：视频跟着分镜表归属本集
+          ...(typeof d.episodeId === "string" && d.episodeId
+            ? { episodeId: d.episodeId }
+            : {}),
         },
       });
       if (imgNode) st.connect({ source: imgNode.id, target: nid });

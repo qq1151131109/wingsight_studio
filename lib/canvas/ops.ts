@@ -8,9 +8,11 @@
  */
 
 import {
+  EPISODE_MEMBER_TYPES,
   NODE_FOOTPRINT,
   NODE_META,
   findFreePosition,
+  inheritEpisodeId,
   useCanvasStore,
   type ShotRow,
   type WingNodeData,
@@ -72,6 +74,9 @@ export type AddNodeOp = {
   /** 参考资产卡 id（连线即引用；资产→镜头图卡穿线） */
   refIds?: string[];
   styleSnapshot?: string;
+  /** 归属集 = 所属剧本卡 nodeId（一张剧本卡 = 一集）。缺省时若同批
+   *  connect_nodes 把本卡连到某张卡上，自动从那张卡继承（见 applyOps） */
+  episodeId?: string;
 };
 
 export type UpdateNodeOp = {
@@ -130,6 +135,8 @@ export type UpdateNodeOp = {
   genShot?: WingNodeData["genShot"];
   refIds?: string[];
   styleSnapshot?: string;
+  /** 归属集 = 所属剧本卡 nodeId（改归属/补挂用；传空串清空归属） */
+  episodeId?: string;
 };
 
 export type DeleteNodesOp = {
@@ -559,6 +566,17 @@ export function applyOps(rawOps: unknown): OpResult {
   // 未带 position 的 add_node 的排版计划（资产四类分组框 + 带尾网格）——
   // 先整批算好再进循环，循环里逐卡取落点；建完卡后按计划收组框
   const layout = planBatchLayout(ops);
+  // 集归属继承：同批 connect_nodes 指向新建卡时，从源卡继承集（一张剧本卡
+  // = 一集）。分镜表出图落卡 ops 正是这个形状（add_node 图卡 +
+  // connect_nodes 分镜表→图卡）——agent 不必逐卡手写 episodeId
+  const connectSources = new Map<string, string[]>();
+  for (const op of ops) {
+    if (op.op === "connect_nodes") {
+      const list = connectSources.get(op.toId) ?? [];
+      list.push(op.fromId);
+      connectSources.set(op.toId, list);
+    }
+  }
   let applied = 0;
   const createdIds: string[] = [];
   // op 下标 → 建出的真实节点 id（收组框用；op.id 占位符或生成 id 都以
@@ -618,6 +636,19 @@ export function applyOps(rawOps: unknown): OpResult {
           }
           // 批量建卡级联入场（对标影策 45ms 错峰；CSS 变量经节点 style 继承到卡片）
           const stagger = Math.min(createdIds.length, 12) * 50;
+          // 集归属：显式 episodeId 优先；否则同批连线源卡继承（剧本卡=集，
+          // 产物卡=源的集）——分镜表出图落卡 ops 靠这条自动挂到本集
+          let episodeId = op.episodeId !== undefined ? op.episodeId.slice(0, 40) : undefined;
+          if (episodeId === undefined && EPISODE_MEMBER_TYPES.has(op.nodeType) && op.id) {
+            for (const sid of connectSources.get(op.id) ?? []) {
+              const src = useCanvasStore.getState().nodes.find((n) => n.id === sid);
+              const ep = inheritEpisodeId(src, op.nodeType);
+              if (ep) {
+                episodeId = ep;
+                break;
+              }
+            }
+          }
           const id = live.addNode({
             id: op.id,
             position: pos,
@@ -676,6 +707,7 @@ export function applyOps(rawOps: unknown): OpResult {
               ...(op.styleSnapshot !== undefined
                 ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
                 : {}),
+              ...(episodeId !== undefined ? { episodeId } : {}),
             },
           });
           createdIds.push(id);
@@ -766,6 +798,9 @@ export function applyOps(rawOps: unknown): OpResult {
               : {}),
             ...(op.styleSnapshot !== undefined
               ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
+              : {}),
+            ...(op.episodeId !== undefined
+              ? { episodeId: op.episodeId.slice(0, 40) }
               : {}),
           });
           applied += 1;
