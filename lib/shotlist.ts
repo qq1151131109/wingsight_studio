@@ -326,15 +326,18 @@ export async function startCharacterImageJob(opts: {
 
 // ---------- 分镜行批量出视频（BigModel CogVideoX 直连，同出图 job 范式） ----------
 
-/** 出视频请求：prompt = 运动描述（运镜+画面动态，必填——视频提示词描述
- *  「怎么动」而非重复首帧图已有的静态画面）；imageUrl = 首帧图（镜头图卡
- *  主图，i2v 锚点；缺省纯文生视频）；params 镜头级覆盖（模型/时长/音效） */
+/** 出视频请求：prompt = 运动描述（运镜+画面动态+图N 参考编号，必填——视频
+ *  提示词描述「怎么动」而非重复首帧图已有的静态画面）；imageUrl = 首帧图
+ *  （镜头图卡主图，占参考槽 0）；referenceImages = 参考图清单（行引用的
+ *  资产设定图等，最多 8 张）；params 镜头级覆盖（时长/清晰度/画幅） */
 export type ShotVideoRequest = {
   rid: string;
   name: string;
   prompt: string;
-  /** 首帧图（本服务资产 URL 或外链） */
+  /** 首帧图（本服务资产 URL） */
   imageUrl?: string;
+  /** 参考图（资产设定图 URL，上限 8——超出 agent 截断） */
+  referenceImages?: string[];
   params?: VideogenParams;
 };
 
@@ -381,26 +384,17 @@ export async function pollShotVideoJob(
 }
 
 /** 启动批量出视频任务（Next 代理掐长请求，异步 job + 轮询）。服务端按
- *  models.py 视频目录逐镜头校验模型/时长/音效组合，非法 400 点名 */
+ *  models.py 视频目录逐镜头校验时长/清晰度/画幅组合，非法 400 点名 */
 export async function startShotVideoJob(
   shots: ShotVideoRequest[],
   params?: VideogenParams,
 ): Promise<string> {
-  // 键名转 snake_case 对齐 agent resolve_video_params（withAudio → with_audio）
-  const agentParams = params?.model
-    ? {
-        model: params.model,
-        ...(params.duration ? { duration: params.duration } : {}),
-        ...(params.quality ? { quality: params.quality } : {}),
-        ...(params.withAudio !== undefined ? { with_audio: params.withAudio } : {}),
-      }
-    : undefined;
   const r = await apiFetch("/agent-service/storyboard/videos", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       shots,
-      ...(agentParams ? { params: agentParams } : {}),
+      ...(params?.model ? { params } : {}),
       project_id: useCanvasStore.getState().projectId,
     }),
   });

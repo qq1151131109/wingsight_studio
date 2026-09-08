@@ -1,18 +1,24 @@
-"""BigModel（智谱）视频生成客户端：CogVideoX 系（cogvideox-3 / cogvideox-flash）。
+"""RunningHub MiniMax H3 参考生视频客户端（ComfyUI 工作流协议）。
 
-供应商与契约均为 2026-09-07 真实探针验证（选型实录见 models.py VIDEO_MODELS
-注释）：
-- 提交：POST {PAAS}/videos/generations，{model, prompt≤512, image_url?(URL 或
-  base64 data URI，v3 另收 [首帧,尾帧] 数组), size?, fps?(30/60), duration?
-  (v3: 5|10), quality?(v3: speed|quality), with_audio?(v3)} → {id, task_status}
-- 轮询：GET {PAAS}/async-result/{id} → task_status PROCESSING|SUCCESS|FAIL，
-  SUCCESS 带 video_result[0].url（临时 URL，尽快下载）
-- i2v 不传 size：按原图比例自适配（短边 1080）——分镜图生视频默认不传
+2026-09-08 用户拍板：视频只支持 RunningHub 渠道的 MiniMax H3 参考生视频。
+协议与节点映射移植自 juben `lib/video_backends/runninghub.py`（实战验证过）：
+- 工作流 2088888684010622977（9 参考图槽 + 3 音频槽，无独立主图槽——首帧占
+  第 0 槽，其余参考图依次占后续槽，参考上限 8）
+- 上传：POST /task/openapi/upload（form：apiKey + fileType=input + 文件）→ fileName
+- 建任务：POST /task/openapi/create {apiKey, workflowId, nodeInfoList} → taskId；
+  **421 TASK_QUEUE_MAXED = 账号并发满，任务未创建不重复计费**，30s 重试至多 30 分钟
+- 轮询：POST /task/openapi/outputs {apiKey, taskId} → code 0 + data[].fileUrl
+  （取 video 型产物）；804/813 = 进行中；805 = failedReason 失败
+- 时长开关 select = 秒数 − 4（5s→1 … 15s→11）；兆像素开关 1=540p / 2=720p；
+  画幅走 ResolutionSelector 枚举（"16:9 (Widescreen)" 等，必须精确匹配）
 
-与 compose.py 同范式直连（ffmpeg/HTTP 原语不经 Langflow：视频 API 调用不是
-LLM 文字生成，提示词组装在前端/调用方逐字可见，无版式渲染契约）。coding
-套餐 key 即可调用，但必须走官方 paas 路径——coding 网关（/api/coding/paas/v4）
-不挂视频路由。
+历史选型实录（2026-09-07 探针留档，供日后扩渠道参考）：DMX /v1/videos 海螺系
+取件链坏（双面 artifact_gone）；ark key 未开通 seedance；BigModel cogvideox
+双档全通（coding 套餐 key 走官方 paas）——后被本渠道取代，恢复时见
+jobstore 前历史 git 版本。
+
+与 compose.py 同范式直连（HTTP 原语不经 Langflow：视频 API 调用不是 LLM
+文字生成，提示词在调用方组装逐字可见）。
 """
 
 from __future__ import annotations
@@ -23,19 +29,44 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
 import usage
 
-BIGMODEL_API_KEY = os.environ.get("BIGMODEL_API_KEY", "")
-# 官方 paas 路径（coding 网关无视频路由，勿改成 BIGMODEL_BASE_URL）
-VIDEO_API_BASE = "https://open.bigmodel.cn/api/paas/v4"
-PROMPT_LIMIT = 512
-POLL_INTERVAL = 8
-POLL_TIMEOUT = 15 * 60  # 单条视频轮询上限（实测 1 分钟内出片，留足余量）
+RUNNINGHUB_API_KEY = os.environ.get("RUNNINGHUB_API_KEY", "")
+_BASE_URL = "https://www.runninghub.cn"
+PROMPT_LIMIT = 2000
+POLL_INTERVAL = 6
+POLL_TIMEOUT = 15 * 60  # 单条轮询上限（工作流实测数分钟，留足余量）
 DOWNLOAD_TIMEOUT = 300
+QUEUE_RETRY_INTERVAL = 30  # 421 队列满：30s 后重试提交（任务未创建，不重复计费）
+QUEUE_MAX_WAIT = 30 * 60
+
+# 工作流 2088888684010622977（MiniMax H3 参考生视频）节点映射——来自工作流
+# 编辑器 Export Workflow API JSON（juben 实战维护），改工作流须同步这里
+_WORKFLOW_ID = "2088888684010622977"
+_NODE_PROMPT = "250"
+_NODE_ASPECT = "115"
+_NODE_MEGAPIXEL = "225"
+_NODE_DURATION = "205"
+_NODE_SEED = "129"
+_IMAGE_SLOTS = ("231", "232", "233", "234", "235", "236", "237", "238", "239")
+MAX_REFERENCES = 8  # 槽位 0 被首帧占用，参考图最多 8 张
+_DURATION_SELECT_BASE = 4  # 时长开关 select = 秒数 − 4
+
+# ResolutionSelector 画幅枚举（带说明后缀，必须与节点枚举精确一致）
+_ASPECT_ENUMS = {
+    "1:1": "1:1 (Square)",
+    "2:3": "2:3 (Portrait Photo)",
+    "3:2": "3:2 (Photo)",
+    "3:4": "3:4 (Portrait Standard)",
+    "4:3": "4:3 (Standard)",
+    "9:16": "9:16 (Portrait Widescreen)",
+    "16:9": "16:9 (Widescreen)",
+    "21:9": "21:9 (Ultrawide)",
+}
 
 # 与 skills.ASSETS_DIR 同一资产根（视频落这里即得 /agent-service/assets/<name>）
 ASSETS_DIR = Path(__file__).resolve().parent / "static" / "assets"
@@ -45,132 +76,166 @@ def _flat(value: Any) -> str:
     return " ".join(str(value or "").split())
 
 
-def _image_payload(url: str) -> str:
-    """首帧图转 API 载荷：本服务资产 URL → 本地文件读 base64 data URI（本地
-    开发无公网，BigModel 实测收 data URI）；外部 http(s) URL 原样透传。"""
+def _read_local_image(url: str) -> Optional[tuple[str, bytes]]:
+    """本服务资产 URL → (文件名, bytes)；外部 http(s) URL 返回 None（不下载，
+    参考图由调用方保证是本服务资产——分镜链路全是本地镜头图/资产图）。"""
     u = str(url or "").strip()
-    if u.startswith(("http://", "https://", "data:")):
-        return u
+    if not u:
+        return None
+    if u.startswith(("http://", "https://")):
+        return None
     name = u.rsplit("/", 1)[-1]
     path = ASSETS_DIR / name
     if not path.is_file():
-        raise ValueError(f"首帧图不存在：{u}")
-    suffix = path.suffix.lower().lstrip(".")
-    mime = "jpeg" if suffix in ("jpg", "jpeg") else ("png" if suffix == "png" else "jpeg")
-    b64 = base64.b64encode(path.read_bytes()).decode()
-    return f"data:image/{mime};base64,{b64}"
-
-
-def _extract_error(payload: Dict[str, Any]) -> str:
-    err = payload.get("error")
-    if isinstance(err, dict):
-        return str(err.get("message") or err.get("code") or err)[:300]
-    return str(payload.get("message") or payload)[:300]
+        raise ValueError(f"参考图不存在：{u}")
+    return (path.name, path.read_bytes())
 
 
 async def generate_video(
     prompt: str,
     *,
-    model: str = "cogvideox-flash",
-    image_url: Optional[str] = None,
-    last_frame_url: Optional[str] = None,
-    size: Optional[str] = None,
-    fps: Optional[int] = None,
-    duration: Optional[int] = None,
-    quality: Optional[str] = None,
-    with_audio: Optional[bool] = None,
+    image_url: str = "",
+    reference_images: Optional[List[str]] = None,
+    duration: int = 5,
+    resolution: str = "540p",
+    aspect: str = "16:9",
+    seed: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """单条视频生成原语：提交 → 轮询 → 下载落盘。
+    """单条视频生成原语：上传参考图 → 建工作流任务 → 轮询 → 下载落盘。
 
-    返回 {ok, videoUrl?|error}；videoUrl 为本服务资产 URL（/agent-service/…），
-    上游临时 URL 不外泄（过期后不可回看，落盘才是我们的事实源）。
+    image_url = 首帧（占图槽 0，构图基准）；reference_images = 其余参考图
+    （资产设定图等，最多 8 张，按序占槽）。返回 {ok, videoUrl?|error}。
     """
-    if not BIGMODEL_API_KEY:
-        return {"ok": False, "error": "未配置 BIGMODEL_API_KEY，视频生成不可用"}
+    if not RUNNINGHUB_API_KEY:
+        return {"ok": False, "error": "未配置 RUNNINGHUB_API_KEY，视频生成不可用"}
     text = _flat(prompt)[:PROMPT_LIMIT]
-    if not text and not image_url:
-        return {"ok": False, "error": "提示词与首帧图均为空，无法生成视频"}
-    body: Dict[str, Any] = {"model": model, "prompt": text}
+    if not text:
+        return {"ok": False, "error": "运动提示词为空，无法生成视频"}
     try:
-        if image_url and last_frame_url:
-            # v3 首尾帧：image_url 收两张图的数组（第一张=首帧，第二张=尾帧）
-            body["image_url"] = [
-                _image_payload(image_url),
-                _image_payload(last_frame_url),
-            ]
-        elif image_url:
-            body["image_url"] = _image_payload(image_url)
+        # 图片槽序列：首帧（槽0）+ 参考图（槽1+，超上限截断并明示）
+        images: List[tuple[str, bytes]] = []
+        for u in [image_url, *(reference_images or [])]:
+            local = _read_local_image(u)
+            if local is not None:
+                images.append(local)
+        if not images:
+            return {"ok": False, "error": "缺少首帧图（图生视频工作流至少 1 张图）"}
+        truncated = max(0, len(images) - len(_IMAGE_SLOTS))
+        if truncated:
+            images = images[: len(_IMAGE_SLOTS)]
     except ValueError as exc:
         return {"ok": False, "error": str(exc)[:200]}
-    # i2v 缺省不传 size：按原图比例自适配；t2v 不传 size 上游按短边 1080 出横版
-    if size:
-        body["size"] = size
-    if fps:
-        body["fps"] = fps
-    if duration:
-        body["duration"] = duration
-    if quality:
-        body["quality"] = quality
-    if with_audio is not None:
-        body["with_audio"] = with_audio
 
-    headers = {"Authorization": f"Bearer {BIGMODEL_API_KEY}"}
+    dur = max(5, min(15, int(duration or 5)))
+    node_info: List[Dict[str, Any]] = [
+        {"nodeId": _NODE_PROMPT, "fieldName": "prompt", "fieldValue": text},
+        {
+            "nodeId": _NODE_ASPECT,
+            "fieldName": "aspect_ratio",
+            "fieldValue": _ASPECT_ENUMS.get(aspect or "16:9", _ASPECT_ENUMS["16:9"]),
+        },
+        # 兆像素开关：1 = 0.5MP（约 540p），2 = 1MP（约 720p）
+        {"nodeId": _NODE_MEGAPIXEL, "fieldName": "select", "fieldValue": 2 if resolution == "720p" else 1},
+        {"nodeId": _NODE_DURATION, "fieldName": "select", "fieldValue": dur - _DURATION_SELECT_BASE},
+    ]
+    if seed is not None:
+        node_info.append({"nodeId": _NODE_SEED, "fieldName": "noise_seed", "fieldValue": int(seed)})
+
     async with httpx.AsyncClient(timeout=60) as client:
-        # 提交（幂等性无从保证，只对网络类瞬态重试；4xx 业务错不重试）
-        task_id = ""
-        for attempt in range(3):
-            try:
+        try:
+            # 逐张上传（fileName 进节点信息；本地 bytes 直传，无需公网）
+            for slot, (name, blob) in zip(_IMAGE_SLOTS, images):
                 r = await client.post(
-                    f"{VIDEO_API_BASE}/videos/generations", json=body, headers=headers
+                    f"{_BASE_URL}/task/openapi/upload",
+                    data={"apiKey": RUNNINGHUB_API_KEY, "fileType": "input"},
+                    files={"file": (name, blob)},
                 )
-            except httpx.HTTPError as exc:
-                if attempt == 2:
-                    return {"ok": False, "error": f"视频任务提交失败：{exc}"[:200]}
-                await asyncio.sleep(2 * (attempt + 1))
-                continue
-            if r.status_code == 200:
-                task_id = str((r.json() or {}).get("id") or "")
-                break
-            try:
-                err_payload = r.json()
-            except ValueError:
-                err_payload = {}
-            return {"ok": False, "error": f"视频任务提交失败：{_extract_error(err_payload)}"[:200]}
-        if not task_id:
-            return {"ok": False, "error": "视频任务提交失败（无任务 id）"}
+                r.raise_for_status()
+                file_name = str((r.json().get("data") or {}).get("fileName") or "")
+                if not file_name:
+                    return {"ok": False, "error": f"参考图上传失败：{name}"[:200]}
+                node_info.append({"nodeId": slot, "fieldName": "image", "fieldValue": file_name})
+        except httpx.HTTPError as exc:
+            return {"ok": False, "error": f"参考图上传失败：{exc}"[:200]}
 
-        # 轮询到终态
+        # 建任务（421 队列满 = 账号并发上限：任务未创建不重复计费，等 30s 重试）
+        body = {
+            "apiKey": RUNNINGHUB_API_KEY,
+            "workflowId": _WORKFLOW_ID,
+            "nodeInfoList": node_info,
+        }
+        task_id = ""
+        elapsed = 0.0
+        while True:
+            try:
+                r = await client.post(f"{_BASE_URL}/task/openapi/create", json=body)
+            except httpx.HTTPError as exc:
+                return {"ok": False, "error": f"任务提交失败：{exc}"[:200]}
+            payload = _json_or(r, {})
+            code = payload.get("code")
+            if str(code) == "421":
+                if elapsed >= QUEUE_MAX_WAIT:
+                    return {"ok": False, "error": f"RunningHub 队列已满，等待 {elapsed:.0f}s 后放弃（可稍后重试）"}
+                await asyncio.sleep(QUEUE_RETRY_INTERVAL)
+                elapsed += QUEUE_RETRY_INTERVAL
+                continue
+            if str(code) not in ("0", "") or "taskId" not in (payload.get("data") or {}):
+                return {"ok": False, "error": f"任务提交失败：code={code} {payload.get('msg')}"[:200]}
+            task_id = str(payload["data"]["taskId"])
+            break
+
+        # 轮询到产物 URL（804/813 = 进行中；805 = 失败带 failedReason）
         deadline = time.monotonic() + POLL_TIMEOUT
-        video_url = ""
+        file_url = ""
         while time.monotonic() < deadline:
             await asyncio.sleep(POLL_INTERVAL)
             try:
-                r = await client.get(
-                    f"{VIDEO_API_BASE}/async-result/{task_id}", headers=headers
+                r = await client.post(
+                    f"{_BASE_URL}/task/openapi/outputs",
+                    json={"apiKey": RUNNINGHUB_API_KEY, "taskId": task_id},
                 )
-            except httpx.HTTPError as exc:
-                await asyncio.sleep(3)
+            except httpx.HTTPError:
                 continue
-            if r.status_code != 200:
-                # 轮询 4xx/5xx 视为瞬态，退避后重试直到超时
-                await asyncio.sleep(3)
+            if r.status_code >= 500:
                 continue
-            data = r.json()
-            status = str(data.get("task_status") or "")
-            if status == "FAIL":
-                return {"ok": False, "error": f"视频生成失败：{_extract_error(data)}"[:300]}
-            if status == "SUCCESS":
-                result = (data.get("video_result") or [{}])[0]
-                video_url = str(result.get("url") or "")
-                break
-        if not video_url:
-            return {"ok": False, "error": f"视频生成超时（{POLL_TIMEOUT // 60} 分钟）"}
+            payload = _json_or(r, {})
+            code = str(payload.get("code"))
+            if code == "0":
+                data = payload.get("data")
+                if isinstance(data, list) and data:
+                    vids = [
+                        x for x in data
+                        if isinstance(x, dict) and "video" in str(x.get("fileType", "")).lower()
+                    ]
+                    chosen = vids[0] if vids else data[0]
+                    file_url = str((chosen or {}).get("fileUrl") or "")
+                    if file_url:
+                        break
+                # code 0 但产物未出：继续等
+            elif code == "805":
+                reason = ""
+                d = payload.get("data")
+                if isinstance(d, dict):
+                    reason = str(d.get("failedReason") or "")
+                return {"ok": False, "error": f"视频生成失败：{reason or payload.get('msg')}"[:300]}
+            elif code in ("804", "813"):
+                continue
+            else:
+                return {"ok": False, "error": f"任务查询异常：code={code} {payload.get('msg')}"[:200]}
+        if not file_url:
+            return {"ok": False, "error": f"视频生成超时（{POLL_TIMEOUT // 60} 分钟），task_id={task_id}"}
 
-        # 下载落盘（临时 URL 有时效；失败重试，不再重新生成浪费额度）
         try:
-            return await _download_as_asset(client, video_url, model)
+            return await _download_as_asset(client, file_url, "rh-minimax-h3")
         except (httpx.HTTPError, OSError, RuntimeError) as exc:
             return {"ok": False, "error": f"视频下载落盘失败：{exc}"[:200]}
+
+
+def _json_or(r: httpx.Response, default: Any) -> Any:
+    try:
+        return r.json()
+    except ValueError:
+        return default
 
 
 async def _download_as_asset(

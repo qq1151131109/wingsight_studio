@@ -212,46 +212,27 @@ def resolve_text_model(raw: Any) -> Optional[str]:
     return model
 
 
-# ---------- 视频模型目录（BigModel/智谱 CogVideoX 系，2026-09-07 实探验证） ----------
-# 供应商选型实录（探针留档，勿凭印象改供应商）：
-# - DMX /v1/videos：海螺系提交+轮询通、但产物取件链坏——/videos/{id}/content 与
-#   /tasks/{id}/artifacts 双面均 artifact_gone/404（完成即刻也取不到，2026-09-07
-#   五连探针实锤）；wan/kling/vidu 适配器 fail_to_fetch_task；seedance/sora 无渠道
-# - 火山方舟 ark 直连：REST 契约已从 juben 后端验证（contents/generations/tasks），
-#   但手头 ark key 未开通 seedance（ModelNotOpen）——开通后可按 juben 范式接
-# - BigModel 官方 paas 路径（open.bigmodel.cn/api/paas/v4/videos/generations）：
-#   coding 套餐 key 即可用，flash 免费档 + cogvideox-3 付费档双通（base64 图生
-#   视频、async-result 轮询、URL 可下载，mp4/h264、v3 带 AAC 音轨全验证）
-# cogvideox-3：文生/图生（image_url 单图或 [首帧,尾帧] 数组）·5/10s·30/60fps·
-#   speed/quality 双档·with_audio AI 音效·至高 4K；i2v 不传 size 时按原图比例
-#   自适配（短边 1080）——分镜图生视频默认走这条免传 size
-# cogvideox-flash：免费·图生视频（单图）·无时长/音效参数（固定 ~5s 无音轨）
+# ---------- 视频模型目录（RunningHub MiniMax H3 参考生视频，2026-09-08 用户拍板唯一渠道） ----------
+# 协议/节点映射移植自 juben lib/video_backends/runninghub.py（工作流
+# 2088888684010622977：9 参考图槽+3 音频槽，首帧占槽 0、参考图最多 8 张；
+# 5-15s；540p/720p 经兆像素开关；画幅 8 档走 ResolutionSelector 枚举；
+# 恒出音频）。历史选型实录（2026-09-07 探针留档）：DMX /v1/videos 海螺系
+# 取件链坏（双面 artifact_gone）；ark key 未开通 seedance；BigModel cogvideox
+# 双档全通后被本渠道取代——扩渠道时参考 videogen.py 头部注释
 
-DEFAULT_VIDEO_MODEL_ID = "cogvideox-flash"
+DEFAULT_VIDEO_MODEL_ID = "rh-minimax-h3"
 
 VIDEO_MODELS: List[Dict[str, Any]] = [
     {
-        "id": "cogvideox-flash",
-        "label": "CogVideoX Flash",
-        "tag": "免费档 · 图生视频 · 固定约5秒 · 无音轨",
-        "sizes": [
-            "720x480", "1024x1024", "1280x960", "960x1280",
-            "1920x1080", "1080x1920", "2048x1080", "3840x2160",
-        ],
-        "durations": [],
-        "default": True,
-    },
-    {
-        "id": "cogvideox-3",
-        "label": "CogVideoX 3",
-        "tag": "质量档 · 图生/文生/首尾帧 · 5或10秒 · 可带AI音效",
-        "sizes": [
-            "1280x720", "720x1280", "1024x1024",
-            "1920x1080", "1080x1920", "2048x1080", "3840x2160",
-        ],
-        "durations": [5, 10],
-        "qualities": ["speed", "quality"],
+        "id": "rh-minimax-h3",
+        "label": "MiniMax H3 参考生视频",
+        "tag": "RunningHub 工作流 · 首帧+最多8张参考 · 5-15秒 · 540p/720p · 恒带音频",
+        "durations": [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+        "resolutions": ["540p", "720p"],
+        "aspects": ["16:9", "9:16", "1:1", "4:3", "3:4", "2:3", "3:2", "21:9"],
+        "max_references": 8,
         "with_audio": True,
+        "default": True,
     },
 ]
 
@@ -266,16 +247,16 @@ def find_video_model(model_id: str) -> Optional[Dict[str, Any]]:
 
 
 def resolve_video_params(raw: Any) -> Optional[Dict[str, Any]]:
-    """校验视频生成参数（{model?, size?, duration?, quality?, with_audio?, fps?}）。
+    """校验视频生成参数（{model?, duration?, resolution?, aspect?}）。
 
-    缺省/空对象 → None（全默认：flash 模型 + size 不传按原图比例自适配）；
-    不合法 → ValueError（端点转 400 中文点名，与出图同一铁律：选了不支持的
-    组合必须让用户知道，绝不静默换参数出视频）。
+    缺省/空对象 → None（全默认：H3 + 5 秒 + 540p）；不合法 → ValueError
+    （端点转 400 中文点名，与出图同一铁律：选了不支持的组合必须让用户知道，
+    绝不静默换参数出视频）。
     """
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ValueError("params 必须是对象（{model?, size?, duration?, quality?, with_audio?}）")
+        raise ValueError("params 必须是对象（{model?, duration?, resolution?, aspect?}）")
     model = str(raw.get("model") or "").strip()
     if not model:
         return None
@@ -284,13 +265,6 @@ def resolve_video_params(raw: Any) -> Optional[Dict[str, Any]]:
         known = " / ".join(m["id"] for m in VIDEO_MODELS)
         raise ValueError(f"未知视频模型：{model}（可用：{known}）")
     out: Dict[str, Any] = {"model_name": model}
-    size = str(raw.get("size") or "").strip()
-    if size:
-        if size not in entry["sizes"]:
-            raise ValueError(
-                f"{entry['label']} 不支持尺寸 {size}（支持：{'/'.join(entry['sizes'])}）"
-            )
-        out["size"] = size
     durations = entry.get("durations") or []
     dur = raw.get("duration")
     if dur is not None and str(dur).strip():
@@ -299,25 +273,24 @@ def resolve_video_params(raw: Any) -> Optional[Dict[str, Any]]:
         except (TypeError, ValueError):
             raise ValueError(f"时长不合法：{dur}（应为整数秒）")
         if d not in durations:
-            hint = "/".join(str(x) for x in durations) if durations else "该模型不支持指定时长"
-            raise ValueError(f"{entry['label']} 不支持 {d} 秒（支持：{hint}）")
+            raise ValueError(
+                f"{entry['label']} 不支持 {d} 秒（支持：{'/'.join(str(x) for x in durations)}）"
+            )
         out["duration"] = d
-    qualities = entry.get("qualities") or []
-    quality = str(raw.get("quality") or "").strip()
-    if quality:
-        if quality not in qualities:
-            hint = "/".join(qualities) if qualities else "该模型不支持质量档"
-            raise ValueError(f"{entry['label']} 不支持质量档 {quality}（支持：{hint}）")
-        out["quality"] = quality
-    if raw.get("with_audio") is not None:
-        if not entry.get("with_audio"):
-            raise ValueError(f"{entry['label']} 不支持 AI 音效")
-        out["with_audio"] = bool(raw.get("with_audio"))
-    fps = raw.get("fps")
-    if fps is not None and str(fps).strip():
-        if int(fps) not in (30, 60):
-            raise ValueError(f"帧率不合法：{fps}（支持 30/60）")
-        out["fps"] = int(fps)
+    resolution = str(raw.get("resolution") or "").strip()
+    if resolution:
+        if resolution not in entry["resolutions"]:
+            raise ValueError(
+                f"{entry['label']} 不支持清晰度 {resolution}（支持：{'/'.join(entry['resolutions'])}）"
+            )
+        out["resolution"] = resolution
+    aspect = str(raw.get("aspect") or "").strip()
+    if aspect:
+        if aspect not in entry["aspects"]:
+            raise ValueError(
+                f"{entry['label']} 不支持画幅 {aspect}（支持：{'/'.join(entry['aspects'])}）"
+            )
+        out["aspect"] = aspect
     return out
 
 

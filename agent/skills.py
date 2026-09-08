@@ -1672,17 +1672,17 @@ async def start_storyboard_video_job(
     params: Optional[Dict[str, Any]] = None,
     project_id: str = "",
 ) -> str:
-    """启动分镜行批量出视频任务（videogen 直连，并发 4，不经聊天）。
+    """启动分镜行批量出视频任务（videogen 直连 RunningHub H3，并发 4，不经聊天）。
 
-    shots: [{rid, name, prompt(运动描述，必填), imageUrl?(首帧图——本服务
-    资产 URL 或外链，缺省纯文生), params?: {model, size?, duration?, fps?,
-    quality?, with_audio?}}]；params 请求级默认，镜头级覆盖，逐镜头合并
-    预校验（models.resolve_video_params）——任一组合不合法整批 ValueError
-    （端点 400 点名镜头）。i2v 不传 size 时 BigModel 按原图比例自适配。
+    shots: [{rid, name, prompt(运动描述，含图N参考编号，必填), imageUrl(首帧
+    图，必填), referenceImages?(参考图 URL 清单，上限 8), params?: {model,
+    duration?, resolution?, aspect?}}]；params 请求级默认，镜头级覆盖，逐
+    镜头合并预校验（models.resolve_video_params）——任一组合不合法整批
+    ValueError（端点 400 点名镜头）。
     project_id 仅供终态事件流路由。立即返回 jobId，前端轮询增量取走。
     """
-    if not videogen.BIGMODEL_API_KEY:
-        raise RuntimeError("未配置 BIGMODEL_API_KEY，视频生成不可用")
+    if not videogen.RUNNINGHUB_API_KEY:
+        raise RuntimeError("未配置 RUNNINGHUB_API_KEY，视频生成不可用")
     resolved: Dict[str, Optional[Dict[str, Any]]] = {}
     invalid: List[str] = []
     for s in shots:
@@ -1694,6 +1694,8 @@ async def start_storyboard_video_job(
             invalid.append(f"「{str(s.get('name') or rid) or rid}」{exc}")
         if not str(s.get("prompt") or "").strip():
             invalid.append(f"「{str(s.get('name') or rid) or rid}」缺少运动提示词")
+        if not str(s.get("imageUrl") or "").strip():
+            invalid.append(f"「{str(s.get('name') or rid) or rid}」缺少首帧图")
     if invalid:
         raise ValueError("；".join(invalid))
     _prune_storyboard_video_jobs()
@@ -1719,13 +1721,13 @@ async def start_storyboard_video_job(
                     return
                 result = await videogen.generate_video(
                     str(shot.get("prompt") or ""),
-                    model=p.get("model_name") or models.DEFAULT_VIDEO_MODEL_ID,
-                    image_url=str(shot.get("imageUrl") or "") or None,
-                    size=p.get("size"),
-                    fps=p.get("fps"),
-                    duration=p.get("duration"),
-                    quality=p.get("quality"),
-                    with_audio=p.get("with_audio"),
+                    image_url=str(shot.get("imageUrl") or ""),
+                    reference_images=[
+                        str(u) for u in (shot.get("referenceImages") or []) if str(u).strip()
+                    ][: videogen.MAX_REFERENCES],
+                    duration=p.get("duration") or 5,
+                    resolution=p.get("resolution") or "540p",
+                    aspect=p.get("aspect") or "16:9",
                 )
         except asyncio.CancelledError:
             result = {"ok": False, "error": "已取消", "cancelled": True}

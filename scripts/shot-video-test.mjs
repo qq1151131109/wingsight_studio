@@ -149,6 +149,16 @@ await page.route("**/agent-service/storyboard/videos", (route) => {
     if (!okRows.every((s) => s.imageUrl && s.prompt)) {
       return route.fulfill({ status: 400, contentType: "text/plain", body: "mock 预检失败：缺 imageUrl/prompt" });
     }
+    if (!okRows.every((s) => s.prompt.includes("参考图1（首帧）"))) {
+      return route.fulfill({ status: 400, contentType: "text/plain", body: "mock 预检失败：prompt 缺图N 参考编号行" });
+    }
+    if (body.params?.aspect !== "16:9" || body.params?.model !== "rh-minimax-h3") {
+      return route.fulfill({
+        status: 400,
+        contentType: "text/plain",
+        body: `mock 预检失败：params 应为 rh-minimax-h3/16:9，实际 ${JSON.stringify(body.params)}`,
+      });
+    }
     return route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -280,9 +290,9 @@ check(
 
 await browser.close();
 
-// ---------- C 组（REAL=1）：真跑 1 条 cogvideox-flash（API 全链） ----------
+// ---------- C 组（REAL=1）：真跑 1 条 RunningHub MiniMax H3 参考生视频 ----------
 if (process.env.REAL === "1") {
-  // 首帧 fixture：真图（BigModel 收 base64/URL，走 agent 的本服务资产路径）
+  // 首帧 fixture：真图上传成资产（RunningHub 工作流上传通道走本地 bytes）
   execSync(
     `ffmpeg -y -loglevel error -f lavfi -i testsrc=duration=1:size=320x240:rate=5 -frames:v 1 /tmp/e2e_vfx.jpg`,
   );
@@ -300,11 +310,12 @@ if (process.env.REAL === "1") {
         {
           rid: "r_real",
           name: "镜头1",
-          prompt: "运镜：缓慢推进；画面：午后山坡风吹草动，光线柔和",
+          prompt:
+            "运镜：缓慢推进；画面：午后山坡风吹草动，光线柔和\n参考图1（首帧）：画面与构图基准，从该画面起运镜",
           imageUrl: FIXTURE_IMG,
         },
       ],
-      params: { model: "cogvideox-flash" },
+      params: { model: "rh-minimax-h3", duration: 5, resolution: "540p", aspect: "16:9" },
       project_id: pid,
     }),
   });

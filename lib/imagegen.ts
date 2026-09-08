@@ -66,17 +66,21 @@ export function saneGen(raw: unknown): ImagegenParams | null {
   return v.model === src.model && v.resolution === src.resolution ? v : null;
 }
 
-// ---------- 视频模型目录（agent /models/video，BigModel CogVideoX 系实探验证） ----------
+// ---------- 视频模型目录（agent /models/video，RunningHub MiniMax H3 参考生视频） ----------
 
 export type VideoModelOption = {
   id: string;
   label: string;
   tag: string;
-  /** 输出像素尺寸枚举（i2v 缺省不传：上游按原图比例自适配） */
-  sizes: string[];
-  /** 可选时长秒数（空数组 = 该模型不支持指定时长，固定约 5 秒） */
+  /** 可选时长秒数 */
   durations: number[];
-  qualities?: string[];
+  /** 清晰度档（H3 工作流经兆像素开关：540p/720p） */
+  resolutions: string[];
+  /** 画幅枚举（工作流 ResolutionSelector） */
+  aspects: string[];
+  /** 参考图上限（不含占槽位 0 的首帧） */
+  max_references: number;
+  /** 恒出音频（无开关，仅展示用） */
   with_audio?: boolean;
   default?: boolean;
 };
@@ -84,12 +88,12 @@ export type VideoModelOption = {
 export type VideogenParams = {
   model: string;
   duration?: number;
-  quality?: string;
-  withAudio?: boolean;
+  resolution?: string;
+  aspect?: string;
 };
 
-/** 分镜卡视频生成默认：免费档 flash（ cogvideox-flash，无时长/音效参数） */
-export const VIDEOGEN_DEFAULT: VideogenParams = { model: "cogvideox-flash" };
+/** 分镜卡视频生成默认：MiniMax H3 参考生视频 · 5 秒 · 540p */
+export const VIDEOGEN_DEFAULT: VideogenParams = { model: "rh-minimax-h3" };
 
 async function fetchVideoModels(): Promise<VideoModelOption[]> {
   const r = await apiFetch("/agent-service/models/video");
@@ -136,8 +140,8 @@ export function saneVideoGen(raw: unknown): VideogenParams {
     return {
       model: v.model,
       ...(typeof v.duration === "number" ? { duration: v.duration } : {}),
-      ...(typeof v.quality === "string" && v.quality ? { quality: v.quality } : {}),
-      ...(typeof v.withAudio === "boolean" ? { withAudio: v.withAudio } : {}),
+      ...(typeof v.resolution === "string" && v.resolution ? { resolution: v.resolution } : {}),
+      ...(typeof v.aspect === "string" && v.aspect ? { aspect: v.aspect } : {}),
     };
   }
   return VIDEOGEN_DEFAULT;

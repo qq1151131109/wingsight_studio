@@ -5113,15 +5113,17 @@ function ShotGenSettings({ nodeId }: { nodeId: string }) {
   );
 }
 
-/** 分镜卡视频生成设置 chip：模型 + 时长 + AI 音效（写入 data.videoGen）。
- *  cogvideox-3 有时长/音效参数；flash 免费档固定约 5 秒无音轨（目录 durations
- *  为空即该模型不可调，面板不渲染对应段）。i2v 不传尺寸：上游按首帧图比例自适配 */
+/** 分镜卡视频生成设置 chip：模型 + 时长 + 清晰度（写入 data.videoGen）。
+ *  H3 参考生视频：5-15s、540p/720p，恒带音频（工作流无开关）；画幅跟随
+ *  分镜卡出图画幅（d.aspect），不在这里重复设置 */
 function VideoGenSettings({ nodeId }: { nodeId: string }) {
   const data = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId)?.data);
   const { models } = useVideoModels();
   const [open, setOpen] = useState(false);
   const vg = saneVideoGen(data?.videoGen);
   const option = models?.find((m) => m.id === vg.model) ?? null;
+  const duration = vg.duration ?? option?.durations[0] ?? 5;
+  const resolution = vg.resolution ?? option?.resolutions[0] ?? "540p";
   const wrapRef = useRef<HTMLSpanElement | null>(null);
   useDismissOnOutside(wrapRef, open, () => setOpen(false));
   useEffect(() => {
@@ -5139,9 +5141,7 @@ function VideoGenSettings({ nodeId }: { nodeId: string }) {
     <span ref={wrapRef} className="relative shrink-0">
       <button
         type="button"
-        data-tip={`本卡视频设置：${option?.label ?? vg.model}${
-          option?.durations.length ? ` · ${vg.duration ?? option.durations[0]} 秒` : " · 约5秒"
-        }${option?.with_audio ? (vg.withAudio ? " · 带音效" : " · 无音效") : ""}`}
+        data-tip={`本卡视频设置：${option?.label ?? vg.model} · ${duration} 秒 · ${resolution} · 恒带音频`}
         aria-label="本卡视频设置"
         className="nodrag whitespace-nowrap rounded border border-hairline bg-surface-1 px-1.5 py-0.5 text-text-2 transition-colors hover:border-accent hover:text-text"
         data-track="card.video-settings"
@@ -5150,7 +5150,7 @@ function VideoGenSettings({ nodeId }: { nodeId: string }) {
           setOpen((v) => !v);
         }}
       >
-        视频{option?.durations.length ? ` · ${vg.duration ?? option.durations[0]}s` : ""}
+        视频 · {duration}s · {resolution}
       </button>
       {open ? (
         <span
@@ -5176,8 +5176,9 @@ function VideoGenSettings({ nodeId }: { nodeId: string }) {
                       duration: m.durations.includes(Number(vg.duration))
                         ? vg.duration
                         : undefined,
-                      quality: m.qualities?.includes(String(vg.quality)) ? vg.quality : undefined,
-                      withAudio: m.with_audio ? vg.withAudio : undefined,
+                      resolution: m.resolutions.includes(String(vg.resolution))
+                        ? vg.resolution
+                        : undefined,
                     })
                   }
                 >
@@ -5190,40 +5191,40 @@ function VideoGenSettings({ nodeId }: { nodeId: string }) {
           {option && option.durations.length > 0 ? (
             <>
               <span className="mt-2 block text-[10px] font-medium text-text-4">时长</span>
-              <span className="mt-1 flex gap-1">
+              <span className="mt-1 flex flex-wrap gap-1">
                 {option.durations.map((d) => (
                   <button
                     key={d}
                     type="button"
                     className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-                      (vg.duration ?? option.durations[0]) === d
+                      duration === d
                         ? "border-accent bg-accent-dim text-text"
                         : "border-hairline text-text-3 hover:text-text"
                     }`}
                     onClick={() => patch({ duration: d })}
                   >
-                    {d} 秒
+                    {d}秒
                   </button>
                 ))}
               </span>
             </>
           ) : null}
-          {option?.with_audio ? (
+          {option && option.resolutions.length > 0 ? (
             <>
-              <span className="mt-2 block text-[10px] font-medium text-text-4">AI 音效</span>
+              <span className="mt-2 block text-[10px] font-medium text-text-4">清晰度</span>
               <span className="mt-1 flex gap-1">
-                {[false, true].map((on) => (
+                {option.resolutions.map((res) => (
                   <button
-                    key={String(on)}
+                    key={res}
                     type="button"
                     className={`rounded border px-1.5 py-0.5 text-[10px] transition-colors ${
-                      Boolean(vg.withAudio) === on
+                      resolution === res
                         ? "border-accent bg-accent-dim text-text"
                         : "border-hairline text-text-3 hover:text-text"
                     }`}
-                    onClick={() => patch({ withAudio: on })}
+                    onClick={() => patch({ resolution: res })}
                   >
-                    {on ? "生成音效" : "无音效"}
+                    {res}
                   </button>
                 ))}
               </span>
@@ -5308,14 +5309,33 @@ function failLoadingShotVideos(cardId: string, message: string) {
 }
 
 /** 分镜行→视频运动提示词：视频提示词描述「怎么动」——运镜置顶 + 画面动态 +
- *  台词点睛（首帧图已锚定静态画面，不重复铺陈）；@ 是画布引用记号要剥除 */
-function composeShotVideoPrompt(r: ShotRow): string {
+ *  台词点睛（首帧图已锚定静态画面，不重复铺陈）；@ 是画布引用记号要剥除。
+ *  图N 参考编号行（juben PROMPT_REFERENCES 范式）：图1=首帧构图基准，
+ *  图2+=行引用的资产设定图（H3 参考生视频按编号对槽位） */
+const VIDEO_REF_KIND: Record<string, string> = {
+  character: "角色",
+  scene: "场景",
+  prop: "道具",
+  costume: "服饰",
+};
+function composeShotVideoPrompt(
+  r: ShotRow,
+  refs: { type: string; name: string }[] = [],
+): string {
   const parts = [
     r.cameraMove?.trim() ? `运镜：${r.cameraMove.trim()}` : "",
     r.action?.trim().replace(/@/g, "") ?? "",
     r.dialogue?.trim() ? `台词：${r.dialogue.trim().replace(/@/g, "")}` : "",
   ].filter(Boolean);
-  return parts.join("；").slice(0, 480) || "画面轻微流动，镜头缓慢推进";
+  const lines = ["参考图1（首帧）：画面与构图基准，从该画面起运镜"];
+  refs.slice(0, 8).forEach((x, i) => {
+    const kind = VIDEO_REF_KIND[x.type] ?? "资产";
+    lines.push(`参考图${i + 2}（${kind}·${x.name}）：身份、造型与形态保持一致`);
+  });
+  return (
+    [parts.join("；"), lines.join("；")].filter(Boolean).join("\n").slice(0, 1900) ||
+    "画面轻微流动，镜头缓慢推进"
+  );
 }
 
 /** 执行成片卡合成：按 itemIds 顺序取连线视频源 → compose → 产物写回卡上
@@ -6144,7 +6164,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     setVidGenerating(true);
     setGenError("");
     const created: string[] = [];
-    const jobs: { rid: string; name: string; prompt: string; nodeId: string; imageUrl: string }[] = [];
+    const jobs: {
+      rid: string;
+      name: string;
+      prompt: string;
+      nodeId: string;
+      imageUrl: string;
+      referenceImages: string[];
+    }[] = [];
     const ridToNode = new Map<string, string>();
     for (const t of targets) {
       const { row } = t;
@@ -6157,7 +6184,19 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         (row.imageUrl as string | undefined) ??
         "";
       if (!firstFrame) continue; // 可出视频行已过滤，防御而已
-      const prompt = composeShotVideoPrompt(row);
+      // 参考图（H3 参考生视频）：行引用的资产设定图带图者，上限 8（槽 0 是首帧）。
+      // 与出图同源解析（refIds→Look 优先），提示词带 图N 编号行对槽位
+      const refAssets = rowRefNodes(row)
+        .filter((n) => Boolean(n.data.imageUrl))
+        .slice(0, 8);
+      const referenceImages = refAssets.map((n) => n.data.imageUrl as string);
+      const prompt = composeShotVideoPrompt(
+        row,
+        refAssets.map((n) => ({
+          type: String(n.data.nodeType),
+          name: String(n.data.title || "未命名"),
+        })),
+      );
       const existing = row.videoNodeId
         ? st.nodes.find((n) => n.id === row.videoNodeId)
         : null;
@@ -6171,7 +6210,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             genPrompt: prompt,
             imageUrl: firstFrame,
           });
-        jobs.push({ rid: row.rid, name: `镜头${t.seq + 1}`, prompt, nodeId: existing.id, imageUrl: firstFrame });
+        jobs.push({ rid: row.rid, name: `镜头${t.seq + 1}`, prompt, nodeId: existing.id, imageUrl: firstFrame, referenceImages });
         ridToNode.set(row.rid, existing.id);
         continue;
       }
@@ -6207,7 +6246,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       if (imgNode) st.connect({ source: imgNode.id, target: nid });
       st.connect({ source: id, target: nid });
       created.push(nid);
-      jobs.push({ rid: row.rid, name: `镜头${t.seq + 1}`, prompt, nodeId: nid, imageUrl: firstFrame });
+      jobs.push({ rid: row.rid, name: `镜头${t.seq + 1}`, prompt, nodeId: nid, imageUrl: firstFrame, referenceImages });
       ridToNode.set(row.rid, nid);
     }
     if (jobs.length === 0) {
@@ -6223,14 +6262,16 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     st.selectNodes(jobs.map((j) => j.nodeId));
     if (created.length > 0) st.flashNodes(created);
     try {
+      // 画幅跟随分镜卡出图画幅（d.aspect，缺省 16:9）；时长/清晰度来自 chip
       const jobId = await startShotVideoJob(
         jobs.map((j) => ({
           rid: j.rid,
           name: j.name,
           prompt: j.prompt,
           imageUrl: j.imageUrl,
+          referenceImages: j.referenceImages,
         })),
-        vg,
+        { ...vg, aspect: (d.aspect ?? "").trim() || "16:9" },
       );
       // jobId 落卡：出视频中刷新/关标签后挂载续轮询收尾（完事即清）
       useCanvasStore.getState().updateNodeData(id, { videoJobId: jobId });
