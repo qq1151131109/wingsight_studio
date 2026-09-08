@@ -586,6 +586,7 @@ function ToolBtn({
   active,
   label,
   badge,
+  track,
   onClick,
   children,
 }: {
@@ -598,12 +599,15 @@ function ToolBtn({
   label?: string;
   /** 文字旁的小数字角标（如调研待采纳数） */
   badge?: number;
+  /** 埋点位（TelemetryListener 全局捕获，如 doc.fullscreen） */
+  track?: string;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   return (
     <button
       type="button"
+      data-track={track}
       data-tip={label ? undefined : title}
       aria-label={title}
       disabled={disabled}
@@ -1765,6 +1769,88 @@ function ExportMenuButton({
   );
 }
 
+/** 全屏文档编辑器（2026-09-08 卡片全屏文档模式）：文本/剧本/策划类卡的长文
+ *  写作与阅读面。与卡内正文同一数据源（store body + Editable 非受控内核，
+ *  打字流实时落库），双入口零版本冲突；portal 到 body 不受画布 LOD/视口
+ *  卸载影响——万字长文照常流畅。将来「文稿台」第二视图平铺复用此内核。
+ *  关闭只走 Esc/关闭钮（写作模式不吃背景板误点）；剧本卡沿用衬线体。 */
+function DocFullscreenEditor({
+  nodeId,
+  onClose,
+}: {
+  nodeId: string;
+  onClose: () => void;
+}) {
+  const node = useCanvasStore((s) => s.nodes.find((n) => n.id === nodeId));
+  const wrapRef = useRef<HTMLDivElement>(null);
+  // 打开即聚焦、光标落文末（续写姿态）；textarea 常驻挂载，一拍即可落位
+  useEffect(() => {
+    const el = wrapRef.current?.querySelector("textarea");
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+  if (!node) return null; // 编辑期间卡被删除：随数据源静默收起
+  const d = node.data;
+  const body = d.body ?? "";
+  const title = (d.title || "").trim() || "未命名文稿";
+  const update = makeUpdater(nodeId);
+  const doExport = (format: ExportFormat) => {
+    const text = body.trim();
+    if (!text) return;
+    if (format === "docx") void exportDocxFile(title, textToDocxBlocks(title, text));
+    else exportTextFile(title, text, format);
+  };
+  return (
+    <OverlayModal
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      onKeyDown={(e) => {
+        // IME 组合中的 Esc 是取消候选，不是关闭命令（Editable 同款守卫）
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        if (e.key === "Escape") onClose();
+      }}
+    >
+      <div
+        ref={wrapRef}
+        className="flex h-[min(88vh,1000px)] w-[min(92vw,1400px)] flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl"
+      >
+        <div className="flex items-center justify-between gap-3 border-b border-hairline px-5 py-3">
+          <p className="flex min-w-0 items-center gap-2 text-sm font-semibold text-text">
+            <span className="truncate">{title}</span>
+            <span className="shrink-0 text-[10px] font-normal tabular-nums text-text-4">
+              {body.length} 字
+            </span>
+          </p>
+          <div className="flex shrink-0 items-center gap-1">
+            <ExportMenuButton onExport={doExport} disabled={!body.trim()} track="doc" bare />
+            <button
+              type="button"
+              data-tip="关闭（Esc）" aria-label="关闭全屏编辑"
+              className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+              onClick={onClose}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col px-8 py-6">
+          <Editable
+            value={body}
+            onSave={(next, opts) => update({ body: next }, opts)}
+            multiline
+            fill
+            always
+            placeholder="开始写作…（与卡面正文实时同步）"
+            className={`min-h-0 flex-1 text-[15px] leading-8 text-text ${
+              d.nodeType === "script" ? "font-editorial" : ""
+            }`}
+          />
+        </div>
+      </div>
+    </OverlayModal>
+  );
+}
+
 /** 文本 / 剧本卡：紧凑文本卡 + 就地编辑（标题在卡外头部）。
  *  空卡 = 直接输入框 + AI 撰写输入条（对标 libtv 的"尝试"+输入区）。
  *  文本卡（非剧本）的 生图/生视频/调研/导出 全在悬浮工具条（剧本卡同范式；
@@ -1790,6 +1876,7 @@ function TextCard({
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
   const [forceEdit, setForceEdit] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [docOpen, setDocOpen] = useState(false);
   const lod = useLod();
   useEffect(() => {
     const onFocusEdit = (e: Event) => {
@@ -1899,6 +1986,14 @@ function TextCard({
           )}
         </ToolBtn>
       ) : null}
+      <ToolBtn
+        title="全屏写作模式：大编辑面编辑本卡正文，与卡面实时同步（Esc 退出）"
+        label="全屏"
+        track="doc.fullscreen"
+        onClick={() => setDocOpen(true)}
+      >
+        <Maximize2 className="h-3.5 w-3.5" />
+      </ToolBtn>
       <ExportMenuButton
         onExport={doExport}
         disabled={empty}
@@ -1908,6 +2003,7 @@ function TextCard({
     </>
   );
   return (
+    <>
     <CardShell
       id={id}
       data={data}
@@ -1951,6 +2047,10 @@ function TextCard({
         </p>
       ) : null}
     </CardShell>
+    {docOpen ? (
+      <DocFullscreenEditor nodeId={id} onClose={() => setDocOpen(false)} />
+    ) : null}
+    </>
   );
 }
 
@@ -1971,6 +2071,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   const [genError, setGenError] = useState("");
   const [researching, setResearching] = useState(false);
   const [researchMsg, setResearchMsg] = useState("");
+  const [docOpen, setDocOpen] = useState(false);
   const [reviewBatch, setReviewBatch] = useState<BatchRefJob | null>(null);
   // 批量调研续链：锚在卡数据上，移出视口卸载/刷新后恢复进度与终态面板
   const refJob = useBatchRefJob(id);
@@ -2172,6 +2273,14 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       >
         <Film className="h-3.5 w-3.5" />
       </ToolBtn>
+      <ToolBtn
+        title="全屏写作模式：大编辑面编辑剧本正文，与卡面实时同步（Esc 退出）"
+        label="全屏"
+        track="doc.fullscreen"
+        onClick={() => setDocOpen(true)}
+      >
+        <Maximize2 className="h-3.5 w-3.5" />
+      </ToolBtn>
       <ExportMenuButton
         onExport={doExport}
         disabled={empty}
@@ -2182,6 +2291,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   );
 
   return (
+    <>
     <TextCard
       data={d}
       id={id}
@@ -2234,6 +2344,10 @@ function ScriptCard({ data, id, selected }: NodeProps) {
         </>
       }
     />
+    {docOpen ? (
+      <DocFullscreenEditor nodeId={id} onClose={() => setDocOpen(false)} />
+    ) : null}
+    </>
   );
 }
 
