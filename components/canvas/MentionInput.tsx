@@ -60,7 +60,9 @@ export type MentionInputHandle = {
 type Trigger = { textNode: Text; at: number; q: string };
 
 /** 候选分桶轮转的类型顺序：角色最前（一致性主场景），随后有图生产类、
- *  文本类、媒体类；桶内带图优先 */
+ *  文本类、媒体类；桶内带图优先。**新增卡型必须同步这里**——不在表里的
+ *  类型只会在「已连线」组露出，普通列表永远 @ 不到（shotlist/research
+ *  曾漏，2026-09-08 补齐：卷宗做写作依据、分镜表做上下文都要能 @） */
 const TYPE_ORDER_KEYS = [
   "character",
   "image",
@@ -68,8 +70,10 @@ const TYPE_ORDER_KEYS = [
   "prop",
   "costume",
   "storyboard",
+  "shotlist",
   "script",
   "note",
+  "research",
   "video",
   "audio",
   "compose",

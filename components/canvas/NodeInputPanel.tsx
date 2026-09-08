@@ -15,8 +15,13 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 import { useStoreApi } from "@xyflow/react";
-import { useCanvasStore, selectionBoxes } from "@/lib/canvas/store";
+import { useCanvasStore, selectionBoxes, absolutePosition, nodeSize } from "@/lib/canvas/store";
 import { ADD_REF_EVENT, type AddRefDetail } from "@/lib/canvas/events";
+import {
+  addMediaCard,
+  parseAssetDrag,
+  ASSET_DRAG_MIME,
+} from "@/lib/canvas/ingest";
 import PromptBar from "./PromptBar";
 
 const KIND_BY_TYPE: Record<
@@ -124,7 +129,10 @@ function PanelBody({ nodeId, kind }: { nodeId: string; kind: string }) {
       ref={boxRef}
       className={`ws-detail absolute z-10 -translate-x-1/2 ${dropActive ? "ws-ref-drop-active" : ""}`}
       onDragOver={(e) => {
-        if (e.dataTransfer.types.includes("application/x-ws-node-ref")) {
+        if (
+          e.dataTransfer.types.includes("application/x-ws-node-ref") ||
+          e.dataTransfer.types.includes(ASSET_DRAG_MIME)
+        ) {
           e.preventDefault();
           setDropActive(true);
         }
@@ -132,6 +140,27 @@ function PanelBody({ nodeId, kind }: { nodeId: string; kind: string }) {
       onDragLeave={() => setDropActive(false)}
       onDrop={(e) => {
         setDropActive(false);
+        // 素材库项：库项不是画布卡，@ 的载体必须是卡——就近建媒体卡再引用
+        const assetRaw = e.dataTransfer.getData(ASSET_DRAG_MIME);
+        if (assetRaw) {
+          e.preventDefault();
+          const p = parseAssetDrag(assetRaw);
+          if (!p) return;
+          const st = useCanvasStore.getState();
+          const cur = st.nodes.find((n) => n.id === nodeId);
+          const anchor = cur
+            ? {
+                x: absolutePosition(st.nodes, cur).x + nodeSize(cur).w + 80,
+                y: absolutePosition(st.nodes, cur).y,
+              }
+            : undefined;
+          const id = addMediaCard(p.kind, p.url, p.title, anchor);
+          if (id)
+            window.dispatchEvent(
+              new CustomEvent(ADD_REF_EVENT, { detail: { nodeId: id } }),
+            );
+          return;
+        }
         const raw = e.dataTransfer.getData("application/x-ws-node-ref");
         if (!raw) return;
         e.preventDefault();

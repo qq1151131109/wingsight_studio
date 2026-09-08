@@ -40,6 +40,7 @@ import MentionInput, {
 import {
   uploadAsset,
   extractText,
+  saveAsset,
   cancelChatRun,
   cancelChatJob,
   listChatJobs,
@@ -47,6 +48,13 @@ import {
 } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
 import { CHAT_EDIT_MESSAGE_EVENT, CHAT_INSERT_TEXT_EVENT } from "@/lib/canvas/events";
+import {
+  addDocCard,
+  addMediaCard,
+  parseAssetDrag,
+  ASSET_DRAG_MIME,
+} from "@/lib/canvas/ingest";
+import { showToast } from "@/lib/toast";
 import { AutoRunBridge } from "@/components/copilot/TaskEvents";
 
 /** caret 前的 /slash 片段（行首或空格后的 "/xxx"）→ 技能菜单 */
@@ -100,7 +108,10 @@ const TEXT_LIKE_EXT = [".txt", ".md", ".json", ".csv", ".srt", ".xml", ".log"];
 /** 二进制文档 → 服务端 /extract-text 提取后内联（docx zip 直解、doc/rtf 走
  *  soffice、pdf 走 pdftotext——浏览器里读不了这些格式，只有服务端能转） */
 const EXTRACT_TEXT_EXT = [".doc", ".docx", ".rtf", ".pdf"];
-const INLINE_TEXT_MAX = 64 * 1024; // 纯文本文件本体上限（直读内联）
+/** 文本类文件直读上限：超过就落到上传分支（拿不到正文、agent 也读不了）。
+ *  2MB 覆盖典型剧本/大纲（中文 5 万字 ≈ 150KB）；曾用 64KB，把 100KB+ 的
+ *  剧本 .txt 静默踢出「落卡 + 内联」两条路（2026-09-08 review 发现） */
+const TEXT_READ_MAX = 2 * 1024 * 1024;
 // 拼进消息正文的字符上限：剧本文档动辄数万字，截 8000 会把剧本截残
 // （「全站不截断」口径）；超长由对话滚动压缩兜底
 const INLINE_TEXT_CHARS = 50000;
@@ -346,6 +357,13 @@ export default function ChatInput({
         // 这些格式，失败明报（扫描件/加密/损坏都会给原因）
         if (kind === "document" && EXTRACT_TEXT_EXT.includes(ext)) {
           const t = await extractText(f, a.name);
+          // 落资料卡（2026-09-08 @ 体系补缺）：文档此前只内联在当轮消息里，
+          // 后续轮次无法点名引用、不落卡、不进素材库——用户上传资料的主要
+          // 形态恰好走这条路。建卡后 @/连线/跨会话/跨视图全通。
+          if (t?.ok && t.text.trim()) {
+            const id = addDocCard(a.name, t.text);
+            if (id) showToast(`已存为资料卡，可在画布 @ 引用`);
+          }
           writeAttachments(
             attachmentsRef.current.map((x) =>
               x.key === a.key
@@ -359,12 +377,25 @@ export default function ChatInput({
           );
           return;
         }
-        // 文本类小文件：直接内联，不上传
-        if (kind === "document" && f.size <= INLINE_TEXT_MAX) {
+        // 文本类文件：直读内联 + 落资料卡（不上传）。读空/读失败要明报错误态，
+        // 否则附件永远停在「上传中」、submit 三分支全不匹配被静默丢弃
+        if (kind === "document" && f.size <= TEXT_READ_MAX) {
           const t = await f.text().catch(() => "");
+          if (!t.trim()) {
+            writeAttachments(
+              attachmentsRef.current.map((x) =>
+                x.key === a.key
+                  ? { ...x, status: "error", errorMessage: "文件为空或不是文本格式" }
+                  : x,
+              ),
+            );
+            return;
+          }
+          const id = addDocCard(a.name, t);
+          if (id) showToast(`已存为资料卡，可在画布 @ 引用`);
           writeAttachments(
             attachmentsRef.current.map((x) =>
-              x.key === a.key && t.trim()
+              x.key === a.key
                 ? { ...x, status: "inline", inlineText: t.slice(0, INLINE_TEXT_CHARS) }
                 : x,
             ),
@@ -372,6 +403,12 @@ export default function ChatInput({
           return;
         }
         const url = await uploadAsset(f, f.type, f.name);
+        // 聊天上传的媒体自动进素材库（与画布上传对齐：此前只有画布节点的
+        // 媒体入库，聊天上传的图/视频/音频是"一次性"的，库和 @ 都够不着）
+        if (url && (kind === "image" || kind === "video" || kind === "audio")) {
+          const pid = useCanvasStore.getState().projectId;
+          if (pid) void saveAsset(pid, { kind, title: a.name, url, source: "upload" });
+        }
         writeAttachments(
           attachmentsRef.current.map((x) =>
             x.key === a.key
@@ -568,6 +605,16 @@ export default function ChatInput({
           } catch {
             /* 非法载荷忽略 */
           }
+          return;
+        }
+        // 素材库项拖进来 = 建媒体卡 + @ 引用（库项不是画布卡，@ 的载体必须
+        // 是卡——建卡后即进候选，语义与「库图即资产」一致）
+        const assetRaw = e.dataTransfer.getData(ASSET_DRAG_MIME);
+        if (assetRaw) {
+          e.preventDefault();
+          const p = parseAssetDrag(assetRaw);
+          const id = p ? addMediaCard(p.kind, p.url, p.title) : null;
+          if (id) edRef.current?.appendMention(id);
           return;
         }
         if (e.dataTransfer.files?.length) {

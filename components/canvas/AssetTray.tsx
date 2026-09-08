@@ -15,6 +15,7 @@ import { NODE_META, useCanvasStore, type WingNodeData } from "@/lib/canvas/store
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 import { dispatchFocusEdit, FOCUS_NODES_EVENT } from "@/lib/canvas/events";
+import { ASSET_DRAG_MIME } from "@/lib/canvas/ingest";
 import {
   deleteAsset,
   listAssets,
@@ -227,7 +228,16 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
             <div
               key={a.id}
               className="group relative flex cursor-pointer items-center gap-1.5 rounded-md border border-hairline bg-surface-2 px-1.5 py-1 transition-colors hover:border-accent"
-              title={`${a.title}（${KIND_LABEL[a.kind]}）— 点击放入画布`}
+              title={`${a.title}（${KIND_LABEL[a.kind]}）— 点击放入画布；拖进输入条 = 建卡并 @ 引用`}
+              draggable
+              onDragStart={(e) => {
+                // 输入条（画布面板/聊天）读这个载荷：建媒体卡 + 引用
+                e.dataTransfer.setData(
+                  ASSET_DRAG_MIME,
+                  JSON.stringify({ kind: a.kind, url: a.url, title: a.title }),
+                );
+                e.dataTransfer.effectAllowed = "copy";
+              }}
               onClick={() => addToCanvas(a)}
             >
               <span className="h-8 w-11 shrink-0 overflow-hidden rounded bg-black/10">
