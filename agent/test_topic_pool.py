@@ -321,7 +321,7 @@ RESCAN_VERDICT = {
 }
 
 
-async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None) -> str:
+async def fake_flow_runner(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
     global _CONVERGE_CALLS
     payload = json.loads(input_value)
     if flow_id == "f-diverge":
@@ -733,7 +733,7 @@ def _tracking_runner(stats: dict, *, sleep: float = 0.01):
 
     sleep 让事件循环真正交错——并发限流与断点续跑要测的就是交错下的账本。
     """
-    async def runner(flow_id: str, input_value: str, tweaks=None) -> str:
+    async def runner(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
         payload = json.loads(input_value)
         stats["inflight"] += 1
         stats["max"] = max(stats["max"], stats["inflight"])
@@ -814,7 +814,7 @@ async def run_crash_resume() -> None:
     diverge_started = {"n": 0}
     base = _tracking_runner({"inflight": 0, "max": 0})
 
-    async def gated(flow_id: str, input_value: str, tweaks=None) -> str:
+    async def gated(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
         if flow_id == "f-diverge":
             diverge_started["n"] += 1
             if diverge_started["n"] == 2:
@@ -858,7 +858,7 @@ async def run_diverge_failure_not_fed() -> None:
     fail = {"on": True}
     base = _tracking_runner({"inflight": 0, "max": 0})
 
-    async def flaky(flow_id: str, input_value: str, tweaks=None) -> str:
+    async def flaky(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
         if flow_id == "f-diverge" and fail["on"]:
             raise RuntimeError("（引擎错误：flow 不存在）")
         return await base(flow_id, input_value, tweaks)
@@ -945,7 +945,7 @@ print("verdict 规则 ✓")
 async def run_call_flow_retry() -> None:
     calls = {"n": 0}
 
-    async def flaky(flow_id: str, input_value: str, tweaks=None) -> str:
+    async def flaky(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
         calls["n"] += 1
         if calls["n"] == 1:
             return '坏输出：他说"这不算 JSON"就完了'  # 未转义引号类坏输出
@@ -955,7 +955,7 @@ async def run_call_flow_retry() -> None:
     parsed = await curator._call_flow("verdict", {"x": 1})
     expect(parsed == [{"ok": True}] and calls["n"] == 2, f"坏输出应重试一次后成功：calls={calls['n']}")
 
-    async def always_bad(flow_id: str, input_value: str, tweaks=None) -> str:
+    async def always_bad(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
         calls["n"] += 1
         return "始终不是 JSON"
 
@@ -967,7 +967,7 @@ async def run_call_flow_retry() -> None:
     except RuntimeError as exc:
         expect("两次解析失败" in str(exc) and calls["n"] == 2, f"应恰好尝试两次后报错：{exc}")
 
-    async def engine_error(flow_id: str, input_value: str, tweaks=None) -> str:
+    async def engine_error(flow_id: str, input_value: str, tweaks=None, timeout=300) -> str:
         calls["n"] += 1
         return "（引擎错误：flow 不存在）"
 
@@ -1308,7 +1308,7 @@ async def run_anchor_rewrite():
             self.search = None
             self.flow_runner = self._fake
 
-        async def _fake(self, fid, payload, tweaks=None):
+        async def _fake(self, fid, payload, tweaks=None, timeout=300):
             return json.dumps(self._outputs.pop(0), ensure_ascii=False)
 
     result = topic_pool.IdeateResult()
@@ -1398,7 +1398,7 @@ async def run_treatment_pairing():
             self.search = None
             self.flow_runner = self._fake
 
-        async def _fake(self, fid, payload, tweaks=None):
+        async def _fake(self, fid, payload, tweaks=None, timeout=300):
             # 按调用顺序弹输出（讲法配对 → 收敛 → 重写…）
             return json.dumps(self._outputs.pop(0), ensure_ascii=False)
 
