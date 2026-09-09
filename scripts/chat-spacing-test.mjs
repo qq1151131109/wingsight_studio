@@ -74,7 +74,7 @@ await context.addInitScript(
   ["wingsight_studio_token", TOKEN],
 );
 const page = await context.newPage();
-await page.goto(`${WEB}/project/${PID}`, { waitUntil: "networkidle" });
+await page.goto(`${WEB}/project/${PID}`, { waitUntil: "load" });
 await page.waitForTimeout(2500);
 if (
   (await page.evaluate(() => document.querySelector("aside.copilotKitSidebar")?.getAttribute("aria-hidden"))) !==
@@ -180,11 +180,24 @@ check(
 );
 const paraGaps = m.rows.flatMap((x) => x.paraGaps);
 check("④ 段内间距仍 16px（space-y-4 未被误伤）", paraGaps.length >= 2 && paraGaps.every((g) => Math.abs(g - 16) <= 1), `[${paraGaps.join(", ")}]`);
-const cardRows = m.rows.filter((x) => !x.isUser && x.blockGaps.length === 0 && x.text.includes("画布操作"));
+// ⑤ 工具卡上下间距：卡要么贴壳顶（纯卡消息，空 prose 已掐），要么与前一块的
+// 间距恰为消息内块间距 10px（正文→卡同条消息，v2 聚合后的常见形状）。
+// 卡顶槽若大于 10px 就是空 prose 复活占槽
+const cardRows = m.rows.filter((x) => !x.isUser && x.blockGaps.length >= 1 && x.text.includes("画布操作"));
+const pureCardRows = m.rows.filter((x) => !x.isUser && x.blockGaps.length === 0 && x.text.includes("画布操作"));
+const cardTopOk =
+  (cardRows.length > 0 &&
+    cardRows.every((x) => x.blockGaps.every((g) => Math.abs(g - 10) <= 1))) ||
+  (pureCardRows.length > 0 &&
+    pureCardRows.every((x) => Math.abs(x.ink.t - x.shell.t) <= 1));
 check(
-  "⑤ 工具卡消息空 prose 不占槽（卡贴壳顶）",
-  cardRows.length > 0 && cardRows.every((x) => Math.abs(x.ink.t - x.shell.t) <= 1),
-  cardRows.length ? cardRows.map((x) => (x.ink.t - x.shell.t).toFixed(1)).join(",") : "无工具卡消息",
+  "⑤ 工具卡不占多余槽（正文→卡恰 10px / 纯卡贴壳顶）",
+  cardTopOk,
+  cardRows.length
+    ? `块间距[${cardRows.map((x) => x.blockGaps.join("/")).join(",")}]`
+    : pureCardRows.length
+      ? pureCardRows.map((x) => (x.ink.t - x.shell.t).toFixed(1)).join(",")
+      : "无工具卡消息",
 );
 check("⑥ 横向内缩收到 20px/侧（正文 ≥350px）", (m.contentW ?? 0) >= 350, `正文宽=${m.contentW}`);
 check(
