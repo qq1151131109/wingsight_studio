@@ -35,6 +35,7 @@ from typing import Any, Awaitable, Callable
 import topics as store
 import insights as insight_store
 from treatments import (
+    ARCHIVAL,
     record_use,
     treatment_card_shape,
     treatments_payload,
@@ -59,7 +60,7 @@ class VerticalSpec:
 VERTICAL_SPECS: dict[str, VerticalSpec] = {
     "history": VerticalSpec(
         id="history", label="历史", color="var(--color-cool)",
-        scope="历史事件、历史人物、考古发现、文物、时代记忆（核心驱动是过去的事件与过去的人）",
+        scope="历史事件、历史人物、考古发现、文物、口述与集体记忆（核心驱动是过去的事件与过去的人本身；行业/门类的「演变史」按其内容域归类——吃→美食、教育→人文、竞技体育→人文，不因涉及过去而归历史）",
         material_seeds=(
             "考古中国 发布会 {year}",
             "考古新发现 {year}",
@@ -1781,6 +1782,7 @@ class TopicCurator:
                 continue
             idx = p.get("sourceIndex")
             if not isinstance(idx, int) or not 0 <= idx < len(chunk):
+                logger.warning("讲法配对丢弃（sourceIndex 非法）: %r", p.get("sourceIndex"))
                 continue
             tid = str(p.get("treatment") or "")
             shape = treatment_card_shape(tid, str(p.get("why") or ""), p.get("alternates"))
@@ -1812,6 +1814,12 @@ class TopicCurator:
             if shape:
                 chunk[idx]["treatment"] = shape
                 record_use(shape["id"])
+            else:
+                logger.warning(
+                    "讲法配对丢弃（库外 id 且非原创提案）: %r → 方向「%s」",
+                    tid,
+                    str(chunk[idx].get("name") or "")[:30],
+                )
 
     async def _converge_chunk(
         self,
@@ -1841,6 +1849,25 @@ class TopicCurator:
                 self._attach_treatments(pairs, chunk)
             except Exception as exc:  # noqa: BLE001 - 配对失败按默认讲法走
                 logger.warning("讲法配对失败（按默认严肃档案系）: %s", str(exc)[:160])
+            # 明确默认：配对没给出有效讲法的方向统一挂注册表默认（archival），
+            # 卡片显示「讲法 · 默认」——此前静默留空，漏配多少条无从知晓
+            missing = [
+                d
+                for d in chunk
+                if not (isinstance(d.get("treatment"), dict) and d["treatment"].get("id"))
+            ]
+            if missing:
+                default_shape = treatment_card_shape(ARCHIVAL, "")
+                if default_shape:
+                    for d in missing:
+                        d["treatment"] = dict(default_shape)
+                    logger.warning(
+                        "讲法配对缺 %d/%d 条，按默认「%s」补齐：%s",
+                        len(missing),
+                        len(chunk),
+                        default_shape["name"],
+                        "、".join(str(d.get("name") or "")[:14] for d in missing[:5]),
+                    )
         payload = {
             "directions": [
                 {
