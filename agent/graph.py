@@ -1364,8 +1364,16 @@ def _embed_local_media(m: Any) -> Any:
 # 提示词正文在 prompts/system.md（占位符用 string.Template 的 $name 语法，
 # JSON 示例可直接写花括号，不必再数 {{ }}）。按 mtime 热加载：改提示词保存
 # 即生效，不必重启 agent（与技能手册的 refresh 同款诉求）。
+# ⚠ 维护提示词时：正文里要写字面 $ 必须写成 $$（如金额 $100 → $$100），否则
+#   substitute 会把它当占位符，抛 ValueError（$ 后非法字符）或 KeyError（像变量名）。
 _PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "system.md"
 _prompt_cache: Tuple[float, Template] | None = None
+
+# chat_node 每轮 substitute 提供的占位符集合；system.md 里的占位符必须与之完全
+# 一致——多了没人传（KeyError）、少了动态段静默丢失（画布摘要/技能目录不进 prompt）。
+_PROMPT_PLACEHOLDERS = frozenset(
+    {"canvas_summary", "camera_cheat", "skill_catalog", "history_section"}
+)
 
 
 def load_system_prompt() -> Template:
@@ -1378,7 +1386,23 @@ def load_system_prompt() -> Template:
             f"系统提示文件缺失：{_PROMPT_PATH}（{exc}）——提示词是 agent 的宪法，缺失即拒绝启动"
         ) from exc
     if _prompt_cache is None or _prompt_cache[0] != mtime:
-        _prompt_cache = (mtime, Template(_PROMPT_PATH.read_text(encoding="utf-8")))
+        tmpl = Template(_PROMPT_PATH.read_text(encoding="utf-8"))
+        # 占位符双向校验：装载时（启动 + 每次热重载）就炸，不留到第一轮对话
+        # substitute 才暴露。get_identifiers() 需 Python ≥3.11（本项目 ≥3.12）。
+        found = set(tmpl.get_identifiers())
+        if found != _PROMPT_PLACEHOLDERS:
+            missing = sorted(_PROMPT_PLACEHOLDERS - found)
+            extra = sorted(found - _PROMPT_PLACEHOLDERS)
+            parts = []
+            if missing:
+                parts.append(f"缺失(对应动态段会丢失) {missing}")
+            if extra:
+                parts.append(f"多余(chat_node 没传会 KeyError) {extra}")
+            raise RuntimeError(
+                f"系统提示占位符不匹配：{'；'.join(parts)}"
+                f"——system.md 应与 chat_node 提供的 {sorted(_PROMPT_PLACEHOLDERS)} 完全一致"
+            )
+        _prompt_cache = (mtime, tmpl)
     return _prompt_cache[1]
 
 

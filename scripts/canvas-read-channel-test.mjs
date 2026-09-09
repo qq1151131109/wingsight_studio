@@ -139,8 +139,8 @@ const sizeOf = (id) => {
   return { w: Number(n?.style?.width), h: Number(n?.style?.height) };
 };
 check("短便签保持便签尺寸 280×170", sizeOf("N_short").w === 280 && sizeOf("N_short").h === 170, JSON.stringify(sizeOf("N_short")));
-check("长文 note 落文档尺寸 480×360", sizeOf("N_long").w === 480 && sizeOf("N_long").h === 360, JSON.stringify(sizeOf("N_long")));
-check("超长 note 落 560×480", sizeOf("N_huge").w === 560 && sizeOf("N_huge").h === 480, JSON.stringify(sizeOf("N_huge")));
+check("长文 note 按正文实算给高（500 字 → 480×367）", sizeOf("N_long").w === 480 && sizeOf("N_long").h === 367, JSON.stringify(sizeOf("N_long")));
+check("超长 note 高度钳到上限 560×760（超出滚动）", sizeOf("N_huge").w === 560 && sizeOf("N_huge").h === 760, JSON.stringify(sizeOf("N_huge")));
 // 批量布局按分档尺寸排格：三张长文 note 的 y 或 x 间距不得小于卡高/卡宽（不叠卡）
 const ys = ["N_long", "N_huge"].map((id) => node(id).position.y);
 const xs = ["N_long", "N_huge"].map((id) => node(id).position.x);
@@ -151,6 +151,21 @@ const longNode = node("N_long");
 check("批量建卡（stagger>0）分档尺寸与级联变量共存",
   sizeOf("N_long").w === 480 && typeof longNode?.style?.["--ws-stagger"] === "string",
   JSON.stringify(longNode?.style));
+// 候选阅读卡（2026-09-09 二轮终态：高度按正文实算——候选池 100-300 字的
+// 「读」卡不再挤便签框也不再固定档截半，全文可见）
+const d1b = applyOps([
+  { op: "add_node", nodeType: "note", id: "N_read", title: "候选·沈太福", body: "字".repeat(210) },
+]);
+check("候选阅读卡宽度按量选档 440、高度实算 211",
+  d1b.errors.length === 0 && sizeOf("N_read").w === 440 && sizeOf("N_read").h === 211,
+  JSON.stringify(sizeOf("N_read")));
+const d1c = applyOps([
+  { op: "add_node", nodeType: "note", id: "N_links", title: "带来源", body: "字".repeat(210),
+    links: [{ title: "a", url: "https://a.example" }, { title: "b", url: "https://b.example" }] },
+]);
+check("links 来源行计入卡高（2 条 +38）",
+  d1c.errors.length === 0 && sizeOf("N_links").h === sizeOf("N_read").h + 38,
+  JSON.stringify(sizeOf("N_links")));
 
 // —— links 透传（候选落卡 P1：可点来源行）——
 import { sanitizeCanvas } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/sanitize.ts";
@@ -188,6 +203,26 @@ check("sanitize 清脏 links（危险 scheme/非数组）、留干净的",
   san.nodes.find((n) => n.id === "s3")?.data?.links?.[0]?.url === "https://ok.example" &&
   san.nodes.find((n) => n.id === "s1")?.data?.links === undefined,
   `fixedLinks=${san.fixedLinks}`);
+// —— 存量 note 卡 sanitize 尺寸归一（历史默认档 → 正文实算；research 卡同款先例）——
+const upNote = (id, body, style, extra = {}) => ({
+  id, type: "note", position: { x: 0, y: 0 }, style,
+  data: { nodeType: "note", title: "存量", body }, ...extra,
+});
+const up1 = sanitizeCanvas([upNote("UP1", "字".repeat(210), { width: 280, height: 170 })], []);
+check("存量 280×170 便签框 + 210 字正文 → 归一 440×211",
+  up1.resizedNotes === 1 && up1.nodes[0].style.width === 440 && up1.nodes[0].style.height === 211,
+  JSON.stringify({ n: up1.resizedNotes, s: up1.nodes[0].style }));
+const up2 = sanitizeCanvas([upNote("UP2", "字".repeat(210), { width: 280, height: 170 }, { width: 300, height: 180 })], []);
+check("用户手调过（顶层有尺寸）不归一", up2.resizedNotes === 0 && up2.nodes[0].style.width === 280,
+  JSON.stringify(up2.resizedNotes));
+const up3 = sanitizeCanvas([upNote("UP3", "短便签", { width: 280, height: 170 })], []);
+check("短便签算出来与现值相同 → 不动不计数", up3.resizedNotes === 0 && up3.nodes[0].style.height === 170);
+const up4 = sanitizeCanvas([upNote("UP4", "字".repeat(1302), { width: 480, height: 360 })], []);
+check("上午分档期 480×360 策划卡 → 归一 560×698 全文可见",
+  up4.resizedNotes === 1 && up4.nodes[0].style.width === 560 && up4.nodes[0].style.height === 698,
+  JSON.stringify({ n: up4.resizedNotes, s: up4.nodes[0].style }));
+const up5 = sanitizeCanvas([upNote("UP5", "字".repeat(210), { width: 440, height: 211 })], []);
+check("归一幂等（动态尺寸不在历史档，再装载不计数）", up5.resizedNotes === 0);
 // 画布摘要带 links 计数标记（agent 知道候选卡带出处，补研/引用时用）
 const s2 = summarizeCanvas(
   useCanvasStore.getState().nodes,

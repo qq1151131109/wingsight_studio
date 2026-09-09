@@ -513,11 +513,11 @@ function planBatchLayout(ops: CanvasOp[]): BatchLayout {
 
   let groupLeft = anchor.x;
   let rowY = anchor.y;
-  /** 建卡实际足迹：note 按正文长度分档（与 add_node 落卡尺寸同源）——布局
+  /** 建卡实际足迹：note 按正文实算（与 add_node 落卡尺寸同源）——布局
    *  格子必须与实际卡面同尺寸，否则长文 note 会压到邻卡身上 */
   const footprintOf = (op: Extract<CanvasOp, { op: "add_node" }>) =>
     op.nodeType === "note"
-      ? noteFootprintFor(op.body ?? "")
+      ? noteFootprintFor(op.body ?? "", op.links?.length ?? 0)
       : (NODE_FOOTPRINT[op.nodeType] ?? NODE_FOOTPRINT.note);
   /** 混类型网格用批内最大占位做统一单元格（不同 footprint 逐卡错位会散） */
   const maxFootprint = (adds: Extract<CanvasOp, { op: "add_node" }>[]) => {
@@ -714,10 +714,12 @@ export function applyOps(rawOps: unknown): OpResult {
             break;
           }
           // 建卡初始尺寸三来源必须合并成一个 style 对象（分开 spread 会互相
-          // 覆盖）：分组框给显式默认（否则零尺寸不可见）；note 按正文长度分档
-          // （策划案/资料全文别挤在便签框里）；stagger 只加级联入场 CSS 变量
+          // 覆盖）：分组框给显式默认（否则零尺寸不可见）；note 按正文实算
+          // 尺寸（全文尽量可见，别挤在便签框里）；stagger 只加级联入场 CSS 变量
           const noteFp =
-            op.nodeType === "note" ? noteFootprintFor(op.body ?? "") : null;
+            op.nodeType === "note"
+              ? noteFootprintFor(op.body ?? "", op.links?.length ?? 0)
+              : null;
           const nodeStyle: CSSProperties = {
             ...(op.nodeType === "group" ? { width: 480, height: 360 } : {}),
             ...(noteFp ? { width: noteFp.w, height: noteFp.h } : {}),

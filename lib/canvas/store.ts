@@ -421,15 +421,28 @@ export const NODE_FOOTPRINT: Record<string, { w: number; h: number }> = {
   group: { w: 480, h: 360 },
 };
 
-/** 文本卡（note）的建卡尺寸分档（2026-09-09 090803 项目事故：策划案/上传文档
- *  全文挤在 280×170 的便签框里滚动——足迹是便签时代的，用途已是文档）。
- *  按正文长度给文档尺寸；短便签保持原样。只影响**建卡初始尺寸**：已有卡片、
- *  用户手动缩放、agent update_node 都不动。 */
-export function noteFootprintFor(body: string): { w: number; h: number } {
-  const n = (body ?? "").trim().length;
-  if (n >= 2000) return { w: 560, h: 480 };
-  if (n >= 300) return { w: 480, h: 360 };
-  return NODE_FOOTPRINT.note;
+/** 文本卡（note）的建卡尺寸：宽度按内容量选行宽档，高度按正文**实算行数**
+ *  给——目标是「全文可见」，超出高度上限才滚动（2026-09-09 两轮迭代的终态：
+ *  便签时代的 280×170 固定足迹装不下策划案/候选卡，固定分档又把 500 字卡
+ *  截半）。行高 19.5（text-xs leading-relaxed）、汉字全宽 12px 半角折半、
+ *  8% 换行余量；固定开销 74 = 标题行 24 + 卡内边距 24 + 字数行 ~26；
+ *  links 来源行每条约 16px。只影响**建卡初始尺寸**：手动缩放、agent
+ *  update_node 都不动（存量默认尺寸走 sanitize 归一）。 */
+export function noteFootprintFor(body: string, linkCount = 0): { w: number; h: number } {
+  const text = (body ?? "").trim();
+  if (!text) return NODE_FOOTPRINT.note;
+  const n = text.length;
+  const w = n >= 1200 ? 560 : n >= 400 ? 480 : n >= 100 ? 440 : 280;
+  const perLine = Math.max(1, Math.floor((w - 24) / 12));
+  let lines = 0;
+  for (const seg of text.split("\n")) {
+    let units = 0;
+    for (const ch of seg) units += ch.charCodeAt(0) < 0x2e80 ? 0.5 : 1;
+    lines += Math.max(1, Math.ceil((units * 1.08) / perLine));
+  }
+  const linksH = linkCount > 0 ? Math.min(linkCount, 6) * 16 + 6 : 0;
+  const h = Math.ceil(74 + lines * 19.5 + linksH);
+  return { w, h: Math.min(760, Math.max(NODE_FOOTPRINT.note.h, h)) };
 }
 
 /** 卡片创建/装载时的默认尺寸（resize 前提：包装层有显式宽高，卡片内容撑满）。

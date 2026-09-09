@@ -7,6 +7,7 @@
 import {
   findFreePosition,
   NODE_FOOTPRINT,
+  noteFootprintFor,
   type ShotRow,
   type WingEdge,
   type WingNode,
@@ -33,6 +34,8 @@ export interface SanitizeResult {
   upsizedResearch: number;
   /** 存量资产卡降 16:9 适配高度的卡数（旧默认 288×352 → 288×214） */
   resizedAssets: number;
+  /** 存量 note 卡按正文实算归一尺寸的卡数（历史默认档 → noteFootprintFor） */
+  resizedNotes: number;
   /** 脏 links（非数组/缺字段/危险 scheme）清掉的卡数 */
   fixedLinks: number;
 }
@@ -409,6 +412,28 @@ export function sanitizeCanvas(
     }
   }
 
+  // 存量 note 卡尺寸归一（2026-09-09 候选池事故两轮：固定分档尺寸总装不全
+  // 正文，终态=noteFootprintFor 按正文实算）：style 精确等于历史默认档
+  // （便签 280×170 / 分档期 440×340、480×360、560×480）且**顶层无
+  // width/height**（xyflow resize 只写顶层，有值即用户手调过）才归一——
+  // 算出来与现值相同则不动（幂等）。research 卡 320×220→480×560 同款先例
+  let resizedNotes = 0;
+  const legacyNoteSize = new Set(["280x170", "440x340", "480x360", "560x480"]);
+  for (const n of cleanNodes) {
+    if (n.data.nodeType !== "note") continue;
+    if (n.width !== undefined || n.height !== undefined) continue;
+    const sw = Number(n.style?.width);
+    const sh = Number(n.style?.height);
+    if (!sw || !sh || !legacyNoteSize.has(`${sw}x${sh}`)) continue;
+    const fp = noteFootprintFor(
+      String(n.data.body ?? ""),
+      Array.isArray(n.data.links) ? n.data.links.length : 0,
+    );
+    if (fp.w === sw && fp.h === sh) continue;
+    n.style = { ...n.style, width: fp.w, height: fp.h };
+    resizedNotes += 1;
+  }
+
   // 存量资产卡降 16:9 适配高度（2026-09-04 媒体区比例适配）：旧默认 288×352
   // 精确匹配才降 288×214（头部34+16:9媒体161+设定行19）——用户手调过的尺寸
   // 不动。降后不再命中，装载幂等
@@ -454,6 +479,7 @@ export function sanitizeCanvas(
     fixedResearchIds,
     upsizedResearch,
     resizedAssets,
+    resizedNotes,
     fixedLinks,
   };
 }
