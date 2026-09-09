@@ -1885,7 +1885,9 @@ class TopicCurator:
         }
         themes = self._load_day_themes()
         if themes:
-            payload["existingThemes"] = themes  # 跨批同题材去重（指纹只挡完全同题；并发下尽力传播）
+            # 只注入最近 30 条：400 条全量平铺时模型做不了语义查重（秦汉×西汉
+            # 同论题漏网），反而稀释创作注意力——最新题眼与当前批次最相关
+            payload["existingThemes"] = themes[:30]  # 跨批同题材去重（指纹只挡完全同题；并发下尽力传播）
         # 标杆拆解知识：热内容「为什么被接受 + 什么可迁移」，供价值判断与形态选择参考
         known = insight_store.payload()
         if known:
