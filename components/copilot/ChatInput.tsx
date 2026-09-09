@@ -11,7 +11,10 @@
  *    二进制文档（doc/docx/rtf/pdf）经服务端 /extract-text 提取文本后内联
  *    （docx zip 直解、doc/rtf 走 soffice、pdf 走 pdftotext；失败明报原因）
  *  - Enter 发送 / Shift+Enter 换行 / IME 组合输入安全（composing 时不发送）
- *  - 运行中显示停止按钮；复用 stock 的 .copilotKitInput 系列样式保持原生观感
+ *  - 运行中可继续输入：回车排队（本轮结束自动发出，Claude Code 引导范式，
+ *    chips 可 × 撤回）；停止按钮真停（abort + 取消在途后端工具）并落一条
+ *    「（用户中断了这一轮生成）」标记，agent 下轮知道自己被截断
+ *  - 复用 stock 的 .copilotKitInput 系列样式保持原生观感
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
@@ -20,6 +23,7 @@ import { langgraphAgent } from "@/app/agent-provider";
 import {
   ArrowUp,
   Brain,
+  Clock,
   FileText,
   Film,
   ImageIcon,
@@ -142,6 +146,19 @@ type ContentPart =
       type: "image" | "video" | "audio";
       source: { type: "url"; value: string; mimeType?: string };
     };
+
+/** 排队消息（Claude Code 引导范式）：运行中提交不丢弃也不打断——先排队，
+ *  本轮结束自动发出。mediaParts 已在排队时定稿（附件 await 完才进来），
+ *  排水时直接按多模态/纯文本两路发送。threadKey = 入队时的 agentThreadId：
+ *  排队文本属于当时的会话语境，可见与排水都按它过滤（它在新会话首次落库
+ *  前后保持稳定，只在真正切会话/切项目时变化——不能用 threadId 当标，
+ *  null→真 id 的首存会被误判成切会话把队清掉） */
+interface QueuedMessage {
+  id: string;
+  text: string;
+  mediaParts: ContentPart[];
+  threadKey: string | undefined;
+}
 
 let attachSeq = 0;
 
@@ -479,14 +496,66 @@ export default function ChatInput({
 
   // ---------- 发送 ----------
 
+  const [queue, setQueue] = useState<QueuedMessage[]>([]);
+  const queueRef = useRef<QueuedMessage[]>([]);
+  const writeQueue = useCallback((next: QueuedMessage[]) => {
+    queueRef.current = next;
+    setQueue(next);
+  }, []);
+  // 只展示当前会话的排队项（别的会话排队项留在栈里，切回去还能看见/排水）
+  const agentThreadId = useChatSession((s) => s.agentThreadId);
+  const visibleQueue = queue.filter((q) => q.threadKey === agentThreadId);
+
+  /** 已定稿载荷的统一发送口（submit 与排队排水共用） */
+  const sendComposed = useCallback(
+    ({ text, mediaParts }: { text: string; mediaParts: ContentPart[] }) => {
+      if (mediaParts.length > 0) {
+        // 多模态消息：text part + 媒体 part（视觉模型服务端透传；文本模型自动降级）
+        if (chatAgent) {
+          chatAgent.addMessage({
+            id: `u_${Date.now()}`,
+            role: "user",
+            content: [{ type: "text", text }, ...mediaParts],
+          } as never);
+          void copilotkit.runAgent({ agent: chatAgent }).catch((e: unknown) => {
+            console.error("[ChatInput] 多模态 runAgent 失败", e);
+          });
+        }
+      } else {
+        if (onSend) void onSend(text);
+      }
+    },
+    [chatAgent, copilotkit, onSend],
+  );
+
+  // 排水：运行→空闲的跳变沿自动发出下一条排队消息（无论本轮是跑完还是
+  // 被停止——停止后排队的引导恰好作为新一轮指令接上）；别的会话的排队
+  // 项跳过，留在栈里
+  const wasRunningRef = useRef<boolean | undefined>(undefined);
+  useEffect(() => {
+    const was = wasRunningRef.current;
+    wasRunningRef.current = inProgress;
+    if (!was || inProgress || queueRef.current.length === 0) return;
+    const cur = useChatSession.getState().agentThreadId;
+    const idx = queueRef.current.findIndex((q) => q.threadKey === cur);
+    if (idx === -1) return;
+    const next = queueRef.current[idx];
+    writeQueue(queueRef.current.filter((_, i) => i !== idx));
+    sendComposed(next);
+  }, [inProgress, writeQueue, sendComposed]);
+
   const submit = async () => {
     const r = lastRead;
     const prompt = r?.display.trim() ?? "";
     const mentioned = (r?.mentionIds ?? [])
       .map((id) => nodes.find((n) => n.id === id))
       .filter((n): n is WingNode => Boolean(n));
-    if (inProgress || (!prompt && mentioned.length === 0 && attachments.length === 0))
+    if (!prompt && mentioned.length === 0 && attachments.length === 0) return;
+    // 编辑重发要截断历史再发，运行中做等于把正在跑的轮次脚下抽薪——拦下
+    if (editingMsg && inProgress) {
+      showToast("正在生成中，等本轮结束（或先停止）再编辑重发");
       return;
+    }
     // 编辑重发：截断被编辑消息及其之后的历史，新发送即替代它
     if (editingMsg) {
       const msgs = langgraphAgent.messages ?? [];
@@ -537,20 +606,20 @@ export default function ChatInput({
       .filter(Boolean)
       .join("\n\n");
 
-    if (mediaParts.length > 0) {
-      // 多模态消息：text part + 媒体 part（视觉模型服务端透传；文本模型自动降级）
-      if (chatAgent) {
-        chatAgent.addMessage({
-          id: `u_${Date.now()}`,
-          role: "user",
-          content: [{ type: "text", text: textPart }, ...mediaParts],
-        } as never);
-        void copilotkit.runAgent({ agent: chatAgent }).catch((e: unknown) => {
-          console.error("[ChatInput] 多模态 runAgent 失败", e);
-        });
-      }
+    if (inProgress) {
+      // 运行中提交 = 排队引导（Claude Code 范式）：不掐断本轮也不要求用户
+      // 干等，本轮结束（跑完或被停止）后自动发出
+      writeQueue([
+        ...queueRef.current,
+        {
+          id: `q_${Date.now()}_${queueRef.current.length}`,
+          text: textPart,
+          mediaParts,
+          threadKey: useChatSession.getState().agentThreadId,
+        },
+      ]);
     } else {
-      if (onSend) void onSend(textPart);
+      sendComposed({ text: textPart, mediaParts });
     }
     edRef.current?.setValue("");
     writeAttachments([]);
@@ -685,8 +754,7 @@ export default function ChatInput({
         ) : null}
         {attachments.length > 0 ? (
           <div className="mb-1.5 flex flex-wrap gap-1">
-            {attachments.map((a) => (
-              <span
+            {attachments.map((a) => (              <span
                 key={a.key}
                 data-tip={a.status === "error" ? (a.errorMessage || "上传失败") : undefined}
                 className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
@@ -730,6 +798,35 @@ export default function ChatInput({
           </div>
         ) : null}
 
+        {visibleQueue.length > 0 ? (
+          <div className="mb-1.5 flex flex-col gap-1">
+            {visibleQueue.map((q) => (
+              <div
+                key={q.id}
+                className="flex items-center gap-1.5 rounded-md border border-accent-soft bg-accent/5 px-2 py-1 text-[11px] text-text-2"
+              >
+                <Clock className="h-3 w-3 shrink-0 text-accent" />
+                <span
+                  className="min-w-0 flex-1 truncate"
+                  data-tip="已排队：本轮结束后自动发送"
+                >
+                  {q.text}
+                </span>
+                <button
+                  type="button"
+                  data-tip="移除排队消息" aria-label="移除排队消息"
+                  className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-danger"
+                  onClick={() =>
+                    writeQueue(queueRef.current.filter((x) => x.id !== q.id))
+                  }
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
         <div
           onKeyDownCapture={onSlashKeyDownCapture}
           onPasteCapture={(e) => {
@@ -743,7 +840,11 @@ export default function ChatInput({
         >
           <MentionInput
             ref={edRef}
-            placeholder="问点什么…@ 引用画布卡片，可粘贴/拖入附件"
+            placeholder={
+              inProgress
+                ? "生成中…此时回车将排队，本轮结束后自动发送；点 ■ 可停止"
+                : "问点什么…@ 引用画布卡片，可粘贴/拖入附件"
+            }
             minHeight={28}
             maxHeight={160}
             enterToSubmit
@@ -784,6 +885,14 @@ export default function ChatInput({
                 // 一并取消，否则烧钱循环继续跑完（分镜批量出图取消同范式）
                 void cancelChatRun(useChatSession.getState().threadId);
                 onStop?.();
+                // 打断告知（Claude Code "[Request interrupted]" 范式）：残篇之后
+                // 落一条用户口吻的标记——agent 下轮据此知道自己上一轮是中途
+                // 被截断的，不会把半截话当完整回答或自顾自续跑
+                chatAgent?.addMessage({
+                  id: `u_stop_${Date.now()}`,
+                  role: "user",
+                  content: "（用户中断了这一轮生成）",
+                } as never);
               }}
             >
               <Square className="h-3 w-3 fill-current" />

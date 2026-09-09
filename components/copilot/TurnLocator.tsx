@@ -15,11 +15,17 @@
  * 卸载远处消息时 DOM 不全，锚点清单必须来自消息数据而非 DOM）。跳转两段
  * 式：元素在 DOM（<50 条不虚拟化，常态）直接 scrollIntoView；被虚拟化
  * 卸载时按轮次序位比例估滚，等挂载后再精跳。
+ *
+ * 命中区（2026-09-09 review）：圆点此前就是按钮本体（10×4~6px），基本点不中；
+ * 现每个按钮撑成 24px 宽 ×（点高+间距）的连续列，圆点退化为列内居中的 span
+ * ——整条轨都是命中区。轨整体让开右缘 24px：v2 滚动容器自带 20px 滚动条，
+ * 此前轨压在其上（pointer-events-auto 会截获拖动）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { langgraphAgent } from "@/app/agent-provider";
+import { escapeStickToBottom, findViewport } from "@/lib/chat/scroll";
 
 type ChatMsg = { id?: string; role?: string; content?: unknown };
 
@@ -56,42 +62,12 @@ function buildAnchors(messages: ChatMsg[]): Anchor[] {
   return out;
 }
 
-/** 可视滚动区：从消息列表向上爬到第一个真正带溢出的祖先（v2 的滚动容器
- *  是无类名 DIV，类名不稳定不能当选择器；判据稳定）。高度超过视口 1.2 倍的
- *  不是滚动视口而是内容级包装（流式重排帧里判据会瞬时翻脸匹配到它们），
- *  跳过继续爬 */
-function findViewport(el: Element | null): HTMLElement | null {
-  let cur: Element | null = el;
-  for (let i = 0; i < 12 && cur && cur !== document.body; i++) {
-    if (
-      i > 0 &&
-      cur.scrollHeight > cur.clientHeight + 2 &&
-      cur.clientHeight <= window.innerHeight * 1.2
-    )
-      return cur as HTMLElement;
-    cur = cur.parentElement;
-  }
-  return null;
-}
-
 /** 跳转闪圈：accent 描边 1.2s 淡出（keyframes 在 globals.css） */
 function flash(el: Element) {
   el.classList.remove("ws-turn-flash");
   // 重新触发同一次连续跳两轮的动画
   void (el as HTMLElement).offsetWidth;
   el.classList.add("ws-turn-flash");
-}
-
-/** 逃离 v2 贴底锁（use-stick-to-bottom）：该库只认「wheel 向上」为用户解除
- *  贴底的意图（wheel 监听器同步翻转 isAtBottom），程序化 scrollIntoView 它
- *  不认——流式期间内容持续增长，库把滚动事件当 resize 噪音忽略掉（resizeDifference
- *  门控），继续逐帧把视图拽回底部，与跳转方向打架。跳转前在滚动容器上合成
- *  一次向上的 wheel，让库先解锁（passive 监听器收得到合成事件，解锁后其
- *  动画循环每帧查 isAtBottom 即自动中止）。 */
-function escapeStickToBottom(vp: HTMLElement | null) {
-  vp?.dispatchEvent(
-    new WheelEvent("wheel", { deltaY: -120, bubbles: true, cancelable: true }),
-  );
 }
 
 type Region = { top: number; height: number; right: number };
@@ -239,7 +215,8 @@ export default function TurnLocator() {
         position: "fixed",
         top: `${region.top + 14}px`,
         height: `${Math.max(region.height - 28, 0)}px`,
-        right: `${Math.max(window.innerWidth - region.right + 4, 0)}px`,
+        /* +24：让开滚动容器右缘的 20px 滚动条（轨压在滚动条上会截获拖动） */
+        right: `${Math.max(window.innerWidth - region.right + 24, 0)}px`,
       }}
     >
       <div className="group pointer-events-auto flex items-center justify-end">
@@ -269,7 +246,9 @@ export default function TurnLocator() {
             ))}
           </div>
         </div>
-        {/* 圆点轨：末轮加宽 accent（最新一轮的视觉锚），悬停展宽 */}
+        {/* 圆点轨：末轮加宽 accent（最新一轮的视觉锚），悬停展宽。
+            按钮 = 24px 宽 ×（点高+间距）的命中列，圆点是列内居中的 span
+            ——此前按钮本体只有 10×4~6px，实际点不中（2026-09-09 review） */}
         <div className="flex flex-col items-end justify-center py-1.5">
           {anchors.map((a, i) => {
             const last = i === anchors.length - 1;
@@ -283,15 +262,21 @@ export default function TurnLocator() {
                   jump(a.id);
                   e.currentTarget.blur();
                 }}
-                className="rounded-full transition-all duration-200 hover:w-5 focus-visible:w-5"
+                className="group/dot flex w-6 items-center justify-end"
                 style={{
-                  height: `${dotCls.h}px`,
-                  marginBottom: i < anchors.length - 1 ? `${dotCls.gap}px` : 0,
-                  width: last ? 18 : 10,
-                  background: last ? "var(--color-accent)" : "var(--color-text-4)",
-                  opacity: last ? 1 : 0.55,
+                  height: `${dotCls.h + (i < anchors.length - 1 ? dotCls.gap : 0)}px`,
                 }}
-              />
+              >
+                <span
+                  className="rounded-full transition-all duration-200 group-hover/dot:w-5 group-focus-visible/dot:w-5"
+                  style={{
+                    height: `${dotCls.h}px`,
+                    width: last ? 18 : 10,
+                    background: last ? "var(--color-accent)" : "var(--color-text-4)",
+                    opacity: last ? 1 : 0.55,
+                  }}
+                />
+              </button>
             );
           })}
         </div>

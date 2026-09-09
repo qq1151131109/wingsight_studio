@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from ag_ui_langgraph import LangGraphAgent, add_langgraph_fastapi_endpoint
@@ -598,6 +598,36 @@ async def api_chat_cancel(req: dict, user: auth.CurrentUser):
 def api_chat_jobs(user: auth.CurrentUser, threadId: str = ""):
     """会话在途长任务清单（任务面板数据源：kind/title/done/total）。"""
     return skills.list_chat_jobs(threadId)
+
+
+@app.post("/chat/regenerate")
+async def api_chat_regenerate(req: dict, user: auth.CurrentUser):
+    """重新生成：把指定消息之前的 checkpoint 分叉成会话当前头。
+
+    前端「重新生成」= 本端点 fork + 截断本地历史 + 正常发起一轮 run。为什么
+    必须 fork（2026-09-09 实测）：客户端单纯截断历史重跑时，ag_ui_langgraph 的
+    is_continuation 判定把「子集消息」当成续跑（补全工具调用场景），不触发它的
+    time-travel 分叉——旧回答仍留在 checkpoint 里，模型下一轮能逐字复述出被
+    「删掉」的答案。fork 后旧回答从模型上下文真正消失，与界面所见一致。
+    """
+    thread_id = str(req.get("threadId") or "")
+    message_id = str(req.get("messageId") or "")
+    if not thread_id or not message_id:
+        raise HTTPException(status_code=400, detail="threadId 与 messageId 必填")
+    config = {"configurable": {"thread_id": thread_id}}
+    try:
+        ckpt = await agent.get_checkpoint_before_message(message_id, thread_id, config)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail=f"找不到该消息的检查点：{e}") from e
+    if ckpt is None:
+        raise HTTPException(status_code=404, detail="找不到该消息的检查点")
+    next_nodes = getattr(ckpt, "next", None) or ()
+    await agent.graph.aupdate_state(
+        ckpt.config,
+        ckpt.values,
+        as_node=next_nodes[0] if next_nodes else "__start__",
+    )
+    return {"ok": True}
 
 
 @app.get("/projects/{pid}/threads/{tid}/messages")

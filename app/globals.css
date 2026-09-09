@@ -874,6 +874,68 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     color: var(--color-text);
 }
 
+/* ── 长内容浏览（2026-09-09 review）──────────────────────────────────
+   ① 助手消息工具栏：框架默认按钮偏大，收成 26px 见方与卡面工具条同族；
+      常驻可见但压低透明度（悬停回满）——纯 hover 浮现时那 26px 行仍占着
+      版面却不显示任何东西，长对话里就是一排空槽
+   ② 长回复折叠：只裁正文（v2 工具栏在正文之后，包整条消息会把操作钮一起
+      裁掉）；限高容器之外没有额外行——展开钮挂在工具栏行里
+   ③ 会话内搜索高亮：CSS Custom Highlight API（不改 DOM，流式重排不打架）
+   ────────────────────────────────────────────────────────────────── */
+.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] {
+    opacity: 0.65;
+}
+.copilotKitAssistantMessage:hover [data-testid="copilot-assistant-toolbar"] {
+    opacity: 1;
+}
+.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button:not(.ws-msg-toggle) {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    justify-content: center;
+}
+.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button:not(.ws-msg-toggle) svg {
+    width: 15px;
+    height: 15px;
+}
+
+.ws-asst-msg[data-ws-collapsed="1"] .cpk\:prose {
+    position: relative;
+    max-height: 340px;
+    overflow: hidden;
+}
+.ws-asst-msg[data-ws-collapsed="1"] .cpk\:prose::after {
+    content: "";
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    height: 72px;
+    background: linear-gradient(to bottom, transparent, var(--color-surface-1));
+    pointer-events: none;
+}
+.ws-msg-toggle {
+    margin-left: 4px;
+    padding: 0 6px;
+    height: 26px;
+    width: auto;
+    white-space: nowrap;
+    font-size: 11px;
+    color: var(--color-accent);
+    transition: color 120ms ease;
+}
+.ws-msg-toggle:hover {
+    text-decoration: underline;
+}
+
+::highlight(ws-search) {
+    background-color: var(--color-accent-dim);
+    color: inherit;
+}
+::highlight(ws-search-current) {
+    background-color: var(--color-accent);
+    color: #fff;
+}
+
 /* 输入区：纸面容器 + 聚焦描边（自定义 ChatInput 复用 .copilotKitInput 类名；
    容器/控制行布局原由 v1 stock 样式提供，摘除 v1 样式后在这里自给） */
 .copilotKitSidebar .copilotKitInputContainer {

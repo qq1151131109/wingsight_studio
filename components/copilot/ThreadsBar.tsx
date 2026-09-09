@@ -11,10 +11,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCopilotChat } from "@copilotkit/react-core";
 import { useCopilotChatConfiguration } from "@copilotkit/react-core/v2";
-import { History, Pencil, Download, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { History, Pencil, Download, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
 import { OPEN_CAPABILITIES_EVENT } from "@/lib/canvas/events";
 import { useChatSession } from "@/lib/chat/session";
+import { useChatSearch } from "@/lib/chat/search";
+import ChatSearch from "./ChatSearch";
 import { contentToMarkdown, decodeContent } from "@/lib/chat/content";
 import {
   cancelChatRun,
@@ -72,6 +74,8 @@ export default function ChatSidebarHeader() {
   const [threads, setThreads] = useState<ChatThreadMeta[] | null>(null);
   const [threadQuery, setThreadQuery] = useState("");
   const [deleting, setDeleting] = useState<ChatThreadMeta | null>(null);
+  const searchOpen = useChatSearch((s) => s.open);
+  const setSearchOpen = useChatSearch((s) => s.setOpen);
   // 页签双击重命名（浏览器 tab 范式）：内联输入，Enter/失焦提交、Esc 取消
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -218,6 +222,17 @@ export default function ChatSidebarHeader() {
       <div className="ml-auto flex shrink-0 items-center gap-1">
         <button
           type="button"
+          data-tip="在对话里搜索（⌘/Ctrl+F）" aria-label="打开搜索"
+          data-track="chat.searchOpen"
+          onClick={() => setSearchOpen(!searchOpen)}
+          className={`rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${
+            searchOpen ? "bg-surface-2 text-text" : ""
+          }`}
+        >
+          <Search className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
           data-tip="全部会话（搜索/重命名）" aria-label="全部会话（搜索/重命名）"
           data-track="chat.threadSwitcher"
           onClick={togglePanel}
@@ -326,6 +341,10 @@ export default function ChatSidebarHeader() {
           <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      {/* 常挂载（关闭时自返回 null）：Ctrl/Cmd+F 的全局监听在组件里，
+          条件挂载会让快捷键在关闭态失效 */}
+      <ChatSearch />
 
       {panelOpen ? (
         <div className="absolute right-2 top-[calc(100%+4px)] z-30 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">

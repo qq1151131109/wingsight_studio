@@ -146,7 +146,9 @@ try {
       dotCount: dots.length,
       stamps,
       rect: { x: Math.round(rect.x), y: Math.round(rect.y), h: Math.round(rect.height) },
-      lastDotStyle: dots.at(-1)?.getAttribute("style") ?? "",
+      // 圆点视觉在按钮内的 span 上（按钮本体是 24px 宽的命中列，2026-09-09）
+      lastDotStyle: dots.at(-1)?.firstElementChild?.getAttribute("style") ?? "",
+      lastDotHitW: Math.round(dots.at(-1)?.getBoundingClientRect().width ?? 0),
       firstLabel: dots[0]?.getAttribute("aria-label") ?? "",
     };
   });
@@ -157,6 +159,7 @@ try {
   );
   check("轨道贴右缘纵向在区内", railInfo.rect.x > 1500 && railInfo.rect.x < 1600 && railInfo.rect.h > 300, JSON.stringify(railInfo.rect));
   check("末点 accent 加宽", /var\(--color-accent\)/.test(railInfo.lastDotStyle) && /width:\s*18/.test(railInfo.lastDotStyle));
+  check("圆点命中区 ≥24px（10px 点本体点不中）", railInfo.lastDotHitW >= 24, `${railInfo.lastDotHitW}px`);
   check("首点 aria-label 带轮次摘要", railInfo.firstLabel.startsWith("跳到第 1 轮："), railInfo.firstLabel.slice(0, 30));
 
   // 2) 悬停展开面板

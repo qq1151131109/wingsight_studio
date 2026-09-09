@@ -26,6 +26,7 @@ import {
 import "@copilotkit/react-core/v2/styles.css";
 import { Check, Copy, Music, Pencil, Sparkles, Video } from "lucide-react";
 import ChatInput from "./ChatInput";
+import AssistantMessage from "./AssistantMessage";
 import CapabilitiesDialog from "./CapabilitiesDialog";
 import TurnLocator from "./TurnLocator";
 import { useChatSession } from "@/lib/chat/session";
@@ -66,9 +67,12 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
       }
     }
   const text = textParts.join("\n");
-  // 系统代发的任务通知（TaskEvents 自动续跑）：中性样式 + 摘掉编辑重发
-  // ——那是系统的嘴不是用户的口吻，改了重发没有意义
-  const isJobNotice = text.startsWith("（任务通知）");
+  // 系统代发的消息走中性样式：任务通知（TaskEvents 自动续跑）与中断标记
+  // （ChatInput 停止按钮落的「（用户中断了这一轮生成）」，Claude Code
+  // "[Request interrupted]" 范式）都是系统的嘴不是用户的口吻——改了重发
+  // 没有意义，也不该盖轮次跳转锚
+  const isSystemNotice =
+    text.startsWith("（任务通知）") || text.startsWith("（用户中断");
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(text);
@@ -86,7 +90,7 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
     <div
       className="group flex justify-end px-1"
       data-turn-id={
-        !isJobNotice &&
+        !isSystemNotice &&
         typeof message?.id === "string" &&
         !message.id.startsWith("progress_") &&
         text
@@ -121,7 +125,7 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
           </div>
         ) : null}
         {text ? (
-          isJobNotice ? (
+          isSystemNotice ? (
             <div className="whitespace-pre-wrap break-words rounded-[14px_14px_4px_14px] border border-hairline bg-surface-2 px-3 py-2 text-[13px] leading-relaxed text-text-2">
               {text}
             </div>
@@ -141,7 +145,7 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
-            {isJobNotice ? null : (
+            {isSystemNotice ? null : (
               <button
                 type="button"
                 data-tip="编辑并重发" aria-label="编辑并重发"
@@ -163,10 +167,6 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
       </div>
     </div>
   );
-}
-
-function NullSlot(): null {
-  return null;
 }
 
 /** 侧栏宽度记忆键（拖拽内缘调宽，globals.css 的 --ws-chat-w 同源；
@@ -486,11 +486,11 @@ export default function ThemedSidebar() {
         toggleButton={asSlot<typeof CopilotChatToggleButton>(AssistantFab)}
         suggestionView={asSlot<typeof CopilotChatSuggestionView>(EmptyStateSuggestions)}
         messageView={{
-          // 复制按钮暂不需要（且按钮在本工程层叠下偏大）：user/assistant 两侧
-          // 都替换成空渲染；重新生成/赞踩等其余工具栏保留
-          assistantMessage: {
-            copyButton: asSlot<never>(NullSlot),
-          },
+          // 助手消息视图自绘（components/copilot/AssistantMessage.tsx）：
+          // 复制/重新生成按钮 + 长回复折叠。此前只把 copyButton 换成空渲染，
+          // 而 v2 工具栏是条件渲染（无 handler 的按钮不渲染）——结果助手消息
+          // 一个操作按钮都没有，长回复只能手动拖选（2026-09-09 review）
+          assistantMessage: asSlot<never>(AssistantMessage),
           userMessage: asSlot<never>(UserBubble),
         }}
         onError={(ev) => {

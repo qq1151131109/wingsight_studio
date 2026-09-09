@@ -238,6 +238,24 @@ export async function cancelChatJob(threadId: string, jobId: string): Promise<vo
   }
 }
 
+/** 重新生成的服务端分叉：把 messageId 之前的 checkpoint 变成会话当前头。
+ *  必须在客户端截断历史 + 重跑之前调用（否则旧回答仍留在模型上下文里）。 */
+export async function regenerateChatRun(
+  threadId: string,
+  messageId: string,
+): Promise<boolean> {
+  try {
+    const r = await apiFetch(`/agent-service/chat/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId, messageId }),
+    });
+    return r.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface ChatJob {
   jobId: string;
   kind: "imagegen" | "tool" | string;
