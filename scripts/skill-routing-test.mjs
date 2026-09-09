@@ -4,7 +4,7 @@
  *   R1「真实罪案题材想做纪录片，你打算怎么推进」→ read_skill real-documentary
  *   R2「分镜应该怎么切，有哪些自查规则」→ read_skill storyboard-director
  *   R3「帮这部片子规划抖音宣发文案」→ read_skill documentary-promotion
- *   R4「我想做一部历史纪录片，关于中国近现代的骗局」（只给题材的目标陈述，空画布）
+ *   R4「我想做一部关于敦煌藏经洞的历史纪录片」（只给题材的目标陈述，空画布；题面避开手册示例与历史测试句，考泛化不考背诵）
  *      → 入口行为：先读 real-documentary 的导览对话纪律，**不出方向清单**、
  *        反问意图、不建卡不出图（2026-09-08 090803 项目「直接输出方向菜单」事故回归）
  *   R5「我想拍一部古装短剧，还没想好具体拍什么」（非真实题材的开放性想法）
@@ -161,7 +161,7 @@ const readSkill = (calls, skill) =>
 {
   // 目标陈述（只给题材、空画布）：入口层应把 agent 拦在「先问意图」这一步
   const { calls, text } = await run(
-    "我想做一部历史纪录片，关于中国近现代的骗局",
+    "我想做一部关于敦煌藏经洞的历史纪录片",
     "R4 只给题材",
     EMPTY_CTX,
   );
@@ -186,7 +186,7 @@ const readSkill = (calls, skill) =>
   const execCalled = calls.filter((c) => EXEC_TOOLS.includes(c.name)).map((c) => c.name);
   check("R4d 不建卡不出图不发起调研", execCalled.length === 0, execCalled.join(",") || "无执行类调用");
   const anchorHit =
-    /参照|对标|喜欢的?(片子|作品|节目|播客|账号)|心里想|想放进去|哪种感觉|具体的?(案子|案例|事件|题材)|为什么(想|是|做|这个|对)/.test(text);
+    /锚点|动机|参照|对标|喜欢的?(片子|作品|节目|播客|账号)|心里想|想放进去|哪种感觉|具体的?(案子|案例|事件|题材)|为什么(想|是|做|这个|对)/.test(text);
   check("R4e 问到锚点（参照/动机/必放案例类高信息量提问）", anchorHit, text.slice(-160).replace(/\n/g, " "));
 }
 
