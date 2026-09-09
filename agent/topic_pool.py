@@ -252,10 +252,11 @@ def verticals_payload() -> list[dict[str, str]]:
 DIVERGE_CLUES_PER_BATCH = 5  # 发散批：5 线索 × 6-10 方向 ≈ 2k token 输出，安全
 CONVERGE_DIRECTIONS_PER_BATCH = 24  # 收敛批：24 方向过三问闸，过闸率天然 <1，输出 8-16 题
 CONVERGE_ENTRIES_CAP = 20  # 单个收敛批的落卡上限（flow 违规刷屏时掐断）
-# 单轮刷新的发散调用上限（成本硬上界）。0 = 不设帽：当日线索一轮吃满
-# （2026-09-07 用户拍板「剩余线索都用上，快出量」；此前固定 16 批让每天
-# 3400 条语料只喂 80 条）。要回到保守档设 TOPIC_IDEATE_BATCHES_CAP=N。
-IDEATE_BATCHES_CAP = _int_env("TOPIC_IDEATE_BATCHES_CAP", 0)
+# 单轮刷新的发散调用上限（成本硬上界）。0 = 不设帽——2026-09-07 曾按
+# 「剩余线索都用上」开过 0 帽，2026-09-09 语料涨到 3.4k 条/日后 0 帽单轮
+# 产 2.5 万方向把收敛饿死（langflow 队列被配对小调用占满、两小时 0 产出
+# 纯烧钱）。现行默认 48 批=240 线索 ≈ 280 卡/轮（.env.local 同步配置）。
+IDEATE_BATCHES_CAP = _int_env("TOPIC_IDEATE_BATCHES_CAP", 48)
 # 一轮内发散/收敛 flow 调用的并发在途上限（共用一个信号量；组题与深挖
 # 不受限）。8 路 ≈ 每小时百次级 flow 调用，DMX 通道常规负载；调大前先
 # 盯 langflow 日志与上游 429 表现。
