@@ -185,6 +185,9 @@ const readSkill = (calls, skill) =>
   ];
   const execCalled = calls.filter((c) => EXEC_TOOLS.includes(c.name)).map((c) => c.name);
   check("R4d 不建卡不出图不发起调研", execCalled.length === 0, execCalled.join(",") || "无执行类调用");
+  const anchorHit =
+    /参照|对标|喜欢的?(片子|作品|节目|播客|账号)|心里想|想放进去|哪种感觉|具体的?(案子|案例|事件|题材)|为什么(想|是|做|这个|对)/.test(text);
+  check("R4e 问到锚点（参照/动机/必放案例类高信息量提问）", anchorHit, text.slice(-160).replace(/\n/g, " "));
 }
 
 {
