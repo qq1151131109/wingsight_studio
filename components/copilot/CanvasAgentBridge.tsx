@@ -1292,10 +1292,11 @@ export default function CanvasAgentBridge() {
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +
       '{op:"set_viewport",x,y,zoom}。' +
-      "**布局：建卡一律不传 position**——系统自动在现有内容下方按类型分组排版（角色/场景/道具/服饰各收进同名组框、组内网格，与剧本拆解的资产带同款）；只有用户明确要求摆到特定位置时才传 position（此时不参与自动分组）。" +
+      "**布局：建卡一律不传 position**——系统自动在现有内容下方按类型分组排版（角色/场景/道具/服饰各收进同名组框、组内网格，与剧本拆解的资产带同款；纯文本卡批次接在最近一张文本卡下方同列）；只有用户明确要求摆到特定位置时才传 position（此时不参与自动分组）。" +
       "**多集项目（一张剧本卡 = 一集）**：每集一张 script 卡；该集的分镜表/镜头图/视频/成片用 episodeId=该剧本卡 id 归属（分镜表出图/出视频落卡自动继承，不必逐卡手写；update_node 传 episodeId 可改归属）。**资产卡不要带 episodeId**——角色/场景/道具/服饰跨集共享，只拆一次。**集号 episodeNo（1 起正整数）建 script 卡时自动排到末尾，通常不用管**；只有用户要求调整集序（「把第 3 集挪到第 2 集前」）才用 update_node 显式改（改完两集集号可能重复，分集面板点一次 ↑↓ 会整体归一到 1..N——你只需给目标集号）。画布摘要里剧本卡行显示「第 N 集 · 本集：…」统计、产物卡行尾带 ⟨集名⟩。" +
       "**卡面正文是设定数据不是状态日志**：资产卡的 body/description 只写外观与设定事实——出图成败用聊天回复汇报、用 status/errorMessage 字段表达，禁止把「已生成/出图失败/已标记」之类叙述追加进正文（正文会被后续出图当事实注入提示词，状态残留永久污染生成）。" +
       '**候选池落卡（共创契约「先铺开再收敛」的载体）**：给用户出候选清单（选题/案例/讲法/结构）时，一个候选建一张 note 卡（title=候选名，body=一句背景+关键事实+材料底数厚/中/薄），并带 **links:[{title,url}]**（该候选的背景出处，卡面渲染成可点「来源」行，上限 6 条）——用户要逐条点开比较，不要把长清单塞进一张卡或只留在聊天里；整批候选用 {op:"group_nodes",ids:[...],title:"候选池·<主题>"} 收进一个组框；推荐哪几个在聊天里说（带理由），落卡的是全集。' +
+      '**系列/分集策划卡（成组有序的文本卡）**：整批一次 canvas_ops 落卡——数组顺序就是阅读顺序（第 1 集在第 1 个），别逐轮单发（跨轮零散建卡会在画布上漂散、集序错乱）；标题带序号（「第 01 集《XX》·单集策划」），同批用 {op:"group_nodes",ids:[...],title:"<主题>·分集规划"} 收框（同批新建卡可直接用占位 id 引用）。之后轮次再补的文本卡会自动接在最近一张文本卡正下方同列，不会跑散。' +
       "复杂批量（≥10 项或含删除/分组/对新建节点连线）先用 canvas_validate_ops 干跑校验，无 error 再应用。" +
       "可以在一批里执行多个操作。",
     available: "remote",
@@ -1319,10 +1320,10 @@ export default function CanvasAgentBridge() {
               : [];
       const list = normalizeOps(raw);
 
-      // 人在环：删除/分组先请用户在聊天流里的审批卡上确认（整批等待）
-      const destructive = list.filter(
-        (o) => o.op === "delete_nodes" || o.op === "group_nodes",
-      );
+      // 人在环：删除先请用户在聊天流里的审批卡上确认（整批等待）。
+      // 分组已摘出审批名单（2026-09-09）：可逆（解组即回）、只挪位置不毁数据，
+      // 走审批会卡住「整批落卡+收框」的流畅度
+      const destructive = list.filter((o) => o.op === "delete_nodes");
       if (destructive.length > 0) {
         const ok = await requestToolApproval(describeDestructive(destructive));
         if (!ok) {
@@ -1487,10 +1488,6 @@ function describeDestructive(ops: CanvasOp[]): string {
     CanvasOp,
     { op: "delete_nodes" }
   >[];
-  const grp = ops.filter((o) => o.op === "group_nodes") as Extract<
-    CanvasOp,
-    { op: "group_nodes" }
-  >[];
   const store = useCanvasStore.getState();
   const parts: string[] = [];
   if (del.length > 0) {
@@ -1500,11 +1497,6 @@ function describeDestructive(ops: CanvasOp[]): string {
       .slice(0, 8)
       .join("、");
     parts.push(`删除 ${del.reduce((n, o) => n + o.ids.length, 0)} 张卡片（${titles}）`);
-  }
-  if (grp.length > 0) {
-    parts.push(
-      `把 ${grp.reduce((n, o) => n + o.ids.length, 0)} 张卡片收进分组${grp[0].title ? `「${grp[0].title}」` : ""}`,
-    );
   }
   return `助手请求：${parts.join("；")}。允许后这批操作会立即执行。`;
 }

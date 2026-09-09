@@ -233,5 +233,47 @@ const s2 = summarizeCanvas(
 );
 check("画布摘要候选卡行带「来源 N 条」标记", s2.includes("来源 2 条"), s2.split("\n").find((l) => l.includes("N_cand")) ?? "行缺失");
 
+// —— 系列卡跨轮成列 + 同批收框（2026-09-09 罪案策划0909 项目散射事故：
+// 11 卡跨轮逐张建、斜跨 2700×2800 无组框、集序视觉错乱）——
+import { absolutePosition, nodeSize } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/store.ts";
+// 1) 同批系列落卡：数组顺序=网格阅读序，group_nodes 占位 id 同批收框
+const epBody = "字".repeat(150);
+const dSer = applyOps([
+  { op: "add_node", nodeType: "note", id: "EP_1", title: "第 01 集", body: epBody },
+  { op: "add_node", nodeType: "note", id: "EP_2", title: "第 02 集", body: epBody },
+  { op: "add_node", nodeType: "note", id: "EP_3", title: "第 03 集", body: epBody },
+  { op: "group_nodes", ids: ["EP_1", "EP_2", "EP_3"], title: "测试·分集规划" },
+]);
+check("同批系列落卡+收框全部应用", dSer.applied === 4 && dSer.errors.length === 0, dSer.errors.join("|"));
+const stSer = useCanvasStore.getState();
+const grp = stSer.nodes.find((n) => n.data?.nodeType === "group" && n.data?.title === "测试·分集规划");
+const kids = stSer.nodes.filter((n) => ["EP_1", "EP_2", "EP_3"].includes(n.id));
+check("同批 group_nodes 占位 id 全解析进组框",
+  Boolean(grp) && kids.every((k) => k.parentId === grp?.id),
+  `group=${Boolean(grp)} parented=${kids.filter((k) => k.parentId === grp?.id).length}/3`);
+const p1 = kids.find((k) => k.id === "EP_1").position;
+const p2 = kids.find((k) => k.id === "EP_2").position;
+const p3 = kids.find((k) => k.id === "EP_3").position;
+check("数组顺序=网格阅读序（1→2 横排、3 换行）",
+  p2.x > p1.x && p1.y === p2.y && p3.y > p1.y, JSON.stringify({ p1, p2, p3 }));
+// 2) 跨轮续列：下一批纯 note 接在最近一张 note 卡正下方同列（x 不漂移）
+const ep3abs = absolutePosition(stSer.nodes, kids.find((k) => k.id === "EP_3"));
+const dNext = applyOps([
+  { op: "add_node", nodeType: "note", id: "EP_4", title: "第 04 集", body: epBody },
+]);
+const ep4 = useCanvasStore.getState().nodes.find((n) => n.id === "EP_4");
+check("跨轮纯 note 批次接在同列（x=最近 note 列位）",
+  ep4?.position.x === ep3abs.x && ep4.position.y > ep3abs.y,
+  `ep4=${JSON.stringify(ep4?.position)} ep3abs=${JSON.stringify(ep3abs)}`);
+// 3) 混合批次（含资产）保持全局锚点：资产带语义不变
+const globalMinX = Math.min(...useCanvasStore.getState().nodes.map((n) => n.position.x));
+const dMix = applyOps([
+  { op: "add_node", nodeType: "character", title: "混排角色", body: "设定" },
+  { op: "add_node", nodeType: "note", id: "MIX_N", title: "混排便签", body: "混排正文" },
+]);
+const mixChar = useCanvasStore.getState().nodes.find((n) => n.data?.title === "混排角色");
+check("混合批次资产带仍走全局锚点", mixChar?.position.x === globalMinX,
+  `charX=${mixChar?.position.x} 全局minX=${globalMinX}`);
+
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

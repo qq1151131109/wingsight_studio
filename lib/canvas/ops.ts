@@ -11,8 +11,10 @@ import {
   EPISODE_MEMBER_TYPES,
   NODE_FOOTPRINT,
   NODE_META,
+  absolutePosition,
   findFreePosition,
   inheritEpisodeId,
+  nodeSize,
   noteFootprintFor,
   useCanvasStore,
   type ShotRow,
@@ -486,7 +488,12 @@ type BatchLayout = {
  *  在现有内容下方开一条「资产带」——角色/场景/道具/服饰各一组框、组内
  *  √n 列网格（组框整块避让找空地，逐卡避让会散成一条横排——白骨精项目
  *  25 卡 8700px 横带事故）；非资产卡排在带尾的普通网格，不套框。
- *  agent 显式给了 position 的卡不参与（尊重精确摆位） */
+ *  agent 显式给了 position 的卡不参与（尊重精确摆位）。
+ *  纯 note 批次（分集策划/系列方案这类成组文本卡）锚点续接到**最近一张
+ *  note 卡正下方同列**——系列跨轮逐批建卡也自成一列（集序自上而下可读），
+ *  不再沿全局内容的左缘斜向漂移（罪案策划0909 项目 11 卡斜跨 2700×2800
+ *  无组框事故）；列位被占由 findFreePosition 避让。混合批次保持全局锚点
+ *  （资产带语义不变） */
 function planBatchLayout(ops: CanvasOp[]): BatchLayout {
   const positions = new Map<number, { x: number; y: number }>();
   const groupedKinds: BatchLayout["groupedKinds"] = [];
@@ -500,9 +507,20 @@ function planBatchLayout(ops: CanvasOp[]): BatchLayout {
 
   const { nodes } = useCanvasStore.getState();
   // 带的锚点：现有内容包围盒下方（空画布放原点）。下方是中性空地——
-  // 右侧会与「右侧渐新增卡」的直觉位打架，左侧压上游来向
+  // 右侧会与「右侧渐新增卡」的直觉位打架，左侧压上游来向。
+  // 纯 note 批次例外：接在最近一张 note 卡正下方（系列成列续排）
+  const allNotes = autoAdds.every((a) => a.op.nodeType === "note");
   let anchor = { x: 0, y: 0 };
-  if (nodes.length > 0) {
+  if (allNotes) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      if ((n.data?.nodeType ?? n.type) !== "note") continue;
+      const abs = absolutePosition(nodes, n);
+      const size = nodeSize(n);
+      anchor = { x: abs.x, y: abs.y + size.h + 44 };
+      break;
+    }
+  } else if (nodes.length > 0) {
     const xs = nodes.map((n) => n.position.x);
     const ys = nodes.map((n) => n.position.y);
     anchor = {
