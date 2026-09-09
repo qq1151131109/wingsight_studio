@@ -110,6 +110,9 @@ export interface WingNodeData {
   /** 资产卡：文字考据简报（批量调研文路产物，视觉细节/时代特征/常见误用，
    *  每条带来源域名）。喂「AI 写设定」与出图设定的证据材料，用户可清空 */
   researchBrief?: string;
+  /** 文本卡：可点来源行（候选落卡 P1：候选的背景出处，卡面渲染成「来源」
+   *  行，样式同调研卡来源底账）。上限 6 条，渲染层兜底再截 */
+  links?: { title: string; url: string }[];
   /** image 卡：最近一次智能编排合成后的最终提示词（回显可追溯，可载入
    *  输入框修改后重发） */
   composedPrompt?: string;
@@ -1769,7 +1772,12 @@ export function summarizeCanvas(
       episodeTitles.has(n.data.episodeId)
         ? `⟨${episodeTitles.get(n.data.episodeId)}⟩`
         : "";
-    return `- ${n.id} [${meta.label}] ${title}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${body}${sel}`;
+    // links 计数标记：候选卡有可点来源（agent 补研/引用时知道卡上带出处）
+    const linksNote =
+      Array.isArray(n.data.links) && n.data.links.length > 0
+        ? `（来源 ${n.data.links.length} 条）`
+        : "";
+    return `- ${n.id} [${meta.label}] ${title}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${linksNote}${body}${sel}`;
   };
 
   // 连线列清单设上限：大画布连线行会吃光预算（旧版连线永不丢行，

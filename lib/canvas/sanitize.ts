@@ -33,6 +33,8 @@ export interface SanitizeResult {
   upsizedResearch: number;
   /** 存量资产卡降 16:9 适配高度的卡数（旧默认 288×352 → 288×214） */
   resizedAssets: number;
+  /** 脏 links（非数组/缺字段/危险 scheme）清掉的卡数 */
+  fixedLinks: number;
 }
 
 /** 旧版建卡/agent 兜底把 NODE_META.hint 占位文案存成真标题（罪案实录 9 张卡
@@ -71,6 +73,7 @@ export function sanitizeCanvas(
   let removedNodes = 0;
   let fixedParents = 0;
   let fixedEpisodes = 0;
+  let fixedLinks = 0;
   for (const raw of nodes) {
     if (!raw || typeof raw.id !== "string" || typeof raw.data?.nodeType !== "string") {
       removedNodes += 1;
@@ -104,6 +107,25 @@ export function sanitizeCanvas(
     ) {
       n = { ...n, data: { ...n.data, episodeNo: undefined } };
       fixedEpisodes += 1;
+    }
+    // 脏 links：非数组/条目缺 title 或 url/协议不白名单（javascript: 等危险
+    // scheme 会经卡面 <a> 执行）一律清掉——links 渲染成可点 <a>，必须收敛
+    if (n.data.links !== undefined) {
+      const ls = n.data.links;
+      const ok =
+        Array.isArray(ls) &&
+        ls.length > 0 &&
+        ls.every(
+          (l) =>
+            l &&
+            typeof l.title === "string" &&
+            typeof l.url === "string" &&
+            /^(https?:\/\/|\/)/.test(l.url),
+        );
+      if (!ok) {
+        n = { ...n, data: { ...n.data, links: undefined } };
+        fixedLinks += 1;
+      }
     }
     if (n.parentId && !ids.has(n.parentId)) {
       // 组框丢失的孤儿卡：脱离分组（坐标按绝对值近似处理，交给用户微调）
@@ -432,5 +454,6 @@ export function sanitizeCanvas(
     fixedResearchIds,
     upsizedResearch,
     resizedAssets,
+    fixedLinks,
   };
 }

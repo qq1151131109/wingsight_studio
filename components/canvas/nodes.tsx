@@ -2047,6 +2047,26 @@ function TextCard({
               } nowheel`}
             />
           </div>
+          {/* 可点来源行（候选落卡 P1）：候选的背景出处，样式同调研卡来源底账。
+              nowheel+nodrag 让滚轮/点击留在链接上，不劫持给画布 */}
+          {(data.links?.length ?? 0) > 0 ? (
+            <div className="ws-detail nodrag nowheel mt-1 border-t border-hairline pt-1">
+              {data.links!.slice(0, 6).map((l) => (
+                <a
+                  key={l.url}
+                  href={l.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex min-w-0 items-center gap-1 rounded px-0.5 text-[10px] text-text-3 hover:text-accent hover:underline"
+                  title={l.url}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <span className="shrink-0 text-text-4">↗</span>
+                  <span className="truncate">{l.title || l.url}</span>
+                </a>
+              ))}
+            </div>
+          ) : null}
           {empty ? (
             <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
               选中卡片后可在下方输入区让 AI 撰写

@@ -152,5 +152,51 @@ check("批量建卡（stagger>0）分档尺寸与级联变量共存",
   sizeOf("N_long").w === 480 && typeof longNode?.style?.["--ws-stagger"] === "string",
   JSON.stringify(longNode?.style));
 
+// —— links 透传（候选落卡 P1：可点来源行）——
+import { sanitizeCanvas } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/sanitize.ts";
+const d2 = applyOps([
+  {
+    op: "add_node", nodeType: "note", id: "N_cand", title: "候选·民族资产解冻",
+    body: "跨 40 年的金光党骗术…材料底数：厚",
+    links: [
+      { title: "公安部公布 78 个项目", url: "http://www.news.cn/legal/2024/117ca.html" },
+      { title: "维基百科词条", url: "https://zh.wikipedia.org/zh-cn/民族资产解冻骗局" },
+      { title: "危险协议", url: "javascript:alert(1)" },
+      { title: "缺字段", url: "" },
+    ],
+  },
+  { op: "update_node", id: "N_short", links: [{ title: "补充来源", url: "https://example.com/a" }] },
+]);
+check("候选卡与 links 更新全部应用", d2.applied === 2 && d2.errors.length === 0, d2.errors.join("|"));
+const candLinks = node("N_cand")?.data?.links;
+check("add_node links 只收 http(s)（危险协议剔除）",
+  Array.isArray(candLinks) && candLinks.length === 2 && candLinks.every((l) => /^https?:\/\//.test(l.url)),
+  JSON.stringify(candLinks));
+check("update_node links 透传", node("N_short")?.data?.links?.[0]?.url === "https://example.com/a",
+  JSON.stringify(node("N_short")?.data?.links));
+// sanitize 装载边界：脏 links（非数组/危险 scheme）整条清掉；干净 links 原样保留
+const san = sanitizeCanvas(
+  [
+    { id: "s1", type: "note", position: { x: 0, y: 0 }, data: { nodeType: "note", title: "t", body: "", links: "not-an-array" } },
+    { id: "s2", type: "note", position: { x: 0, y: 0 }, data: { nodeType: "note", title: "t", body: "", links: [{ title: "x", url: "javascript:alert(1)" }] } },
+    { id: "s3", type: "note", position: { x: 0, y: 0 }, data: { nodeType: "note", title: "t", body: "", links: [{ title: "ok", url: "https://ok.example" }] } },
+  ],
+  [],
+);
+check("sanitize 清脏 links（危险 scheme/非数组）、留干净的",
+  san.fixedLinks === 2 &&
+  san.nodes.find((n) => n.id === "s3")?.data?.links?.[0]?.url === "https://ok.example" &&
+  san.nodes.find((n) => n.id === "s1")?.data?.links === undefined,
+  `fixedLinks=${san.fixedLinks}`);
+// 画布摘要带 links 计数标记（agent 知道候选卡带出处，补研/引用时用）
+const s2 = summarizeCanvas(
+  useCanvasStore.getState().nodes,
+  [],
+  [],
+  4000,
+  7,
+);
+check("画布摘要候选卡行带「来源 N 条」标记", s2.includes("来源 2 条"), s2.split("\n").find((l) => l.includes("N_cand")) ?? "行缺失");
+
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

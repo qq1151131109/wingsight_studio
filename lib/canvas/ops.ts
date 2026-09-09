@@ -75,6 +75,9 @@ export type AddNodeOp = {
   /** 参考资产卡 id（连线即引用；资产→镜头图卡穿线） */
   refIds?: string[];
   styleSnapshot?: string;
+  /** 文本卡：可点来源行（候选落卡：每条候选的背景出处，卡面渲染「来源」行）。
+   *  上限 6 条，title 截 60 字，url 需 http(s)——协议校验在 sanitize 再兜一道 */
+  links?: { title: string; url: string }[];
   /** 归属集 = 所属剧本卡 nodeId（一张剧本卡 = 一集）。缺省时若同批
    *  connect_nodes 把本卡连到某张卡上，自动从那张卡继承（见 applyOps） */
   episodeId?: string;
@@ -138,6 +141,8 @@ export type UpdateNodeOp = {
   genShot?: WingNodeData["genShot"];
   refIds?: string[];
   styleSnapshot?: string;
+  /** 文本卡：可点来源行（补挂/修正用，字段同 add_node） */
+  links?: { title: string; url: string }[];
   /** 归属集 = 所属剧本卡 nodeId（改归属/补挂用；传空串清空归属） */
   episodeId?: string;
   /** 剧本卡：集号（1 起，正整数；重排/纠正用） */
@@ -204,6 +209,26 @@ export function episodeNoIssue(
       message: `episodeNo 必须是正整数（1 起），收到 "${String(v)}"`,
     };
   return null;
+}
+
+/** links 白名单整形（add_node/update_node 共用）：只收 http(s) 链接，
+ *  截 6 条、title 60 字、url 500 字；非法项静默剔除（sanitize 装载时再兜一道）。
+ *  返回 undefined 表示无有效 links，不写字段。 */
+function sanitizeLinks(
+  links: { title: string; url: string }[] | undefined,
+): { links: { title: string; url: string }[] } | Record<string, never> {
+  if (!Array.isArray(links)) return {};
+  const clean = links
+    .filter(
+      (l): l is { title: string; url: string } =>
+        !!l &&
+        typeof l.title === "string" &&
+        typeof l.url === "string" &&
+        /^https?:\/\//i.test(l.url),
+    )
+    .slice(0, 6)
+    .map((l) => ({ title: l.title.slice(0, 60), url: l.url.slice(0, 500) }));
+  return clean.length > 0 ? { links: clean } : {};
 }
 
 /** 干跑校验（canvas_validate_ops 前端工具用；影策 validateCanvasOps 范式）：
@@ -750,6 +775,7 @@ export function applyOps(rawOps: unknown): OpResult {
               ...(op.styleSnapshot !== undefined
                 ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
                 : {}),
+              ...(sanitizeLinks(op.links)),
               ...(episodeId !== undefined ? { episodeId } : {}),
               // 集号：显式给了就带上，缺省由 store.addNode 自动排到末尾
               ...(op.episodeNo !== undefined ? { episodeNo: op.episodeNo } : {}),
@@ -849,6 +875,7 @@ export function applyOps(rawOps: unknown): OpResult {
             ...(op.styleSnapshot !== undefined
               ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
               : {}),
+            ...(sanitizeLinks(op.links)),
             ...(op.episodeId !== undefined
               ? { episodeId: op.episodeId.slice(0, 40) }
               : {}),
