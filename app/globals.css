@@ -847,7 +847,14 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     border: 1px solid var(--color-hairline);
     border-radius: 8px;
     background-color: var(--color-surface-1);
+    /* 横向滚动条贴在最后一行文字上（table-scroll 探针：paddingBottom=0），
+       stable 滚动槽留出呼吸位且不挤行高 */
+    scrollbar-gutter: stable;
+    /* 容器与上下正文的呼吸位（Streamdown wrapper 无 margin，贴死段落） */
+    margin: 6px 0;
 }
+/* 表格与上下正文的间距走容器 margin；th 吸顶仅对纵向滚动容器有意义，
+   wrapper 不限高（长表在页面里滚），sticky 不触发也无副作用——不设 */
 
 /* 消息列表顶部留白：v2 滚动内容出厂无上内边距，首条消息贴死头部 */
 .copilotKitSidebar [data-testid="copilot-scroll-content"] {
