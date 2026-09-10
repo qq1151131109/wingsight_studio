@@ -3,17 +3,23 @@
 /**
  * 自绘聊天侧栏 Header（v2 CopilotSidebar 的 header 槽位替换 CopilotModalHeader；
  * 槽位组件不收绑定 props——关闭走 useCopilotChatConfiguration）：
- *   错误横幅 + 标题 + [新会话] [历史] [关闭]
+ *   错误横幅 + 身份（「画布助手」+运行状态）+ [搜索][历史] │ [关闭]
  * 历史面板：列表（自动标题 + 时间 + 条数）/ 点击切换 / 重命名 / 删除；
  * 删除当前会话时自动落到最新一条。会话状态在 lib/chat/session.ts。
+ *
+ * 2026-09-10 review 收口（原来头部是「孤立运行点 + 15px 会话标题 + 四个同权重
+ * 裸图标」，乱在三点）：① 会话名只在下面页签行出现，头部不再重复说一遍，改回
+ * 产品身份；② 搜索/历史是"看这个会话"的工具，收进一个 pill 槽成组，关闭是
+ * 窗口动作，用竖线与组分开；③「技能」移去输入条（产品能力入口与当前会话无关，
+ * 不该占头部黄金位）。激活态也从「与 hover 同色的 bg-surface-2」改成 +ring，
+ * 否则"开着"和"划过"看不出区别。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useCopilotChat } from "@copilotkit/react-core";
 import { useCopilotChatConfiguration } from "@copilotkit/react-core/v2";
-import { History, Pencil, Download, Plus, Search, Sparkles, Trash2, X } from "lucide-react";
+import { History, Pencil, Download, Plus, Search, Trash2, X } from "lucide-react";
 import { useCanvasStore } from "@/lib/canvas/store";
-import { OPEN_CAPABILITIES_EVENT } from "@/lib/canvas/events";
 import { useChatSession } from "@/lib/chat/session";
 import { useChatSearch } from "@/lib/chat/search";
 import ChatSearch from "./ChatSearch";
@@ -206,58 +212,55 @@ export default function ChatSidebarHeader() {
       ref={wrapRef}
       className="copilotKitHeader relative flex w-full flex-col gap-2"
     >
-      <div className="relative flex min-h-7 w-full items-center gap-2">
+      <div className="relative flex min-h-8 w-full items-center gap-2">
       <RunErrorBanner />
-      {/* 当前会话标题（纯标签）：历史切换收进右侧 History 按钮——原来时钟
-          粘在标题尾巴上，看着像排版事故；运行中亮黄点 */}
-      {isLoading ? (
-        <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn" />
-      ) : null}
-      <span className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[0.01em]">
-        {threadId
-          ? (threads ?? []).find((t) => t.id === threadId)?.title || "当前会话"
-          : "Wingsight 助手"}
+      {/* 头部只留身份 + 运行状态：会话名交给下面的页签行（两行说同一个名字
+          是重复）；「技能」已移到输入条（产品能力入口与当前会话无关）。
+          运行点从标题左侧 40px 外的孤立位置收进标题尾巴 */}
+      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="truncate text-[13.5px] font-semibold tracking-[0.01em]">
+          画布助手
+        </span>
+        {isLoading ? (
+          <span
+            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-warn"
+            aria-label="运行中"
+          />
+        ) : null}
       </span>
 
-      <div className="ml-auto flex shrink-0 items-center gap-1">
-        <button
-          type="button"
-          data-tip="在对话里搜索（⌘/Ctrl+F）" aria-label="打开搜索"
-          data-track="chat.searchOpen"
-          onClick={() => setSearchOpen(!searchOpen)}
-          className={`rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${
-            searchOpen ? "bg-surface-2 text-text" : ""
-          }`}
-        >
-          <Search className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          data-tip="全部会话（搜索/重命名）" aria-label="全部会话（搜索/重命名）"
-          data-track="chat.threadSwitcher"
-          onClick={togglePanel}
-          className={`rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${
-            panelOpen ? "bg-surface-2 text-text" : ""
-          }`}
-        >
-          <History className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          data-tip="技能" aria-label="技能"
-          data-track="chat.skills"
-          onClick={() =>
-            window.dispatchEvent(new CustomEvent(OPEN_CAPABILITIES_EVENT))
-          }
-          className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
-        >
-          <Sparkles className="h-4 w-4" />
-        </button>
+      <div className="ml-auto flex shrink-0 items-center gap-2.5">
+        {/* 查看类动作成组（搜索/历史），关闭是窗口动作，与组之间用竖线分开 */}
+        <div className="flex items-center gap-0.5 rounded-lg border border-hairline bg-surface-2/50 p-0.5">
+          <button
+            type="button"
+            data-tip="在对话里搜索（⌘/Ctrl+F）" aria-label="打开搜索"
+            data-track="chat.searchOpen"
+            onClick={() => setSearchOpen(!searchOpen)}
+            className={`flex h-7 w-7 items-center justify-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${
+              searchOpen ? "bg-surface-2 text-text ring-1 ring-accent-soft" : ""
+            }`}
+          >
+            <Search className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            data-tip="全部会话（搜索/重命名）" aria-label="全部会话（搜索/重命名）"
+            data-track="chat.threadSwitcher"
+            onClick={togglePanel}
+            className={`flex h-7 w-7 items-center justify-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${
+              panelOpen ? "bg-surface-2 text-text ring-1 ring-accent-soft" : ""
+            }`}
+          >
+            <History className="h-4 w-4" />
+          </button>
+        </div>
+        <span className="h-4 w-px bg-hairline" aria-hidden="true" />
         <button
           type="button"
           aria-label="关闭" data-tip="关闭"
           onClick={() => config?.setModalOpen(false)}
-          className="rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
+          className="flex h-8 w-8 items-center justify-center rounded-md text-text-3 transition-colors hover:bg-surface-2 hover:text-text"
         >
           <X className="h-4 w-4" />
         </button>
@@ -313,7 +316,8 @@ export default function ChatSidebarHeader() {
                   onDoubleClick={() =>
                     setRenaming({ id: t.id, value: t.title || "" })
                   }
-                  className="max-w-24 truncate"
+                  // 当前页签给更宽的额度（头部不再重复会话名，这里要能读全）
+                  className={`truncate ${active ? "max-w-40" : "max-w-24"}`}
                   title={t.title || "未命名会话（双击重命名）"}
                 >
                   {t.title || "未命名会话"}

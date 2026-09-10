@@ -936,6 +936,14 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     color: #fff;
 }
 
+/* v2 流式光标（消息列末尾那颗 11px 圆点，pulse-cursor 动画放大到 1.5 倍）：
+   模型在调工具（最后一条不是推理消息）时它孤零零挂在输入框上方，看着像掉了
+   个球。「在干活」已由工具卡（正在操作画布…）与思考折叠块表达，这条多余——
+   2026-09-10 用户 review 后隐藏 */
+.copilotKitSidebar [data-testid="copilot-loading-cursor"] {
+    display: none;
+}
+
 /* 输入区：纸面容器 + 聚焦描边（自定义 ChatInput 复用 .copilotKitInput 类名；
    容器/控制行布局原由 v1 stock 样式提供，摘除 v1 样式后在这里自给） */
 .copilotKitSidebar .copilotKitInputContainer {

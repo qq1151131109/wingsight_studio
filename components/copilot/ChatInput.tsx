@@ -22,7 +22,6 @@ import { useAgent, useCopilotChatConfiguration, useCopilotKit } from "@copilotki
 import { langgraphAgent } from "@/app/agent-provider";
 import {
   ArrowUp,
-  Brain,
   Clock,
   FileText,
   Film,
@@ -32,6 +31,7 @@ import {
   Pencil,
   Palette,
   Paperclip,
+  Sparkles,
   Square,
   X,
 } from "lucide-react";
@@ -51,7 +51,7 @@ import {
   type ChatJob,
 } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
-import { CHAT_EDIT_MESSAGE_EVENT, CHAT_INSERT_TEXT_EVENT } from "@/lib/canvas/events";
+import { CHAT_EDIT_MESSAGE_EVENT, CHAT_INSERT_TEXT_EVENT, OPEN_CAPABILITIES_EVENT } from "@/lib/canvas/events";
 import {
   addDocCard,
   addMediaCard,
@@ -211,67 +211,6 @@ export default function ChatInput({
   const threadId = useChatSession((s) => s.threadId);
   const [jobs, setJobs] = useState<ChatJob[]>([]);
 
-  // 思考中指示条（novanova ThinkingBlock 范式）：@copilotkit/core 的事件转换器
-  // 不处理 REASONING_* 事件（hook 的 messages 里没有），所以直接订阅注册的
-  // HttpAgent——它自己会物化 role="reasoning" 的消息。运行中实时展示、出正文后收起
-  const agent = langgraphAgent;
-  const [thinking, setThinking] = useState("");
-  const agentRef = useRef<typeof agent | null>(null);
-  useEffect(() => {
-    // useAgent 可能每次渲染给新对象：同一实例只订阅一次，避免解绑风暴丢事件
-    if (!agent || agentRef.current === agent) return;
-    agentRef.current = agent;
-    let streaming = false;
-    let buffer = "";
-    return agent.subscribe({
-      // 包装 agent 只分发 core 认识的回调，但 raw onEvent 能看到全部事件
-      // （含 REASONING_*）——思考文本在这里自己攒
-      onEvent: (p) => {
-        const ev = (p as {
-          event?: {
-            type?: string;
-            event?: { event?: string; data?: { chunk?: { additional_kwargs?: { reasoning_content?: string }; content?: unknown } } };
-          };
-        }).event;
-        const t = String(ev?.type ?? "");
-        // 思考增量藏在 RAW 包装的 on_chat_model_stream 流事件里
-        //（core 不认识 REASONING_* 与 langchain 流事件，统一打成 RAW）
-        if (t === "RUN_FINISHED" || t === "RUN_ERROR") {
-          streaming = false;
-          setThinking("");
-          return;
-        }
-        if (t !== "RAW") return;
-        const stream = ev?.event;
-        if (stream?.event !== "on_chat_model_stream") return;
-        const chunk = stream.data?.chunk;
-        const reasoning = chunk?.additional_kwargs?.reasoning_content;
-        if (process.env.NODE_ENV !== "production")
-          console.log(
-            "[ticker] stream:",
-            stream.event,
-            "rc:",
-            typeof reasoning === "string" ? reasoning.length : String(reasoning),
-            "content:",
-            typeof chunk?.content === "string" ? chunk.content.length : "-",
-            "streaming:",
-            streaming,
-          );
-        if (typeof reasoning === "string" && reasoning) {
-          if (!streaming) {
-            streaming = true;
-            buffer = "";
-          }
-          buffer += reasoning;
-          setThinking(buffer.slice(-160));
-        } else if (chunk?.content) {
-          // 正文开始输出 → 思考结束，指示条收起
-          streaming = false;
-          setThinking("");
-        }
-      },
-    }).unsubscribe;
-  }, [agent]);
   useEffect(() => {
     let alive = true;
     const tick = async () => {
@@ -713,12 +652,6 @@ export default function ChatInput({
           </div>
         ) : null}
       <div className="copilotKitInput relative flex flex-col">
-        {thinking ? (
-          <div className="ws-thinking-row mb-1.5 flex items-center gap-1.5 rounded-md border border-accent-soft bg-surface-1 px-2 py-1 text-[11px] text-text-3">
-            <Brain className="h-3 w-3 shrink-0 text-accent motion-safe:animate-pulse" />
-            <span className="min-w-0 flex-1 truncate">思考中：{thinking}</span>
-          </div>
-        ) : null}
         {jobs.length > 0 ? (
           <div className="mb-1.5 flex flex-col gap-1">
             {jobs.map((j) => (
@@ -864,9 +797,11 @@ export default function ChatInput({
           />
         </div>
 
-        {/* 附件居左 / 发送居右（ChatGPT·Claude 共识布局）：发送是唯一主动作，
-            实心 accent 圆钮与左侧幽灵按钮拉开主次 */}
+        {/* 附件/技能居左 / 发送居右（ChatGPT·Claude 共识布局）：发送是唯一主动作，
+            实心 accent 圆钮与左侧幽灵按钮拉开主次。「技能」原在侧栏头部——那是
+            告诉用户"这个产品能干什么"，与当前会话无关，头部黄金位留给会话本身 */}
         <div className="copilotKitInputControls mt-1.5">
+          <div className="flex items-center gap-0.5">
           <button
             type="button"
             className="copilotKitInputControlButton"
@@ -875,6 +810,18 @@ export default function ChatInput({
           >
             <Paperclip className="h-4 w-4" />
           </button>
+          <button
+            type="button"
+            className="copilotKitInputControlButton"
+            data-tip="技能（手册与指令）" aria-label="技能"
+            data-track="chat.skills"
+            onClick={() =>
+              window.dispatchEvent(new CustomEvent(OPEN_CAPABILITIES_EVENT))
+            }
+          >
+            <Sparkles className="h-4 w-4" />
+          </button>
+          </div>
           {inProgress ? (
             <button
               type="button"

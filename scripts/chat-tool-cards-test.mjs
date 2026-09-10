@@ -250,6 +250,8 @@ await page
   .catch(() => {});
 
 // ---- 6) 思考透传：GLM thinking → reasoning 消息（stock 折叠卡，头部 Thought*） ----
+// 判据用 v2 自渲染的推理折叠块（Thinking… / Thought for X）——自绘那条「思考中」
+// 2026-09-10 已从输入框删掉（它和这条折叠块是同一份信息的两个副本）
 await input.click();
 await page.keyboard.type("9.11 和 9.9 哪个大？先想清楚再回答。", { delay: 10 });
 await send.click({ timeout: 300_000 });
@@ -261,7 +263,7 @@ for (let attempt = 0; attempt < 3 && !thinkingSeen; attempt++) {
   await send.click({ timeout: 300_000 });
   for (let i = 0; i < 25; i++) {
     const row = await page
-      .locator(".ws-thinking-row")
+      .getByText(/Thinking…|Thought for/)
       .first()
       .isVisible()
       .catch(() => false);
@@ -279,7 +281,7 @@ for (let attempt = 0; attempt < 3 && !thinkingSeen; attempt++) {
 }
 // 思考是否触发取决于模型自愿（thinking 参数已开），不作为硬失败
 console.log(
-  `${thinkingSeen ? "✓" : "⚠"} 思考指示条${thinkingSeen ? "已出现" : "未出现（模型本轮未思考，非缺陷）"}`,
+  `${thinkingSeen ? "✓" : "⚠"} 思考折叠块${thinkingSeen ? "已出现" : "未出现（模型本轮未思考，非缺陷）"}`,
 );
 
 // 404 类 console 噪音只认 notFound 里的未知 URL（良性 canvas 404 已过滤）；

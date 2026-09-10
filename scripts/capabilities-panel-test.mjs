@@ -78,9 +78,9 @@ const fab = page.getByRole("button", { name: "打开画布助手" });
 if (await fab.isVisible().catch(() => false)) await fab.click();
 await page.waitForTimeout(800);
 
-// 1) 打开技能面板（单一列表）
+// 1) 打开技能面板（单一列表）；入口在输入条控制行（2026-09-10 从侧栏头部移来）
 const btn = page.getByRole("button", { name: "技能", exact: true });
-check("聊天 header「技能」按钮可见", await btn.isVisible().catch(() => false));
+check("输入条「技能」按钮可见", await btn.isVisible().catch(() => false));
 await btn.click();
 check("技能面板打开", await page.getByText("技能", { exact: true }).first().isVisible({ timeout: 5000 }).catch(() => false));
 
