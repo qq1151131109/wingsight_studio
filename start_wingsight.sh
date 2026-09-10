@@ -79,16 +79,19 @@ start_tunnel() {
   grep -oE "bore.pub:[0-9]+" "$LOGS/tunnel.log" | head -1 | sed 's/^/✓ 公网地址: http:\/\//' || echo "（隧道地址稍后见 logs/tunnel.log）"
 }
 
-# 按端口找占用进程（macOS 用 lsof，Linux 退 ss）。旧实现只用 ss —— 本机 macOS
-# 没有它、恒返回空，于是 stop 变成空转：打印「已停止」而旧进程照跑，紧接着的
-# start 看到端口占用就跳过，你以为重启了、其实跑的还是旧代码
+# 按端口找占用进程：**两种工具都问、取并集**（macOS 只有 lsof；Linux 生产机实测
+# lsof 存在却查不到 socket、返回空而 ss 查得到——只信一个都会漏，漏掉就是「以为
+# 重启了其实跑的还是旧进程」）。任一工具不存在就只用另一个。
 port_pids() {
-  local port="$1"
+  local port="$1" out=""
   if command -v lsof >/dev/null 2>&1; then
-    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null
-  elif command -v ss >/dev/null 2>&1; then
-    ss -tlnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u
+    out="$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || true)"
   fi
+  if command -v ss >/dev/null 2>&1; then
+    out="${out}
+$(ss -tlnpH "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 || true)"
+  fi
+  printf '%s\n' "$out" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' '
 }
 
 # 连子进程一起收（uv run 包 python 的两层结构：只杀父会留下占端口的子）

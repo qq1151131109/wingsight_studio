@@ -112,6 +112,16 @@ page.on("console", (m) => { if (m.type() === "error") console.log("  [浏览器�
 await page.goto(`${BASE}/project/${pid}`, { waitUntil: "domcontentloaded" });
 await page.waitForTimeout(5000);
 
+// 工具条是 NodeToolbar isVisible={selected}：先选中剧本卡，按钮才出现。
+// 点标题栏右端（避开 Editable 正文区，避免误入编辑态）
+const scriptNode = page
+  .locator(".react-flow__node")
+  .filter({ hasText: "测试剧本" })
+  .first();
+const sbox = await scriptNode.boundingBox();
+if (sbox) await page.mouse.click(sbox.x + sbox.width - 24, sbox.y + 12);
+await page.waitForTimeout(1500);
+
 const btnText = await page.evaluate(() => {
   const el = [...document.querySelectorAll("button")].find((b) => (b.textContent || "").includes("造型图"));
   return el ? el.textContent.trim() : "";
