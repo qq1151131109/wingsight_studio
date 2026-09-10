@@ -91,7 +91,8 @@ port_pids() {
     out="${out}
 $(ss -tlnpH "sport = :${port}" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 || true)"
   fi
-  printf '%s\n' "$out" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' '
+  # 逐行输出（不要 tr 成空格：单个 pid 会带尾空格，调用方 grep '^[0-9]+$' 会漏）
+  printf '%s\n' "$out" | grep -E '^[0-9]+$' | sort -u
 }
 
 # 连子进程一起收（uv run 包 python 的两层结构：只杀父会留下占端口的子）
