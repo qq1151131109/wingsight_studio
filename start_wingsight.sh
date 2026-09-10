@@ -79,22 +79,83 @@ start_tunnel() {
   grep -oE "bore.pub:[0-9]+" "$LOGS/tunnel.log" | head -1 | sed 's/^/✓ 公网地址: http:\/\//' || echo "（隧道地址稍后见 logs/tunnel.log）"
 }
 
-do_stop() {
-  for name in agent web tunnel; do
-    pidfile="$LOGS/$name.pid"
-    if [ -f "$pidfile" ]; then
-      pid="$(cat "$pidfile")"
-      if kill "$pid" 2>/dev/null; then echo "✓ 已停止 $name (pid $pid)"; fi
-      rm -f "$pidfile"
-    fi
+# 按端口找占用进程（macOS 用 lsof，Linux 退 ss）。旧实现只用 ss —— 本机 macOS
+# 没有它、恒返回空，于是 stop 变成空转：打印「已停止」而旧进程照跑，紧接着的
+# start 看到端口占用就跳过，你以为重启了、其实跑的还是旧代码
+port_pids() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null
+  elif command -v ss >/dev/null 2>&1; then
+    ss -tlnpH "sport = :$port" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u
+  fi
+}
+
+# 连子进程一起收（uv run 包 python 的两层结构：只杀父会留下占端口的子）
+kill_tree() {
+  local pid="$1" sig="$2"
+  local k
+  for k in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill "-$sig" "$k" 2>/dev/null
   done
-  # 兜底清孤儿（按命令行匹配本项目；dev/start 两种模式都要清）
+  kill "-$sig" "$pid" 2>/dev/null
+}
+
+# TERM → 等 5 秒 → KILL。agent 带着常开 SSE 连接时 graceful shutdown 会卡在
+# 「等连接关闭」上收不掉（2026-09-10 生产实测：旧 agent 丢了监听端口却仍挂着
+# ESTAB 连接活着，两个进程同写一个 SQLite 有锁风险），所以必须兜底 KILL；
+# 且收完要核实端口真的空了——旧实现发完 TERM 就报「全部停止」
+stop_pids() {
+  local label="$1"; shift
+  local pids="$*" p alive i=0
+  [ -z "$pids" ] && return 0
+  for p in $pids; do kill_tree "$p" TERM; done
+  while [ "$i" -lt 5 ]; do
+    alive=""
+    for p in $pids; do kill -0 "$p" 2>/dev/null && alive="$alive $p"; done
+    [ -z "$alive" ] && { echo "✓ 已停止 ${label} (${pids})"; return 0; }
+    sleep 1
+    i=$((i + 1))
+  done
+  for p in $pids; do kill_tree "$p" KILL; done
+  sleep 1
+  echo "✓ 已强制停止 ${label}（TERM 5 秒未退，已 KILL）：${pids}"
+}
+
+do_stop() {
+  local agent_pids web_pids left port
+  agent_pids="$(cat "$LOGS/agent.pid" 2>/dev/null || true)
+$(port_pids "$AGENT_PORT")"
+  web_pids="$(cat "$LOGS/web.pid" 2>/dev/null || true)
+$(port_pids "$WEB_PORT")"
+  agent_pids="$(printf '%s\n' "$agent_pids" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')"
+  web_pids="$(printf '%s\n' "$web_pids" | grep -E '^[0-9]+$' | sort -u | tr '\n' ' ')"
+  rm -f "$LOGS/agent.pid" "$LOGS/web.pid"
+
+  stop_pids "agent" $agent_pids
+  stop_pids "前端" $web_pids
+
+  if [ -f "$LOGS/tunnel.pid" ]; then
+    local tpid; tpid="$(cat "$LOGS/tunnel.pid")"
+    kill_tree "$tpid" TERM
+    rm -f "$LOGS/tunnel.pid"
+    echo "✓ 已停止 tunnel (pid $tpid)"
+  fi
+
+  # 兜底清孤儿（命令行匹配本项目；端口清理已是主路径，这里是双保险）
   pkill -f "wingsight-studio/agent.*uvicorn" 2>/dev/null && echo "✓ 清理 agent 孤儿进程"
   pkill -f "wingsight-studio.*next dev --port $WEB_PORT" 2>/dev/null && echo "✓ 清理前端孤儿进程"
   pkill -f "wingsight-studio.*next start --port $WEB_PORT" 2>/dev/null && echo "✓ 清理前端孤儿进程"
-  # pid 文件失效但端口仍被占（nohup 孙进程脱离 pid 记录）——按端口兜底
-  _port_pids="$(ss -tlnpH "sport = :$WEB_PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
-  if [ -n "$_port_pids" ]; then kill $_port_pids 2>/dev/null && echo "✓ 清理占用 :$WEB_PORT 的残留进程 ($_port_pids)"; fi
+
+  # 收尾核实：端口真空了才算停干净（否则明报，别让「以为重启了」重演）
+  left=""
+  for port in "$AGENT_PORT" "$WEB_PORT"; do
+    [ -n "$(port_pids "$port")" ] && left="$left :$port"
+  done
+  if [ -n "$left" ]; then
+    echo "✗ 端口仍被占用：${left}（手动处理：lsof -nP -iTCP:8123 -sTCP:LISTEN）"
+    return 1
+  fi
   echo "全部停止"
 }
 

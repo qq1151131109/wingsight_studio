@@ -200,6 +200,33 @@ check("D2 执行端点接受合法主题（返回 started）",
   dup.status === 200 && Array.isArray(dup.body?.started),
   `status=${dup.status} started=${JSON.stringify(dup.body?.started)}`);
 
+// ---------- E. 取消采纳（删参考卡 = 这张参考不要了） ----------
+const cands0 = await api(`/projects/${pid}/refs/candidates?nodeId=N_FENG`);
+const first = (cands0.body ?? []).find((c) => c.adopted);
+check("E1 已采纳候选在位", Boolean(first), JSON.stringify((cands0.body ?? []).map((c) => [c.id, c.adopted])));
+const un = await api(`/projects/${pid}/refs/unadopt`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ nodeId: "N_FENG", ids: [first.id] }),
+});
+const after = (un.body?.candidates ?? []).find((c) => c.id === first.id);
+check("E2 取消采纳生效且候选行保留",
+  un.status === 200 && after && after.adopted === false,
+  `status=${un.status} adopted=${after?.adopted}`);
+const rep2 = await api(`/projects/${pid}/refs/report`);
+const stillAdopted = (rep2.body?.adopted ?? [])
+  .flatMap((g) => g.candidates.map((c) => c.id))
+  .includes(first.id);
+check("E3 报告底账里不再算作采纳（对账不会重建它）",
+  !stillAdopted && rep2.body?.text?.includes("参考图底账（已采纳 0 张）"),
+  `adopted 里仍有=${stillAdopted}`);
+const badUn = await api(`/projects/${pid}/refs/unadopt`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ nodeId: "", ids: [] }),
+});
+check("E4 缺参数 → 400", badUn.status === 400, `status=${badUn.status}`);
+
 // ---------- 清理 ----------
 await api(`/projects/${pid}`, { method: "DELETE" });
 py(`

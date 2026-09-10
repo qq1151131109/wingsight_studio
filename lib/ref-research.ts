@@ -127,6 +127,26 @@ export async function adoptRefCandidates(
   return body.candidates;
 }
 
+/** 取消采纳（保留候选行）：用户删掉参考卡 = 这张参考不要了——不再作为出图
+ *  参考，也不再被对账物化成卡。候选仍在「找参考图」面板里可重新采纳。 */
+export async function unadoptRefCandidates(
+  projectId: string,
+  nodeId: string,
+  ids: string[],
+): Promise<RefCandidate[]> {
+  const r = await apiFetch(`/agent-service/projects/${projectId}/refs/unadopt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ nodeId, ids }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || `取消采纳失败（${r.status}）`);
+  }
+  const body = (await r.json()) as { candidates: RefCandidate[] };
+  return body.candidates;
+}
+
 export async function deleteRefCandidate(
   projectId: string,
   id: string,

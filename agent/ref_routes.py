@@ -197,6 +197,18 @@ def api_adopt_ref_candidates(pid: str, req: dict, user: auth.CurrentUser):
     return {"candidates": imgresearch.mark_adopted(pid, node_id, ids)}
 
 
+@router.post("/projects/{pid}/refs/unadopt")
+def api_unadopt_ref_candidates(pid: str, req: dict, user: auth.CurrentUser):
+    """取消采纳（保留候选行）：用户删掉参考卡 = 这张参考不要了——不再作为出图
+    参考，也不再被对账物化成卡（否则删了下次打开项目又长回来）。"""
+    projects.assert_access(user, pid)
+    node_id = str(req.get("nodeId") or "").strip()
+    ids = [str(i) for i in (req.get("ids") or []) if str(i).strip()]
+    if not node_id or not ids:
+        return Response(status_code=400, content="缺少 nodeId 或 ids", media_type="text/plain")
+    return {"candidates": imgresearch.unadopt_candidates(pid, node_id, ids)}
+
+
 @router.delete("/projects/{pid}/refs/candidates/{cid}")
 def api_delete_ref_candidate(pid: str, cid: str, user: auth.CurrentUser):
     projects.assert_access(user, pid)

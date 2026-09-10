@@ -13,6 +13,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { IMAGEGEN_DEFAULT, type ImagegenParams } from "@/lib/imagegen";
+import { notifyRefCardsDeleted } from "@/lib/canvas/refDismiss";
 
 /** 题材真伪（存画布 meta.factuality）：真实题材（历史/罪案纪录片等）出图前
  *  会为缺考据的资产补一次文字考据（年代/形制/常见误用），虚构题材（动画片）
@@ -163,6 +164,10 @@ export interface WingNodeData {
   /** image 卡：考据参考图（参考图调研面板采纳落卡）。出图职责段按
    *  「锁定形制/材质/年代特征」渲染，而非「保留构图」的改图语义 */
   refSource?: "research";
+  /** image 卡：参考图对应的服务端候选 id（refSource="research" 时带）。
+   *  两个用途：①删除这张卡=取消采纳，下次打开项目不再被对账重建
+   *  ②对账反向修复——画布上有卡而服务端未采纳（撤销恢复的卡）补采纳 */
+  refCandidateId?: string;
   /** 资产卡来源（character/scene/prop/costume）：拆解锚点卡 id（剧本卡/分镜表卡）。
    *  「补资产图」按它圈定本卡资产；聊天/agent 直建的资产卡无此字段不纳入 */
   assetSource?: string;
@@ -889,6 +894,25 @@ export const useCanvasStore = create<CanvasState>()(
 
       deleteNodes: (ids) => {
         const idSet = new Set(ids);
+        // 删掉考据参考卡 = 这张参考不要了：广播给处理方去服务端取消采纳，
+        // 否则对账只认「这张图有没有卡」，下次打开项目又把它建回来。
+        // store 不碰网络，故只播事件（见 lib/canvas/refDismiss.ts）
+        notifyRefCardsDeleted(
+          get()
+            .nodes.filter(
+              (n) =>
+                idSet.has(n.id) &&
+                n.data.refSource === "research" &&
+                n.data.refCandidateId,
+            )
+            .map((n) => ({
+              candidateId: String(n.data.refCandidateId),
+              assetNodeId: String(
+                get().edges.find((e) => e.source === n.id)?.target ?? "",
+              ),
+            }))
+            .filter((d) => d.assetNodeId),
+        );
         get().commitHistory();
         set((state) => {
           // 删除分组框时提升存活子节点到画布层（坐标转绝对），避免孤儿 parentId

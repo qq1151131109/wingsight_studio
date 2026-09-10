@@ -250,6 +250,27 @@ def delete_candidate(project_id: str, cid: str) -> bool:
     return cur.rowcount > 0
 
 
+def unadopt_candidates(
+    project_id: str, node_id: str, ids: list[str]
+) -> list[dict[str, Any]]:
+    """取消采纳（保留候选行）：用户删掉参考卡 = 这张参考不要了。
+
+    与「删除候选行」（delete_candidate）分开：候选仍在「找参考图」面板里，
+    只是回到未采纳、不再作为出图参考、也不被对账物化成卡。重跑调研时若又
+    命中同一张图会重新入库（重跑=新结果，采纳权仍在用户/终选）。"""
+    clean = [str(i) for i in ids if str(i).strip()]
+    if not clean or not node_id:
+        return list_candidates(project_id, node_id)
+    marks = ",".join("?" for _ in clean)
+    with _conn() as conn:
+        conn.execute(
+            f"UPDATE ref_candidates SET adopted = 0 WHERE project_id = ?"
+            f" AND node_id = ? AND id IN ({marks})",
+            (project_id, node_id, *clean),
+        )
+    return list_candidates(project_id, node_id)
+
+
 def _now() -> str:
     from datetime import datetime, timezone
 

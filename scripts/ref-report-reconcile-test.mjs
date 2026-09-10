@@ -204,6 +204,9 @@ check("B7 参考卡连线到资产卡",
 check("B8 参考卡带来源域名",
   String(refCards[0]?.data?.body ?? "").includes("commons.wikimedia.org"),
   refCards[0]?.data?.body);
+check("B8b 参考卡带候选 id（删除=取消采纳的凭据）",
+  Boolean(refCards[0]?.data?.refCandidateId),
+  `refCandidateId=${refCards[0]?.data?.refCandidateId}`);
 
 // C. 幂等：重新打开项目不重复建卡
 await page.reload({ waitUntil: "domcontentloaded" });
@@ -224,6 +227,34 @@ await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForTimeout(5000);
 const { body: c4 } = await api(`/projects/${pid}/canvas`);
 check("D1 前端保存周期保住了 era 口径", c4?.meta?.era === ERA, `era=${c4?.meta?.era}`);
+
+// E. 删掉参考卡 = 这张参考不要了：服务端取消采纳，重载不再长回来
+//    （真实交互：选中卡片 → 工具条「删除」；画布卡有 data-id，工具条按钮有 aria-label）
+const refId = refCards[0].id;
+await page.locator(`[data-id="${refId}"]`).first().click();
+await page.waitForTimeout(600);
+await page
+  .locator('.react-flow__node-toolbar [aria-label="删除"]:visible')
+  .first()
+  .click();
+await page.waitForTimeout(3000); // 落库 debounce 1.2s
+const { body: afterDel } = await api(`/projects/${pid}/canvas`);
+check("E1 参考卡已从画布删除",
+  !(afterDel?.nodes ?? []).some((n) => n.id === refId),
+  `still=${(afterDel?.nodes ?? []).filter((n) => n.id === refId).length}`);
+const { body: cands } = await api(`/projects/${pid}/refs/candidates?nodeId=N_FENG`);
+check("E2 服务端已取消采纳（删卡=不要这张参考）",
+  (cands ?? []).some((c) => c.id === refCards[0].data.refCandidateId && !c.adopted),
+  JSON.stringify((cands ?? []).map((c) => [c.id, c.adopted])));
+
+await page.reload({ waitUntil: "domcontentloaded" });
+await page.waitForTimeout(6000);
+const { body: afterReload } = await api(`/projects/${pid}/canvas`);
+check("E3 重载后参考卡没有被长回来（对账不重建已取消采纳的）",
+  !(afterReload?.nodes ?? []).some(
+    (n) => n.data?.refSource === "research" && n.data?.imageUrl === REF_URL,
+  ),
+  `count=${(afterReload?.nodes ?? []).filter((n) => n.data?.imageUrl === REF_URL).length}`);
 
 await browser.close();
 

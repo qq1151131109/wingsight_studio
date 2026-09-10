@@ -20,6 +20,7 @@ import { adoptRefRows } from "@/lib/canvas/refAdopt";
 import { absolutePosition, nodeSize, useCanvasStore } from "@/lib/canvas/store";
 import { addCardAt } from "@/lib/canvas/ingest";
 import {
+  adoptRefCandidates,
   getRefOutline,
   getRefReport,
   type RefOutline,
@@ -157,6 +158,31 @@ export async function reconcileRefResearch(
       refsCreated += adoptRefRows([{ nodeId: group.nodeId, candidates: picks }], {
         history: "skip",
       }).length;
+    }
+
+    // ②b 反向修复：画布上有参考卡、服务端却未采纳（删卡撤销回来后就是这状态）
+    //     → 补采纳。不做的话卡片看着是参考、实际已不在采纳集里，两个真相。
+    const adoptedIds = new Set(
+      report.adopted.flatMap((g) => g.candidates.map((c) => c.id)),
+    );
+    const readopt = new Map<string, string[]>();
+    for (const n of useCanvasStore.getState().nodes) {
+      const cid = String(n.data.refCandidateId ?? "");
+      if (n.data.refSource !== "research" || !cid || adoptedIds.has(cid)) continue;
+      const assetNodeId = String(
+        useCanvasStore.getState().edges.find((e) => e.source === n.id)?.target ?? "",
+      );
+      if (!assetNodeId) continue;
+      readopt.set(assetNodeId, [...(readopt.get(assetNodeId) ?? []), cid]);
+    }
+    if (readopt.size) {
+      await Promise.all(
+        [...readopt.entries()].map(([nodeId, ids]) =>
+          adoptRefCandidates(projectId, nodeId, ids).catch((err) =>
+            console.warn("[调研对账] 参考卡补采纳失败", nodeId, err),
+          ),
+        ),
+      );
     }
 
     // ③ 报告卡与大纲卡（各自单例）：有条目/主题才建——空卡是噪音

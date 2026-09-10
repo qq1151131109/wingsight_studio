@@ -359,4 +359,31 @@ expect("＋主题考据〈北魏兵器〉" in m2["text"], "该节应指向服务
 expect("环首刀直刃长身" in m2["cardBriefs"].get("n_sword", ""),
        f"只有主题覆盖的卡也要有卡面简报：{m2['cardBriefs'].get('n_sword')}")
 
+# N. 取消采纳（删参考卡 = 这张参考不要了；候选行保留，仍在面板里可重新采纳）
+adopted_before = imgresearch.adopted_by_node(PID)
+c_first = adopted_before["n_feng"][0]
+out_rows = imgresearch.unadopt_candidates(PID, "n_feng", [c_first["id"]])
+expect(
+    not next(c for c in out_rows if c["id"] == c_first["id"])["adopted"],
+    "取消采纳后该候选 adopted 应为 0",
+)
+expect(
+    len(imgresearch.adopted_by_node(PID)["n_feng"]) == len(adopted_before["n_feng"]) - 1,
+    "已采纳分组应少一张（对账不会再物化它）",
+)
+expect(
+    any(c["id"] == c_first["id"] for c in imgresearch.list_candidates(PID, "n_feng")),
+    "候选行应保留（只摘采纳，不删候选）",
+)
+# 对账口径：卡被删后服务端也不该再把它算作采纳
+expect(
+    c_first["id"] not in {c["id"] for c in imgresearch.adopted_by_node(PID).get("n_feng", [])},
+    "取消采纳的候选不得出现在 adopted_by_node",
+)
+# 幂等 / 容忍脏参数
+imgresearch.unadopt_candidates(PID, "n_feng", [c_first["id"]])
+expect(imgresearch.unadopt_candidates(PID, "n_feng", []) == imgresearch.list_candidates(PID, "n_feng"),
+       "空 ids 应原样返回候选列表")
+expect(imgresearch.unadopt_candidates(PID, "", ["x"]) == [], "空 node_id 返回空列表（不炸）")
+
 print(f"✅ 考证报告 {PASS[0]} 项断言全部通过")

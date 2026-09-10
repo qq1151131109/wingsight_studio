@@ -129,6 +129,9 @@ export function adoptRefRows(
             imageUrl: c.assetUrl,
             status: "ready",
             refSource: "research",
+            // 候选 id 落卡：删除这张卡 = 取消采纳（下次打开不再重建），
+            // 也是对账反向修复的凭据（卡在而未采纳 → 补采纳）
+            refCandidateId: c.id,
           },
         },
         opts,

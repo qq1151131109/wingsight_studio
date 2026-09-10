@@ -28,6 +28,9 @@ import {
   type AgentJobEvent,
 } from "@/lib/agent-events";
 import { reconcileRefResearch } from "@/lib/canvas/refReconcile";
+import { onRefCardsDeleted } from "@/lib/canvas/refDismiss";
+import { unadoptRefCandidates } from "@/lib/ref-research";
+import { useRefStatusStore } from "@/lib/refStatus";
 import { useCanvasStore } from "@/lib/canvas/store";
 
 /** 自动续跑消息的统一前缀（Sidebar 据此把气泡渲染成系统样式而非用户口吻） */
@@ -164,9 +167,29 @@ export default function TaskEvents() {
     };
   }, [projectId]);
 
+  // 删掉考据参考卡 = 这张参考不要了：去服务端取消采纳，否则下次打开项目
+  // 对账又会把它建回来（store 只广播事件，见 lib/canvas/refDismiss.ts）
   useEffect(() => {
-    const requestAutoRun = (e: AgentJobEvent) => {
-      if (ranJobs.current.has(e.job_id)) return;
+    if (!projectId) return;
+    return onRefCardsDeleted((drops) => {
+      const byNode = new Map<string, string[]>();
+      for (const d of drops) {
+        byNode.set(d.assetNodeId, [...(byNode.get(d.assetNodeId) ?? []), d.candidateId]);
+      }
+      void Promise.all(
+        [...byNode.entries()].map(([nodeId, ids]) =>
+          unadoptRefCandidates(projectId, nodeId, ids)
+            .then(() =>
+              useRefStatusStore.getState().refresh(projectId, { force: true }),
+            )
+            .catch((err) => console.warn("[参考卡] 取消采纳失败", nodeId, err)),
+        ),
+      );
+    });
+  }, [projectId]);
+
+  useEffect(() => {
+    const requestAutoRun = (e: AgentJobEvent) => {      if (ranJobs.current.has(e.job_id)) return;
       ranJobs.current.add(e.job_id);
       window.dispatchEvent(
         new CustomEvent(AGENT_AUTO_RUN_EVENT, { detail: { text: autoRunText(e), jobId: e.job_id } }),
