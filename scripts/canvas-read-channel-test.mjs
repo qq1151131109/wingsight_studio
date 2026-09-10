@@ -133,6 +133,34 @@ const charYs = new Set(["C_1", "C_2", "C_3"].map(id => abs(id).y));
 check("角色组内网格换行（不再一条横排）", charYs.size >= 2, `y 集合=${[...charYs].join(",")}`);
 check("资产带开在现有内容下方", abs("C_1").y >= maxYBefore, `首卡 y=${abs("C_1").y} 原 maxY=${maxYBefore}`);
 check("组框 id 进 createdIds（agent 侧选中整框）", g1.createdIds.length === 9, `created=${g1.createdIds.length}`);
+// —— 资产带内组框顺序：角色→服饰→场景→道具（2026-09-11 用户口径「服饰应该和
+// 角色挨着」）。服饰有主（造型计划把服饰绑到角色、造型图参考图2=服饰结构图），
+// 与场景/道具（环境与物件家族）不是一类；此前服饰排带尾，角色组右缘到服饰组
+// 隔了 2136px（091001 实测：角色 x=-36 / 场景 1028 / 道具 2092 / 服饰 3156）——
+// 找某角色的衣服要横穿两组框。拆解链（nodes.tsx KIND_ORDER）同款顺序
+const gOrder = applyOps([
+  { op: "add_node", nodeType: "character", id: "K_C1", title: "角色甲" },
+  { op: "add_node", nodeType: "character", id: "K_C2", title: "角色乙" },
+  { op: "add_node", nodeType: "costume", id: "K_K1", title: "朝服" },
+  { op: "add_node", nodeType: "costume", id: "K_K2", title: "常服" },
+  { op: "add_node", nodeType: "scene", id: "K_S1", title: "大殿" },
+  { op: "add_node", nodeType: "scene", id: "K_S2", title: "街市" },
+  { op: "add_node", nodeType: "prop", id: "K_P1", title: "环首刀" },
+  { op: "add_node", nodeType: "prop", id: "K_P2", title: "灯笼" },
+]);
+const gx = (label) => useCanvasStore.getState().nodes.find((n) => n.data.nodeType === "group" && n.data.title === label)?.position.x;
+const gw = (label) => {
+  const g = useCanvasStore.getState().nodes.find((n) => n.data.nodeType === "group" && n.data.title === label);
+  return (g?.style?.width ?? 0) + (g?.position.x ?? 0);
+};
+check("四类资产各成一框（角色/服饰/场景/道具）",
+  gOrder.errors.length === 0 && ["角色", "服饰", "场景", "道具"].every((l) => Number.isFinite(gx(l))),
+  `x=${["角色", "服饰", "场景", "道具"].map((l) => gx(l)).join(",")}`);
+check("服饰框紧挨角色框右缘（不与场景/道具夹隔）",
+  gx("服饰") < gx("场景") && gx("服饰") < gx("道具") && gx("服饰") >= gw("角色"),
+  `角色右缘=${gw("角色")} 服饰 x=${gx("服饰")} 场景 x=${gx("场景")} 道具 x=${gx("道具")}`);
+check("场景/道具退到外侧（原角色/场景/道具/服饰顺序已改）",
+  gx("角色") < gx("服饰") && gx("服饰") < gx("场景") && gx("场景") < gx("道具"));
 // 带 position 的卡不参与自动分组：精确摆位尊重原坐标、不套框
 const g2 = applyOps([{ op: "add_node", nodeType: "scene", id: "S_9", title: "天庭", position: { x: 5000, y: -800 } }]);
 const s9 = node("S_9");

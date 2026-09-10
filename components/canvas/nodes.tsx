@@ -5023,14 +5023,21 @@ async function runAssetDecompose(opts: {
     const src = st.nodes.find((n) => n.id === anchorId);
     if (!src) return;
     const abs = absolutePosition(st.nodes, src);
-    // 排布（novanova 资产分组范式）：角色/场景/道具各成一个组框，
-    // 组内 2 列网格；三个组从左到右排开（整组矩形一次性避让找空地，
-    // 逐卡避让会散）。重复拆解时同名卡跳过、组框按需补建
+    // 排布（novanova 资产分组范式）：角色/服饰/场景/道具各成一个组框，
+    // 组内 √n 网格（1~3 列封顶）；四个组从左到右排开（整组矩形一次性避让
+    // 找空地，逐卡避让会散）。**服饰紧跟角色**（2026-09-11 用户口径）：
+    // 服饰有主——造型计划把服饰绑在具体角色上（looks[i].costume→costumeId），
+    // 造型图出图的「参考图2=服饰结构图」为那个角色锁形制；场景/道具是
+    // 环境与物件家族，退到外侧。顺序与 ops.ts 的 LAYOUT_KIND_ORDER 同款
+    // （两处一起改）；「造型图」框贴角色组右缘放（预留位在角色之后），
+    // 服饰排在角色后一位正好落在预留位右侧：角色|造型图|服饰|场景|道具，
+    // 角色→造型、服饰→造型两条派生边都不横穿别的组框。
+    // 重复拆解时同名卡跳过、组框按需补建
     const KIND_ORDER = [
       { type: "character" as const, label: "角色" },
+      { type: "costume" as const, label: "服饰" },
       { type: "scene" as const, label: "场景" },
       { type: "prop" as const, label: "道具" },
-      { type: "costume" as const, label: "服饰" },
     ];
     const created: string[] = [];
     const groupIds: string[] = [];

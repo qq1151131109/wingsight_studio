@@ -114,16 +114,21 @@ try {
   check("A1 单选一张卡 → 恰 1 条悬浮工具条", a1 === 1, `toolbars=${a1}`);
   check("A2 单选态没有多选工具条", (await selBar()) === 0);
 
-  // A3 按钮真能点（口径：防「工具条整体失效」被当通过）
+  // A3 按钮真能点（口径：防「工具条整体失效」被当通过）。注意节点信息弹窗
+  //    只认背板点击关闭（没有 Esc 路径），必须点角落背板——留着它会把后面
+  //    所有点击都吃掉（本测试首版就在这栽过：Esc 没关掉 → D 假通过）
   await page
     .locator('.react-flow__node-toolbar [aria-label="节点信息"]:visible')
     .first()
     .click({ timeout: 6000 });
   await page.waitForTimeout(500);
-  const infoOpen = await page.getByText(/节点信息/).count();
-  await page.keyboard.press("Escape");
-  await page.waitForTimeout(300);
-  check("A3 单选工具条「节点信息」可点开弹窗", infoOpen > 0, `hits=${infoOpen}`);
+  const infoTitle = page.locator("h3", { hasText: "节点信息" });
+  const infoOpen = await infoTitle.count();
+  await page.mouse.click(20, 20);
+  await page.waitForTimeout(400);
+  const infoClosed = await infoTitle.count();
+  check("A3 单选工具条「节点信息」可点开、可关闭", infoOpen === 1 && infoClosed === 0,
+    `open=${infoOpen} afterClose=${infoClosed}`);
 
   // B. 全选（用户截图那条路径：已选 N）：逐卡工具条应清零
   await page.keyboard.press("Meta+a");
@@ -141,17 +146,23 @@ try {
   // 视觉留证（WS_SHOT=/tmp/x.png 时抓多选态整屏，人眼复核画布干净不干净）
   if (process.env.WS_SHOT) await page.screenshot({ path: process.env.WS_SHOT });
 
-  // D. 清空选择：0 条（点空白画布；坐标避开浮层——取画布下半部空处）
-  await page.locator(".react-flow__pane").first().click({ position: { x: 700, y: 700 } });
+  // D. 清空选择：0 条。点空白画布用裸鼠标坐标（locator.click 会被 xyflow
+  //    内部层挡成 not stable）；坐标取画布下半部空处，避开浮层与底坞
+  const paneBox = await page.locator(".react-flow__pane").first().boundingBox();
+  await page.mouse.click(paneBox.x + 700, paneBox.y + 700);
   await page.waitForTimeout(400);
   const d1 = await cardToolbars();
-  check("D1 点空白清空选择 → 0 条工具条", d1 === 0, `toolbars=${d1}`);
+  const dSel = await page.locator(".ws-node.is-selected").count();
+  check("D1 点空白清空选择 → 选择为空且 0 条工具条", d1 === 0 && dSel === 0,
+    `toolbars=${d1} selected=${dSel}`);
 
   // E. 回到单选：工具条复现（显隐可逆）
   await page.locator(`[data-id="${IDS[2]}"]`).first().click();
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(600);
   const e1 = await cardToolbars();
-  check("E1 多选回到单选 → 工具条复现 1 条", e1 === 1, `toolbars=${e1}`);
+  const eSel = await page.locator(".ws-node.is-selected").count();
+  check("E1 多选回到单选 → 工具条复现 1 条", e1 === 1 && eSel === 1,
+    `toolbars=${e1} selected=${eSel}`);
 
   await browser.close();
   await api(`/projects/${pid}`, { method: "DELETE" });
