@@ -14,23 +14,30 @@ import { chromium } from "playwright";
 
 const WEB = "http://127.0.0.1:8008";
 const AGENT = "http://127.0.0.1:8123";
-const COLLAPSE_LIMIT = 700; // 与 AssistantMessage.COLLAPSE_CHARS 同源
+// 与 AssistantMessage 同源：折叠限高 480px、正文溢出 ≥1.6 倍才折
+// （2026-09-11 起判据从字数改为实测溢出，并加「最新一轮的答复永不折叠」）
+const COLLAPSE_LIMIT_PX = 480;
 
+// 认证：.env.local 有 AUTH_PASSWORD 就登录，空则不带头（本机认证关闭时的
+// 常态，与 node-toolbar-select / chat-revise-image 等回归同约定；服务端
+// auth_enabled=false 时不带头照常放行）。此前这里硬抛错，本机跑不起来。
 const AUTH_PASSWORD = fs
   .readFileSync(".env.local", "utf8")
   .match(/^AUTH_PASSWORD=(.*)$/m)?.[1]?.trim();
-if (!AUTH_PASSWORD) throw new Error("缺 AUTH_PASSWORD（.env.local）");
-const login = await fetch(`${AGENT}/api/v1/auth/token`, {
-  method: "POST",
-  body: new URLSearchParams({ username: "admin", password: AUTH_PASSWORD }),
-});
-if (!login.ok) throw new Error(`登录失败 ${login.status}`);
-const TOKEN = (await login.json()).access_token;
+let TOKEN = "";
+if (AUTH_PASSWORD) {
+  const login = await fetch(`${AGENT}/api/v1/auth/token`, {
+    method: "POST",
+    body: new URLSearchParams({ username: "admin", password: AUTH_PASSWORD }),
+  });
+  if (!login.ok) throw new Error(`登录失败 ${login.status}`);
+  TOKEN = (await login.json()).access_token;
+}
 
 const api = async (path, init) => {
   const r = await fetch(`${AGENT}${path}`, {
     ...init,
-    headers: { Authorization: `Bearer ${TOKEN}`, ...(init?.headers ?? {}) },
+    headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), ...(init?.headers ?? {}) },
   });
   const text = await r.text();
   let body = null;
@@ -66,7 +73,7 @@ process.on("unhandledRejection", (e) => void bail(e));
 
 const tid = Date.now().toString(16).padStart(12, "0").slice(-12);
 const LONG = Array.from(
-  { length: 14 },
+  { length: 20 },
   (_, i) =>
     `第 ${i + 1} 段：夜莺计划的分镜要点——这一段刻意写长以触发折叠，讲清楚机位、光线与声音的配合，并说明它与上一段在叙事上的承接关系。`,
 ).join("\n\n");
@@ -91,10 +98,14 @@ await api(`/projects/${PID}/threads/${tid}/messages`, {
       { id: "a3", role: "assistant", content: "收尾回到夜莺计划的主旨。" },
       { id: "u4", role: "user", content: "还有别的吗" },
       { id: "a4", role: "assistant", content: "暂时没有，夜莺计划到此讲完。" },
+      // 最新一轮的**长**答复：按新规则不折叠（折叠是翻历史的手段）——
+      // B7 断言它展开、而更早那条同样长的 a0 照旧折叠
+      { id: "u5", role: "user", content: "夜莺计划完整版再说一遍" },
+      { id: "a5", role: "assistant", content: LONG },
     ],
   }),
 });
-check("夹具：长回复超过折叠阈值", LONG.length > COLLAPSE_LIMIT, `${LONG.length} 字`);
+check("夹具：长回复远超折叠溢出阈值", LONG.length > 1200, `${LONG.length} 字（>1200 保证溢出 > ${Math.round(COLLAPSE_LIMIT_PX * 1.6)}px）`);
 
 const browser = await chromium.launch();
 const context = await browser.newContext({
@@ -187,17 +198,50 @@ check(
 const toggleText = await page.locator("aside .ws-msg-toggle").first().innerText();
 check("B2 展开钮带字数", /展开全文（\d+ 字）/.test(toggleText), toggleText);
 const hClamped = await proseH();
-check("B3 折叠态正文限高 340px", hClamped === 340, `${hClamped}px`);
+check(`B3 折叠态正文限高 ${COLLAPSE_LIMIT_PX}px`, hClamped === COLLAPSE_LIMIT_PX, `${hClamped}px`);
 await page.locator("aside .ws-msg-toggle").first().click();
 await page.waitForTimeout(300);
 const hExpanded = await proseH();
 check("B4 展开后正文变高", hExpanded > hClamped + 200, `${hClamped} → ${hExpanded}px`);
 await page.locator("aside .ws-msg-toggle").first().click();
 await page.waitForTimeout(300);
-check("B5 收起恢复限高", (await proseH()) === 340);
+check("B5 收起恢复限高", (await proseH()) === COLLAPSE_LIMIT_PX);
 check(
   "B6 折叠时工具栏仍在（复制/重新生成没被裁掉）",
   (await msgs[0].locator('[data-testid="copilot-copy-button"]').count()) === 1,
+);
+
+// B7 最新一轮的答复即使很长也不折叠（折叠是翻历史的手段，刚拿到的答案要铺开）
+const longRows = await page.evaluate(() =>
+  Array.from(document.querySelectorAll("aside .ws-asst-msg"))
+    .map((el) => ({
+      chars: +(el.getAttribute("data-ws-chars") || 0),
+      collapsed: el.getAttribute("data-ws-collapsed"),
+    }))
+    .filter((r) => r.chars > 1200),
+);
+check(
+  "B7 最新一轮长答复不折叠、更早的长回复照旧折叠",
+  longRows.length >= 2 &&
+    longRows[0].collapsed === "1" &&
+    longRows[longRows.length - 1].collapsed === "0",
+  JSON.stringify(longRows),
+);
+// B8 展开态按消息记（不是全局开关）：展开最早那条长回复，最新那条仍不折叠
+await page.locator("aside .ws-msg-toggle").first().click();
+await page.waitForTimeout(300);
+const perMsg = await page.evaluate(() =>
+  Array.from(document.querySelectorAll("aside .ws-asst-msg")).map((el) => ({
+    chars: +(el.getAttribute("data-ws-chars") || 0),
+    collapsed: el.getAttribute("data-ws-collapsed"),
+    toggle: el.querySelector(".ws-msg-toggle")?.getAttribute("aria-expanded") ?? null,
+  })),
+);
+const lr = perMsg.filter((r) => r.chars > 1200);
+check(
+  "B8 展开态按消息 id 记（展开一条不牵连另一条）",
+  lr[0]?.collapsed === "0" && lr[0]?.toggle === "true" && lr[lr.length - 1]?.collapsed === "0",
+  JSON.stringify(lr),
 );
 
 // ---------- C 会话内搜索 ----------

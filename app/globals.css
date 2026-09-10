@@ -908,7 +908,10 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 
 .ws-asst-msg[data-ws-collapsed="1"] .cpk\:prose {
     position: relative;
-    max-height: 340px;
+    /* 与 AssistantMessage.COLLAPSE_LIMIT_PX 同源（480px ≈ 600 字）；
+       旧值 340px ≈ 430 字，与 700 字的触发阈值只差 1.6 倍——一折就砍掉
+       近四成正文，2026-09-11 起限高与「溢出 1.6 倍才折」配套 */
+    max-height: 480px;
     overflow: hidden;
 }
 .ws-asst-msg[data-ws-collapsed="1"] .cpk\:prose::after {

@@ -6,9 +6,12 @@
  *    是条件渲染（没 handler 的按钮不渲染）——助手消息一个操作按钮都没有，长回复
  *    只能手动拖选。现在直接渲染框架的 CopilotChatAssistantMessage（复制钮由框架
  *    接好 onClick=copyToClipboard），并补上「重新生成」。
- *  - **长回复折叠**：超过 COLLAPSE_CHARS 字默认收起（约 12 行），底部渐隐 +
- *    「展开全文（N 字）」；搜索进行中自动展开（命中可能在折叠区里）。
- *    最新一条流式输出期间不折叠——写到一半突然收起来太跳。
+ *  - **长回复折叠**：正文**实测溢出**到限高的 1.6 倍以上才折（底部渐隐 +
+ *    「展开全文（N 字）」）；**最新一轮的答复永不折叠**——折叠是翻历史的手段，
+ *    刚拿到的答案要完整铺开。搜索进行中自动展开（命中可能在折叠区里）。
+ *    流式输出期间不折叠——写到一半突然收起来太跳。
+ *  - **展开状态按消息 id 存 store**（lib/chat/collapse）：框架虚拟化会卸载滚出
+ *    视口的消息，组件本地 state 会丢，展开过的长回复滚回来又折上。
  *  - **重新生成**：先调 /chat/regenerate 让服务端把该轮用户消息之前的 checkpoint
  *    分叉为会话当前头，再截断本地历史重跑。只截断不 fork 的话旧回答仍留在模型
  *    上下文里（2026-09-09 实测：模型能逐字复述「已删掉」的答案）。
@@ -29,20 +32,30 @@ import {
   type CopilotChatAssistantMessageProps,
 } from "@copilotkit/react-core/v2";
 import { langgraphAgent } from "@/app/agent-provider";
+import { useChatCollapse } from "@/lib/chat/collapse";
 import { useChatSession } from "@/lib/chat/session";
 import { selectSearchActive, useChatSearch } from "@/lib/chat/search";
 import { regenerateChatRun } from "@/lib/projects";
 import { showToast } from "@/lib/toast";
 
-/** 折叠阈值：约 12 行正文（13px/1.7 ≈ 22px 行高） */
-const COLLAPSE_CHARS = 700;
+/** 折叠限高（px，与 globals.css 的 .ws-asst-msg[data-ws-collapsed="1"] 同源） */
+const COLLAPSE_LIMIT_PX = 480;
+/** 正文溢出到限高的这个倍数才折。略超一点就折 = 只藏两三行却要用户点一次；
+ *  旧阈值（700 字 vs 340px ≈ 430 字容量）一折就砍掉近四成正文，正是
+ *  「所有回复都折叠、影响观看」的来源（2026-09-11 用户反馈） */
+const COLLAPSE_MIN_RATIO = 1.6;
+/** 明显短于限高的正文不必测量（省一次 layout 读取） */
+const COLLAPSE_SKIP_CHARS = 300;
 
 export default function AssistantMessage({
   message,
   messages,
   isRunning,
 }: CopilotChatAssistantMessageProps) {
-  const [expanded, setExpanded] = useState(false);
+  const msgId = message?.id ?? "";
+  const expanded = useChatCollapse((s) => (msgId ? Boolean(s.expanded[msgId]) : false));
+  const toggleExpanded = useChatCollapse((s) => s.toggle);
+  const [overflows, setOverflows] = useState(false);
   const searchActive = useChatSearch(selectSearchActive);
   const threadId = useChatSession((s) => s.threadId);
   const chatConfig = useCopilotChatConfiguration();
@@ -75,8 +88,35 @@ export default function AssistantMessage({
     }
     return true;
   })();
-  const collapsible =
-    isTurnFinal && content.length > COLLAPSE_CHARS && !(isRunning && isLatest);
+  // 实测正文溢出：用 scrollHeight 而不是字数——同字数在纯文本/列表/代码块下
+  // 高度差很多，字数只是排版容量的粗代理。
+  // 为什么加 ResizeObserver：回调 ref 触发的时刻框架的 .cpk:prose 内部往往还没
+  // 渲染完（首帧量到 0），而 ref 身份不变就不会重量——实测表现是「永远不折叠」。
+  // 改为观察外层容器：内容落地/流式增长时补量。
+  // 全程在回调 ref（commit 期）里做，不用 effect——react-hooks/set-state-in-effect
+  // 是硬错误（同 media 的 onLoad 测量范式）。限高由 CSS 按 data-ws-collapsed 施加，
+  // 但 scrollHeight 在 overflow:hidden + max-height 下仍返回完整内容高度，
+  // 所以测量与当前是否折叠无关、不会自激；同值直接返回不触发重渲染。
+  const measureOverflow = useCallback(
+    (el: HTMLDivElement | null) => {
+      if (!el) return;
+      const measure = () => {
+        const prose = el.querySelector(".cpk\\:prose") as HTMLElement | null;
+        const next =
+          content.length >= COLLAPSE_SKIP_CHARS &&
+          Boolean(prose && prose.scrollHeight > COLLAPSE_LIMIT_PX * COLLAPSE_MIN_RATIO);
+        setOverflows((prev) => (prev === next ? prev : next));
+      };
+      measure();
+      if (typeof ResizeObserver === "undefined") return;
+      const ro = new ResizeObserver(measure);
+      ro.observe(el);
+      return () => ro.disconnect();
+    },
+    [content],
+  );
+
+  const collapsible = isTurnFinal && !isLatest && overflows;
   const collapsed = collapsible && !expanded && !searchActive;
 
   const regenerate = useCallback(async () => {
@@ -106,6 +146,7 @@ export default function AssistantMessage({
 
   return (
     <div
+      ref={measureOverflow}
       className="ws-asst-msg"
       data-ws-chars={content.length}
       data-ws-collapsed={collapsed ? "1" : "0"}
@@ -127,7 +168,7 @@ export default function AssistantMessage({
               data-track="chat.msgToggle"
               aria-expanded={expanded}
               className="ws-msg-toggle"
-              onClick={() => setExpanded((v) => !v)}
+              onClick={() => toggleExpanded(msgId)}
             >
               {expanded ? "收起" : `展开全文（${content.length} 字）`}
             </button>
