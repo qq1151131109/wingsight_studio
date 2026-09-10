@@ -158,6 +158,12 @@ agent = LangGraphAgent(
     name="default",
     graph=graph.graph,
     description="Wingsight 画布助手",
+    # 单轮步数上限：LangGraph 默认 25 步（一次 chat_node + tool_node = 2 步），
+    # 搜索型任务（「列一批选题」逐条核）会正当超限——2026-09-10 号池补 key 后
+    # 实测 R6 场景在第 25 步抛 GraphRecursionError，整条请求崩掉、用户零产出
+    # （不是「少答几句」）。抬到 80 并配宪法步数预算纪律（逐条搜=预算杀手，
+    # 宽搜再交付）；env AGENT_RECURSION_LIMIT 可调。
+    config={"recursion_limit": max(int(os.environ.get("AGENT_RECURSION_LIMIT", "80")), 25)},
 )
 
 add_langgraph_fastapi_endpoint(app, agent, path="/")
@@ -824,7 +830,11 @@ async def api_storyboard_generate_status(job_id: str, user: auth.CurrentUser):
         return Response(status_code=404, content="任务不存在", media_type="text/plain")
     if job["status"] == "done" and job.get("error"):
         return {"status": "done", "error": job["error"], "rows": None}
-    return {"status": job["status"], "rows": job.get("rows")}
+    return {
+        "status": job["status"],
+        "rows": job.get("rows"),
+        "missingAssets": job.get("missingAssets"),
+    }
 
 
 @app.post("/prompt/optimize")
