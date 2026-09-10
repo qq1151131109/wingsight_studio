@@ -70,6 +70,22 @@ check("rows 资产名无同名卡告警", v5.ok && v5.issues.some(i => i.severit
 const v6 = validateOps([{ op: "connect_nodes", fromId: "n_a", toId: "n_a" }]);
 check("自连报错", !v6.ok);
 
+// —— 分镜行「场次」透传（相邻镜头连贯参考的配对依据；缺了就只能按行号猜）——
+const a7 = applyOps([{
+  op: "update_node", id: "n_a",
+  rows: [
+    { rid: "r1", scene: "御书房·夜", action: "展开密信" },
+    { rid: "r2", scene: "御书房·夜", action: "火漆印特写" },
+    { rid: "r3", action: "无场次行" },
+    { rid: "r4", scene: "街".repeat(40), action: "超长场次名" },
+  ],
+}]);
+const rowsA = useCanvasStore.getState().nodes.find((n) => n.id === "n_a")?.data?.rows ?? [];
+check("update_node rows 场次透传", a7.applied === 1 && rowsA[0]?.scene === "御书房·夜" && rowsA[1]?.scene === "御书房·夜",
+  JSON.stringify(rowsA.map(r => [r.rid, r.scene])));
+check("缺场次的行不补默认值（留空=不配相邻参考）", rowsA[2]?.scene === undefined, `r3=${JSON.stringify(rowsA[2])}`);
+check("场次名截断 30 字（防工具参数超长）", rowsA[3]?.scene?.length === 30, `len=${rowsA[3]?.scene?.length}`);
+
 // 截断守卫：部分解析残骸（前几行完整 + 尾部空对象）整批拒绝，干跑同款报错
 const trunc = [
   { rid: "r1", action: "雨夜面馆全景", shotSize: "大全景" },

@@ -217,10 +217,21 @@ expect("全局视觉风格：水墨" in out["visual_notes"], "原视觉要点应
 asyncio.run(skills._ensure_research_brief(shot_new, "p-real", "real", brief_sem))
 expect(calls.count("新道具") == 1, f"缓存应生效（只搜一次）：{calls}")
 
-# Q. 补考据：失败软放行（不拦出图）
+# Q. 补考据：失败软放行（不拦出图）+ 留「未考证」痕（软失败不许无声）
 shot_fail = {"name": "会失败", "visual_notes": "全局视觉风格：水墨"}
 out = asyncio.run(skills._ensure_research_brief(shot_fail, "p-real", "real", brief_sem))
-expect(out == shot_fail, "考据失败应原样放行")
+expect(
+    out.get("visual_notes") == shot_fail["visual_notes"],
+    "考据失败应原样放行（提示词不加料）",
+)
+expect(
+    str(out.get("_researchNote") or "").startswith("未考证"),
+    f"考据失败应留痕：{out.get('_researchNote')!r}",
+)
+expect("考据依据" not in str(out.get("visual_notes") or ""), "失败不该伪造考据依据")
+# 成功路径不留痕（缓存命中走有简报分支）
+out_ok = asyncio.run(skills._ensure_research_brief(shot_new, "p-real", "real", brief_sem))
+expect("_researchNote" not in out_ok, "成功路径不带未考证标记")
 
 # ---------- S. 考据条目：服务端落点、注入源、跨项目复用 ----------
 # S1. 补考据成功即落条目（此前只活在进程内缓存里，重启即蒸发）

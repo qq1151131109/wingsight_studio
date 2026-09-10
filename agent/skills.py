@@ -80,6 +80,9 @@ def _parse_shot_rows(text: str) -> list[dict]:
         rows.append(
             {
                 "rid": f"r{i + 1}",
+                # 场次（地点·时间）：同一场连续戏的镜头同名，供前端配「相邻镜头
+                # 一致性参考」——没有它就只能按行号猜邻镜是否同场
+                "scene": str(it.get("scene") or ""),
                 "shotSize": str(it.get("shotSize") or ""),
                 "cameraMove": str(it.get("cameraMove") or ""),
                 "duration": str(it.get("duration") or ""),
@@ -113,11 +116,14 @@ async def run_storyboard_flow(
     visual_style: str = "",
     assets: Optional[List[Dict[str, Any]]] = None,
     model: str = "",
-) -> List[Dict[str, Any]]:
-    """跑分镜生成 flow 并返回结构化 rows（HTTP job 与聊天工具共用的核心）。
+) -> tuple[List[Dict[str, Any]], List[str]]:
+    """跑分镜生成 flow 并返回 (结构化 rows, 名单外的资产名)。
 
-    失败抛 RuntimeError（调用方决定明报形态）；rows 内 assets 已按名单
-    二次校验剔除幻觉名。model：空=目录默认文本模型。
+    失败抛 RuntimeError（调用方决定明报形态）。rows 内 assets 已按名单
+    二次校验——名字不在名单里的一律剔除（防幻觉），但剔除的名字收进第二个
+    返回值：**分镜申报了画布上没有的资产是发现缺卡的唯一回路**（换装服饰、
+    关键道具），调用方必须把它报出去（报给用户或 agent 去补建），不许静默
+    丢弃。model：空=目录默认文本模型。
     """
     flow_id = os.environ.get("LANGFLOW_SHOTLIST_FLOW_ID", "")
     if not flow_id:
@@ -167,11 +173,19 @@ async def run_storyboard_flow(
         for a in (assets or [])
         if str(a.get("name") or "").strip()
     }
+    # 剔除的名字按出现顺序留档（去重）——分镜说「他穿囚衣」而画布没有这张卡，
+    # 这条信息必须能传到用户/agent 手里，否则镜头只能拿基础角色图硬生
+    missing: List[str] = []
     for row in rows:
-        row["assets"] = (
-            [a for a in row.get("assets", []) if a in roster] if roster else []
-        )
-    return rows
+        kept = []
+        for a in row.get("assets", []):
+            name = str(a).strip()
+            if roster and name in roster:
+                kept.append(a)
+            elif name and name not in missing:
+                missing.append(name)
+        row["assets"] = kept
+    return rows, missing
 
 
 async def start_storyboard_gen_job(
@@ -188,15 +202,22 @@ async def start_storyboard_gen_job(
     经 LanguageModelComponent 的 model_name 覆盖字段按组件名注入。
     """
     job_id = uuid.uuid4().hex[:12]
-    STORYBOARD_GEN_JOBS[job_id] = {"status": "running", "rows": None, "error": None}
+    STORYBOARD_GEN_JOBS[job_id] = {
+        "status": "running",
+        "rows": None,
+        "missingAssets": None,
+        "error": None,
+    }
     # 任务落库（jobstore）：flow 单次调用最长 15 分钟，agent 重启后轮询端
     # 凭 jobId 照常命中（孤儿标「生成中断」），不再 404
-    jobstore.create_job(job_id, "shotlist_gen", {"rows": None, "error": None})
+    jobstore.create_job(
+        job_id, "shotlist_gen", {"rows": None, "missingAssets": None, "error": None}
+    )
 
     async def run() -> None:
         state = STORYBOARD_GEN_JOBS[job_id]
         try:
-            state["rows"] = await run_storyboard_flow(
+            state["rows"], state["missingAssets"] = await run_storyboard_flow(
                 script,
                 shot_count=shot_count,
                 duration_seconds=duration_seconds,
@@ -208,7 +229,14 @@ async def start_storyboard_gen_job(
             state["error"] = str(e)[:300]
         finally:
             state["status"] = "done"
-            jobstore.finish_job(job_id, {"rows": state["rows"], "error": state["error"]})
+            jobstore.finish_job(
+                job_id,
+                {
+                    "rows": state["rows"],
+                    "missingAssets": state["missingAssets"],
+                    "error": state["error"],
+                },
+            )
         # 清理历史任务（保留最近 49 个已完成）
         done = [k for k, v in STORYBOARD_GEN_JOBS.items() if v["status"] == "done"]
         for k in done[:-49]:
@@ -1359,7 +1387,12 @@ async def _ensure_research_brief(
             _BRIEF_CACHE[key] = brief
         except Exception as exc:  # noqa: BLE001 软失败：考据不成不拦出图
             print(f"[考据] 补考据失败 {key}：{str(exc)[:160]}", flush=True)
-            return shot
+            # 软失败要留痕：图照出但不带考据，用户有权知道（juben「未考证」
+            # 标记语义——出图不阻塞，但状态可见）
+            return {**shot, "_researchNote": f"未考证：补考据失败（{str(exc)[:60]}）"}
+        if not brief:
+            # 搜完没有可用结论（文路全软失败）——同样留痕
+            return {**shot, "_researchNote": "未考证：考据搜索未得到可用结论"}
     return _attach_brief(shot, brief)
 
 
@@ -1537,7 +1570,11 @@ async def generate_asset_images(
         done[0] += 1
         job_set_progress(job_id, done[0])
         if result.get("ok") and result.get("imageUrl"):
-            line = f"✓ {name}｜image_url={result['imageUrl']}"
+            # 考据软失败留痕：图出了但没带考据依据，返回串里如实点名
+            note = str(shot.get("_researchNote") or "").strip()
+            line = f"✓ {name}｜image_url={result['imageUrl']}" + (
+                f"｜{note}" if note else ""
+            )
             structured.append(
                 {
                     "name": name,
@@ -1547,6 +1584,7 @@ async def generate_asset_images(
                     # 实际发送的完整提示词（版式渲染或 final_prompt 原样）：
                     # 写卡 genShot.finalPrompt 的数据源（卡上查看/编辑重跑）
                     "finalPrompt": str(result.get("finalPrompt") or ""),
+                    **({"researchNote": note} if note else {}),
                 }
             )
         else:
@@ -1949,6 +1987,10 @@ async def start_storyboard_image_job(
             # cancel_storyboard_image_job 取消了在途任务：httpx 请求中止，
             # 未完成的生成不再计费
             result = {"ok": False, "error": "已取消", "cancelled": True}
+        # 考据软失败留痕随结果回传（卡上可见「未考证」，不是无声裸奔）
+        note = str(shot.get("_researchNote") or "").strip()
+        if note and result.get("ok"):
+            result["researchNote"] = note
         STORYBOARD_IMAGE_JOBS[job_id]["images"][rid] = {"rid": rid, **result}
         # 单张结果即时落库：重启窗口内已完成的图可被找回（计费已发生）
         try:

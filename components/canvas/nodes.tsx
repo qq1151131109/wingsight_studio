@@ -419,6 +419,20 @@ export function NodeInfoModal({
         {d.nodeType === "image" ? (
           <FinalPromptBlock node={node} onClose={onClose} />
         ) : null}
+        {/* 未考证留痕（真实题材补考据软失败）：图是出了，但提示词里没有
+            史料依据——软失败不让它变成无声（juben 未考证标记语义） */}
+        {d.nodeType === "image" && (d.genShot?.researchNote ?? "").trim() ? (
+          <div className="rounded-md border border-amber-300 bg-amber-50 p-2">
+            <p className="text-xs font-medium text-amber-700">未考证</p>
+            <p className="mt-1 text-[11px] leading-relaxed text-amber-700/90">
+              {d.genShot!.researchNote}
+            </p>
+            <p className="mt-1 text-[11px] leading-relaxed text-amber-700/90">
+              这张图的提示词里没有史料依据，形制可能不准。要补：给相关资产做参考图考据
+              （资产卡「找参考图」），或按「实际发送提示词」改完重跑。
+            </p>
+          </div>
+        ) : null}
         {/* 上次生成实际注入的设定与画风（genShot 快照）：排查「图和设定
             打架」用的审计信息——从生成面板挪来这儿，面板只留创作相关 */}
         {(d.genShot?.visualNotes ?? "").trim() ? (
@@ -1124,9 +1138,17 @@ function CardShell({
       {/* 悬浮工具条（libtv 范式）：选中即在卡上方浮现常用操作。
           不做 tiny（缩放）隐藏——工具条是屏幕空间固定尺寸，任意缩放都
           可读（zoom<0.5 时藏掉曾让用户"看不到入口"，竞品也是全档显示）。
+          **不传 isVisible**：xyflow 的默认语义就是"仅当本卡是唯一选中卡时
+          显示"（NodesToolbar 源码 isActive = nodes.size===1 && selected &&
+          selectedNodesCount===1），这正是我们要的——多选时逐卡工具条是单卡
+          动作（裁剪/打光/删除…），每张卡各浮一条会铺满画布，批量动作归
+          CanvasView 的选区工具条（复制/对齐/成组/下载/删除…）。
+          曾漏传导致满屏工具条的事故就是显式写了 isVisible={selected}——它
+          整体覆盖默认守卫（was: 102 张选中 → 102 条）。要改显隐语义请改写
+          默认判断，别再传一个只看 selected 的布尔值。
           offset 12：贴着标题行上缘；贴顶钳制时压住标题行贴住图片容器；按钮 36px 高图标+文字
           （对标 Lovart 系工具条观感） */}
-      <NodeToolbar isVisible={selected} position={Position.Top} offset={tbOffset}>
+      <NodeToolbar position={Position.Top} offset={tbOffset}>
         <div className="flex items-center gap-0.5 rounded-full border border-hairline bg-surface-1/90 p-1 shadow-[0_1px_2px_oklch(0_0_0/0.05),0_8px_24px_oklch(0_0_0/0.10),0_20px_48px_oklch(0_0_0/0.08)] backdrop-blur-sm">
           {(isAsset || data.nodeType === "image") && data.imageUrl ? (
             <>
@@ -5300,6 +5322,7 @@ async function runAssetDecompose(opts: {
           ? `${existed} 项资产均已存在：已按 角色/场景/道具 收拢成组`
           : `${existed} 项资产均已存在（已在类型组内，不重排）`,
       );
+      promptEraIfNeeded();
       return;
     }
     const kindSummary = KIND_ORDER.filter((k) => kindCounts[k.type])
@@ -5322,6 +5345,10 @@ async function runAssetDecompose(opts: {
             styleNote +
             (interrupted ? `｜⚠ ${interrupted}` : ""),
     );
+    // 资产卡建好了——考据年代问一次（第二个入口：用户拆完直接出图、从不点
+    // 调研时，era 也得有地方问，否则补考据永远进不了跨项目复用域）。
+    // 会话级跳过集保证只弹一次；架空/穿越（虚构）不问
+    promptEraIfNeeded();
   } catch (exc) {
     opts.onError(exc instanceof Error ? exc.message : "拆解失败");
   }
@@ -5670,6 +5697,16 @@ const VIDEO_REF_KIND: Record<string, string> = {
   prop: "道具",
   costume: "服饰",
 };
+/** 参考生视频的固定守卫句（juben 稳定包尾句范式）：参考图里图2 起常是白底
+ *  资产设定图（16:9 四格/三视图/结构图），模型容易把版式与白底一并复刻进
+ *  画面——这是参考生视频最常见的一类失败。图1（首帧）例外，它就是要照着重现
+ *  的构图基准，故守卫面只覆盖资产参考与画面内文字/分身。 */
+const SHOT_VIDEO_GUARD =
+  "图2 起的参考图只提供身份、服饰、空间与道具的形制依据，不复刻它们的白底背景、" +
+  "三视图或九宫格版式；画面是连续实拍的影像，不是设定图；人物面部稳定、五官清晰、" +
+  "动作连贯自然，无穿模无卡顿；画面内不出现文字、标注、边框与箭头；" +
+  "多人场景禁止同款分身与双胞胎效果。";
+
 function composeShotVideoPrompt(
   r: ShotRow,
   refs: { type: string; name: string }[] = [],
@@ -5684,10 +5721,10 @@ function composeShotVideoPrompt(
     const kind = VIDEO_REF_KIND[x.type] ?? "资产";
     lines.push(`参考图${i + 2}（${kind}·${x.name}）：身份、造型与形态保持一致`);
   });
-  return (
-    [parts.join("；"), lines.join("；")].filter(Boolean).join("\n").slice(0, 1900) ||
-    "画面轻微流动，镜头缓慢推进"
-  );
+  const body =
+    [parts.join("；"), lines.join("；")].filter(Boolean).join("\n").slice(0, 1700) ||
+    "画面轻微流动，镜头缓慢推进";
+  return `${body}\n${SHOT_VIDEO_GUARD}`;
 }
 
 /** 执行成片卡合成：按 itemIds 顺序取连线视频源 → compose → 产物写回卡上
@@ -6144,27 +6181,39 @@ function researchTargetsOf(
  *  不落库——跳过是本次会话的临时意愿，不该污染 meta。 */
 const eraPromptSkipped = new Set<string>();
 
+/** 考据年代（存 meta.era）= 跨项目复用的作用域键：服务端按 (era, 资产名)
+ *  命中同题材项目的历史条目，era 为空则一律不复用、每次调研都重搜。实测生产
+ *  23 个项目无一设过——`set_project_era` 是 agent 工具，而调研是用户点按钮
+ *  发起、不经过 agent，于是复用能力从未生效。故在**花钱/建卡的入口**问一次
+ *  （可跳过）：真实题材才问，架空/穿越不设 era 免污染复用域（「朝服」在唐宋
+ *  与北魏是两回事）。
+ *  **两个入口都问**（2026-09-10 八仙饭店实况补）：①发起批量调研时（花钱）
+ *  ②拆资产产出资产卡之后（建卡）——只挂在调研入口会漏：用户拆完资产直接出图、
+ *  从不点调研，era 就永远是空的、补考据也永远不进复用域。会话级跳过集保证
+ *  只弹一次。 */
+function promptEraIfNeeded(): void {
+  const st = useCanvasStore.getState();
+  const projectId = st.projectId;
+  if (!projectId) return;
+  if (!shouldPromptEra(st.projectEra, st.projectFactuality, projectId, eraPromptSkipped))
+    return;
+  const v = window.prompt(
+    "【考据归档】这个项目是什么年代？\n\n" +
+      "用于同题材项目之间复用考据结论（例：「北魏·平城时期」「北宋汴京」）。\n" +
+      "留空 = 不复用（照常继续）。",
+    "",
+  );
+  if (v?.trim()) useCanvasStore.getState().setProjectEra(v.trim());
+  else eraPromptSkipped.add(projectId);
+}
+
 async function startBatchResearchForCard(sourceId: string): Promise<string | null> {
   const st = useCanvasStore.getState();
   const projectId = st.projectId;
   if (!projectId) throw new Error("项目未保存：先等画布保存完成再调研");
   const targets = researchTargetsOf(st.nodes, st.edges, sourceId);
   if (targets.length === 0) return null;
-  // 考据年代（存 meta.era）= 跨项目复用的作用域键：服务端按 (era, 资产名)
-  // 命中同题材项目的历史条目，era 为空则一律不复用、每次调研都重搜。实测生产
-  // 23 个项目无一设过——`set_project_era` 是 agent 工具，而调研是用户点按钮
-  // 发起、不经过 agent，于是复用能力从未生效。故在花钱的入口问一次（可跳过）：
-  // 真实题材才问，架空/穿越不设 era 免污染复用域（「朝服」在唐宋与北魏是两回事）。
-  if (shouldPromptEra(st.projectEra, st.projectFactuality, projectId, eraPromptSkipped)) {
-    const v = window.prompt(
-      "【考据归档】这个项目是什么年代？\n\n" +
-        "用于同题材项目之间复用考据结论（例：「北魏·平城时期」「北宋汴京」）。\n" +
-        "留空 = 不复用，本次调研照常进行。",
-      "",
-    );
-    if (v?.trim()) useCanvasStore.getState().setProjectEra(v.trim());
-    else eraPromptSkipped.add(projectId);
-  }
+  promptEraIfNeeded();
   // 直接开跑（调研可中途放弃、号池按量计费，无需确认弹窗打断）
   const batchId = await startBatchRefResearch(
     projectId,
@@ -6345,7 +6394,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     setGenSec(0);
     setGenError("");
     try {
-      const next = await generateShotlist(scriptSource, {
+      const { rows: next, missingAssets } = await generateShotlist(scriptSource, {
         // 项目画风打底 + 分镜表风格叠加
         visualStyle: [
           projectStyle.trim() ? `全局：${projectStyle.trim()}` : "",
@@ -6409,6 +6458,16 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         return ids.size > 0 ? { ...rest, refIds: [...ids] } : rest;
       });
       update({ rows: bound, status: "ready" });
+      // 分镜引用了画布上没有的资产：这是换装服饰/关键道具漏拆的唯一信号，
+      // 必须让用户看见（否则相关镜头出图时只能拿基础角色图硬生）
+      if (missingAssets.length > 0) {
+        const head = missingAssets.slice(0, 4).join("、");
+        showToast(
+          `分镜提到画布上没有的资产：${head}${
+            missingAssets.length > 4 ? ` 等 ${missingAssets.length} 个` : ""
+          }——先补建资产卡再出图，否则这些镜头没有设定图可参考`,
+        );
+      }
     } catch (exc) {
       setGenError(exc instanceof Error ? exc.message : "生成失败");
     } finally {
@@ -6472,6 +6531,32 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     rowRefNodes(r)
       .map((n) => (n?.data.imageUrl as string | undefined) ?? "")
       .filter(Boolean);
+
+  /** 服装主体看得清的景别（juben costume 判据「近景及以上」）：这类镜头
+   *  穿错衣服观众看得出来，未指定造型必须提示；中景以下看不清，不提示 */
+  const COSTUME_VISIBLE_SHOTS = new Set(["大特写", "特写", "近景", "头肩景"]);
+
+  /** 造型未指定检测：本行引用的角色有 Look 图，但解析结果仍落在定妆照上
+   *  （行文字没出现任何造型名/服饰名，猜不出该用哪套）——返回角色标题列表。
+   *  只在景别看得清服装时提示，否则满屏噪音。行内 @造型名 或点选即可指定 */
+  const lookUnboundFor = (r: ShotRow): string[] => {
+    if (!COSTUME_VISIBLE_SHOTS.has(String(r.shotSize ?? ""))) return [];
+    const ids = resolveRowRefIds(r, nodes, edges);
+    const used = preferLookRefs(r, ids, nodes, edges);
+    const out: string[] = [];
+    for (const cid of ids) {
+      const c = nodes.find((n) => n.id === cid);
+      if (!c || c.data.nodeType !== "character") continue;
+      const looks = nodes.filter(
+        (m) =>
+          isLookCard(m, nodes, edges) &&
+          edges.some((e) => e.source === cid && e.target === m.id),
+      );
+      if (looks.length === 0 || looks.some((m) => used.includes(m.id))) continue;
+      out.push(String(c.data.title || "这个角色"));
+    }
+    return out;
+  };
 
   /** 行出图提示词：最终提示词优先，否则按行字段合成（与 synthRow 同构，
    *  全局视觉风格收尾——novanova 八段式轻量版） */
@@ -6550,7 +6635,11 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     const unrefSeqs = targets
       .filter((t) => refImagesFor(t.row).length === 0)
       .map((t) => t.seq + 1);
-    if (unrefSeqs.length > 0 || targets.length > 8) {
+    // 造型未指定：近景里角色有造型图却用定妆照出图（服装穿错一眼看得出）
+    const lookMiss = targets
+      .map((t) => ({ seq: t.seq + 1, names: lookUnboundFor(t.row) }))
+      .filter((x) => x.names.length > 0);
+    if (unrefSeqs.length > 0 || lookMiss.length > 0 || targets.length > 8) {
       const parts: string[] = [];
       if (unrefSeqs.length > 0) {
         const label =
@@ -6559,6 +6648,17 @@ function ShotListCard({ data, id, selected }: NodeProps) {
             : `${unrefSeqs.slice(0, 6).map((s) => `镜${s}`).join("、")} 等 ${unrefSeqs.length} 镜`;
         parts.push(
           `${label}未引用已出图的资产设定图，将纯文生图、角色一致性打折（行内 @资产名 可绑定参考）`,
+        );
+      }
+      if (lookMiss.length > 0) {
+        const who = [...new Set(lookMiss.flatMap((x) => x.names))];
+        const label =
+          lookMiss.length <= 4
+            ? lookMiss.map((x) => `镜${x.seq}`).join("、")
+            : `${lookMiss.slice(0, 4).map((x) => `镜${x.seq}`).join("、")} 等 ${lookMiss.length} 镜`;
+        parts.push(
+          `${label}（${who.slice(0, 4).join("、")}）有造型图但本行未指定用哪套，将按定妆照出图` +
+            "——近景会看清服装，可在行内 @造型名 指定",
         );
       }
       if (targets.length > 8)
@@ -6577,6 +6677,17 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     const src = st.nodes.find((n) => n.id === id);
     if (!src) return;
     setImgGenerating(true);
+    // 相邻镜头一致性参考的图源快照：下面循环会把重跑行的 imageUrl 清空置
+    // loading，等到拼请求时已经取不到上一镜的图了，故先在批量前把既有镜头
+    // 图 URL 记下来（同场配对照用）
+    const frameBefore = new Map<string, string>();
+    for (const r of rows) {
+      const url = r.imageNodeId
+        ? (st.nodes.find((n) => n.id === r.imageNodeId)?.data
+            .imageUrl as string | undefined)
+        : r.imageUrl;
+      if (url) frameBefore.set(r.rid, url);
+    }
     // 网格锚点：整块区域 findFreePosition 避让已有卡，块内按 √n 取列数
     // 铺成近似方阵（固定双列在镜头多时纵向拉得过长；空位只是画布留白不可见）
     const abs = absolutePosition(st.nodes, src);
@@ -6710,6 +6821,27 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           type: String(n.data.nodeType),
           name: String(n.data.title || "无题"),
         }));
+        // 同场次相邻镜头连贯（juben 同 unit 相邻镜默认引用上一张分镜图范式）：
+        // 上一镜的镜头图当参考，锁光线/色调/陈设/造型的连贯。配对靠行上
+        // scene 同名——场次不同不配（跨场参照会把上一场的调子拖过来）。
+        // 排资产之后、且资产占满 5 席时让位（flow 参考上限 5，身份参考优先）
+        const seqIdx = rows.findIndex((x) => x.rid === t.row.rid);
+        const prevRow = seqIdx > 0 ? rows[seqIdx - 1] : undefined;
+        const prevUrl =
+          prevRow && t.row.scene && prevRow.scene === t.row.scene
+            ? frameBefore.get(prevRow.rid)
+            : undefined;
+        if (
+          prevUrl &&
+          referenceImages.length < 5 &&
+          !referenceImages.includes(prevUrl)
+        ) {
+          referenceImages.push(prevUrl);
+          referenceLabels.push({
+            type: "shotref",
+            name: `上一镜（${t.row.scene}）`,
+          });
+        }
         snapshots.set(j.rid, {
           genPrompt: description,
           genShot: {
@@ -6743,7 +6875,10 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       // jobId 落卡：出图中刷新/关标签后挂载续轮询收尾（完事即清）
       useCanvasStore.getState().updateNodeData(id, { imageJobId: jobId });
       // 轮询任务：按镜聚合候选（张张计票，齐了才回填该行图卡）
-      const agg = new Map<string, { urls: string[]; errors: string[] }>();
+      const agg = new Map<
+        string,
+        { urls: string[]; errors: string[]; note?: string }
+      >();
       const applyRow = (rowRid: string) => {
         const a = agg.get(rowRid);
         if (!a || a.urls.length + a.errors.length < genCount) return;
@@ -6757,6 +6892,8 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           });
           return;
         }
+        // 未考证留痕落快照（节点信息里可见）——图出了但没带考据依据
+        const curShot = ust.nodes.find((n) => n.id === nodeId)?.data.genShot;
         ust.updateNodeData(nodeId, {
           status: "ready",
           imageUrl: a.urls[0],
@@ -6764,6 +6901,9 @@ function ShotListCard({ data, id, selected }: NodeProps) {
           ...(a.urls.length > 1 ? { imageUrls: a.urls } : {}),
           ...(a.errors.length > 0
             ? { errorMessage: `${a.errors.length}/${genCount} 张候选失败` }
+            : {}),
+          ...(a.note && curShot
+            ? { genShot: { ...curShot, researchNote: a.note } }
             : {}),
         });
       };
@@ -6773,6 +6913,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         agg.set(rowRid, a);
         if (item.ok && item.imageUrl) a.urls.push(item.imageUrl);
         else a.errors.push(item.error || "出图失败");
+        if (item.researchNote && !a.note) a.note = item.researchNote;
         applyRow(rowRid);
       });
       if (outcome === "gone")
@@ -6992,14 +7133,18 @@ function ShotListCard({ data, id, selected }: NodeProps) {
     let ready = 0;
     let loading = 0;
     let error = 0;
+    // 未考证：图出来了但补考据软失败（提示词里没有考据依据）——真实题材
+    // 项目里这是「史实可能不准」的直接信号，得在批次条上能一眼看见
+    let unverified = 0;
     for (const r of rows) {
       const n = r.imageNodeId ? nodes.find((x) => x.id === r.imageNodeId) : null;
       if (!n) continue;
       if (n.data.status === "loading") loading++;
       else if (n.data.status === "error") error++;
       else if (n.data.status === "ready") ready++;
+      if (String(n.data.genShot?.researchNote ?? "").trim()) unverified++;
     }
-    return { ready, loading, error };
+    return { ready, loading, error, unverified };
   })();
   // 缺图行 = 可出图但没图卡/图卡失败（补缺图一键只打这些，跳过已完成的）
   const missingRows = genableRows.filter((r) => {
@@ -7458,6 +7603,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 <div className="relative flex min-w-0 flex-1 flex-col gap-0.5">
                   <div className="flex flex-wrap items-center gap-1">
                     <ShotSelect label="景别" value={r.shotSize ?? ""} options={SHOT_SIZES} onSave={(v) => setRow(r.rid, { shotSize: v })} />
+                    <ShotChip label="场次" value={r.scene ?? ""} onSave={(v, opts) => setRow(r.rid, { scene: v }, opts)} />
                     <ShotChip label="运镜" value={r.cameraMove ?? ""} onSave={(v, opts) => setRow(r.rid, { cameraMove: v }, opts)} />
                     <ShotChip label="时长" value={r.duration ?? ""} onSave={(v, opts) => setRow(r.rid, { duration: v }, opts)} />
                     <ShotChip label="光影" value={r.lighting ?? ""} onSave={(v, opts) => setRow(r.rid, { lighting: v }, opts)} />
@@ -7689,6 +7835,14 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                 {imgAgg.loading > 0 ? ` · 出图中 ${imgAgg.loading}` : ""}
                 {imgAgg.error > 0 ? (
                   <span className="text-danger"> · 失败 {imgAgg.error}</span>
+                ) : null}
+                {imgAgg.unverified > 0 ? (
+                  <span
+                    className="text-amber-700"
+                    data-tip="这些镜头出图时补考据失败，提示词里没有史料依据——形制可能不准，可点卡上「节点信息」看原因，或先做资产考据再重出"
+                  >
+                    {" · "}未考证 {imgAgg.unverified}
+                  </span>
                 ) : null}
               </>
             ) : null}

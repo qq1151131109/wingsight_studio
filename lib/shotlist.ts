@@ -17,7 +17,12 @@ export async function generateShotlist(
     /** 文本模型覆盖（agent/models.py 目录 id，空=flow 出厂模型） */
     model?: string;
   },
-): Promise<ShotRow[]> {
+): Promise<{
+  rows: ShotRow[];
+  /** 分镜引用了但画布上没有对应卡的资产名（顺序去重）——换装服饰/关键
+   *  道具漏拆的唯一发现回路，调用方必须提示用户补建，不要静默丢弃 */
+  missingAssets: string[];
+}> {
   const start = await apiFetch("/agent-service/storyboard/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -39,11 +44,12 @@ export async function generateShotlist(
     const data = (await r.json()) as {
       status: "running" | "done";
       rows?: ShotRow[] | null;
+      missingAssets?: string[] | null;
       error?: string;
     };
     if (data.status === "done") {
       if (data.error) throw new Error(data.error);
-      return data.rows ?? [];
+      return { rows: data.rows ?? [], missingAssets: data.missingAssets ?? [] };
     }
     if (Date.now() > deadline) throw new Error("生成超时");
   }
@@ -214,6 +220,9 @@ export type ShotImageResult = {
   composeAction?: "keep" | "optimize";
   /** 实际发送的完整提示词（服务端渲染或 final_prompt 原样） */
   finalPrompt?: string;
+  /** 未考证留痕（真实题材补考据软失败）：图照出但没带考据依据，
+   *  卡片「节点信息」里可见，不该是无声裸奔 */
+  researchNote?: string;
 };
 
 /** 任务表在 agent 内存里：agent 重启后旧 jobId 查无此任务（区别于网络

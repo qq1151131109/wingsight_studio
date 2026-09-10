@@ -407,6 +407,7 @@ async function directImagegen(
     let lastError = "";
     let composed: { prompt: string; action?: string } | null = null;
     let serverFinalPrompt = "";
+    let researchNote = "";
     const outcome = await pollShotImageJob(jobId, (item) => {
       if (item.ok && item.imageUrl) urls.push(item.imageUrl);
       else if (item.error) lastError = item.error;
@@ -415,6 +416,8 @@ async function directImagegen(
       // 服务端渲染出的实际提示词（版式契约+画风+描述的合成结果）：回填
       // genShot 供「实际提示词」查看/编辑重跑——报纸事故的知情权补丁
       if (item.finalPrompt && !serverFinalPrompt) serverFinalPrompt = item.finalPrompt;
+      // 未考证留痕（真实题材补考据软失败）：同样落快照，节点信息里可见
+      if (item.researchNote && !researchNote) researchNote = item.researchNote;
     });
     if (outcome === "cancelled") {
       // 用户已取消：卡回原态（有图 ready，无图占位），轮询尾包幂等
@@ -440,8 +443,14 @@ async function directImagegen(
         composedPrompt:
           (composed as { prompt: string } | null)?.prompt ?? undefined,
         // 实际发送提示词落快照（服务端渲染版覆盖提交时的覆写值，同值幂等）
-        ...(serverFinalPrompt && curShot
-          ? { genShot: { ...curShot, finalPrompt: serverFinalPrompt } }
+        ...(curShot && (serverFinalPrompt || researchNote)
+          ? {
+              genShot: {
+                ...curShot,
+                ...(serverFinalPrompt ? { finalPrompt: serverFinalPrompt } : {}),
+                ...(researchNote ? { researchNote } : {}),
+              },
+            }
           : {}),
       });
     } else {
@@ -1367,7 +1376,7 @@ export default function CanvasAgentBridge() {
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝），取值与形状：每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（资产四类 character/scene/prop/costume 是正经卡型——场景/道具/服饰不要建成 note 加标题前缀；分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；**角色卡必须带 looks:[{label,description,costume}]**——拆解结果里带「造型：」的角色，把造型计划原样落进该字段（label=造型名、description=该造型的服饰细节、costume=核心服装名）：造型图据此生成、分镜引用时系统按行文里的造型词自动选中对应造型卡，丢这一步角色的造型能力就废了；媒体卡可带 imageUrl/videoUrl/audioUrl（多图候选加 imageUrls 数组）；shotlist 可带 rows 行数组（行字段 rid/action/shotSize/cameraMove/duration/lighting/sound/dialogue/assets:[资产名]）；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
+      '{op:"add_node",nodeType:"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（资产四类 character/scene/prop/costume 是正经卡型——场景/道具/服饰不要建成 note 加标题前缀；分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；**角色卡必须带 looks:[{label,description,costume}]**——拆解结果里带「造型：」的角色，把造型计划原样落进该字段（label=造型名、description=该造型的服饰细节、costume=核心服装名）：造型图据此生成、分镜引用时系统按行文里的造型词自动选中对应造型卡，猜不中就用定妆照并在出图前点名提示用户（近景要在行内 @造型名 指定），丢这一步角色的造型能力就废了；媒体卡可带 imageUrl/videoUrl/audioUrl（多图候选加 imageUrls 数组）；shotlist 可带 rows 行数组（行字段 rid/scene/action/shotSize/cameraMove/duration/lighting/sound/dialogue/assets:[资产名]——**scene 是场次（地点·时间）**，同一场连续戏的镜头写完全相同的场次名，出图时系统据此把同场上一镜的镜头图当连贯参考，写乱或漏写前后镜就各画各的；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
       '{op:"update_node",id,title,body,imageUrl,episodeId,episodeNo}（**给卡挂图片唯一通道 = imageUrl 字段**：用户上传的图/已有素材 URL 填进来即上卡显示，多图加 imageUrls 数组成候选；**禁止把图片 URL 写进 body 正文**——正文是设定文本，URL 混进去会被后续出图当事实注入提示词，卡面上也看不到图；分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +

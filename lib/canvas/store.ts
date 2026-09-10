@@ -72,6 +72,9 @@ export type WingNodeType =
 /** 分镜表的一行（一个镜头） */
 export interface ShotRow {
   rid: string;
+  /** 场次（地点·时间）：同一场连续戏的镜头同名，出图时据此配相邻镜头
+   *  一致性参考（同场上一镜的镜头图当参考）；改名/手填都会影响配对 */
+  scene?: string;
   shotSize?: string;
   cameraMove?: string;
   duration?: string;
@@ -151,6 +154,8 @@ export interface WingNodeData {
    *  报告由服务端条目拼装（GET /refs/report），前端对账时创建/更新——
    *  同一项目恒定一张，按此标记去重不重复建卡 */
   reportKind?: string;
+  /** 资料卡标记（聊天上传文档时由 ingest.addDocCard 落）：正文即文档全文。画布摘要据此显示「[资料卡]…正文已落卡 N 字」——agent 一看就知道稿子已在画布上、read_node 可取全文（八仙饭店：看着卡说「画布是空的」） */
+  docCard?: boolean;
   /** 文本卡：可点来源行（候选落卡 P1：候选的背景出处，卡面渲染成「来源」
    *  行，样式同调研卡来源底账）。上限 6 条，渲染层兜底再截 */
   links?: { title: string; url: string }[];
@@ -174,6 +179,9 @@ export interface WingNodeData {
     /** 实际发送的完整提示词（版式契约+画风+描述的合成结果；final_prompt
      *  覆写时=覆写值）。「实际提示词」查看/编辑重跑的数据源 */
     finalPrompt?: string;
+    /** 未考证留痕（真实题材补考据软失败）：图照出但提示词里没有考据依据，
+     *  节点信息里亮出来——软失败不等于没发生 */
+    researchNote?: string;
   };
   /** 出图参数卡片级覆盖（模型/档位/画幅，目录见 agent/models.py）：缺省
    *  跟随项目级设置（store.imagegen，meta.imagegen 持久化）。资产卡/图片卡/
@@ -1913,7 +1921,14 @@ export function summarizeCanvas(
       Array.isArray(n.data.links) && n.data.links.length > 0
         ? `（来源 ${n.data.links.length} 条）`
         : "";
-    return `- ${n.id} [${meta.label}] ${title}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${linksNote}${body}${sel}`;
+    // 上传文档落的资料卡：正文就是文档全文。摘要里必须认得出——八仙饭店
+    // 事故里 agent 看着这张卡说「画布上还是空的」；标记出来它才知道稿子已经
+    // 在画布上（read_node 就能取全文，不必让用户再贴一遍）
+    const docNote = n.data.docCard
+      ? `（上传文档·正文已落卡 ${(n.data.body ?? "").length} 字，read_node 可取全文）`
+      : "";
+    const label = n.data.docCard ? "资料卡" : meta.label;
+    return `- ${n.id} [${label}] ${title}${docNote}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${linksNote}${body}${sel}`;
   };
 
   // 连线列清单设上限：大画布连线行会吃光预算（旧版连线永不丢行，

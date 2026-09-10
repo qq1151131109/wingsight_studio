@@ -289,7 +289,9 @@ await page.evaluate(() => {
 });
 await page.waitForTimeout(400);
 
-const composeBtn = page.getByRole("button", { name: /成片/ }).first();
+// 按 aria-label 前缀精确定位「成片」按钮：/成片/ 模糊匹配会先命中「出视频」
+// 按钮（其 aria-label 里有「可直接「成片」」），拿到的是那个禁用钮
+const composeBtn = page.locator('button[aria-label^="把与本卡连线的镜头视频"]');
 const disabled = await composeBtn.isDisabled().catch(() => true);
 check("C1 两段视频就位后成片按钮可点", !disabled);
 await composeBtn.click();

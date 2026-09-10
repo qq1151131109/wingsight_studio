@@ -485,6 +485,7 @@ function emptyRowNumbers(
 function normalizeRows(
   raw: {
     rid?: string;
+    scene?: string;
     shotSize?: string;
     cameraMove?: string;
     duration?: string;
@@ -503,6 +504,7 @@ function normalizeRows(
   const rows = raw.slice(0, 60).map((r, i) => {
     const norm = {
       rid: String(r.rid ?? `${ridPrefix}${i + 1}`),
+      ...(r.scene !== undefined ? { scene: String(r.scene).slice(0, 30) } : {}),
       ...(r.shotSize !== undefined ? { shotSize: String(r.shotSize).slice(0, 20) } : {}),
       ...(r.cameraMove !== undefined ? { cameraMove: String(r.cameraMove).slice(0, 20) } : {}),
       ...(r.duration !== undefined ? { duration: String(r.duration).slice(0, 20) } : {}),

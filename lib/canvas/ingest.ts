@@ -54,7 +54,9 @@ export function addCardAt(
 }
 
 /** 聊天上传的文档（doc/pdf/rtf/文本）→ 资料卡：正文=提取全文，标题=文件名。
- *  长文按分档给文档尺寸——全文要塞得进卡（此前 280×170 便签框装 150KB 剧本） */
+ *  长文按分档给文档尺寸——全文要塞得进卡（此前 280×170 便签框装 150KB 剧本）。
+ *  带 docCard 标记：画布摘要据此显示「[资料卡]…正文已落卡」，agent 才知道
+ *  这份剧本已经在画布上、不要再落一张（八仙饭店「画布是空的」事故） */
 export function addDocCard(name: string, text: string): string | null {
   const title = name.replace(/\.[^.]+$/, "").trim().slice(0, 60) || "资料";
   return addCardAt(
@@ -63,6 +65,7 @@ export function addDocCard(name: string, text: string): string | null {
       nodeType: "note",
       title,
       body: text,
+      docCard: true,
     },
     noteFootprintFor(text),
   );
