@@ -890,12 +890,44 @@ export function applyOps(rawOps: unknown): OpResult {
             }
             rowsField = norm.rows;
           }
+          // 覆盖主图/主视频前把旧媒体存进版本档案（2026-09-10 补）：agent 经
+          // canvas_ops 回填 imageUrl 原本是纯覆盖——通道 A（改设定重出）在聊天
+          // 里执行会丢旧图、无法回滚，与 revise-assets「版本档案是回滚」矛盾。
+          // 幂等：旧图已是 versions 末条时不再入档（前端生成路径提交时已归档，
+          // 避免重复条目）；同批 ops 逐条按实时 state 计算。
+          let archVersions: { url: string; at: string; prompt?: string }[] | undefined;
+          {
+            const cur = useCanvasStore.getState().nodes.find((n) => n.id === op.id)?.data;
+            if (cur) {
+              const base = cur.versions ?? [];
+              let acc = base;
+              for (const [field, next] of [
+                ["imageUrl", op.imageUrl],
+                ["videoUrl", op.videoUrl],
+              ] as const) {
+                const to = typeof next === "string" ? next.trim() : "";
+                const from = String((cur as Record<string, unknown>)[field] ?? "").trim();
+                if (!to || !from || from === to) continue;
+                if (acc[acc.length - 1]?.url === from) continue;
+                acc = [
+                  ...acc,
+                  {
+                    url: from,
+                    at: new Date().toISOString().slice(5, 16).replace("T", " "),
+                    prompt: String(cur.genPrompt ?? "").trim() || undefined,
+                  },
+                ].slice(-12);
+              }
+              if (acc !== base) archVersions = acc;
+            }
+          }
           live.updateNodeData(op.id, {
             ...(op.title !== undefined ? { title: op.title.slice(0, 80) } : {}),
             ...(op.body !== undefined ? { body: op.body.slice(0, 8000) } : {}),
             ...(op.status !== undefined ? { status: op.status } : {}),
             ...(op.imageUrl !== undefined ? { imageUrl: op.imageUrl } : {}),
             ...(op.videoUrl !== undefined ? { videoUrl: op.videoUrl } : {}),
+            ...(archVersions ? { versions: archVersions } : {}),
             ...(op.audioUrl !== undefined ? { audioUrl: op.audioUrl } : {}),
             ...(Array.isArray(op.imageUrls)
               ? { imageUrls: op.imageUrls.slice(0, 8).map(String) }

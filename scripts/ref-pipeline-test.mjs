@@ -12,7 +12,7 @@
 import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
 
-const BASE = "http://127.0.0.1:8008";
+const BASE = process.env.WS_BASE || "http://127.0.0.1:8008";
 const API = `${BASE}/agent-service`;
 
 function envLocal(key) {

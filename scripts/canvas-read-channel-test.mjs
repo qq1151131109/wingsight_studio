@@ -412,5 +412,78 @@ check(
   JSON.stringify(afterUpd?.map((l) => l.label)),
 );
 
+// ---------- 主图覆盖前归档（2026-09-10 改图闭环修复的纯函数回归）----------
+// agent 经 canvas_ops 回填 imageUrl 原本是纯覆盖：通道 A（改设定重出）在聊天里
+// 执行会丢旧图、无法回滚。现在覆盖前自动入版本档案，且**幂等**——前端生成路径
+// 提交时已归档（旧图已是 versions 末条），不能再重复入一条。
+applyOps([{ op: "add_node", id: "n_arch_1", nodeType: "image", title: "归档卡", body: "" }]);
+applyOps([
+  {
+    op: "update_node",
+    id: "n_arch_1",
+    imageUrl: "/assets/a1.png",
+    genPrompt: "第一次提示词",
+    status: "ready",
+  },
+]);
+const firstFill = useCanvasStore.getState().nodes.find((n) => n.id === "n_arch_1")?.data;
+check(
+  "归档：首次填图不产生版本档案（无旧图可归）",
+  (firstFill?.versions ?? []).length === 0,
+  JSON.stringify(firstFill?.versions),
+);
+applyOps([{ op: "update_node", id: "n_arch_1", imageUrl: "/assets/a2.png" }]);
+const afterReplace = useCanvasStore.getState().nodes.find((n) => n.id === "n_arch_1")?.data;
+check(
+  "归档：覆盖主图把旧图入档并带当时提示词",
+  afterReplace?.versions?.length === 1 &&
+    afterReplace.versions[0].url === "/assets/a1.png" &&
+    afterReplace.versions[0].prompt === "第一次提示词",
+  JSON.stringify(afterReplace?.versions),
+);
+applyOps([{ op: "update_node", id: "n_arch_1", imageUrl: "/assets/a2.png" }]);
+const sameAgain = useCanvasStore.getState().nodes.find((n) => n.id === "n_arch_1")?.data;
+check(
+  "归档：回填同一张图不重复入档（幂等）",
+  (sameAgain?.versions ?? []).length === 1,
+  JSON.stringify(sameAgain?.versions),
+);
+applyOps([{ op: "update_node", id: "n_arch_1", imageUrl: "/assets/a3.png" }]);
+const twice = useCanvasStore.getState().nodes.find((n) => n.id === "n_arch_1")?.data;
+check(
+  "归档：再次换图 → 两版档案（a1、a2）",
+  twice?.versions?.length === 2 &&
+    twice.versions[0].url === "/assets/a1.png" &&
+    twice.versions[1].url === "/assets/a2.png",
+  JSON.stringify(twice?.versions),
+);
+// 前端已归档场景（链路三提交形态：旧图已入档、当前 imageUrl 仍是它）：
+// 末档 == 当前图 → 跳过，不重复
+useCanvasStore.getState().updateNodeData("n_arch_1", {
+  imageUrl: "/assets/a3.png",
+  versions: [
+    { url: "/assets/a1.png", at: "01-01 00:00" },
+    { url: "/assets/a2.png", at: "01-01 00:01" },
+    { url: "/assets/a3.png", at: "01-01 00:02" },
+  ],
+});
+applyOps([{ op: "update_node", id: "n_arch_1", imageUrl: "/assets/a4.png" }]);
+const noDup = useCanvasStore.getState().nodes.find((n) => n.id === "n_arch_1")?.data;
+check(
+  "归档：前端已归档过的不重复（末档==当前图时跳过）",
+  noDup?.versions?.length === 3 && noDup.versions[2].url === "/assets/a3.png",
+  JSON.stringify(noDup?.versions),
+);
+// 视频同规
+applyOps([{ op: "add_node", id: "n_arch_v", nodeType: "video", title: "视频归档卡" }]);
+applyOps([{ op: "update_node", id: "n_arch_v", videoUrl: "/assets/v1.mp4" }]);
+applyOps([{ op: "update_node", id: "n_arch_v", videoUrl: "/assets/v2.mp4" }]);
+const vid = useCanvasStore.getState().nodes.find((n) => n.id === "n_arch_v")?.data;
+check(
+  "归档：视频覆盖同规（旧视频入档）",
+  vid?.versions?.length === 1 && vid.versions[0].url === "/assets/v1.mp4",
+  JSON.stringify(vid?.versions),
+);
+
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

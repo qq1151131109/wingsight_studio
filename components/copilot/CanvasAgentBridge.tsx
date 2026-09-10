@@ -8,7 +8,17 @@ import {
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
 import { CheckCircle2, CircleAlert, Crosshair, FileText, Landmark, Palette, Wrench } from "lucide-react";
-import { nodesOfEpisode, saneEra, summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
+import {
+  NODE_FOOTPRINT,
+  absolutePosition,
+  findFreePosition,
+  nodesOfEpisode,
+  saneEra,
+  summarizeCanvas,
+  useCanvasStore,
+  type ShotRow,
+  type WingNode,
+} from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
 import { declaredAssetType, type SheetAssetType } from "@/lib/canvas/genContract";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
@@ -749,6 +759,118 @@ export default function CanvasAgentBridge() {
         </ToolCard>
       );
     },
+  });
+
+  // 卡上出图/改图（agent 侧工具）：复用输入条那条直连管线 directImagegen——
+  // 版本档案、EDIT 最小模板改图语义、无谱系卡派生新卡全部同源，agent 出图
+  // 与用户点输入条出图得到同一种结果。
+  // 2026-09-10 修缺口：此前聊天里说「改这张图」时 agent 手上没有等价工具
+  // （图片生成是前端直连、不经聊天），只能退化成图生图近似或让用户自己去点
+  // 输入条；而 canvas_ops 回填 imageUrl 是纯覆盖、旧图不入档、无法回滚
+  // （ops.ts 现已补归档，本条补"用对通道"）。
+  useCopilotAction({
+    name: "regenerate_card_image",
+    description:
+      "在画布卡片上出图/改图（与卡片输入条同一条出图管线：重出前旧图自动进版本档案、卡上「版本历史」可回滚）。" +
+      "用于对已有画面迭代——「这张不对/改一下/重画/去掉某物/换成某物/其他不变」，以及改完卡上设定后的重出。" +
+      "prompt 只写要改的地方（改图语义自动保留其余部分，不必写「其他不变」）；留空=按卡上标题与设定重出。" +
+      "无生成谱系的有图卡（上传图/素材库图）自动派生新卡、原图不动。出图约 30-90 秒，返回时已带结果与成败。",
+    available: "remote",
+    parameters: [
+      {
+        name: "node_id",
+        type: "string",
+        required: true,
+        description: "目标卡节点 id（图片卡 / 资产卡 / 单镜头分镜卡）",
+      },
+      {
+        name: "prompt",
+        type: "string",
+        required: false,
+        description:
+          "要改什么（如「把帽子改成斗笠」「背景换雨夜」「去掉桌上的杯子」）；留空=按卡上标题与设定重出",
+      },
+      {
+        name: "ref_ids",
+        type: "string[]",
+        required: false,
+        description: "额外一致性参考卡 id（一般不用传：本卡原图与连线卡已自动进参考）",
+      },
+      { name: "count", type: "number", required: false, description: "候选张数 1-4，缺省 1" },
+    ],
+    handler: async (args: {
+      node_id?: unknown;
+      prompt?: unknown;
+      ref_ids?: unknown;
+      count?: unknown;
+    }) => {
+      const id = String(args?.node_id ?? "").trim();
+      const st = useCanvasStore.getState();
+      const node = st.nodes.find((n) => n.id === id);
+      if (!node)
+        return `卡片不存在（node_id=${id}）——先 canvas_query/read_node 取准确节点 id 再试`;
+      const IMAGE_CARD_TYPES = ["image", "character", "scene", "prop", "costume", "storyboard"];
+      const nt = String(node.data.nodeType);
+      if (!IMAGE_CARD_TYPES.includes(nt))
+        return nt === "video"
+          ? "这卡是视频卡：视频生成走分镜表卡的「出视频·N 镜」（聊天侧没有视频管线），不要用本工具"
+          : nt === "shotlist"
+            ? "这卡是分镜表：要改画面就改行（canvas_ops update_node 的 row / genPrompt）再为该行出图，本工具只对单张图的卡用"
+            : `「${nt}」类型的卡不出图，本工具不适用`;
+      if (!st.projectStyle.trim())
+        return "未选画风（出图闸）：先 open_style_picker 让用户选，或说明推荐理由后用 set_project_style 设；拿到画风再调本工具出图";
+      // 谱系判定（与输入条同一分流口径）：有 genShot/genPrompt 的卡原位覆盖
+      // （旧图自动入版本档案）；无谱系的有图卡派生新卡，原图不动
+      const hasLineage =
+        Boolean(node.data.genShot) || Boolean(String(node.data.genPrompt ?? "").trim());
+      let targetId = id;
+      let derivedNote = "";
+      if (!hasLineage && node.data.imageUrl) {
+        const srcTitle = node.data.title || "图片";
+        const newId = st.addNode({
+          position: findFreePosition(
+            st.nodes,
+            {
+              x: absolutePosition(st.nodes, node).x +
+                (node.measured?.width ?? NODE_FOOTPRINT.image.w) +
+                80,
+              y: absolutePosition(st.nodes, node).y,
+            },
+            NODE_FOOTPRINT.image,
+          ),
+          data: {
+            nodeType: "image",
+            title: `${srcTitle} · 衍生`,
+            body: "",
+            ...(node.data.gen ? { gen: node.data.gen } : {}),
+          },
+        });
+        st.connect({ source: id, target: newId });
+        targetId = newId;
+        derivedNote = `（原图未动，已派生新卡 ${newId}「${srcTitle} · 衍生」承接结果）`;
+      }
+      const refIds = Array.isArray(args?.ref_ids)
+        ? (args.ref_ids as unknown[]).map(String).filter(Boolean)
+        : [];
+      const prompt = String(args?.prompt ?? "").trim();
+      const count = Number(args?.count);
+      await directImagegen(targetId, {
+        prompt,
+        refIds,
+        ...(Number.isFinite(count) && count > 1 ? { count: Math.min(4, Math.floor(count)) } : {}),
+        ...(targetId !== id ? { editOf: id } : {}),
+      });
+      const done = useCanvasStore.getState().nodes.find((n) => n.id === targetId)?.data;
+      const title = String(done?.title || node.data.title || "图片");
+      if (done?.status === "ready" && done.imageUrl)
+        return targetId === id
+          ? `已重出《${title}》：新图 ${String(done.imageUrl)}；旧图已入版本档案（卡上工具条「版本历史」可对比/回滚）。`
+          : `已出一张新图《${title}》：${String(done.imageUrl)}${derivedNote}。`;
+      if (done?.status === "error")
+        return `出图失败：${String(done.errorMessage || "未知原因")}（卡已置 error，可按 generation-recovery 手册处置）`;
+      return `出图未完成：卡片状态 ${String(done?.status ?? "未知")}——不要当成功交付，如实说明。`;
+    },
+    render: () => <></>,
   });
 
   // 题材声明：缺省「真实题材」（历史/罪案纪录片是主力片型）——出图前会给
