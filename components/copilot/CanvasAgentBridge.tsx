@@ -819,13 +819,16 @@ export default function CanvasAgentBridge() {
             : `「${nt}」类型的卡不出图，本工具不适用`;
       if (!st.projectStyle.trim())
         return "未选画风（出图闸）：先 open_style_picker 让用户选，或说明推荐理由后用 set_project_style 设；拿到画风再调本工具出图";
-      // 谱系判定（与输入条同一分流口径）：有 genShot/genPrompt 的卡原位覆盖
-      // （旧图自动入版本档案）；无谱系的有图卡派生新卡，原图不动
+      // 谱系判定 + 派生判据（与输入条 PromptBar.deriveEdit **同口径**）：
+      // 只有**图片卡**且无谱系（genShot/genPrompt 皆无）才派生新卡、原图不动；
+      // 资产卡（character/scene/prop/costume）与分镜卡是那张图的本体，无谱系
+      // 也原位重出（版本档案兜底）——判据漏了 nodeType 会把资产设定图改到一
+      // 张无关的新卡上，asset 本尊留在旧图
       const hasLineage =
         Boolean(node.data.genShot) || Boolean(String(node.data.genPrompt ?? "").trim());
       let targetId = id;
       let derivedNote = "";
-      if (!hasLineage && node.data.imageUrl) {
+      if (nt === "image" && !hasLineage && node.data.imageUrl) {
         const srcTitle = node.data.title || "图片";
         const newId = st.addNode({
           position: findFreePosition(
@@ -870,7 +873,27 @@ export default function CanvasAgentBridge() {
         return `出图失败：${String(done.errorMessage || "未知原因")}（卡已置 error，可按 generation-recovery 手册处置）`;
       return `出图未完成：卡片状态 ${String(done?.status ?? "未知")}——不要当成功交付，如实说明。`;
     },
-    render: () => <></>,
+    render: ({ status, result }) => {
+      const text = typeof result === "string" ? result : "";
+      const bad =
+        status === "complete" &&
+        /^(出图失败|卡片不存在|这卡是|「.*」类型|未选画风|出图未完成)/.test(text);
+      return (
+        <ToolCard
+          icon={<Wrench />}
+          title={
+            status !== "complete"
+              ? "正在改图（约 30-90 秒）"
+              : bad
+                ? "改图未成功"
+                : "改图完成"
+          }
+          {...(status === "complete" ? { ok: !bad } : {})}
+        >
+          {null}
+        </ToolCard>
+      );
+    },
   });
 
   // 题材声明：缺省「真实题材」（历史/罪案纪录片是主力片型）——出图前会给

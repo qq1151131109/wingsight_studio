@@ -70,6 +70,8 @@ const OLD2 = "/agent-service/assets/rev_old2.png";
 const NEW2 = "/agent-service/assets/rev_new2.png";
 const OLD3 = "/agent-service/assets/rev_old3.png";
 const NEW3 = "/agent-service/assets/rev_new3.png";
+const OLD4 = "/agent-service/assets/rev_old4.png";
+const NEW4 = "/agent-service/assets/rev_new4.png";
 
 const createdPids = [];
 
@@ -298,6 +300,38 @@ try {
   check("D1 未选画风 → 不出图（图为原样）", n3?.data?.imageUrl === OLD3, `imageUrl=${String(n3?.data?.imageUrl)}`);
   check("D2 未选画风 → 无版本档案", versionsOf(n3).length === 0, `versions=${versionsOf(n3).length}`);
   await c3.browser.close();
+  // ===== 用例 4：资产卡无谱系 → 原位重出（不派生；与输入条 deriveEdit 同口径）=====
+  // 资产卡/分镜卡是那张图的本体，没有 genShot/genPrompt 也原位重出（版本档案
+  // 兜底）；只有**图片卡**无谱系才派生新卡。判据漏 nodeType 会把资产设定图
+  // 改到一张无关新卡上、资产本尊留在旧图（review 抓到的自身不一致）。
+  const N4 = "n_rev_4";
+  const pid4 = await makeProject("asset", [
+    {
+      id: N4,
+      type: "character",
+      position: { x: 0, y: 0 },
+      data: {
+        nodeType: "character",
+        title: "测试角色",
+        body: "一个将军",
+        imageUrl: OLD4,
+        status: "ready",
+      },
+    },
+  ]);
+  const c4 = await openCase(pid4, { toolNodeId: N4, toolPrompt: "换成戎装", newUrl: NEW4 });
+  await sendChat(c4.page, "把这个角色的图换成戎装");
+  const got4 = await waitForImage(pid4, N4, NEW4);
+  check("E1 资产卡（无谱系）原位重出", got4 === NEW4, `imageUrl=${String(got4)}`);
+  const nodes4 = (await readCanvas(pid4)).nodes;
+  check("E2 不派生新卡（资产卡是那张图的本体）", nodes4.length === 1, `卡数=${nodes4.length}`);
+  check(
+    "E3 资产卡旧图入版本档案",
+    versionsOf(nodeOf(nodes4, N4)).some((v) => v.url === OLD4),
+    `versions=${JSON.stringify(versionsOf(nodeOf(nodes4, N4)).map((v) => v.url))}`,
+  );
+  await c4.browser.close();
+
 } catch (exc) {
   failed = 1;
   console.error("✗ 运行异常：", exc instanceof Error ? exc.message : exc);
