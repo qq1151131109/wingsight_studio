@@ -256,6 +256,36 @@ check("E3 重载后参考卡没有被长回来（对账不重建已取消采纳�
   ),
   `count=${(afterReload?.nodes ?? []).filter((n) => n.data?.imageUrl === REF_URL).length}`);
 
+// F. 删掉报告卡 = 不要这张视图了：重载不再长回来（2026-09-10 用户拍板，
+//    与参考卡同语义；报告卡没有服务端凭据，故标记记在 meta.dismissedReports）
+const reportCard = (afterReload?.nodes ?? []).find(
+  (n) => n.data?.reportKind === "ref-research",
+);
+check("F0 报告卡在画布上（前置条件）", !!reportCard, `id=${reportCard?.id}`);
+if (reportCard) {
+  await page.locator(`[data-id="${reportCard.id}"]`).first().click();
+  await page.waitForTimeout(600);
+  await page
+    .locator('.react-flow__node-toolbar [aria-label="删除"]:visible')
+    .first()
+    .click();
+  await page.waitForTimeout(3000);
+  const { body: afterDelReport } = await api(`/projects/${pid}/canvas`);
+  check("F1 报告卡已从画布删除",
+    !(afterDelReport?.nodes ?? []).some((n) => n.id === reportCard.id));
+  check("F2 meta 记住了删过的报告卡 kind",
+    (afterDelReport?.meta?.dismissedReports ?? []).includes("ref-research"),
+    JSON.stringify(afterDelReport?.meta?.dismissedReports));
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(6000);
+  const { body: afterReloadReport } = await api(`/projects/${pid}/canvas`);
+  check("F3 重载后报告卡没有被长回来",
+    !(afterReloadReport?.nodes ?? []).some(
+      (n) => n.data?.reportKind === "ref-research",
+    ),
+    `count=${(afterReloadReport?.nodes ?? []).filter((n) => n.data?.reportKind === "ref-research").length}`);
+}
+
 await browser.close();
 
 // ---------- 清理 ----------

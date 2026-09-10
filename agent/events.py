@@ -73,6 +73,27 @@ async def record_event(req: EventIn, user: auth.CurrentUser) -> dict:
     return {"ok": True}
 
 
+def track(name: str, props: dict[str, Any] | None = None, project_id: str = "") -> None:
+    """后端内部埋点（不经 HTTP）：agent 行为层计数（每跳工具数/空转/压缩等）。
+    只记粗粒度属性不记正文；埋点失败静默——遥测不得影响主流程。"""
+    try:
+        ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        with _conn() as conn:
+            _ensure_table(conn)
+            conn.execute(
+                "INSERT INTO events (ts, user, name, project_id, props) VALUES (?,?,?,?,?)",
+                (
+                    ts,
+                    "agent",
+                    name[:120],
+                    project_id or None,
+                    json.dumps(props, ensure_ascii=False)[:800] if props else None,
+                ),
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @router.get("/events/summary")
 async def events_summary(user: auth.CurrentUser, days: int = 30) -> dict:
     """按事件名聚合：count / 今日 count / 最近一次时间。days 截窗口。"""

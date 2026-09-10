@@ -86,6 +86,9 @@ function upsertDocCard(
   body: string,
 ): CardState {
   const st = useCanvasStore.getState();
+  // 用户删过这张卡 = 不要这张视图了，不再重建（2026-09-10 用户拍板，与参考卡
+  // 「删了不再长回来」同语义）。标记随 meta 持久化，见 store.deleteNodes
+  if (st.dismissedReports.includes(kind)) return "skipped";
   const existing = st.nodes.find((n) => n.data.reportKind === kind);
   if (!existing) {
     const id = addCardAt(

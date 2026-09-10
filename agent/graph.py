@@ -15,6 +15,7 @@ import math
 import os
 import re
 import subprocess
+from datetime import datetime
 from pathlib import Path
 from string import Template
 from typing import Any, Dict, Iterator, List, Tuple
@@ -36,6 +37,7 @@ from copilotkit import CopilotKitState
 from langgraph.prebuilt import ToolNode
 
 import camera
+import events
 import free_images
 import imgresearch
 import models
@@ -1560,7 +1562,7 @@ _prompt_cache: Tuple[float, Template] | None = None
 # chat_node 每轮 substitute 提供的占位符集合；system.md 里的占位符必须与之完全
 # 一致——多了没人传（KeyError）、少了动态段静默丢失（画布摘要/技能目录不进 prompt）。
 _PROMPT_PLACEHOLDERS = frozenset(
-    {"canvas_summary", "camera_cheat", "skill_catalog", "history_section"}
+    {"canvas_summary", "camera_cheat", "skill_catalog", "history_section", "today"}
 )
 
 
@@ -1596,6 +1598,11 @@ def load_system_prompt() -> Template:
 
 # 启动即校验一次（缺文件/占位符写错在启动时就炸，而不是等第一轮对话）
 load_system_prompt()
+
+
+def _today_str() -> str:
+    d = datetime.now()
+    return f"{d.year}年{d.month}月{d.day}日 周{'一二三四五六日'[d.weekday()]}"
 
 
 
@@ -1778,6 +1785,42 @@ def _cap_embedded_media(messages: List[Any], budget: int) -> List[Any]:
     ]
 
 
+def _has_model_output(m: Any) -> bool:
+    """模型响应是否有可用产出：非空正文（文本块）或工具调用。"""
+    text = _msg_text(m)
+    return bool(text.strip() or getattr(m, "tool_calls", None))
+
+
+def _is_repeat_tool_call(messages: List[Any], response: Any) -> bool:
+    """本次工具调用与历史上最近一次同工具调用的参数是否完全相同（空转信号）。
+    只返回布尔供埋点——参数本身不入库（埋点不记正文铁律）。"""
+    calls = getattr(response, "tool_calls", None) or []
+    if not calls:
+        return False
+
+    def _sig(tc: Any) -> tuple[str | None, str]:
+        if isinstance(tc, dict):
+            name = tc.get("name")
+            args = tc.get("args")
+        else:
+            name = getattr(tc, "name", None)
+            args = getattr(tc, "args", None)
+        try:
+            return name, json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
+        except Exception:  # noqa: BLE001
+            return name, repr(args)
+
+    name, sig = _sig(calls[0])
+    for m in reversed(messages):
+        if not isinstance(m, AIMessage):
+            continue
+        for prev in getattr(m, "tool_calls", None) or []:
+            pname, psig = _sig(prev)
+            if pname == name:
+                return psig == sig
+    return False
+
+
 async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     messages = list(state.get("messages") or [])
 
@@ -1833,6 +1876,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
             camera_cheat=camera.camera_cheat_sheet(),
             skill_catalog=SKILL_CATALOG,
             history_section=history_section,
+            today=_today_str(),
         ),
     )
 
@@ -1845,11 +1889,30 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # 靠 on_chat_model_stream 事件逐 token 下发，ainvoke 是单次非流式请求，
     # 整段回复憋到节点结束才一次性吐出（前端表现为"没有打字机效果"）。
     # 聚合后的完整消息照常入 state/checkpoint，图逻辑与 ainvoke 等价。
+    # 空响应 nudge 重试（gemini geminiChat 范式）：模型偶发只思考不出字/
+    # 断流零内容——nudge 以 user 提醒打在对话末尾重试（不动系统提示，保
+    # 前缀缓存；只进本次请求不落 checkpoint），3 次全空才报错。
     merged: AIMessageChunk | None = None
-    async for chunk in model_with_tools.astream([system_message, *trimmed], config):
-        merged = chunk if merged is None else merged + chunk
-    if merged is None:
-        raise RuntimeError("模型未返回任何内容")
+    nudge_retries = 0
+    for attempt in range(3):
+        attempt_msgs = [system_message, *trimmed]
+        if attempt > 0:
+            attempt_msgs.append(
+                HumanMessage(
+                    content=(
+                        "[系统提醒] 你上一跳没有输出正文，也没有调用工具。"
+                        "请正常回复用户，或调用工具继续任务。"
+                    )
+                )
+            )
+        merged = None
+        async for chunk in model_with_tools.astream(attempt_msgs, config):
+            merged = chunk if merged is None else merged + chunk
+        if merged is not None and _has_model_output(merged):
+            break
+        nudge_retries += 1
+    if merged is None or not _has_model_output(merged):
+        raise RuntimeError("模型连续 3 次未返回内容（空响应，nudge 重试后仍空）")
     response = AIMessage(
         content=merged.content,
         additional_kwargs=merged.additional_kwargs,
@@ -1863,6 +1926,20 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     ]
     has_frontend_call = any(n and n not in backend_tool_names for n in call_names)
     has_backend_call = any(n in backend_tool_names for n in call_names)
+
+    # 行为遥测（粗粒度计数，不含正文/参数——「懒」的量化基础）
+    events.track(
+        "agent.step",
+        {
+            "tools": len(call_names),
+            "frontend": has_frontend_call,
+            "backend": has_backend_call,
+            "chars": len(_msg_text(response)),
+            "nudge_retries": nudge_retries,
+            "repeat_call": _is_repeat_tool_call(messages, response),
+            "compressed": bool(comp_update),
+        },
+    )
 
     # 前端工具调用优先：本轮立即结束交给浏览器执行。若同一消息还混着后端
     # 调用，则后端调用本轮不执行（历史清洗会给它补占位响应，模型下一轮

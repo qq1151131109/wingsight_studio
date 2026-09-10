@@ -481,7 +481,7 @@ class BatchAssetSheetComponent(Component):
                         base_url=self.base_url,
                         api_key=self.api_key,
                         # 资产级画幅覆写（分镜图 9:16/21:9 等），空则按类型默认
-                        aspect_ratio=asset.get("aspect") or TYPE_ASPECT[asset_type],
+                        aspect_ratio=asset.get("aspect") or TYPE_ASPECT.get(asset_type) or "16:9",
                         resolution=self.resolution,
                         reference_images=[r["local_path"] for r in refs],
                         dest_dir=out_dir / asset_type,

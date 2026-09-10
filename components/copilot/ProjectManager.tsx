@@ -11,7 +11,7 @@
 
 import { useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
-import { useCanvasStore, saneEra, saneFactuality } from "@/lib/canvas/store";
+import { useCanvasStore, saneDismissedReports, saneEra, saneFactuality } from "@/lib/canvas/store";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
 import { saneImagegen } from "@/lib/imagegen";
 import { showToast } from "@/lib/toast";
@@ -91,6 +91,7 @@ export default function ProjectManager() {
   const projectStyle = useCanvasStore((s) => s.projectStyle);
   const projectFactuality = useCanvasStore((s) => s.projectFactuality);
   const projectEra = useCanvasStore((s) => s.projectEra);
+  const dismissedReports = useCanvasStore((s) => s.dismissedReports);
   const imagegen = useCanvasStore((s) => s.imagegen);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -107,6 +108,7 @@ export default function ProjectManager() {
           visualStyle: s.projectStyle,
           factuality: s.projectFactuality,
           era: s.projectEra,
+          dismissedReports: s.dismissedReports,
           imagegen: s.imagegen,
         },
       });
@@ -114,7 +116,17 @@ export default function ProjectManager() {
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [projectId, nodes, edges, viewport, projectStyle, projectFactuality, projectEra, imagegen]);
+  }, [
+    projectId,
+    nodes,
+    edges,
+    viewport,
+    projectStyle,
+    projectFactuality,
+    projectEra,
+    dismissedReports,
+    imagegen,
+  ]);
 
   // ---------- 离开工作台：冲刷未落盘的修改 ----------
   useEffect(() => {
@@ -130,6 +142,7 @@ export default function ProjectManager() {
             visualStyle: s.projectStyle,
             factuality: s.projectFactuality,
             era: s.projectEra,
+            dismissedReports: s.dismissedReports,
             imagegen: s.imagegen,
           },
         });
@@ -203,6 +216,7 @@ async function persist(
       visualStyle?: string;
       factuality?: "real" | "fiction";
       era?: string;
+      dismissedReports?: string[];
       imagegen?: { model: string; resolution: string };
     };
   },
@@ -334,6 +348,10 @@ async function activateProject(p: ProjectMeta) {
         ),
         projectEra: saneEra(
           (canvas as { meta?: { era?: unknown } }).meta?.era,
+        ),
+        dismissedReports: saneDismissedReports(
+          (canvas as { meta?: { dismissedReports?: unknown } }).meta
+            ?.dismissedReports,
         ),
         canvasRevision: canvas.revision ?? null,
       });

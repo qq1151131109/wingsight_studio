@@ -24,11 +24,32 @@ export const FACTUALITY_DEFAULT: Factuality = "real";
 export const saneFactuality = (v: unknown): Factuality =>
   v === "fiction" ? "fiction" : FACTUALITY_DEFAULT;
 
+/** 装载边界整形：只收非空字符串（删过的报告卡 kind），去重、上限 8 条 */
+export const saneDismissedReports = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [...new Set(v.filter((x): x is string => typeof x === "string" && !!x.trim()))]
+        .slice(0, 8)
+    : [];
+
 /** 项目时代/题材口径（存画布 meta.era，如「北魏·平城时期」）：考据条目的
  *  作用域键——同一时代同一资产的形制事实可跨项目复用；为空一律不复用
  *  （名字像而年代不同的资产，「朝服」在唐宋与在北魏是两回事）。 */
 export const saneEra = (v: unknown): string =>
   typeof v === "string" ? v.trim().slice(0, 40) : "";
+
+/** 调研发起前要不要问「这个项目是什么年代」（花钱的入口问一次、可跳过）。
+ *  真实题材 + 未设 era + 本会话没跳过过 才问——架空/穿越不设 era（免污染
+ *  复用域），设过就不再打扰。答案走 window.prompt，跳过记在会话级 Set。 */
+export const shouldPromptEra = (
+  era: string,
+  factuality: string,
+  projectId: string,
+  skipped: ReadonlySet<string>,
+): boolean =>
+  !!projectId &&
+  !era.trim() &&
+  factuality === "real" &&
+  !skipped.has(projectId);
 
 /** 画布节点类型：文本 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 调研 / 分组框 */
 export type WingNodeType =
@@ -287,6 +308,10 @@ interface CanvasState {
   projectFactuality: Factuality;
   /** 项目级时代/题材口径（存 meta.era）：考据条目跨项目复用的作用域键 */
   projectEra: string;
+  /** 项目级：用户删过的考证报告/大纲卡 kind（存 meta.dismissedReports）。
+   *  对账据此不再重建——「删了就不再来」，与参考卡删除语义一致（2026-09-10
+   *  用户拍板）；报告卡没有服务端采纳凭据，故记在项目 meta 里随画布持久化 */
+  dismissedReports: string[];
   /** 项目级出图默认（模型 + 分辨率，存 meta.imagegen）：所有出图入口
    *  的生效配置；服务端按 agent/models.py 目录校验，非法组合 400 */
   imagegen: ImagegenParams;
@@ -674,6 +699,7 @@ export const useCanvasStore = create<CanvasState>()(
       projectStyle: "",
       projectFactuality: FACTUALITY_DEFAULT,
       projectEra: "",
+      dismissedReports: [],
       imagegen: IMAGEGEN_DEFAULT,
       projectName: "",
       canvasRevision: null,
@@ -704,6 +730,7 @@ export const useCanvasStore = create<CanvasState>()(
           projectStyle: "",
           projectFactuality: FACTUALITY_DEFAULT,
           projectEra: "",
+          dismissedReports: [],
           imagegen: IMAGEGEN_DEFAULT,
           // 切项目清锁版本：新项目的 revision 由装载路径写入，防止旧值
           // 被首次保存携带造成假冲突
@@ -913,6 +940,15 @@ export const useCanvasStore = create<CanvasState>()(
             }))
             .filter((d) => d.assetNodeId),
         );
+        // 删掉考证报告/大纲卡 = 用户不要这张视图了：记进 dismissedReports，
+        // 对账不再重建（报告卡没有服务端采纳凭据，故记项目 meta 随画布持久化）
+        const dismissedKinds = [
+          ...new Set(
+            get()
+              .nodes.filter((n) => idSet.has(n.id) && n.data.reportKind)
+              .map((n) => String(n.data.reportKind)),
+          ),
+        ];
         get().commitHistory();
         set((state) => {
           // 删除分组框时提升存活子节点到画布层（坐标转绝对），避免孤儿 parentId
@@ -936,6 +972,13 @@ export const useCanvasStore = create<CanvasState>()(
             edges: state.edges.filter(
               (e) => !idSet.has(e.source) && !idSet.has(e.target),
             ),
+            ...(dismissedKinds.length
+              ? {
+                  dismissedReports: [
+                    ...new Set([...state.dismissedReports, ...dismissedKinds]),
+                  ],
+                }
+              : {}),
           };
         });
       },

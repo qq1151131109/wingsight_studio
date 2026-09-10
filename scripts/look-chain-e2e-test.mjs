@@ -66,7 +66,7 @@ const CHAR_ID = "n_char_t";
 const COST_ID = "n_cost_t";
 const nodes = [
   {
-    id: SCRIPT_ID, type: "script", position: { x: 0, y: 0 },
+    id: SCRIPT_ID, type: "script", position: { x: 0, y: 700 },
     data: { nodeType: "script", title: "测试剧本", body: "第一场 日 内 太极殿\n冯太后身着朝服端坐御座，群臣俯首。" },
   },
   {
@@ -119,8 +119,20 @@ const scriptNode = page
   .filter({ hasText: "测试剧本" })
   .first();
 const sbox = await scriptNode.boundingBox();
-if (sbox) await page.mouse.click(sbox.x + sbox.width - 24, sbox.y + 12);
+console.log("剧本卡 boundingBox:", JSON.stringify(sbox));
+if (sbox) await page.mouse.click(sbox.x + 30, sbox.y + sbox.height - 12);
 await page.waitForTimeout(1500);
+const diag = await page.evaluate(() => ({
+  bbox: null,
+  selected: document.querySelectorAll(".react-flow__node.selected").length,
+  toolbars: document.querySelectorAll(".react-flow__node-toolbar").length,
+  btns: [...document.querySelectorAll("button")]
+    .map((b) => (b.textContent || "").trim())
+    .filter(Boolean)
+    .slice(0, 24),
+}));
+console.log("诊断:", JSON.stringify(diag));
+await page.screenshot({ path: "/tmp/ws-review/e2e-selected.png" }).catch(() => {});
 
 const btnText = await page.evaluate(() => {
   const el = [...document.querySelectorAll("button")].find((b) => (b.textContent || "").includes("造型图"));
@@ -135,13 +147,16 @@ await page.evaluate(() => {
 
 // 真出图约 1 分钟：轮询画布直到造型卡落卡
 let canvas = null;
-for (let i = 0; i < 90; i += 1) {
+let lastStatus = "";
+for (let i = 0; i < 60; i += 1) {
   await page.waitForTimeout(3000);
   const r = await api(`/projects/${pid}/canvas`);
   canvas = r.body;
-  const lookCard = (canvas?.nodes ?? []).find((n) => n?.data?.title === "冯太后·朝服");
-  if (lookCard?.data?.imageUrl) break;
+  const lc = (canvas?.nodes ?? []).find((n) => n?.data?.title === "冯太后·朝服");
+  if (lc) lastStatus = `status=${lc.data.status} err=${String(lc.data.errorMessage ?? "").slice(0, 140)}`;
+  if (lc?.data?.imageUrl) break;
 }
+console.log("造型卡最终状态:", lastStatus);
 await page.screenshot({ path: "/tmp/ws-review/e2e-look-result.png" }).catch(() => {});
 await browser.close();
 

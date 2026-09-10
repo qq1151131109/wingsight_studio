@@ -90,6 +90,7 @@ import {
   inheritEpisodeId,
   nodeSize,
   nodesOfEpisode,
+  shouldPromptEra,
   useCanvasStore,
   type NodeDataUpdateOpts,
   type ShotRow,
@@ -6008,12 +6009,15 @@ async function fillLookImages(
           rid: ridOf(j),
           name: `${j.charTitle}·${j.label}`,
           description: protocol,
-          // 原话直传（版式已在 protocol 里说清），不走四格定妆契约
+          // 原话直传（版式已在 protocol 里说清），不走四格定妆契约；
+          // 画幅跟随角色卡的卡片级设置（缺省走 flow 类型默认）——**不能硬编码
+          // 9:16**：默认模型 gpt-image-2.5-sunburst-cdx 只有 16:9/1:1/4:3/3:4，
+          // 硬传 9:16 会被服务端预校验拦成整批 400（2026-09-10 E2E 实测踩中）
           assetType: "none" as const,
-          aspect: "9:16",
           visualNotes: `全局视觉风格：${projectStyle}`,
           referenceImages: refs,
           referenceLabels: labels,
+          ...(saneGen(char?.data.gen) ? { params: saneGen(char?.data.gen)! } : {}),
         };
       }),
     );
@@ -6136,12 +6140,31 @@ function researchTargetsOf(
 /** 圈定本卡资产并发起批量调研：任务 id 锚进卡数据（refBatchJobId），进度与
  *  收尾（审阅面板）由 useBatchRefJob 续链——卡片移出视口被卸载/页面刷新都不丢。
  *  返回 null = 没有需要调研的资产（调用方提示）。失败 throw（调用方明报）。 */
+/** 本次会话已跳过「年代」询问的项目：跳过过就不再每次都弹（刷新后重置）。
+ *  不落库——跳过是本次会话的临时意愿，不该污染 meta。 */
+const eraPromptSkipped = new Set<string>();
+
 async function startBatchResearchForCard(sourceId: string): Promise<string | null> {
   const st = useCanvasStore.getState();
   const projectId = st.projectId;
   if (!projectId) throw new Error("项目未保存：先等画布保存完成再调研");
   const targets = researchTargetsOf(st.nodes, st.edges, sourceId);
   if (targets.length === 0) return null;
+  // 考据年代（存 meta.era）= 跨项目复用的作用域键：服务端按 (era, 资产名)
+  // 命中同题材项目的历史条目，era 为空则一律不复用、每次调研都重搜。实测生产
+  // 23 个项目无一设过——`set_project_era` 是 agent 工具，而调研是用户点按钮
+  // 发起、不经过 agent，于是复用能力从未生效。故在花钱的入口问一次（可跳过）：
+  // 真实题材才问，架空/穿越不设 era 免污染复用域（「朝服」在唐宋与北魏是两回事）。
+  if (shouldPromptEra(st.projectEra, st.projectFactuality, projectId, eraPromptSkipped)) {
+    const v = window.prompt(
+      "【考据归档】这个项目是什么年代？\n\n" +
+        "用于同题材项目之间复用考据结论（例：「北魏·平城时期」「北宋汴京」）。\n" +
+        "留空 = 不复用，本次调研照常进行。",
+      "",
+    );
+    if (v?.trim()) useCanvasStore.getState().setProjectEra(v.trim());
+    else eraPromptSkipped.add(projectId);
+  }
   // 直接开跑（调研可中途放弃、号池按量计费，无需确认弹窗打断）
   const batchId = await startBatchRefResearch(
     projectId,
