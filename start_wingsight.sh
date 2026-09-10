@@ -29,7 +29,11 @@ web_up() { curl -s -o /dev/null --max-time 2 "http://127.0.0.1:$1/" 2>/dev/null 
 start_agent() {
   if is_up "$AGENT_PORT"; then echo "✓ agent 已在运行 (:$AGENT_PORT)"; return; fi
   echo "… 启动 LangGraph agent (:$AGENT_PORT)"
-  (cd "$ROOT/agent" && nohup uv run uvicorn main:app --port "$AGENT_PORT" --host 127.0.0.1 \
+  # 清代理变量（2026-09-10 两次实锤：带 SOCKS 变量起的 agent 每个对话请求
+  # 都炸 httpx ImportError: socksio 未装——LangChain 建 ChatOpenAI 客户端
+  # 即挂，healthz 却正常，表现为「agent 活着但对话全断流」）
+  (cd "$ROOT/agent" && nohup env -u ALL_PROXY -u all_proxy -u HTTP_PROXY -u http_proxy \
+     -u HTTPS_PROXY -u https_proxy uv run uvicorn main:app --port "$AGENT_PORT" --host 127.0.0.1 \
      > "$LOGS/agent.log" 2>&1 & echo $! > "$LOGS/agent.pid")
   for i in $(seq 1 20); do is_up "$AGENT_PORT" && break; sleep 1; done
   is_up "$AGENT_PORT" && echo "✓ agent 就绪 (:$AGENT_PORT)" || { echo "✗ agent 启动失败，看 logs/agent.log"; exit 1; }

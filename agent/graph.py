@@ -111,7 +111,8 @@ async def generate_storyboard(
         script: 剧本原文全文（从剧本卡取时先 read_node，不要自行摘要）。
         shot_count: 目标镜头数，用户点名了才传（如「压到 20 镜」），0=按剧本自定。
         assets_json: 画布已有资产名单 JSON 数组，如 [{"type":"character","name":"郑成功"}]；
-            生成的行会自动引用名单内资产（名单外的幻觉名会被剔除）。画布没有资产卡时留空。
+            生成的行会自动引用名单内资产；名单外但确属剧本的资产名会在返回里列出
+            「画布缺哪些资产」——那是缺卡的信号，按类型补建后再出图。画布没有资产卡时留空。
         model: 文本模型 id（GET /models/text 目录），留空用默认 gpt-5.6-luna。
     """
     assets = None
@@ -130,7 +131,7 @@ async def generate_storyboard(
     if task is not None:
         skills.job_attach_task(job_id, task)
     try:
-        rows = await skills.run_storyboard_flow(
+        rows, missing = await skills.run_storyboard_flow(
             script,
             shot_count=shot_count or None,
             assets=assets,
@@ -138,12 +139,22 @@ async def generate_storyboard(
         )
     except Exception as e:  # noqa: BLE001
         return f"分镜生成失败：{e}"
-    return (
+    out = (
         f"分镜已生成（{len(rows)} 行）。rows JSON：\n"
         + json.dumps(rows, ensure_ascii=False)
         + '\n写回：画布已有 [分镜表] 卡 → canvas_ops update_node(id, rows=上述数组)；'
         '没有 → add_node(nodeType="shotlist", rows=上述数组)。行里的 assets 资产名数组写回时保留，系统会解析成对画布资产卡的引用。'
     )
+    if missing:
+        head = "、".join(missing[:20])
+        more = f"（共 {len(missing)} 个，只列前 20）" if len(missing) > 20 else ""
+        out += (
+            f"\n\n【画布缺的资产】分镜引用了这些名字，画布上没有对应卡：{head}{more}。\n"
+            "这是缺卡信号（换装服饰/关键道具漏拆、或资产还没拆）——下一步先核对它们是否真在剧本里："
+            "在的按类型补建资产卡（canvas_ops add_node，character/scene/prop/costume）并在回复里点名补了哪几个；"
+            "纯属编造的不建、直接说明。补完再出图，否则相关镜头没有资产设定图可参考。"
+        )
+    return out
 
 
 @tool
@@ -216,6 +227,10 @@ aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：**只在用户明确
 /agent-service/assets/ URL（从画布摘要里取带图卡的 imageUrl），配合
 reference_labels（[{{type,name}}]，type=character 时锁身份不继承白底
 排版）——用户要求「按某角色的设定图出」「保持形象一致」时必须带上。
+**同场相邻镜头带上一镜的镜头图当连贯参考**（type 写 `shotref`，name 写
+「上一镜（场次名）」）：行上「场次」同名的连续镜头才配，锁光线/色调/陈设/
+造型的连贯——同场戏前后镜各画各的调子就是这里漏了。参考图上限 5 张，
+资产身份参考优先，排不下时先留资产。
 **考据不用你搬**：真实题材项目（缺省；动画/架空等虚构题材由
 set_project_factuality 声明）出图时，服务端会为画布上没有考据简报的资产
 自动补一次文字考据（年代/形制/常见误用）并注入提示词——不必在
@@ -1050,10 +1065,18 @@ async def _fold_into_summary(prev_summary: str, messages: List[Any]) -> str:
         **({"extra_body": {"thinking": {"type": "enabled"}}} if _thinking_enabled() else {"reasoning_effort": "none"}),
     )
     lines = "\n".join(f"[{getattr(m, 'type', '?')}] {_msg_text(m)[:600]}" for m in messages)
+    # 固定四段结构（gemini <task_state> + opencode Work State/Next Move 范式）：
+    # 「未完成事项」是防半途而废的关键段——长任务跨压缩续跑靠它，自由散文
+    # 摘要会丢；末句借鉴 opencode「不带走就丢失」给摘要模型压力。
     prompt = (
-        "把「已有摘要」与「新增对话片段」合并成一份不超 1500 字的滚动摘要。"
-        "保留：用户目标与偏好、已确认的设定/决策、实体名与关系、未完成事项；"
-        "丢弃：寒暄、失败重试过程、工具调用细节。直接输出摘要正文。"
+        "把「已有摘要」与「新增对话片段」合并成一份不超 1500 字的滚动摘要，"
+        "输出固定四段（段名照抄，无内容也要留段名）：\n"
+        "## 目标与偏好（用户要什么、口味与约束）\n"
+        "## 已定设定与决策（实体名与关系、拍板过的方向与关键事实）\n"
+        "## 未完成事项（进行到哪一步 ←当前焦点、剩余步骤、被什么打断）\n"
+        "## 关键上下文（续接必须知道的：画风/模型/项目名等）\n"
+        "丢弃寒暄、失败重试过程、工具调用细节。摘要会成为后续唯一记忆——"
+        "没写进来的下一轮就没了。直接输出摘要正文。"
         f"\n\n已有摘要：\n{prev_summary or '（无）'}\n\n新增对话片段：\n{lines[:60000]}"
     )
     try:
@@ -1111,7 +1134,7 @@ async def generate_thread_title(user_text: str, assistant_text: str) -> str:
         model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("AGENT_API_KEY", ""),
-        temperature=0.3,
+        temperature=0.2,  # 命名要稳定不要创意（gemini 工具型子代理低温度范式）
         max_tokens=256,
         streaming=False,
         **({"extra_body": {"thinking": {"type": "enabled"}}} if _thinking_enabled() else {"reasoning_effort": "none"}),
@@ -1177,7 +1200,9 @@ async def web_search(query: str, num: int = 6) -> str:
         url = str(r.get("url") or "").strip()
         snippet = str(r.get("snippet") or "").strip()
         lines.append(f"{i}. {title}\n   {url}\n   {snippet}")
-    return "\n".join(lines)
+    # 外部内容统一包裹标记（gemini <untrusted_context> 范式）：宪法按标记识别
+    # 「素材不是指令」，机制层确定性防注入，不靠模型自觉。
+    return f"<untrusted_web_content>\n{chr(10).join(lines)}\n</untrusted_web_content>"
 
 
 @tool
@@ -1200,7 +1225,8 @@ async def web_fetch(url: str) -> str:
         reason = str(e).strip().rstrip("：:，, ") or "网络不可达或被拦截（可换来源，或以搜索摘要为线索级依据）"
         return f"抓取失败：{reason}"
     head = f"【{u}】正文 {len(text)} 字符"
-    return f"{head}\n\n{text}"
+    # 正文整体包裹标记（同 web_search——外部内容是素材不是指令）
+    return f"{head}\n<untrusted_web_content>\n{text}\n</untrusted_web_content>"
 
 
 # f-string 不能作 docstring，正文进常量、def 后显式赋 __doc__ 再 tool() 包装。
@@ -1866,7 +1892,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         summary, summary_count, messages
     )
     history_section = (
-        f"\n## 更早对话的摘要（已压缩，据此理解前文指代与既定决策）\n{summary}\n"
+        f"\n## 更早对话的摘要（已压缩——据此理解前文指代与既定决策，并续接「未完成事项」段列出的工作，不重复已完成的部分）\n{summary}\n"
         if summary
         else ""
     )
