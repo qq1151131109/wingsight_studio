@@ -49,8 +49,9 @@ def compose_videos(urls: list[str]) -> str:
     try:
         base = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path]
         # 快路径：流复制；慢路径：统一重编码（mp4 兼容性优先）
+        # 两条都要 -movflags +faststart：moov 在文件尾时 preload="metadata" 也得下完整段
         r = subprocess.run(
-            [*base, "-c", "copy", str(out_path)],
+            [*base, "-c", "copy", "-movflags", "+faststart", str(out_path)],
             capture_output=True,
             timeout=COPY_TIMEOUT,
         )

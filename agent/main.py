@@ -200,6 +200,19 @@ def serve_thumb(filename: str) -> FileResponse:
     return FileResponse(path, headers=_CACHE_IMMUTABLE)
 
 
+@app.get("/previews/{filename}")
+def serve_preview(filename: str) -> FileResponse:
+    """放大展示的中间档（1600 长边 webp）；缺失时现场生成。
+
+    高缩放（hires）此前直接拉 2K/4K 原图（3~7MB/张），是画布载重最大单项；
+    需要原始分辨率的场景（灯箱/下载/裁剪）仍走 /assets 原图。
+    """
+    path = thumbs.ensure_preview(filename)
+    if path is None:
+        return Response(status_code=404)  # type: ignore[return-value]
+    return FileResponse(path, headers=_CACHE_IMMUTABLE)
+
+
 @app.post("/extract-text")
 async def extract_text(request: Request, user: auth.CurrentUser, name: str = "") -> dict:
     """文档文本提取（聊天附件 doc/docx/rtf/pdf 用）：body 为二进制、?name= 带原始

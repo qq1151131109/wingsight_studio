@@ -32,6 +32,7 @@ import TurnLocator from "./TurnLocator";
 import { useChatSession } from "@/lib/chat/session";
 import ChatSidebarHeader from "./ThreadsBar";
 import { CHAT_EDIT_MESSAGE_EVENT } from "@/lib/canvas/events";
+import { assetThumbUrl } from "@/lib/asset-thumb";
 
 /** slot 槽位支持整组件替换（运行时 renderSlot 认任意函数组件），但 d.ts 要求
  *  带静态成员的组件类型——自绘组件按原类型断言收口 */
@@ -105,7 +106,7 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
               m.kind === "image" ? (
                 <a key={`${i}:${m.url}`} href={m.url} target="_blank" rel="noreferrer" aria-label="查看原图">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={m.url} alt="附件" className="h-14 w-14 rounded-lg border border-hairline object-cover" />
+                  <img src={assetThumbUrl(m.url)} alt="附件" className="h-14 w-14 rounded-lg border border-hairline object-cover" />
                 </a>
               ) : (
                 <a

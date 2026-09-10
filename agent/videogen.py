@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
+import subprocess
 import time
 import uuid
 from pathlib import Path
@@ -238,6 +239,31 @@ def _json_or(r: httpx.Response, default: Any) -> Any:
         return default
 
 
+def _faststart_remux(path: Path) -> None:
+    """把 moov 挪到文件头（-c copy 无损重封装，秒级）。
+
+    RunningHub 下发的 mp4 是 moov 在尾部：浏览器 preload="metadata" 也得把整段
+    下完才拿到时长/尺寸，15 张视频卡就是几十 MB。失败只打日志——视频本身仍可播。
+    """
+    tmp = path.with_suffix(".faststart.mp4")
+    try:
+        r = subprocess.run(
+            [
+                "ffmpeg", "-y", "-loglevel", "error", "-i", str(path),
+                "-c", "copy", "-movflags", "+faststart", "-f", "mp4", str(tmp),
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode(errors="ignore")[-300:])
+        tmp.replace(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"[视频 faststart 重封装失败] {path.name}: {type(e).__name__}: {e}", flush=True)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 async def _download_as_asset(
     client: httpx.AsyncClient, url: str, model: str
 ) -> Dict[str, Any]:
@@ -257,6 +283,7 @@ async def _download_as_asset(
                     async for chunk in r.aiter_bytes(1 << 16):
                         f.write(chunk)
             if out_path.is_file() and out_path.stat().st_size > 1024:
+                await asyncio.to_thread(_faststart_remux, out_path)
                 usage.record_video(model)
                 return {"ok": True, "videoUrl": f"/agent-service/assets/{out_path.name}"}
             last_err = "产物为空"

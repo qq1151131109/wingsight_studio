@@ -98,7 +98,7 @@ import {
   type WingNodeType,
 } from "@/lib/canvas/store";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
-import { assetThumbUrl } from "@/lib/asset-thumb";
+import { assetPreviewUrl, assetThumbUrl } from "@/lib/asset-thumb";
 import { rewriteText } from "@/lib/textwrite";
 import {
   RESEARCH_DEPTH_LABEL,
@@ -589,7 +589,9 @@ function useDisplaySrc(id: string, imageUrl: string | undefined): string | undef
   const [hires, setHires] = useState(false);
   if (hires ? onScreen <= 430 : onScreen > 540) setHires(onScreen > 540);
   if (!imageUrl) return undefined;
-  return hires ? imageUrl : assetThumbUrl(imageUrl);
+  // 放大态用 1600 长边预览档，不再直接拉 2K/4K 原图（3~7MB/张）；
+  // 要原始分辨率走灯箱/下载（那边仍用原 URL）
+  return hires ? assetPreviewUrl(imageUrl) : assetThumbUrl(imageUrl);
 }
 
 /** 悬浮工具条按钮（选中节点上方浮现的常用操作，libtv 范式；
@@ -4083,7 +4085,8 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const [trimOpen, setTrimOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [extracting, setExtracting] = useState(false);
-  // 媒体比例自适应：视频元数据到位按自然比例贴满媒体区
+  // 媒体比例自适应：preload="none" 下 video 不读元数据，改由封面缩略图定比例
+  // （封面与视频同为分镜画幅，实测差异 <2%；fittedFor 记账保证只贴一次）
   const mediaBoxRef = useRef<HTMLDivElement>(null);
   const applyMediaFit = useMediaFitHeight(id, d.videoUrl as string | undefined, mediaBoxRef);
   const [frameCount, setFrameCount] = useState(6);
@@ -4092,6 +4095,15 @@ function VideoCard({ data, id, selected }: NodeProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const lod = useLod();
+  useEffect(() => {
+    if (!d.videoUrl || !d.imageUrl) return;
+    const img = new Image();
+    img.onload = () => applyMediaFit(img.naturalWidth, img.naturalHeight);
+    img.src = assetThumbUrl(d.imageUrl);
+    return () => {
+      img.onload = null;
+    };
+  }, [d.videoUrl, d.imageUrl, applyMediaFit]);
   // 选中即静音预览、失焦即停（对标 viedeo-workflow 的扫片体验）
   useEffect(() => {
     const v = videoRef.current;
@@ -4104,9 +4116,11 @@ function VideoCard({ data, id, selected }: NodeProps) {
     }
   }, [selected]);
   // 就绪后按选定帧数抽缩略图（异步；失败静默——跨域或解码不支持就不出条）。
-  // LOD 门控：micro/nano 不渲染缩略图条，抽帧解码纯浪费
+  // LOD 门控：micro/nano 不渲染缩略图条，抽帧解码纯浪费。
+  // 选中门控：抽帧要 preload=auto + 逐帧 seek，等于把整段视频下完（实测 2.9MB/条）——
+  // 画布一开就 15 张卡全下是首屏最大单项，改为选中时才做（选中本就会自动播放）
   useEffect(() => {
-    if (lod !== "full") return;
+    if (lod !== "full" || !selected) return;
     const url = (data as WingNodeData | undefined)?.videoUrl;
     const key = url ? `${url}_${frameCount}` : "";
     if (!url || framesFor.current === key) return;
@@ -4118,7 +4132,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
         setFrames([]);
       }
     })();
-  }, [data, frameCount, lod]);
+  }, [data, frameCount, lod, selected]);
   // 防御：异常数据不渲染（hooks 已在上，顺序稳定）
   if (!d || typeof d.nodeType !== "string") return null;
   const versionCount = d.versions?.length ?? 0;
@@ -4299,9 +4313,9 @@ function VideoCard({ data, id, selected }: NodeProps) {
             <video
               ref={videoRef}
               src={d.videoUrl}
-              poster={d.imageUrl}
+              poster={d.imageUrl ? assetThumbUrl(d.imageUrl) : undefined}
               controls
-              preload="metadata"
+              preload="none"
               playsInline
               onLoadedMetadata={(e) =>
                 applyMediaFit(e.currentTarget.videoWidth, e.currentTarget.videoHeight)
@@ -4537,8 +4551,9 @@ function ComposeCard({ data, id, selected }: NodeProps) {
           ) : (
             <video
               src={d.videoUrl}
+              poster={d.imageUrl ? assetThumbUrl(d.imageUrl) : undefined}
               controls
-              preload="metadata"
+              preload="none"
               playsInline
               className="nodrag nowheel ws-media-in h-full w-full bg-black object-contain"
               onClick={(e) => e.stopPropagation()}
