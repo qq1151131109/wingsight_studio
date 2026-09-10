@@ -888,6 +888,13 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 .copilotKitAssistantMessage:hover [data-testid="copilot-assistant-toolbar"] {
     opacity: 1;
 }
+/* 一轮只有一组操作按钮：中间步骤（发起过工具调用、还没收轮的助手消息）不挂
+   操作栏——否则一轮 5 步就是 5 组复制/重新生成（2026-09-10 review）。判据在
+   AssistantMessage 的 data-ws-toolbar（收轮那条才为 "1"），行为本身由
+   toolbarVisible 属性收口，这条只兜底（属性透传链路变了也不会漏出按钮） */
+.ws-asst-msg[data-ws-toolbar="0"] [data-testid="copilot-assistant-toolbar"] {
+    display: none;
+}
 .copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button:not(.ws-msg-toggle) {
     width: 26px;
     height: 26px;
