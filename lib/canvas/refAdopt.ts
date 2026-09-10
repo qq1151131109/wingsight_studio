@@ -71,9 +71,11 @@ export async function autoAdoptTopRecommendations(
 /**
  * 批量采纳：每个资产一组候选，建卡连线到该资产所在列的参考带。
  * 返回新建卡 id 列表（供 flash 定位）。
+ * opts.history="skip" 给系统对账用（打开项目自愈落卡不该进撤销栈）。
  */
 export function adoptRefRows(
   rows: { nodeId: string; candidates: RefCandidate[] }[],
+  opts?: { history?: "commit" | "skip" },
 ): string[] {
   const st = useCanvasStore.getState();
   const fp = NODE_FOOTPRINT.image;
@@ -113,23 +115,26 @@ export function adoptRefRows(
       y0 = Math.max(y0, exBottom + 16);
     }
     candidates.forEach((c, i) => {
-      const newId = st.addNode({
-        position: {
-          x: origin.x + i * (fp.w + 24),
-          y: y0,
+      const newId = st.addNode(
+        {
+          position: {
+            x: origin.x + i * (fp.w + 24),
+            y: y0,
+          },
+          style: { width: fp.w, height: fp.h },
+          data: {
+            nodeType: "image",
+            title: (c.title || "参考图").slice(0, 40),
+            body: c.sourceDomain ? `来源：${c.sourceDomain}` : "",
+            imageUrl: c.assetUrl,
+            status: "ready",
+            refSource: "research",
+          },
         },
-        style: { width: fp.w, height: fp.h },
-        data: {
-          nodeType: "image",
-          title: (c.title || "参考图").slice(0, 40),
-          body: c.sourceDomain ? `来源：${c.sourceDomain}` : "",
-          imageUrl: c.assetUrl,
-          status: "ready",
-          refSource: "research",
-        },
-      });
+        opts,
+      );
       created.push(newId);
-      st.connect({ source: newId, target: nodeId });
+      st.connect({ source: newId, target: nodeId }, opts);
     });
   }
   return created;

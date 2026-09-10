@@ -31,21 +31,26 @@ export function belowContentAnchor(nodes: WingNode[]): { x: number; y: number } 
 }
 
 /** 在锚点找空位建卡；无项目（离线/未激活）返回 null，调用方静默跳过。
- *  size 缺省用类型足迹；传了就按它落位（长文档走文档尺寸，见 noteFootprintFor） */
+ *  size 缺省用类型足迹；传了就按它落位（长文档走文档尺寸，见 noteFootprintFor）
+ *  opts.history="skip" 给系统写入（对账落卡等）用——不进撤销栈 */
 export function addCardAt(
   anchor: { x: number; y: number },
   data: WingNodeData,
   size?: { w: number; h: number },
+  opts?: { history?: "commit" | "skip" },
 ): string | null {
   const st = useCanvasStore.getState();
   if (!st.projectId) return null;
   const fp = size ?? NODE_FOOTPRINT[data.nodeType] ?? NODE_FOOTPRINT.note;
   const pos = findFreePosition(st.nodes, anchor, { w: fp.w, h: fp.h });
-  return st.addNode({
-    position: pos,
-    data,
-    ...(size ? { style: { width: size.w, height: size.h } } : {}),
-  });
+  return st.addNode(
+    {
+      position: pos,
+      data,
+      ...(size ? { style: { width: size.w, height: size.h } } : {}),
+    },
+    opts,
+  );
 }
 
 /** 聊天上传的文档（doc/pdf/rtf/文本）→ 资料卡：正文=提取全文，标题=文件名。

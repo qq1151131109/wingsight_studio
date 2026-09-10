@@ -14,6 +14,21 @@ import {
 } from "@xyflow/react";
 import { IMAGEGEN_DEFAULT, type ImagegenParams } from "@/lib/imagegen";
 
+/** 题材真伪（存画布 meta.factuality）：真实题材（历史/罪案纪录片等）出图前
+ *  会为缺考据的资产补一次文字考据（年代/形制/常见误用），虚构题材（动画片）
+ *  跳过。缺省 "real"——主力片型是真实题材，仅动画等显式声明为 fiction */
+export type Factuality = "real" | "fiction";
+export const FACTUALITY_DEFAULT: Factuality = "real";
+/** 装载边界整形：非 "fiction" 一律回落默认（脏值不进 store / 不进 payload） */
+export const saneFactuality = (v: unknown): Factuality =>
+  v === "fiction" ? "fiction" : FACTUALITY_DEFAULT;
+
+/** 项目时代/题材口径（存画布 meta.era，如「北魏·平城时期」）：考据条目的
+ *  作用域键——同一时代同一资产的形制事实可跨项目复用；为空一律不复用
+ *  （名字像而年代不同的资产，「朝服」在唐宋与在北魏是两回事）。 */
+export const saneEra = (v: unknown): string =>
+  typeof v === "string" ? v.trim().slice(0, 40) : "";
+
 /** 画布节点类型：文本 / 剧本 / 角色 / 图片 / 视频 / 音频 / 合成 / 分镜 / 分镜表 / 调研 / 分组框 */
 export type WingNodeType =
   | "note"
@@ -110,6 +125,10 @@ export interface WingNodeData {
   /** 资产卡：文字考据简报（批量调研文路产物，视觉细节/时代特征/常见误用，
    *  每条带来源域名）。喂「AI 写设定」与出图设定的证据材料，用户可清空 */
   researchBrief?: string;
+  /** 文本卡：调研报告卡标记（reportKind="ref-research"=资产考证报告）。
+   *  报告由服务端条目拼装（GET /refs/report），前端对账时创建/更新——
+   *  同一项目恒定一张，按此标记去重不重复建卡 */
+  reportKind?: string;
   /** 文本卡：可点来源行（候选落卡 P1：候选的背景出处，卡面渲染成「来源」
    *  行，样式同调研卡来源底账）。上限 6 条，渲染层兜底再截 */
   links?: { title: string; url: string }[];
@@ -192,9 +211,26 @@ export interface WingNodeData {
   /** 调研卡：深度调研任务 id（卡面是任务实况的视图：进度/卷宗摘要；
    *  正文真相在 agent research_jobs 表，卡片凭它轮询，不在画布数据里存档） */
   researchId?: string;
-  /** 遗留字段（一卡一图重构前）：角色卡 Look 变体。UI 已不读写，仅装载时
-   *  经 sanitizeCanvas 迁移拆成独立图片卡并连线（角色→Look卡） */
-  looks?: { label: string; imageUrl: string; costumeId?: string }[];
+  /** 角色卡：造型/服饰变化计划（拆解 flow 产出，juben look 范式）。
+   *  这是造型的**唯一数据源**：未出图的项留在卡上供补造型图用；出图后回填
+   *  imageUrl/nodeId（同时物化成独立图片卡，卡面看图、此处留账）。
+   *  分镜引用时 preferLookRefs 按行文本的造型词自动选中对应造型卡。 */
+  looks?: {
+    /** 造型名（朝服/常服/冬装） */
+    label: string;
+    /** 该造型的服饰细节（拆解产出，作造型图出图提示词） */
+    description?: string;
+    /** 拆解给的服饰名（与剧本称呼一致，用于匹配服饰卡） */
+    costume?: string;
+    /** 匹配到的服饰卡 id（结构化绑定，改卡名不失联） */
+    costumeId?: string;
+    /** 造型图 URL（出图后回填） */
+    imageUrl?: string;
+    /** 造型图物化成的图片卡 id（幂等标记：有就视为已物化，卡被删也不复活） */
+    nodeId?: string;
+    /** 造型图出图失败的说明（留痕；不写 imageUrl，下次补造型图自然重试） */
+    error?: string;
+  }[];
   /** image 卡生命周期：占位(无图无状态) / loading / error / ready */
   status?: "loading" | "error" | "ready";
   errorMessage?: string;
@@ -229,7 +265,9 @@ interface CanvasSnapshot {
 }
 
 /** 节点数据更新选项：history="coalesce" 标记连续打字流（撤销合并窗口） */
-export type NodeDataUpdateOpts = { history?: "commit" | "coalesce" };
+/** history："skip" = 系统写入不进撤销栈（对账/自适应这类不是用户操作，
+ *  入栈会把「撤销生成/建卡」截断成只撤销系统写入）；"coalesce" = 打字合并 */
+export type NodeDataUpdateOpts = { history?: "commit" | "coalesce" | "skip" };
 
 interface CanvasState {
   nodes: WingNode[];
@@ -240,6 +278,10 @@ interface CanvasState {
   /** 项目级画风锚点（novanova visualStyle / viedeo-workflow styleAnchor）：
    *  注入所有出图与分镜生成；存画布 meta，随项目持久化 */
   projectStyle: string;
+  /** 项目级题材真伪（存 meta.factuality）：真实题材给缺考据的资产补文字考据 */
+  projectFactuality: Factuality;
+  /** 项目级时代/题材口径（存 meta.era）：考据条目跨项目复用的作用域键 */
+  projectEra: string;
   /** 项目级出图默认（模型 + 分辨率，存 meta.imagegen）：所有出图入口
    *  的生效配置；服务端按 agent/models.py 目录校验，非法组合 400 */
   imagegen: ImagegenParams;
@@ -250,6 +292,8 @@ interface CanvasState {
   /** 初始装载完成前不同步到服务端 */
   hydrated: boolean;
   setProjectStyle: (style: string) => void;
+  setProjectFactuality: (f: Factuality) => void;
+  setProjectEra: (era: string) => void;
   setImagegen: (patch: Partial<ImagegenParams>) => void;
   setProject: (id: string, name: string) => void;
   replaceCanvas: (
@@ -269,7 +313,11 @@ interface CanvasState {
    *  「只撤销了卡高」（image-node-ops D4 裁剪撤销回滚事故） */
   fitNodeHeight: (id: string, url: string, height: number) => void;
   deleteNodes: (ids: string[]) => void;
-  connect: (connection: Connection | { source: string; target: string }) => void;
+  /** history:"skip" = 系统写入（对账连线等）不进撤销栈 */
+  connect: (
+    connection: Connection | { source: string; target: string },
+    opts?: { history?: "commit" | "skip" },
+  ) => void;
   removeEdges: (ids: string[]) => void;
   onNodesChange: (changes: NodeChange<WingNode>[]) => void;
   onEdgesChange: (changes: EdgeChange<WingEdge>[]) => void;
@@ -619,6 +667,8 @@ export const useCanvasStore = create<CanvasState>()(
       viewport: { x: 0, y: 0, zoom: 1 },
       projectId: null,
       projectStyle: "",
+      projectFactuality: FACTUALITY_DEFAULT,
+      projectEra: "",
       imagegen: IMAGEGEN_DEFAULT,
       projectName: "",
       canvasRevision: null,
@@ -631,6 +681,8 @@ export const useCanvasStore = create<CanvasState>()(
       clipboardCount: 0,
 
       setProjectStyle: (style) => set({ projectStyle: style }),
+      setProjectFactuality: (f) => set({ projectFactuality: f }),
+      setProjectEra: (era) => set({ projectEra: saneEra(era) }),
       setImagegen: (patch) =>
         set((s) => ({ imagegen: { ...s.imagegen, ...patch } })),
       setSaveState: (saveState) => set({ saveState }),
@@ -645,6 +697,8 @@ export const useCanvasStore = create<CanvasState>()(
           projectName: name,
           hydrated: false,
           projectStyle: "",
+          projectFactuality: FACTUALITY_DEFAULT,
+          projectEra: "",
           imagegen: IMAGEGEN_DEFAULT,
           // 切项目清锁版本：新项目的 revision 由装载路径写入，防止旧值
           // 被首次保存携带造成假冲突
@@ -795,7 +849,9 @@ export const useCanvasStore = create<CanvasState>()(
         // 打字类更新（opts.history="coalesce"）：800ms 窗口内只入栈一次
         // "打字前"快照（与 nudge 同款合并）——否则每字符一次全画布
         // structuredClone + 一步撤销，大剧本上 undo 栈既爆内存又不可用
-        if (opts?.history === "coalesce") {
+        if (opts?.history === "skip") {
+          lastTypeCommitAt = 0;
+        } else if (opts?.history === "coalesce") {
           const now = Date.now();
           if (now - lastTypeCommitAt > 800) get().commitHistory();
           lastTypeCommitAt = now;
@@ -937,8 +993,8 @@ export const useCanvasStore = create<CanvasState>()(
         return children.length;
       },
 
-      connect: (connection) => {
-        get().commitHistory();
+      connect: (connection, opts) => {
+        if (opts?.history !== "skip") get().commitHistory();
         set((state) => ({
           edges: addEdge(
             {

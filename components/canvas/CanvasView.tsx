@@ -896,7 +896,7 @@ function BottomDock({
   const imagegen = useCanvasStore((s) => s.imagegen);
   // 模型目录（模块级缓存，与出图面板/PromptBar 共享一次加载）：底坞只说人话，
   // 绝不把内部模型 id 当标签甩出去——曾用 `?? imagegen.model` 静默回落，目录
-  // 没到/加载失败时底坞直接显示 gpt-image-2-03。加载中/失败/已下架三种状态
+  // 没到/加载失败时底坞直接显示内部模型 id。加载中/失败/已下架三种状态
   // 各有说法，后两种亮红，重试与重选的入口在点开的「出图设置」弹窗里
   const { models: imageModels, error: imageModelsError } = useImageModels();
   const imageModelEntry = findModelOption(imagegen.model, imageModels);

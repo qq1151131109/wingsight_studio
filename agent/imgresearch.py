@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -92,6 +93,48 @@ def init_ref_research_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_ref_candidates_node
                 ON ref_candidates(project_id, node_id, idx_total);
+
+            -- 考据条目：调研文字产物的服务端权威落点（详见「考证条目与报告」节）。
+            -- era 是跨项目复用的作用域键；topic_key 留给考证大纲的主题归属。
+            CREATE TABLE IF NOT EXISTS research_entries (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                asset_key TEXT NOT NULL,
+                node_id TEXT NOT NULL DEFAULT '',
+                asset_name TEXT NOT NULL DEFAULT '',
+                asset_type TEXT NOT NULL DEFAULT '',
+                era TEXT NOT NULL DEFAULT '',
+                topic_key TEXT NOT NULL DEFAULT '',
+                body TEXT NOT NULL DEFAULT '',
+                sources_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, asset_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_research_entries_era
+                ON research_entries(era, asset_name);
+
+            -- 考证大纲：项目级研究计划（主题 → 检索词 → 服务哪些卡）。
+            -- 调研的单位是「题材/时代」不是「资产」：40 个资产共享的时代事实
+            -- 只有一套，按资产各搜一遍既是浪费又会得出互相矛盾的结论。
+            -- topic_key = 标题归一，跨项目复用按 (era, topic_key) 命中。
+            CREATE TABLE IF NOT EXISTS research_topics (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                topic_key TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                rationale TEXT NOT NULL DEFAULT '',
+                queries_json TEXT NOT NULL DEFAULT '[]',
+                node_ids_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'planned',
+                reused_from TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(project_id, topic_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_research_topics_era
+                ON research_topics(project_id);
             """
         )
         # 已建旧表补列（新列不允许静默缺失）
@@ -211,6 +254,852 @@ def _now() -> str:
     from datetime import datetime, timezone
 
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+# ---------- 考证条目与报告（调研产物的服务端落点） ----------
+#
+# 调研产物此前只有两个去处：候选图落 ref_candidates，考据简报只活在 agent
+# 进程内存的 job 字典里（重启即蒸发）。用户能看见的唯一形态是画布卡的
+# data.researchBrief 与参考卡，而它的写入端全在前端轮询回调里——锚卡被平移
+# 卸载、agent 从聊天发起调研（没人把 batchId 写进 refBatchJobId 锚）、agent
+# 重启，任意一条发生产物就永久留在内存或 DB 行里，画布上什么都没有
+# （2026-09-10 生产库实测：23 个项目 refSource 零命中、资产卡 researchBrief
+# 全零，而 ref_candidates 里躺着 152 张已采纳的参考图）。
+#
+# 条目表就是补这个洞：简报一产出即入库，与谁发起、画布开没开、进程活没活
+# 都无关；画布上的简报与报告卡是对它的呈现，打开项目对账一次即可自愈。
+# era 是跨项目复用的作用域键——同一时代、同一资产的形制事实可以复用；
+# era 为空一律不复用（宁可重搜，不可错用年代）。
+
+ENTRY_LOOKUP_LIMIT = 3  # 跨项目复用单资产最多取几条历史条目
+
+
+def _norm_name(name: str) -> str:
+    """资产名归一（去空白与常见标点、小写）：跨项目命中按它比，空格标点差异不漏命中。"""
+    return re.sub(r"[\s·、,，.。()（）\[\]【】\-—_/]+", "", str(name or "").lower())
+
+
+def _project_scope(project_id: str) -> tuple[str, str]:
+    """项目名与时代口径（projects.name + canvases.meta.era）。读不到给空串。"""
+    if not project_id:
+        return "", ""
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            p = db.execute(
+                "SELECT name FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            c = db.execute(
+                "SELECT meta FROM canvases WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001 读不到就空口径，不拦报告
+        return "", ""
+    name = str(p["name"]) if p else ""
+    era = ""
+    if c and c["meta"]:
+        try:
+            era = str((json.loads(c["meta"]) or {}).get("era") or "").strip()
+        except Exception:  # noqa: BLE001
+            era = ""
+    return name, era
+
+
+def upsert_entry(
+    project_id: str,
+    *,
+    body: str,
+    node_id: str = "",
+    asset_name: str = "",
+    asset_type: str = "",
+    era: str = "",
+    topic_key: str = "",
+    sources: list[dict[str, Any]] | None = None,
+) -> str:
+    """写入/覆盖一条考据条目，返回条目 id。
+
+    重跑语义：同资产再次调研覆盖旧条目（与候选「重跑清掉旧未采纳」同口径）。
+    归属键取节点 id（改名不失联），无 id 退回按名归一。"""
+    body = str(body or "").strip()
+    if not project_id or not body:
+        raise ValueError("考据条目需要 project_id 与正文")
+    key = f"node:{node_id}" if str(node_id or "").strip() else f"name:{_norm_name(asset_name)}"
+    now = _now()
+    src = json.dumps(sources or [], ensure_ascii=False)
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM research_entries WHERE project_id = ? AND asset_key = ?",
+            (project_id, key),
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE research_entries SET node_id=?, asset_name=?, asset_type=?,
+                    era=?, topic_key=?, body=?, sources_json=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    str(node_id or ""),
+                    str(asset_name or ""),
+                    str(asset_type or ""),
+                    str(era or ""),
+                    str(topic_key or ""),
+                    body,
+                    src,
+                    now,
+                    row["id"],
+                ),
+            )
+            return str(row["id"])
+        eid = uuid.uuid4().hex[:12]
+        conn.execute(
+            """
+            INSERT INTO research_entries (id, project_id, asset_key, node_id,
+                asset_name, asset_type, era, topic_key, body, sources_json,
+                created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                eid,
+                project_id,
+                key,
+                str(node_id or ""),
+                str(asset_name or ""),
+                str(asset_type or ""),
+                str(era or ""),
+                str(topic_key or ""),
+                body,
+                src,
+                now,
+                now,
+            ),
+        )
+    return eid
+
+
+def _entry_row(r: sqlite3.Row) -> dict[str, Any]:
+    try:
+        sources = json.loads(r["sources_json"] or "[]")
+    except Exception:  # noqa: BLE001
+        sources = []
+    return {
+        "id": r["id"],
+        "projectId": r["project_id"],
+        "nodeId": r["node_id"],
+        "assetName": r["asset_name"],
+        "assetType": r["asset_type"],
+        "era": r["era"],
+        "topicKey": r["topic_key"],
+        "body": r["body"],
+        "sources": sources if isinstance(sources, list) else [],
+        "updatedAt": r["updated_at"],
+    }
+
+
+def list_entries(project_id: str) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_entries WHERE project_id = ? ORDER BY updated_at",
+            (project_id,),
+        ).fetchall()
+    return [_entry_row(r) for r in rows]
+
+
+def lookup_entries(
+    era: str,
+    asset_name: str,
+    asset_type: str = "",
+    limit: int = ENTRY_LOOKUP_LIMIT,
+) -> list[dict[str, Any]]:
+    """跨项目复用查询：同 era + 同资产名（归一后相等）的历史条目。
+
+    严格相等——名字像但不同（「朝服」vs「冯太后朝服」）不命中，宁可重搜，
+    不可把另一个形制的事实塞给出图。era 为空直接返回空（无作用域即不复用）。
+
+    asset_type 只作同名不同物的负向护栏，且**两侧都是资产四类之一时才比**：
+    分镜出图载荷的类型是版式（shot/none），拿它当资产身份比会把该命中的全
+    漏掉（分镜行引冯太后时载荷类型是 shot，条目上是 character）。"""
+    era = str(era or "").strip()
+    want = _norm_name(asset_name)
+    if not era or not want:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_entries WHERE era = ?", (era,)
+        ).fetchall()
+    hits: list[dict[str, Any]] = []
+    for r in rows:
+        if _norm_name(r["asset_name"]) != want:
+            continue
+        got = str(r["asset_type"] or "")
+        if (
+            asset_type in _ASSET_NODE_TYPES
+            and got in _ASSET_NODE_TYPES
+            and got != asset_type
+        ):
+            continue
+        hits.append(_entry_row(r))
+    hits.sort(key=lambda e: str(e.get("updatedAt") or ""), reverse=True)
+    return hits[:limit]
+
+
+# 画布资产卡型（报告里「待补考据」与资产覆盖面按它统计）
+_ASSET_NODE_TYPES = ("character", "scene", "prop", "costume")
+
+
+def canvas_assets(project_id: str) -> list[dict[str, str]]:
+    """项目画布上的资产卡清单：[{nodeId, title, nodeType}]（空名卡不进——未命名
+    资产既不在 @ 名单里也不该进报告）。"""
+    if not project_id:
+        return []
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            row = db.execute(
+                "SELECT nodes FROM canvases WHERE project_id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        return []
+    nodes = json.loads(row[0]) if row and row[0] else []
+    out: list[dict[str, str]] = []
+    for n in nodes if isinstance(nodes, list) else []:
+        if not isinstance(n, dict):
+            continue
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        nt = str(data.get("nodeType") or "")
+        title = str(data.get("title") or "").strip()
+        if nt not in _ASSET_NODE_TYPES or not title:
+            continue
+        out.append({"nodeId": str(n.get("id") or ""), "title": title, "nodeType": nt})
+    return out
+
+
+def adopted_by_node(project_id: str) -> dict[str, list[dict[str, Any]]]:
+    """已采纳候选按节点分组（报告底账 + 前端对账物化用）。"""
+    with _conn() as conn:
+        rows = conn.execute(
+            """SELECT * FROM ref_candidates WHERE project_id = ? AND adopted = 1
+               ORDER BY node_id, rec_rank""",
+            (project_id,),
+        ).fetchall()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(r["node_id"], []).append(_to_dict(r))
+    return out
+
+
+_TYPE_LABELS = {
+    "character": "角色",
+    "scene": "场景",
+    "prop": "道具",
+    "costume": "服饰",
+}
+
+_REPORT_ADOPT_SAMPLE = 5  # 参考图底账每资产列几条（全量在找参考图面板）
+
+# 报告分节序数（段数随有无考证大纲浮动，所以按序号取而不是写死）
+_CN_NUM = ("", "一", "二", "三", "四", "五", "六")
+
+
+def build_report(project_id: str) -> dict[str, Any]:
+    """拼一份项目考证报告：考证大纲 + 条目（按资产）+ 参考图底账 + 待补清单。
+
+    文本是「全貌索引」——一眼看全这个项目现在基于什么事实在做、计划到哪一步、
+    还缺哪些。主题条目（asset_type=topic）归大纲段，不混进资产段。"""
+    project_name, era = _project_scope(project_id)
+    entries = list_entries(project_id)
+    asset_entries = [e for e in entries if e["assetType"] != "topic"]
+    by_node = {e["nodeId"]: e for e in asset_entries if e["nodeId"]}
+    by_name = {_norm_name(e["assetName"]): e for e in asset_entries if e["assetName"]}
+    assets = canvas_assets(project_id)
+    adopted = adopted_by_node(project_id)
+    outline = build_outline(project_id)
+    t_by_node, t_by_name = topic_briefs(project_id)
+
+    def _topics_for(node_id: str, title: str) -> list[list[str]]:
+        """服务该卡的考据主题（先按节点 id，再按资产名——名是各路径都有的键）。"""
+        return t_by_node.get(node_id) or t_by_name.get(title) or []
+
+    covered: list[dict[str, Any]] = []
+    missing: list[dict[str, str]] = []
+    for a in assets:
+        e = by_node.get(a["nodeId"]) or by_name.get(_norm_name(a["title"]))
+        # 被主题覆盖也算「已有考据」：主题考据是时代共有事实，对成员资产同样成立
+        # （不这么算的话，被主题覆盖的卡会一直挂在「待补」里催用户做已经做过的事）
+        topics_for = _topics_for(a["nodeId"], a["title"])
+        if e or topics_for:
+            covered.append({**a, "entry": e, "topics": [t[0] for t in topics_for]})
+        else:
+            missing.append(a)
+    # 卡已不在画布上但条目还在（改名/删卡）：仍列出，条目不因卡没了就消失
+    on_canvas = {a["nodeId"] for a in assets}
+    for e in asset_entries:
+        if e["nodeId"] and e["nodeId"] not in on_canvas:
+            covered.append(
+                {
+                    "nodeId": e["nodeId"],
+                    "title": e["assetName"] or "未命名资产",
+                    "nodeType": e["assetType"],
+                    "entry": e,
+                    "orphan": True,
+                }
+            )
+
+    lines: list[str] = [f"《{project_name or '未命名项目'}》资产考证报告"]
+    if era:
+        lines.append(f"时代/题材：{era}")
+    lines.append(
+        f"资产 {len(assets)} 个 · 已有考据 {len(covered)} 个"
+        f" · 待补 {len(missing)} 个"
+    )
+    lines.append(f"生成于 {_now()[:16].replace('T', ' ')}")
+
+    sec = 0
+    if outline["topics"]:
+        sec += 1
+        lines.append("")
+        lines.append(
+            f"{_CN_NUM[sec]}、考证大纲（{len(outline['topics'])} 个主题"
+            f" · 已完成 {outline['done_count']}）"
+        )
+        lines.extend(outline["lines"])
+
+    sec += 1
+    lines.append("")
+    lines.append(f"{_CN_NUM[sec]}、考据事实")
+    if not covered:
+        lines.append("（暂无——在资产卡「找参考图」发起调研后，考据会自动汇总到这里）")
+    for c in covered:
+        e = c["entry"]
+        kind = str(e["assetType"]) if e else str(c["nodeType"])
+        label = _TYPE_LABELS.get(kind, kind)
+        gone = "（画布上已无此卡）" if c.get("orphan") else ""
+        lines.append("")
+        lines.append(f"■ {c['title']}（{label or '资产'}）{gone}")
+        if e:
+            lines.append(str(e["body"]).strip())
+            doms = [
+                str(s.get("domain") or _domain(str(s.get("url") or "")))
+                for s in e["sources"]
+                if isinstance(s, dict)
+            ]
+            doms = [d for d in doms if d]
+            if doms:
+                seen: list[str] = []
+                for d in doms:
+                    if d not in seen:
+                        seen.append(d)
+                lines.append("—— 来源：" + "、".join(seen[:6]))
+        for ttitle, _tbody in _topics_for(c["nodeId"], c["title"]):
+            lines.append(f"＋主题考据〈{ttitle}〉（全文见考证大纲）")
+
+    sec += 1
+    lines.append("")
+    lines.append(
+        f"{_CN_NUM[sec]}、参考图底账（已采纳 {sum(len(v) for v in adopted.values())} 张）"
+    )
+    if not adopted:
+        lines.append("（暂无已采纳的参考图）")
+    for a in assets:
+        rows = adopted.get(a["nodeId"]) or []
+        if not rows:
+            continue
+        doms = []
+        for r in rows:
+            d = str(r.get("sourceDomain") or "") or _domain(str(r.get("sourceUrl") or ""))
+            if d and d not in doms:
+                doms.append(d)
+        sample = rows[:_REPORT_ADOPT_SAMPLE]
+        titles = "；".join(str(r.get("title") or "参考图")[:24] for r in sample)
+        more = f" 等 {len(rows)} 张" if len(rows) > len(sample) else ""
+        lines.append(f"■ {a['title']}（{len(rows)} 张）")
+        lines.append(f"  {titles}{more}")
+        if doms:
+            lines.append(f"  来源域名：{'、'.join(doms[:6])}")
+
+    sec += 1
+    lines.append("")
+    lines.append(f"{_CN_NUM[sec]}、待补考据（{len(missing)} 个资产）")
+    if not missing:
+        lines.append("（画布资产已全部有考据）")
+    for m in missing:
+        label = _TYPE_LABELS.get(m["nodeType"], m["nodeType"])
+        lines.append(f"· {m['title']}（{label}）")
+
+    # 卡面简报 = 本资产条目 + 服务它的主题条目。出图注入的是同一个合成结果
+    # （skills._inject_research_briefs），所以「卡上显示的」=「出图发出去的」
+    card_briefs: dict[str, str] = {}
+    for a in assets:
+        e = by_node.get(a["nodeId"]) or by_name.get(_norm_name(a["title"]))
+        parts: list[str] = []
+        if e:
+            parts.append(str(e["body"]).strip())
+        for ttitle, tbody in _topics_for(a["nodeId"], a["title"]):
+            parts.append(f"〈{ttitle}〉{tbody}")
+        if parts:
+            card_briefs[a["nodeId"]] = "；".join(p for p in parts if p)
+    for e in asset_entries:
+        if e["nodeId"] and e["nodeId"] not in on_canvas and str(e["body"]).strip():
+            card_briefs.setdefault(e["nodeId"], str(e["body"]).strip())
+
+    return {
+        "projectId": project_id,
+        "projectName": project_name,
+        "era": era,
+        "entries": entries,
+        "missing": missing,
+        "adopted": [{"nodeId": k, "candidates": v} for k, v in adopted.items()],
+        "outline": outline["topics"],
+        "cardBriefs": card_briefs,
+        "text": "\n".join(lines),
+        "generatedAt": _now(),
+    }
+
+
+# ---------- 考证大纲（项目级研究计划：主题 → 检索词 → 服务哪些卡） ----------
+#
+# 调研计划不是「一个资产一次调研」的延长线，而是换主语：主题/时代才是单位，
+# 资产是成果的消费者。三类重叠事实里影响面最大的那类（时代共有事实：服制、
+# 发式、宫室形制）不属于任何单个资产——旧流程只有「资产」这个单位，无主的
+# 事实就没人做；大纲的作用正是给无主的事实安一个主，并按「服务多少张卡」
+# 排资源（影响 6 张卡的服制和影响 1 张的漆器不该花一样的时间）。
+
+TOPIC_STATUS = ("planned", "running", "done", "reused", "error")# 大纲规模闸门：一个项目 40 个资产也不该铺出 50 个主题（人审不动 = 不审）
+MAX_TOPICS = 24
+# 主题执行并发（Serper 号池限速，与补考据同档）
+TOPIC_CONCURRENCY = 4
+
+
+def _topic_row(r: sqlite3.Row) -> dict[str, Any]:
+    def _load(col: str) -> list[Any]:
+        try:
+            v = json.loads(r[col] or "[]")
+        except Exception:  # noqa: BLE001
+            return []
+        return v if isinstance(v, list) else []
+
+    return {
+        "id": r["id"],
+        "topicKey": r["topic_key"],
+        "title": r["title"],
+        "rationale": r["rationale"],
+        "queries": [str(q) for q in _load("queries_json")],
+        "nodeIds": [str(n) for n in _load("node_ids_json")],
+        "status": r["status"],
+        "reusedFrom": r["reused_from"],
+        "error": r["error"],
+        "updatedAt": r["updated_at"],
+    }
+
+
+def list_topics(project_id: str) -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_topics WHERE project_id = ? ORDER BY created_at",
+            (project_id,),
+        ).fetchall()
+    return [_topic_row(r) for r in rows]
+
+
+def replace_topics(project_id: str, topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """整份替换项目考证大纲。
+
+    整份替换而非增量合并：大纲是「这个项目打算怎么考据」的一份判断，增量叠加
+    会攒出互相矛盾的多版计划、没人知道当前生效的是哪版。删掉的主题若已有考据
+    条目，条目本身保留（那是事实，不随计划取消而失效），只摘掉主题归属。
+
+    节点 id 校验照 research_asset_references 的防幻觉口径：不在画布上的 id
+    报错并列出可用卡清单（模型下一轮能自纠），不静默丢弃。"""
+    project_id = str(project_id or "").strip()
+    if not project_id:
+        raise ValueError("缺少 project_id")
+    if not topics:
+        raise ValueError("考证大纲不能为空（没有要考据的题材就先别建大纲）")
+    if len(topics) > MAX_TOPICS:
+        raise ValueError(f"主题数上限 {MAX_TOPICS}（当前 {len(topics)}）——大纲是给人审的，铺太多等于没审")
+    assets = {a["nodeId"]: a for a in canvas_assets(project_id)}
+    known = "、".join(f"{a['title']}({a['nodeId']})" for a in assets.values()) or "（画布上没有资产卡）"
+
+    clean: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for t in topics:
+        if not isinstance(t, dict):
+            raise ValueError("主题必须是对象")
+        title = str(t.get("title") or "").strip()
+        if not title:
+            raise ValueError("主题缺少 title")
+        key = _norm_name(title)[:60]
+        if not key:
+            raise ValueError(f"主题「{title}」标题无法归一成键")
+        if key in seen_keys:
+            raise ValueError(f"主题键重复：「{title}」——同一件事写两遍会得出两套考据")
+        seen_keys.add(key)
+        queries = [str(q).strip() for q in (t.get("queries") or []) if str(q).strip()]
+        node_ids: list[str] = []
+        for raw in t.get("nodeIds") or []:
+            nid = str(raw).strip()
+            if not nid:
+                continue
+            if nid not in assets:
+                raise ValueError(
+                    f"主题「{title}」引用了画布上不存在的卡片 id：{nid}。"
+                    f"可用资产卡：{known}。修正 nodeIds 后原样重发。"
+                )
+            if nid not in node_ids:
+                node_ids.append(nid)
+        clean.append(
+            {
+                "topic_key": key,
+                "title": title[:60],
+                "rationale": str(t.get("rationale") or "").strip()[:400],
+                "queries": queries[:4],
+                "node_ids": node_ids,
+            }
+        )
+
+    now = _now()
+    with _conn() as conn:
+        keep = [c["topic_key"] for c in clean]
+        # 摘掉被移出大纲的主题归属（条目保留——事实不随计划取消而失效）
+        marks = ",".join("?" for _ in keep)
+        conn.execute(
+            f"DELETE FROM research_topics WHERE project_id = ? AND topic_key NOT IN ({marks})",
+            (project_id, *keep),
+        )
+        conn.execute(
+            f"UPDATE research_entries SET topic_key = '' WHERE project_id = ?"
+            f" AND topic_key != '' AND topic_key NOT IN ({marks})",
+            (project_id, *keep),
+        )
+        for c in clean:
+            row = conn.execute(
+                "SELECT id, status, reused_from FROM research_topics"
+                " WHERE project_id = ? AND topic_key = ?",
+                (project_id, c["topic_key"]),
+            ).fetchone()
+            payload = (
+                c["title"],
+                c["rationale"],
+                json.dumps(c["queries"], ensure_ascii=False),
+                json.dumps(c["node_ids"], ensure_ascii=False),
+                now,
+            )
+            if row:
+                # 计划调整不清成果：已完成/复用状态与出处留着，重跑由调用方显式发起
+                conn.execute(
+                    """UPDATE research_topics SET title=?, rationale=?, queries_json=?,
+                       node_ids_json=?, updated_at=? WHERE id=?""",
+                    (*payload, row["id"]),
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO research_topics (id, project_id, topic_key, title,
+                       rationale, queries_json, node_ids_json, status, reused_from,
+                       error, created_at, updated_at)
+                       VALUES (?,?,?,?,?,?,?,'planned','','',?,?)""",
+                    (
+                        uuid.uuid4().hex[:12],
+                        project_id,
+                        c["topic_key"],
+                        *payload,
+                        now,
+                    ),
+                )
+    return list_topics(project_id)
+
+
+def _topic_status(project_id: str, topic_key: str, status: str, **fields: Any) -> None:
+    sets = ["status = ?", "updated_at = ?"]
+    vals: list[Any] = [status, _now()]
+    for col, val in fields.items():
+        sets.append(f"{col} = ?")
+        vals.append(val)
+    vals.extend([project_id, topic_key])
+    with _conn() as conn:
+        conn.execute(
+            f"UPDATE research_topics SET {', '.join(sets)}"
+            " WHERE project_id = ? AND topic_key = ?",
+            tuple(vals),
+        )
+
+
+def topic_entry(project_id: str, topic_key: str) -> dict[str, Any] | None:
+    """本项目该主题的考据条目（执行产物）。"""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM research_entries WHERE project_id = ? AND topic_key = ?"
+            " ORDER BY updated_at DESC LIMIT 1",
+            (project_id, topic_key),
+        ).fetchone()
+    return _entry_row(row) if row else None
+
+
+def build_outline_report(project_id: str) -> dict[str, Any]:
+    """大纲的人读视图：主题 + 正文（落大纲卡）+ 覆盖统计 + 未被覆盖的资产。
+
+    「未被任何主题覆盖的资产」是大纲段最有用的输出——盘点缺口用：既可能是
+    该单独立主题的资产，也可能是并进已有主题就行。"""
+    project_name, era = _project_scope(project_id)
+    # 大纲卡是计划与进度板，不含事实正文（事实归报告卡，两边不重复）
+    outline = build_outline(project_id, with_facts=False)
+    assets = canvas_assets(project_id)
+    covered = set(outline["coveredNodeIds"])
+    uncovered = [a for a in assets if a["nodeId"] not in covered]
+
+    lines: list[str] = [f"《{project_name or '未命名项目'}》考证大纲"]
+    if era:
+        lines.append(f"时代/题材：{era}")
+    lines.append(
+        f"主题 {len(outline['topics'])} 个 · 已完成 {outline['done_count']}"
+        f" · 资产 {len(assets)} 个（未被主题覆盖 {len(uncovered)} 个）"
+    )
+    lines.append(f"生成于 {_now()[:16].replace('T', ' ')}")
+    lines.extend(outline["lines"])
+    if uncovered:
+        lines.append("")
+        lines.append("未被任何主题覆盖的资产（单独立主题，或并进已有主题）：")
+        for a in uncovered:
+            lines.append(f"· {a['title']}（{_TYPE_LABELS.get(a['nodeType'], a['nodeType'])}）")
+
+    return {
+        "projectId": project_id,
+        "projectName": project_name,
+        "era": era,
+        "topics": outline["topics"],
+        "uncovered": uncovered,
+        "assetCount": len(assets),
+        "doneCount": outline["done_count"],
+        "text": "\n".join(lines),
+        "generatedAt": _now(),
+    }
+
+
+def topic_briefs(
+    project_id: str,
+) -> tuple[dict[str, list[list[str]]], dict[str, list[list[str]]]]:
+    """主题考据按资产分发的索引：(按节点 id, 按资产名) → [[主题名, 事实], …]。
+
+    主题条目是「时代共有事实」，一个主题服务多张卡——出图与卡面展示都按主题的
+    服务范围分发到成员资产。状态为 reused 的主题在本项目没有条目，按 (era, 主题键)
+    取源项目的条目：复用是活引用不是拷贝，源项目改进后这里跟着变。"""
+    empty: tuple[dict[str, list[list[str]]], dict[str, list[list[str]]]] = ({}, {})
+    if not project_id:
+        return empty
+    topics = list_topics(project_id)
+    if not topics:
+        return empty
+    _, era = _project_scope(project_id)
+    titles = {a["nodeId"]: a["title"] for a in canvas_assets(project_id)}
+    by_node: dict[str, list[list[str]]] = {}
+    by_name: dict[str, list[list[str]]] = {}
+    for t in topics:
+        entry = topic_entry(project_id, t["topicKey"])
+        if not entry and t["status"] == "reused":
+            entry = lookup_topic_entry(era, t["topicKey"], exclude_project=project_id)
+        if not entry:
+            continue
+        body = str(entry.get("body") or "").strip()
+        if not body:
+            continue
+        item = [t["title"], body]
+        for nid in t["nodeIds"]:
+            by_node.setdefault(nid, []).append(item)
+            title = titles.get(nid)
+            if title:
+                by_name.setdefault(title, []).append(item)
+    return by_node, by_name
+
+
+def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
+    """大纲视图：每个主题的检索词、服务哪些卡、状态、（可选）已考据的事实与出处。
+
+    「服务哪些卡」是大纲最有信息量的一列——它把复用关系显式化了：一眼看出
+    这个主题值不值得做（服务 6 张 vs 1 张），也就能按影响面排资源。
+
+    with_facts=False 给大纲卡（计划与进度板，不含事实正文——事实归报告卡，
+    两边都不重复）。"""
+    _, era = _project_scope(project_id)
+    assets = {a["nodeId"]: a for a in canvas_assets(project_id)}
+    topics_out: list[dict[str, Any]] = []
+    lines: list[str] = []
+    covered_nodes: list[str] = []
+    done = 0
+    for t in list_topics(project_id):
+        entry = topic_entry(project_id, t["topicKey"])
+        if entry:
+            done += 1
+        serves = [
+            {"nodeId": nid, "title": assets[nid]["title"]}
+            for nid in t["nodeIds"]
+            if nid in assets
+        ]
+        covered_nodes.extend(s for s in t["nodeIds"] if s in assets)
+        # 有事实即已完成：状态机只记录过程，产物为准（条目可能是直接写入或补考据
+        # 落库的，状态还停在 planned，此时显示「待执行」会误导）
+        if entry and t["status"] != "reused":
+            status_label = "已完成"
+        elif t["status"] == "reused":
+            status_label = f"复用自《{t['reusedFrom'] or '同题材项目'}》"
+        else:
+            status_label = {
+                "planned": "待执行",
+                "running": "进行中",
+                "error": f"失败：{t['error'] or '未知原因'}",
+            }.get(t["status"], t["status"])
+        lines.append("")
+        lines.append(
+            f"■ {t['title']}（服务 {len(serves)} 张卡 · {status_label}）"
+        )
+        if t["rationale"]:
+            lines.append(f"  为什么：{t['rationale']}")
+        if serves:
+            lines.append("  服务：" + "、".join(s["title"] for s in serves))
+        if t["queries"]:
+            lines.append("  检索词：" + " · ".join(t["queries"]))
+        if with_facts and entry:
+            lines.append("  " + str(entry["body"]).strip().replace("\n", "\n  "))
+            doms = [
+                str(s.get("domain") or _domain(str(s.get("url") or "")))
+                for s in entry["sources"]
+                if isinstance(s, dict)
+            ]
+            doms = [d for d in doms if d]
+            if doms:
+                seen: list[str] = []
+                for d in doms:
+                    if d not in seen:
+                        seen.append(d)
+                lines.append("  —— 来源：" + "、".join(seen[:6]))
+        topics_out.append({**t, "serves": serves, "entry": entry})
+    return {
+        "era": era,
+        "topics": topics_out,
+        "lines": lines,
+        "done_count": done,
+        "coveredNodeIds": covered_nodes,
+        "assetCount": len(assets),
+    }
+
+
+def lookup_topic_entry(
+    era: str, topic_key: str, exclude_project: str = ""
+) -> dict[str, Any] | None:
+    """跨项目复用：同 era 同主题键的历史条目（别的项目已经考据过同一件事）。
+
+    严格按主题键相等——主题键是标题归一，同键即同一件事。era 为空不复用。"""
+    era = str(era or "").strip()
+    if not era or not topic_key:
+        return None
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_entries WHERE era = ? AND topic_key = ?"
+            " ORDER BY updated_at DESC",
+            (era, topic_key),
+        ).fetchall()
+    for r in rows:
+        if exclude_project and r["project_id"] == exclude_project:
+            continue
+        return _entry_row(r)
+    return None
+
+
+async def _run_topic(project_id: str, topic_key: str, sem: asyncio.Semaphore) -> None:
+    """执行一个主题：先查同题材历史条目（复用即零成本），否则搜一轮落条目。
+
+    文路原语与资产调研共用（_run_text_research）；失败记在主题行上明报，
+    不静默标完成。"""
+    # 函数内 import：与 _run_research 同式（imgresearch 顶层已 from skills import，
+    # 但模块名 skills 只在函数内绑定，避免 import 顺序敏感）
+    import skills
+
+    _, era = _project_scope(project_id)
+    async with sem:
+        reused = lookup_topic_entry(era, topic_key, exclude_project=project_id)
+        if reused:
+            _, src_name = _project_scope(str(reused.get("projectId") or ""))
+            _topic_status(
+                project_id,
+                topic_key,
+                "reused",
+                reused_from=src_name or "同题材项目",
+                error="",
+            )
+            return
+        topics = {t["topicKey"]: t for t in list_topics(project_id)}
+        topic = topics.get(topic_key)
+        if topic is None:
+            return
+        _topic_status(project_id, topic_key, "running", error="")
+        try:
+            queries = list(topic["queries"])
+            if not queries:
+                plan = await skills.run_ref_plan_flow(
+                    {
+                        "name": topic["title"],
+                        "type": "topic",
+                        "description": topic["rationale"] or topic["title"],
+                    },
+                    [],
+                )
+                queries = [
+                    str(q).strip()
+                    for q in (plan.get("text_queries") or [])
+                    if str(q).strip()
+                ]
+            if not queries:
+                raise RuntimeError("主题没有检索词，且 plan flow 未产出文字检索词")
+            errors: dict[str, str] = {}
+            brief, sources = await _run_text_research(
+                {
+                    "name": topic["title"],
+                    "type": "topic",
+                    "description": topic["rationale"],
+                },
+                queries[: _MAX_TEXT_QUERIES],
+                errors,
+            )
+            upsert_entry(
+                project_id,
+                body=brief,
+                asset_name=topic["title"],
+                asset_type="topic",
+                era=era,
+                topic_key=topic_key,
+                sources=sources,
+            )
+            _topic_status(
+                project_id, topic_key, "done", error="；".join(errors.values())[:160]
+            )
+        except Exception as exc:  # noqa: BLE001 单主题失败不中断整批
+            print(f"[大纲] 主题执行失败 {project_id}/{topic_key}：{str(exc)[:160]}", flush=True)
+            _topic_status(project_id, topic_key, "error", error=str(exc)[:160])
+
+
+def run_topics(project_id: str, topic_keys: list[str] | None = None) -> list[str]:
+    """执行主题（缺省=全部未完成的）：并发跑，状态写在主题行上（大纲即进度板）。"""
+    todos = [
+        t["topicKey"]
+        for t in list_topics(project_id)
+        if t["status"] != "done" and (not topic_keys or t["topicKey"] in topic_keys)
+    ]
+    if not todos:
+        return []
+    sem = asyncio.Semaphore(TOPIC_CONCURRENCY)
+
+    async def _all() -> None:
+        await asyncio.gather(*[_run_topic(project_id, k, sem) for k in todos])
+
+    task = asyncio.create_task(_all())
+    task.add_done_callback(
+        lambda _t: eventbus.publish_job_event(
+            "ref_topics", project_id, f"outline-{project_id}", "done", title="考证大纲执行"
+        )
+    )
+    return todos
 
 
 # ---------- 搜索渠道：Serper 号池（serper.dev 中转的 Google 图片搜索） ----------
@@ -538,8 +1427,11 @@ _BRIEF_WAIT_S = 150  # 文路整体死线（与图路下载 110s 死线并行，
 
 async def _run_text_research(
     asset: dict[str, Any], queries: list[str], errors: dict[str, str]
-) -> str:
+) -> tuple[str, list[dict[str, Any]]]:
     """文字考据：web 搜索 → 抓正文 → LLM 提纯成考据简报。
+
+    返回 (简报, 来源底账)——来源是真正抓成功的页面（title/url/domain），条目
+    落库时作证据底账存下；没抓到的页面不算来源。
 
     任何一步失败都抛错由调用方记软失败（errors["考据"]），绝不影响图路。
     简报供两处消费：select 终选带简报挑图（纠错配错年代）、落卡喂写设定
@@ -573,7 +1465,12 @@ async def _run_text_research(
             errors.setdefault("考据抓页", f"{item['title']}：{str(exc)[:80]}")
     if not pages:
         raise RuntimeError("网页正文全部抓取失败（疑似反爬）")
-    return await skills.run_ref_brief_flow(asset, pages)
+    brief = await skills.run_ref_brief_flow(asset, pages)
+    sources = [
+        {"title": p["title"], "url": p["url"], "domain": _domain(p["url"])}
+        for p in pages
+    ]
+    return brief, sources
 
 
 def start_batch_research(
@@ -811,14 +1708,32 @@ async def _run_research(
         job["phase"] = "考据与终选"
         # join：收文路考据简报（超时/失败记软错误，不拦终选与采纳）
         brief = ""
+        brief_sources: list[dict[str, Any]] = []
         if text_task is not None:
             try:
-                brief = str(await asyncio.wait_for(text_task, timeout=_BRIEF_WAIT_S))
+                res = await asyncio.wait_for(text_task, timeout=_BRIEF_WAIT_S)
+                brief, brief_sources = res
             except Exception as exc:  # noqa: BLE001 文路软失败明报
                 text_task.cancel()
                 errors["考据"] = str(exc)[:160]
         if brief:
             job["researchBrief"] = brief
+            # 服务端权威落点：简报一产出即入条目表，与谁发起调研、画布开没开、
+            # agent 进程活没活都无关（此前只活在内存 job 字典里，重启即蒸发）
+            _, era = _project_scope(project_id)
+            try:
+                upsert_entry(
+                    project_id,
+                    body=brief,
+                    node_id=node_id,
+                    asset_name=str(asset.get("name") or ""),
+                    asset_type=str(asset.get("type") or ""),
+                    era=era,
+                    sources=brief_sources,
+                )
+            except Exception as exc:  # noqa: BLE001 落库失败不拦出图链路
+                print(f"[考据] 条目落库失败 {project_id}/{node_id}：{exc}", flush=True)
+                errors["条目落库"] = str(exc)[:120]
         # LLM 终选（失败只记 errors，不影响候选展示与人工采纳）；带考据简报
         # 挑图——文字考据纠正选图（错年代/错形制的候选降权）
         try:

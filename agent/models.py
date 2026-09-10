@@ -42,20 +42,37 @@ resolution / reference_count 到 imagegen flow 的 BatchAssetSheet-img02 组件�
 import re
 from typing import Any, Dict, List, Optional
 
-DEFAULT_MODEL_ID = "gpt-image-2-03"
+DEFAULT_MODEL_ID = "gpt-image-2.5-sunburst-cdx"
 
 # 通用画幅枚举（分镜卡 ShotGenSettings 同款 6 档）；例外条目单独覆写
 DEFAULT_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 
+# gpt-image-2.5-sunburst-cdx 实测能力边界（2026-09-10 探针，9 发验证）：
+# images/generations 受控域 = 宽≤2048 且 高≤1536——2048x1152/1024x1024/
+# 1408x1056/1056x1408/1024x1536 受控；超域尺寸（2560x1440/3840x2160/
+# 2048x2048/1152x2048/2368x1024）不报错但静默等比降级（1536x864 等）。
+# 故目录只开 1K 档（16:9 下即 2048x1152）与四个画幅，2K/4K/9:16/21:9
+# 需求走 gpt-image-2-03。edits 参考图通道可用但 size 同样自适应
+# （请求 2048x1152 实出 1536x864，比例正确）。responses 通道（input
+# 直传）也通但尺寸完全不可控（恒 1254x1254），不用。
 IMAGE_MODELS: List[Dict[str, Any]] = [
+    {
+        "id": "gpt-image-2.5-sunburst-cdx",
+        "label": "GPT Image 2.5 Sunburst",
+        "tag": "2.5 代默认 · 高质量渲染 · 仅 1K 档与 4 画幅（竖版/超宽选 GPT Image 2）",
+        "resolutions": ["1K"],
+        "aspects": ["16:9", "1:1", "4:3", "3:4"],
+        "default_resolution": "1K",
+        "recommended": True,
+        "max_references": 4,
+    },
     {
         "id": "gpt-image-2-03",
         "label": "GPT Image 2",
-        "tag": "均衡默认 · 参考图一致性好 · 1K/2K/4K",
+        "tag": "全画幅全档 · 参考图一致性好 · 1K/2K/4K",
         "resolutions": ["1K", "2K", "4K"],
         "aspects": DEFAULT_ASPECTS,
         "default_resolution": "2K",
-        "recommended": True,
         "max_references": 4,
     },
     {
@@ -110,14 +127,15 @@ IMAGE_MODELS: List[Dict[str, Any]] = [
 # - DeepSeek = DeepSeek 官方 API（DEEPSEEK_BASE_URL/DEEPSEEK_API_KEY，
 #   2026-09-07 起指向 api.deepseek.com——此前种子曾指向智谱 coding 网关，
 #   而该网关只有 glm 系模型，DeepSeek 平台一用就 500「modelCode 不存在」）
-#   → deepseek-v4-flash / v4-pro / v4-flash-vision-exp
+#   → deepseek-flash（官方 2026-09-10 起唯一轻量档，多模态实测吃图；
+#   v4-flash/v4-flash-vision-exp/v4-pro 旧 id 已全部下线/不再收录）
 # - DMX = DMXAPI 聚合网关（DMX_BASE_URL/DMX_API_KEY）
 #   → gpt-5.6-luna / gemini-3.7-flash / claude-sonnet-5
 # 注入方式：调用侧经 text_model_tweaks() 同时注 model_name + provider
 # （按组件名 tweaks，不走节点 id，重建不失效）。旧 "OpenAI"/
 # "OpenAI Compatible" 劫持命名已下线（连带 langflow 旧全局变量删除）。
 
-DEFAULT_TEXT_MODEL_ID = "gpt-5.6-luna"
+DEFAULT_TEXT_MODEL_ID = "deepseek-flash"
 
 TEXT_MODELS: List[Dict[str, Any]] = [
     {
@@ -133,29 +151,17 @@ TEXT_MODELS: List[Dict[str, Any]] = [
         "provider": "BigModel",
     },
     {
-        "id": "deepseek-v4-flash",
-        "label": "DeepSeek V4 Flash",
-        "tag": "快 · 便宜 · DeepSeek V4 官方",
+        "id": "deepseek-flash",
+        "label": "DeepSeek Flash",
+        "tag": "全站文本默认 · 快 · 多模态 · DeepSeek 官方",
         "provider": "DeepSeek",
-    },
-    {
-        "id": "deepseek-v4-pro",
-        "label": "DeepSeek V4 Pro",
-        "tag": "深推理 · 质量档 · DeepSeek V4 官方",
-        "provider": "DeepSeek",
-    },
-    {
-        "id": "deepseek-v4-flash-vision-exp",
-        "label": "DeepSeek V4 Flash Vision",
-        "tag": "多模态 · 看图 · DeepSeek V4 官方",
-        "provider": "DeepSeek",
+        "recommended": True,
     },
     {
         "id": "gpt-5.6-luna",
         "label": "GPT 5.6 Luna",
-        "tag": "分镜/剧本默认 · 创意文案 · DMX",
+        "tag": "创意文案 · DMX",
         "provider": "DMX",
-        "recommended": True,
     },
     {
         "id": "gemini-3.7-flash",

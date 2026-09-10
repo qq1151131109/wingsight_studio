@@ -7,8 +7,8 @@ import {
   useCopilotReadable,
 } from "@copilotkit/react-core";
 import { Role, TextMessage } from "@copilotkit/runtime-client-gql";
-import { CheckCircle2, CircleAlert, Crosshair, FileText, Palette, Wrench } from "lucide-react";
-import { nodesOfEpisode, summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
+import { CheckCircle2, CircleAlert, Crosshair, FileText, Landmark, Palette, Wrench } from "lucide-react";
+import { nodesOfEpisode, saneEra, summarizeCanvas, useCanvasStore, type ShotRow, type WingNode } from "@/lib/canvas/store";
 import { ASSET_TYPES, isLookCard } from "@/lib/canvas/shotRefs";
 import { declaredAssetType, type SheetAssetType } from "@/lib/canvas/genContract";
 import { buildRefSequence } from "@/lib/canvas/refSequence";
@@ -374,14 +374,11 @@ async function directImagegen(
           ? {
               compose: true,
               instruction,
-              // 设定文本（本卡设定 chip 开才注入）+ 考据简报（编排扩写的
-              // 证据材料；用户关编排时原样直传不注入——那是明确的"别加工"）
-              setting: [
-                includeSelfBody ? editBody : "",
-                String(node.data.researchBrief ?? "").trim(),
-              ]
-                .filter(Boolean)
-                .join("\n\n【考据简报】\n"),
+              // 设定文本（本卡设定 chip 开才注入）。考据简报不走这里了——
+              // 它由出图服务端按 rid 从画布统一注入 visual_notes，所有出图
+              // 路径同源（原先仅在编排开启且带指令时生效，补资产图/资产卡
+              // 直出全漏，考据成果被浪费）
+              setting: includeSelfBody ? editBody : "",
             }
           : {}),
       })),
@@ -604,6 +601,8 @@ export default function CanvasAgentBridge() {
   const edges = useCanvasStore((s) => s.edges);
   const canvasRevision = useCanvasStore((s) => s.canvasRevision);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const projectFactuality = useCanvasStore((s) => s.projectFactuality);
+  const projectEra = useCanvasStore((s) => s.projectEra);
 
   // 画布摘要下发通道 = useCopilotReadable → RunAgentInput.context → 桥接层
   // （agent/.venv 补丁）注入为末尾 system/human 消息。
@@ -617,13 +616,18 @@ export default function CanvasAgentBridge() {
     2000,
     canvasRevision,
   );
-  // 画风状态行：agent 据此自主判断「无画风 → 出图前先弹选择器/建议设定」
-  // （画风存画布 meta；summarizeCanvas 是纯函数不掺项目态，桥接层拼）
+  // 画风/题材状态行：agent 据此自主判断「无画风 → 出图前先弹选择器/建议设定」
+  // 「真实题材 → 出图前补考据」（两者存画布 meta；summarizeCanvas 是纯函数
+  // 不掺项目态，桥接层拼）
   const summaryWithStyle = `${summary}\n画风：${
     projectStyle.trim()
       ? projectStyle.trim().slice(0, 40)
       : "未设定（出图前先 open_style_picker 让用户选，或说明推荐理由后 set_project_style）"
-  }`;
+  }\n题材：${
+    projectFactuality === "fiction"
+      ? "虚构（动画/架空，出图不做史实考据）"
+      : "真实题材（历史/罪案纪实等，出图前自动补考据）"
+  }\n时代：${projectEra.trim() || "未设定（做历史/纪实题材且知道年代时用 set_project_era 记下，考据条目按它跨项目复用）"}`;
 
   useCopilotReadable({
     description: "当前画布内容（节点 / 连线 / 选中项）",
@@ -730,6 +734,82 @@ export default function CanvasAgentBridge() {
         <ToolCard
           icon={<Palette />}
           title={status !== "complete" ? "正在设定画风" : `画风已设定：「${s.slice(0, 24)}」`}
+          ok
+        >
+          {null}
+        </ToolCard>
+      );
+    },
+  });
+
+  // 题材声明：缺省「真实题材」（历史/罪案纪录片是主力片型）——出图前会给
+  // 缺考据的资产自动补一次文字考据（年代/形制/常见误用）；只有动画、架空、
+  // 穿越等虚构片才置 fiction 跳过考据（2026-09-10 用户口径）
+  useCopilotAction({
+    name: "set_project_factuality",
+    description:
+      '设置项目题材真伪（存画布 meta），决定出图前要不要做史实考据。factuality="fiction"：动画片/架空/穿越等虚构题材——出图不做史实考据；factuality="real"：历史/罪案纪实等真实题材（缺省值，不用特意设）——出图前会给缺考据的资产自动补一次文字考据（年代/形制/常见误用）。用户说要做动画片/虚构片时设 fiction，改做真实题材时设回 real；设置后告知用户当前口径。',
+    available: "remote",
+    parameters: [
+      {
+        name: "factuality",
+        type: "string",
+        required: true,
+        description: '"real"（真实题材，缺省）或 "fiction"（虚构：动画/架空/穿越）',
+      },
+    ],
+    handler: ({ factuality }: { factuality?: string }) => {
+      const v = String(factuality ?? "").trim().toLowerCase();
+      if (v !== "real" && v !== "fiction")
+        return 'factuality 只接受 "real" 或 "fiction"';
+      useCanvasStore.getState().setProjectFactuality(v);
+      return v === "fiction"
+        ? "题材已设为虚构：出图不做史实考据"
+        : "题材已设为真实题材：出图前会为缺考据的资产自动补文字考据";
+    },
+    render: ({ status, args }) => {
+      const v = String((args as { factuality?: unknown })?.factuality ?? "");
+      const label = v === "fiction" ? "虚构（动画/架空）" : "真实题材";
+      return (
+        <ToolCard
+          icon={<Landmark />}
+          title={status !== "complete" ? "正在设置题材" : `题材已设为：${label}`}
+          ok
+        >
+          {null}
+        </ToolCard>
+      );
+    },
+  });
+
+  // 项目时代口径：考据条目按它归档（跨项目复用同一时代同一资产的形制事实）。
+  // 用户明确说了年代/朝代/题材时才设，猜不出就问；不设只是不能跨项目复用，
+  // 不影响本项目调研与出图
+  useCopilotAction({
+    name: "set_project_era",
+    description:
+      '记录项目的时代/题材口径（存画布 meta.era），如「北魏·平城时期」「北宋汴京」「1990 年代东北」。考据条目按它归档——同一时代同一资产（如「朝服」「官印」）的形制事实可以跨项目复用，不用重搜。做历史/纪实题材且从题材或剧本能确定年代时调用；架空/穿越等无真实年代的题材不要设（空着即不跨项目复用）；不确定就先用一句话问用户。',
+    available: "remote",
+    parameters: [
+      {
+        name: "era",
+        type: "string",
+        required: true,
+        description: "时代/题材口径（朝代+时期/地域，如「北魏·平城时期」）",
+      },
+    ],
+    handler: ({ era }: { era?: string }) => {
+      const v = saneEra(era);
+      if (!v) return "era 不能为空（架空/穿越题材不必设置）";
+      useCanvasStore.getState().setProjectEra(v);
+      return `时代口径已记下：${v}。之后为资产做的考据会按它归档，做同题材项目时可直接复用，不用重搜。`;
+    },
+    render: ({ status, args }) => {
+      const v = saneEra((args as { era?: unknown })?.era);
+      return (
+        <ToolCard
+          icon={<Landmark />}
+          title={status !== "complete" ? "正在记录时代口径" : `时代口径：${v}`}
           ok
         >
           {null}
@@ -1287,7 +1367,7 @@ export default function CanvasAgentBridge() {
     name: "canvas_ops",
     description:
       "操作无限画布。ops 是操作数组，每个元素必须带 op 字段标明操作类型（缺 op 的操作会被拒绝），取值与形状：每个元素形如 " +
-      '{op:"add_node",nodeType:"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（资产四类 character/scene/prop/costume 是正经卡型——场景/道具/服饰不要建成 note 加标题前缀；分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；媒体卡可带 imageUrl/videoUrl/audioUrl（多图候选加 imageUrls 数组）；shotlist 可带 rows 行数组（行字段 rid/action/shotSize/cameraMove/duration/lighting/sound/dialogue/assets:[资产名]）；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
+      '{op:"add_node",nodeType:"note|script|character|scene|prop|costume|image|video|audio|compose|storyboard|shotlist|research",title,body,position:{x,y}}（资产四类 character/scene/prop/costume 是正经卡型——场景/道具/服饰不要建成 note 加标题前缀；分镜卡可带 shotNumber/cameraMove/shotSize/duration/dialogue；**角色卡必须带 looks:[{label,description,costume}]**——拆解结果里带「造型：」的角色，把造型计划原样落进该字段（label=造型名、description=该造型的服饰细节、costume=核心服装名）：造型图据此生成、分镜引用时系统按行文里的造型词自动选中对应造型卡，丢这一步角色的造型能力就废了；媒体卡可带 imageUrl/videoUrl/audioUrl（多图候选加 imageUrls 数组）；shotlist 可带 rows 行数组（行字段 rid/action/shotSize/cameraMove/duration/lighting/sound/dialogue/assets:[资产名]）；**research 调研卡必须带 researchId=深度调研任务的 jobId 字段**——卡面进度与卷宗按钮只认它，把 id 写进正文无效；**新建节点要在同批或后续操作里连线/更新时，必须给 id 自拟占位符**如 {op:"add_node",id:"IMG_1",...}，后续 connect_nodes 直接引用该占位符，系统会按真实节点建连）/ ' +
       '{op:"update_node",id,title,body,imageUrl,episodeId,episodeNo}（**给卡挂图片唯一通道 = imageUrl 字段**：用户上传的图/已有素材 URL 填进来即上卡显示，多图加 imageUrls 数组成候选；**禁止把图片 URL 写进 body 正文**——正文是设定文本，URL 混进去会被后续出图当事实注入提示词，卡面上也看不到图；分镜表单行回填用 {op:"update_node",id,row:{rid,imageUrl}}）/ ' +
       '{op:"delete_nodes",ids:[...]} / ' +
       '{op:"connect_nodes",fromId,toId} / {op:"group_nodes",ids:[...],title}（把多张卡收进分组框）/ ' +

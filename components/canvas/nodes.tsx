@@ -207,8 +207,14 @@ import { getLatestScriptReviewCached, getScriptReview, type ReviewJob } from "@/
 import {
   startBatchRefResearch,
   getBatchRefResearchJob,
+  getRefOutline,
+  runRefOutline,
   type BatchRefJob,
 } from "@/lib/ref-research";
+import {
+  reconcileRefResearch,
+  REF_OUTLINE_KIND,
+} from "@/lib/canvas/refReconcile";
 import { useRefStatusStore } from "@/lib/refStatus";
 
 /** 重试生成事件：image 卡 error 态发出，CanvasAgentBridge 监听并转成聊天指令 */
@@ -1895,7 +1901,15 @@ function TextCard({
   // 远程编辑通道（FOCUS_EDIT_EVENT）：外部命令本卡进入编辑态，取消选中即复位
   const [forceEdit, setForceEdit] = useState(false);
   const [researching, setResearching] = useState(false);
+  const [outlineRunning, setOutlineRunning] = useState(false);
   const [docOpen, setDocOpen] = useState(false);
+  /** 考证大纲执行的轮询句柄（执行在服务端跑，这里只刷状态；卸载即停） */
+  const outlinePoll = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => {
+    return () => {
+      if (outlinePoll.current) clearInterval(outlinePoll.current);
+    };
+  }, []);
   const lod = useLod();
   useEffect(() => {
     const onFocusEdit = (e: Event) => {
@@ -1967,11 +1981,72 @@ function TextCard({
       setResearching(false);
     }
   };
+  /** 执行考证大纲：起服务端主题任务，随后轮询刷新大纲卡状态。
+   *  执行在服务端跑（关页面/切项目都继续），这里只负责把状态显示出来 */
+  const runOutline = async () => {
+    const pid = useCanvasStore.getState().projectId;
+    if (!pid) return;
+    setOutlineRunning(true);
+    try {
+      const { started } = await runRefOutline(pid);
+      showToast(`已开始执行 ${started.length} 个主题：${started.join("、")}`);
+      let ticks = 0;
+      const tick = async () => {
+        ticks += 1;
+        try {
+          const o = await getRefOutline(pid);
+          await reconcileRefResearch(pid);
+          const pending = o.topics.filter(
+            (t) => t.status === "running" || t.status === "planned",
+          ).length;
+          if (pending === 0 || ticks >= 60) {
+            if (outlinePoll.current) clearInterval(outlinePoll.current);
+            outlinePoll.current = null;
+            setOutlineRunning(false);
+            const ready = o.topics.filter(
+              (t) => t.status === "done" || t.status === "reused",
+            ).length;
+            showToast(
+              ready
+                ? `考证大纲执行结束：${ready}/${o.topics.length} 个主题已有考据（状态见大纲卡）`
+                : "主题执行结束但都没有产出，失败原因见大纲卡或让助手汇报",
+            );
+          }
+        } catch {
+          // 网络瞬断：下一拍再来（服务端任务不受影响）
+        }
+      };
+      void tick();
+      outlinePoll.current = setInterval(() => void tick(), 5000);
+    } catch (exc) {
+      setOutlineRunning(false);
+      showToast(exc instanceof Error ? exc.message : "执行失败");
+    }
+  };
   // 默认工具（extraTools 未传时注入，即文本卡）：生图/生视频/调研/导出
   const GenIcon = TYPE_ICONS.image;
   const VidIcon = TYPE_ICONS.video;
+  const isOutline = data.reportKind === REF_OUTLINE_KIND;
+  const outlineTools = isOutline ? (
+    <ToolBtn
+      title="执行考证大纲里未完成的主题：逐主题搜网络取证，结果落本项目考据条目（同题材已考据过的自动复用、不重搜）"
+      label={outlineRunning ? "执行中…" : "执行主题"}
+      disabled={outlineRunning}
+      onClick={() => {
+        void trackEvent("outline.run");
+        void runOutline();
+      }}
+    >
+      {outlineRunning ? (
+        <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+      ) : (
+        <Search className="h-3.5 w-3.5" />
+      )}
+    </ToolBtn>
+  ) : null;
   const textTools = editorial ? undefined : (
     <>
+      {outlineTools}
       <ToolBtn
         title="以本文为提示词，右侧新建图片卡并生成"
         label="生图"
@@ -2114,6 +2189,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
   const [decomposing, setDecomposing] = useState(false);
   const [decomposeMsg, setDecomposeMsg] = useState("");
   const [fillingAssets, setFillingAssets] = useState(false);
+  const [fillingLooks, setFillingLooks] = useState(false);
   const [genError, setGenError] = useState("");
   const [researching, setResearching] = useState(false);
   const [researchMsg, setResearchMsg] = useState("");
@@ -2191,6 +2267,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
     ).trim();
 
   const missingAssetCount = countAssetsMissingImage(nodes, id);
+  const missingLookCount = countLooksMissingImage(nodes, id);
   const researchCount = researchTargetsOf(nodes, edges, id).length;
   /** 批量调研：圈定本卡资产开跑，任务锚进卡数据（进度/收尾由 refJob 续链） */
   const researchRefs = async () => {
@@ -2216,6 +2293,19 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       if (msg) setDecomposeMsg(msg);
     } finally {
       setFillingAssets(false);
+    }
+  };
+  /** 出造型图（备用入口）：全自动链已在补资产图之后顺带跑，这里给漏补/
+   *  单补用（存量项目、或用户只想要造型图时） */
+  const fillLooks = async () => {
+    if (fillingLooks) return;
+    setFillingLooks(true);
+    setDecomposeMsg("");
+    try {
+      const msg = await fillLookImages(id, { confirm: true });
+      if (msg) setDecomposeMsg(msg);
+    } finally {
+      setFillingLooks(false);
     }
   };
   /** 拆解资产：共享实现 runAssetDecompose，锚点=本卡（资产组建在本卡正下方） */
@@ -2324,12 +2414,22 @@ function ScriptCard({ data, id, selected }: NodeProps) {
       ) : null}
       {missingAssetCount > 0 ? (
         <ToolBtn
-          title="为本卡拆解出的缺设定图资产卡批量出图（自动带上已采纳的参考卡，画风闸内）"
+          title="为本卡拆解出的缺设定图资产卡批量出图（自动带上已采纳的参考卡，画风闸内）；出完自动接着出造型图"
           label={fillingAssets ? "补图中…" : `补资产图·${missingAssetCount}`}
-          disabled={empty || fillingAssets}
+          disabled={empty || fillingAssets || fillingLooks}
           onClick={() => void fillAssets()}
         >
           <ImageUp className="h-3.5 w-3.5" />
+        </ToolBtn>
+      ) : null}
+      {missingLookCount > 0 ? (
+        <ToolBtn
+          title="出造型图：角色卡上有造型计划（拆解产出的造型/服饰变化）但还没出图的，按「定妆照锁身份 + 服饰结构图锁形制」生成单幅造型图。补资产图后已自动跑过，这里用于漏补"
+          label={fillingLooks ? "造型图中…" : `造型图·${missingLookCount}`}
+          disabled={empty || fillingLooks || fillingAssets}
+          onClick={() => void fillLooks()}
+        >
+          <Shirt className="h-3.5 w-3.5" />
         </ToolBtn>
       ) : null}
       <ToolBtn
@@ -2616,8 +2716,9 @@ function AssetCard({ data, id, selected }: NodeProps) {
         rid: id,
         name: d.title || "资产",
         description: `${d.title || ""}。${d.body ?? ""}`.trim(),
-        // 服饰卡的设定图按道具契约（4:3 单件）出图
-        assetType: kind === "costume" ? "prop" : kind,
+        // 服饰是一等出图类型：flow 有 costume 16:9 三视图契约，走本名
+        // （曾绕行 prop 契约 4:3，与补资产图路径的语义不一致）
+        assetType: kind === "costume" ? "costume" : kind,
         visualNotes: projectStyle ? `全局视觉风格：${projectStyle}` : undefined,
         aspect: cardGen?.aspect || undefined,
         params: cardGen ?? undefined,
@@ -4948,9 +5049,14 @@ async function runAssetDecompose(opts: {
           useCanvasStore.getState().updateNodeData(owner.id, {
             assetSource: anchorId,
           });
-        // 已存在角色的 Look 补齐物化：agent 只回带 image_url 的新造型，
-        // 挂到既有角色卡下（同名 Look 卡已由 agent 对名跳过，这里双保险）
+        // 已存在角色的造型计划合并（按 label 去重、保留已有项的出图产物）；
+        // 随后把「已出图但还没成卡」的项物化成独立造型卡（同名卡在则跳过）
         if (type === "character" && owner) {
+          const merged = mergeLooks(owner.data.looks, a.looks ?? []);
+          if (merged.changed)
+            useCanvasStore
+              .getState()
+              .updateNodeData(owner.id, { looks: merged.looks });
           const newLooks = (a.looks ?? []).filter(
             (l) =>
               l.image_url &&
@@ -4997,10 +5103,15 @@ async function runAssetDecompose(opts: {
             ...(a.image_url
               ? { imageUrl: a.image_url, status: "ready" as const }
               : {}),
+            // 造型计划落卡（不筛 image_url：计划本身就是数据，造型图由「补
+            // 造型图」流程出图后回填——此前只物化带图项，计划全被丢弃）
+            ...(type === "character" && plannedLooks(a.looks ?? []).length > 0
+              ? { looks: plannedLooks(a.looks ?? []) }
+              : {}),
           },
         });
         ids.push(nid);
-        // Look 造型图物化成独立图片卡（连线表达「派生自角色」），不在角色卡上挂多图
+        // 已出图的造型物化成独立图片卡（连线表达「派生自角色」），不在角色卡上挂多图
         const looks = (a.looks ?? []).filter((l) => l.image_url);
         if (type === "character" && looks.length > 0)
           lookJobs.push({ charId: nid, charName: a.name, looks });
@@ -5069,15 +5180,26 @@ async function runAssetDecompose(opts: {
     for (const { lookId, costume } of lookEdges) {
       if (!costume) continue;
       const st4 = useCanvasStore.getState();
-      const cid = st4.nodes.find(
-        (n) =>
-          n.data.nodeType === "costume" &&
-          (() => {
-            const cn = (n.data.title ?? "").trim();
-            return Boolean(cn) && (cn.includes(costume) || costume.includes(cn));
-          })(),
-      );
+      const cid = findCostumeCard(st4.nodes, costume);
       if (cid) st4.connect({ source: cid.id, target: lookId });
+    }
+    // 服饰绑定结构化：角色卡 looks 的 costume 名解析成服饰卡 id 落卡——
+    // 之后改卡名不失联，造型图出图的「参考图2」按 costumeId 取（按名匹配
+    // 只作这里的解析兜底与历史数据兼容）
+    for (const n of useCanvasStore.getState().nodes) {
+      if (n.data.nodeType !== "character") continue;
+      const list = n.data.looks ?? [];
+      if (list.length === 0) continue;
+      const st5 = useCanvasStore.getState();
+      let changed = false;
+      const next = list.map((l) => {
+        if (l.costumeId || !l.costume) return l;
+        const c = findCostumeCard(st5.nodes, l.costume);
+        if (!c) return l;
+        changed = true;
+        return { ...l, costumeId: c.id };
+      });
+      if (changed) st5.updateNodeData(n.id, { looks: next });
     }
     if (created.length > 0) {
       const end = useCanvasStore.getState();
@@ -5597,6 +5719,49 @@ async function composeFromCard(composeId: string) {
   else st.updateNodeData(composeId, { status: "error", errorMessage: "合成失败（源文件不兼容或服务端异常），可重试" });
 }
 
+/** 拆解产出的造型计划 → 角色卡 looks 字段：只保留计划本身（label/description/
+ *  costume），已出图的项顺带回填 imageUrl */
+function plannedLooks(looks: DecomposedLook[]): NonNullable<WingNodeData["looks"]> {
+  return looks
+    .filter((l) => String(l?.label ?? "").trim())
+    .map((l) => ({
+      label: String(l.label).trim(),
+      ...(l.description ? { description: String(l.description) } : {}),
+      ...(l.costume ? { costume: String(l.costume) } : {}),
+      ...(l.image_url ? { imageUrl: l.image_url } : {}),
+    }));
+}
+
+/** 合并造型计划（重拆/补拆）：按 label 去重——既有项保留（不回退出图产物），
+ *  新造型追加；changed=false 时调用方不写卡（省一次保存与撤销快照） */
+function mergeLooks(
+  existing: WingNodeData["looks"],
+  incoming: DecomposedLook[],
+): { looks: NonNullable<WingNodeData["looks"]>; changed: boolean } {
+  const out = [...(existing ?? [])];
+  const seen = new Set(out.map((l) => l.label));
+  let changed = false;
+  for (const l of plannedLooks(incoming)) {
+    if (seen.has(l.label)) continue;
+    out.push(l);
+    seen.add(l.label);
+    changed = true;
+  }
+  return { looks: out, changed };
+}
+
+/** 按名匹配服饰卡（互含即算）：拆解给的 costume 名 ↔ 服饰卡标题。
+ *  结构化绑定（look.costumeId）是主路径，这里是解析与历史数据的兜底 */
+function findCostumeCard(nodes: WingNode[], name: string): WingNode | undefined {
+  const want = String(name ?? "").trim();
+  if (!want) return undefined;
+  return nodes.find((n) => {
+    if (n.data.nodeType !== "costume") return false;
+    const cn = String(n.data.title ?? "").trim();
+    return Boolean(cn) && (cn.includes(want) || want.includes(cn));
+  });
+}
+
 /** 补资产图：收集本卡（assetSource=sourceId）拆解出的缺设定图资产卡批量出图
  *  （novanova 资产批量范式）。画风闸内；返回 null=无缺图/用户取消，否则返回汇报文案 */
 async function fillAssetImages(sourceId: string): Promise<string | null> {
@@ -5686,9 +5851,13 @@ async function fillAssetImages(sourceId: string): Promise<string | null> {
       }
       return "出图任务已失效（agent 重启），请重试";
     }
-    return `补资产图完成：成功 ${done.length} 张${
+    const base = `补资产图完成：成功 ${done.length} 张${
       failed.length > 0 ? `，失败 ${failed.length} 张（${failed.join("、")}，可在卡上重试）` : ""
     }`;
+    // 全自动链第二步：定妆照与服饰图就位后接着补造型图（造型图的参考图1/2
+    // 正是这两者，必须排在资产图之后）。无待出造型时返回 null，不打扰汇报
+    const looksNote = await fillLookImages(sourceId);
+    return looksNote ? `${base}；${looksNote}` : base;
   } catch (exc) {
     const msg = exc instanceof Error ? exc.message : "批量出图失败";
     const ust = useCanvasStore.getState();
@@ -5696,6 +5865,213 @@ async function fillAssetImages(sourceId: string): Promise<string | null> {
       ust.updateNodeData(t.id, { status: "error", errorMessage: msg });
     }
     return msg;
+  }
+}
+
+/** 补造型图（全自动链第二步，跟在补资产图之后）：为角色卡上有造型计划
+ *  （looks）但还没出图的项生成造型图。
+ *  参考图1=角色定妆照（锁身份）、参考图2=绑定服饰的结构图（锁形制）；
+ *  出图后物化成独立造型卡（`角色名·造型名`）+ 角色→造型卡、服饰→造型卡
+ *  连线 + 回填角色卡 looks[i].imageUrl/nodeId（物化幂等标记）。
+ *  返回汇报文案；无待出造型 / 无画风返回 null。sourceId 圈定口径同补资产图。 */
+async function fillLookImages(
+  sourceId: string,
+  opts?: { confirm?: boolean },
+): Promise<string | null> {
+  const st = useCanvasStore.getState();
+  const projectStyle = st.projectStyle.trim();
+  if (!projectStyle) {
+    // 画风闸（同补资产图）：弹出画风面板并明报——不能静默退出让用户以为
+    // 按钮坏了（自动链里补资产图已拦过画风，走不到这里）
+    window.dispatchEvent(new CustomEvent(OPEN_STYLE_EVENT));
+    return "未选画风：已在弹出的「项目画风」里，选好后再出造型图";
+  }
+
+  type LookJob = {
+    charId: string;
+    charTitle: string;
+    idx: number;
+    label: string;
+    description?: string;
+    costumeId?: string;
+  };
+  const jobs: LookJob[] = [];
+  for (const n of st.nodes) {
+    if (n.data.nodeType !== "character") continue;
+    if (sourceId && n.data.assetSource && n.data.assetSource !== sourceId) continue;
+    if (!String(n.data.imageUrl ?? "").trim()) continue; // 无定妆照=无身份锚点
+    (n.data.looks ?? []).forEach((l, idx) => {
+      const label = String(l.label ?? "").trim();
+      if (!label || l.imageUrl) return;
+      jobs.push({
+        charId: n.id,
+        charTitle: String(n.data.title ?? ""),
+        idx,
+        label,
+        ...(l.description ? { description: l.description } : {}),
+        ...(l.costumeId ? { costumeId: l.costumeId } : {}),
+      });
+    });
+  }
+  if (jobs.length === 0) return null;
+
+  if (opts?.confirm) {
+    const ask =
+      jobs.length === 1
+        ? `为「${jobs[0].charTitle}·${jobs[0].label}」出造型图（消耗出图额度）？`
+        : `将为 ${jobs.length} 个造型出图（每个造型一张，消耗出图额度）。确认开始？`;
+    if (!window.confirm(ask)) return null;
+  }
+
+  // rid 用 `{角色卡id}#look{序号}`：服务端按「#」前缀剥离取该角色的考据简报，
+  // 造型图与角色图吃同一份事实依据
+  const ridOf = (j: LookJob) => `${j.charId}#look${j.idx}`;
+  const made: string[] = [];
+  const failed: string[] = [];
+  const lookIds: string[] = [];
+  const lidOf: Record<string, string> = {}; // rid → 造型卡 id
+  /** 改角色卡造型账第 idx 项（出图产物与失败留痕都走它） */
+  const patchLook = (
+    j: LookJob,
+    patch: Partial<NonNullable<WingNodeData["looks"]>[number]>,
+  ) => {
+    const s = useCanvasStore.getState();
+    const cur = s.nodes.find((m) => m.id === j.charId);
+    const looks = [...(cur?.data.looks ?? [])];
+    if (!looks[j.idx]) return;
+    looks[j.idx] = { ...looks[j.idx], ...patch };
+    s.updateNodeData(j.charId, { looks });
+  };
+  try {
+    // 先落占位卡（loading）：出图要几十秒，没有占位用户看不到任何反应；
+    // 失败也留在卡上（错误态可重试），与补资产图的 loading 范式一致
+    const slotOf: Record<string, number> = {};
+    for (const j of jobs) {
+      const s = useCanvasStore.getState();
+      const char = s.nodes.find((m) => m.id === j.charId);
+      if (!char) continue;
+      const lfp = NODE_FOOTPRINT.image;
+      const abs = absolutePosition(s.nodes, char);
+      const slot = slotOf[j.charId] ?? 0;
+      slotOf[j.charId] = slot + 1;
+      const pos = findFreePosition(
+        s.nodes,
+        {
+          x: abs.x + (nodeSize(char).w || lfp.w) + 48,
+          y: abs.y + slot * (lfp.h + 32),
+        },
+        { w: lfp.w, h: lfp.h },
+      );
+      const lid = s.addNode({
+        position: pos,
+        style: { width: lfp.w, height: lfp.h },
+        data: {
+          nodeType: "image",
+          title: `${j.charTitle}·${j.label}`.slice(0, 40),
+          body: j.description ?? "",
+          status: "loading" as const,
+        },
+      });
+      s.connect({ source: j.charId, target: lid });
+      if (j.costumeId && s.nodes.some((m) => m.id === j.costumeId))
+        s.connect({ source: j.costumeId, target: lid });
+      lidOf[ridOf(j)] = lid;
+      lookIds.push(lid);
+    }
+    const jobId = await startShotImageJob(
+      jobs.map((j) => {
+        const s = useCanvasStore.getState();
+        const char = s.nodes.find((m) => m.id === j.charId);
+        const costume = j.costumeId
+          ? s.nodes.find((m) => m.id === j.costumeId)
+          : undefined;
+        const ding = String(char?.data.imageUrl ?? "");
+        const costumeImg = String(costume?.data.imageUrl ?? "");
+        const refs = [ding];
+        const labels = [{ type: "character", name: j.charTitle }];
+        if (costumeImg) {
+          refs.push(costumeImg);
+          labels.push({ type: "costume", name: String(costume?.data.title ?? "") });
+        }
+        const protocol = [
+          `生成角色「${j.charTitle}」的造型定妆图：${j.label}。`,
+          j.description ? `造型要求：${j.description}。` : "",
+          "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，保持完全不变；忽略其服装、配饰、姿态与背景。",
+          costumeImg
+            ? "参考图2（服饰结构参考）：形制、材质、配色以该服饰图为准；只取服装形制，不继承其白底、三视图或转面排版。"
+            : "",
+          "画面为单幅全身造型图：完整呈现穿着该套造型的人物，不做分格、并排多视图或转面陈列。",
+        ]
+          .filter(Boolean)
+          .join(" ");
+        return {
+          rid: ridOf(j),
+          name: `${j.charTitle}·${j.label}`,
+          description: protocol,
+          // 原话直传（版式已在 protocol 里说清），不走四格定妆契约
+          assetType: "none" as const,
+          aspect: "9:16",
+          visualNotes: `全局视觉风格：${projectStyle}`,
+          referenceImages: refs,
+          referenceLabels: labels,
+        };
+      }),
+    );
+    const outcome = await pollShotImageJob(jobId, (item) => {
+      const j = jobs.find((x) => ridOf(x) === item.rid);
+      const lid = lidOf[item.rid];
+      if (!j || !lid) return;
+      const label = `${j.charTitle}·${j.label}`;
+      const s3 = useCanvasStore.getState();
+      if (!item.ok || !item.imageUrl) {
+        const err = String(item.error || "出图失败");
+        s3.updateNodeData(lid, { status: "error", errorMessage: err });
+        // 造型账留痕：不写 imageUrl，下次补造型图会自然重试
+        patchLook(j, { error: err.slice(0, 200) });
+        failed.push(`${label}（${err}）`);
+        return;
+      }
+      s3.updateNodeData(lid, {
+        imageUrl: item.imageUrl,
+        status: "ready",
+        errorMessage: undefined,
+      });
+      // 回填造型账（imageUrl + nodeId 幂等标记，装载时不再重复物化）
+      patchLook(j, { imageUrl: item.imageUrl, nodeId: lid });
+      made.push(label);
+    });
+    if (outcome === "gone") {
+      // 任务失效（agent 重启）：占位卡转错误态，否则永远转圈
+      const s4 = useCanvasStore.getState();
+      for (const lid of lookIds) {
+        if (s4.nodes.find((m) => m.id === lid)?.data.imageUrl) continue;
+        s4.updateNodeData(lid, {
+          status: "error",
+          errorMessage: "出图任务已失效（agent 重启），请重试",
+        });
+      }
+      return "造型图任务已失效（agent 重启），请重试";
+    }
+    if (lookIds.length > 0) {
+      const gid = useCanvasStore.getState().groupNodes(lookIds, "造型图");
+      if (gid) useCanvasStore.getState().flashNodes([gid]);
+    }
+    if (made.length === 0 && failed.length === 0) return null;
+    return `造型图完成：成功 ${made.length} 张${
+      failed.length > 0 ? `，失败 ${failed.length} 张（${failed.join("、")}）` : ""
+    }`;
+  } catch (exc) {
+    const msg = exc instanceof Error ? exc.message : "未知错误";
+    // 占位卡转错误态（启动就失败时不能永远转圈）
+    const s5 = useCanvasStore.getState();
+    for (const lid of lookIds) {
+      if (s5.nodes.find((m) => m.id === lid)?.data.imageUrl) continue;
+      s5.updateNodeData(lid, {
+        status: "error",
+        errorMessage: `造型图生成失败：${msg}`,
+      });
+    }
+    return `造型图生成失败：${msg}`;
   }
 }
 
@@ -5711,6 +6087,21 @@ function countAssetsMissingImage(nodes: WingNode[], sourceId: string): number {
       !n.data.imageUrl &&
       n.data.status !== "loading",
   ).length;
+}
+
+/** 本卡（assetSource=sourceId）角色卡上「有计划、没出图」的造型张数
+ *  （「出造型图」按钮的计数与显隐；无定妆照的角色出不了造型，不计入） */
+function countLooksMissingImage(nodes: WingNode[], sourceId: string): number {
+  let n = 0;
+  for (const node of nodes) {
+    if (node.data.nodeType !== "character") continue;
+    if (sourceId && node.data.assetSource && node.data.assetSource !== sourceId) continue;
+    if (!String(node.data.imageUrl ?? "").trim()) continue;
+    for (const l of node.data.looks ?? []) {
+      if (String(l.label ?? "").trim() && !l.imageUrl) n += 1;
+    }
+  }
+  return n;
 }
 
 /**

@@ -30,6 +30,7 @@ $canvas_summary
 - 宣发/推广/平台文案（抖音/小红书/微博/B站/朋友圈、定档开播收官）→ 先 read_skill("documentary-promotion")；批量文案走 Langflow「宣发文案生成」管线
 - 史实核查/卷宗/时间线/报道取证 → **链路二·深度调研**（下节）
 - 出设定图上下文里说参考图/考据/资产图 → **research_asset_references**（资产卡需已在画布上，按 node_id 发起）
+- 一批资产要考据（≥3 个资产、或用户要「把考据做全/做对」）→ 先走**考证大纲**：`get_research_material` 看现状 → `propose_research_outline` 切主题（单位是时代不是资产）→ 用户确认后 `run_research_outline`；主题考据自动分发给成员资产，同题材已考据过的自动复用。切法与判据见 read_skill("real-documentary")「考证大纲」节。单个资产的参考图仍走 research_asset_references。
 - 分不清是哪一种「调研」→ 问一句。启动错了：running 态先 cancel_research 停掉再改道，planning 态直接弃置（未确认不会跑）。**轻量核实不算调研**——策划/写稿中顺手查证一两个事实用 web_search / web_fetch 直接在对话里做，不要为此发起深度调研任务。
 - 聊天里直接想出一张自由创作的图（不涉画布资产设定图/分镜语义）→ **generate_free_image**（提示词逐字直传，不扩写不套版式）；想把自由生图结果送上画布 → list_free_images 拿 imageUrl + canvas_ops 建图卡。
 - 图片/视频卡输入条上的直接生成请求（@引用）→ **链路三**（下节）

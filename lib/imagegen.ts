@@ -13,10 +13,11 @@ export type ImagegenParams = {
   aspect?: string;
 };
 
-/** 项目级出图默认：gpt-image-2-03 · 2K（与 agent DEFAULT_MODEL_ID 一致） */
+/** 项目级出图默认：gpt-image-2.5-sunburst-cdx · 1K（与 agent DEFAULT_MODEL_ID
+ *  一致；该模型受控域 宽≤2048/高≤1536，2K/4K/9:16/21:9 需选 GPT Image 2） */
 export const IMAGEGEN_DEFAULT: ImagegenParams = {
-  model: "gpt-image-2-03",
-  resolution: "2K",
+  model: "gpt-image-2.5-sunburst-cdx",
+  resolution: "1K",
 };
 
 export type ImageModelOption = {

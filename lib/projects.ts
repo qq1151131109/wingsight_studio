@@ -58,7 +58,7 @@ export async function loadCanvas(
   nodes: unknown[];
   edges: unknown[];
   viewport: unknown;
-  meta?: { visualStyle?: string };
+  meta?: { visualStyle?: string; factuality?: "real" | "fiction"; era?: string };
   /** 服务端乐观锁版本（成功保存 +1；保存时原样带回做 CAS） */
   revision?: number;
 } | null> {
@@ -78,7 +78,7 @@ export async function saveCanvas(
     nodes: unknown[];
     edges: unknown[];
     viewport: unknown;
-    meta?: { visualStyle?: string };
+    meta?: { visualStyle?: string; factuality?: "real" | "fiction"; era?: string };
   },
   revision?: number,
 ): Promise<{ ok: boolean; revision?: number; conflict?: boolean }> {

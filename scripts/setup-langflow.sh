@@ -58,7 +58,17 @@ else
   LF_HOST="$(grep -E '^LANGFLOW_HOST=' .env.local | tail -1 | cut -d= -f2- || true)"
   LF_HOST="${LF_HOST:-127.0.0.1}"
   echo "… 启动 langflow :$LF_HOST:$LF_PORT"
-  (cd langflow && setsid nohup .venv/bin/langflow run --host "$LF_HOST" --port "$LF_PORT" \
+  # setsid 只有 Linux 有（macOS 缺失，曾导致启动静默失败 120s 后退出）；
+  # 取不到就留空——nohup + 子 shell + 重定向已足够脱离终端
+  SETSID="$(command -v setsid || true)"
+  # ALL_PROXY 常是 socks5：httpx 走 socks 需要额外 socksio 包，缺失即启动崩
+  # （ImportError: Using SOCKS proxy...）。启动前清掉；HTTP(S)_PROXY 保留
+  # （httpx 原生支持，不影响出站）
+  # 前端静态目录缺（未构建前端，如本机开发）→ backend-only：API 完整可用，
+  # 只是不服务 langflow UI（agent 调用与下面的导入都只走 API）
+  LF_EXTRA=""
+  [ -d langflow/src/backend/base/langflow/frontend ] || LF_EXTRA="--backend-only"
+  (cd langflow && env -u ALL_PROXY -u all_proxy $SETSID nohup .venv/bin/langflow run --host "$LF_HOST" --port "$LF_PORT" $LF_EXTRA \
      > ../logs/langflow.log 2>&1 < /dev/null &)
   ok=0
   for _ in $(seq 1 60); do

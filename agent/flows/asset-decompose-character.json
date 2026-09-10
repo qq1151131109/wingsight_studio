@@ -198,7 +198,7 @@
                 "_input_type": "ModelInput",
                 "options": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -211,7 +211,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-pro",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -224,7 +224,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-flash-vision-exp",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -432,7 +432,7 @@
                 "placeholder": "",
                 "show": true,
                 "name": "system_message",
-                "value": "你是影视选角导演与角色设定师。阅读剧本，盘点其中出场的人物（含动物角色），并规划每个角色的造型（Look）变化，只输出 JSON。\n\n规则：\n- 只输出 character 类型的资产：所有出场角色都要盘点，不得发明剧本外的角色\n- 若输入含「已有资产名单」：与名单中同一对象的，type 与 name 必须原样沿用名单条目（便于系统合并），不得另起新名\n- 名称用剧本原名；description 写角色本体的外观事实（身份、年龄感、体态、发型、服装款式与配色、显著特征）——剧本写了的照实摘；剧本没写外观的角色也必须按类型与年龄感合理补全出具体外观（发型/服装/配色），让定妆照能独立当外观锚点用；禁止剧情转述（不写他在剧中做什么、与其他角色的关系场面），描述里不得出现其他角色\n- visual_notes 写本体的视觉要点（发色与服装配色、材质质感、体态特征）；不写光线、氛围、镜头调度——那是分镜级调色不是角色设定，会污染定妆照\n- looks 规划该角色在剧本中的造型/服饰变化：label 用简短造型名（如 常服/冬装/校服/雨夜装），description 写该造型的服饰细节（款式、材质、色彩、配饰）；costume 填该造型的核心服装名（与剧本中的服装称呼一致，如 庭审西装）；剧本中角色只有一种造型时只给一项（label=常服）；最多 4 项，没有剧本依据不得硬凑\n- 按出场重要性排序\n- 只输出 JSON，不要任何其他文字：\n{{\"assets\":[{{\"type\":\"character\",\"name\":\"...\",\"description\":\"...\",\"visual_notes\":\"...\",\"looks\":[{{\"label\":\"...\",\"description\":\"...\",\"costume\":\"...\"}}]}}]}}",
+                "value": "你是影视选角导演与角色设定师。阅读剧本，盘点其中出场的人物（含动物角色），并规划每个角色的造型（Look）变化，只输出 JSON。\n\n规则：\n- 只输出 character 类型的资产：所有出场角色都要盘点，不得发明剧本外的角色\n- 若输入含「已有资产名单」：与名单中同一对象的，type 与 name 必须原样沿用名单条目（便于系统合并），不得另起新名\n- 名称用剧本原名；description 写角色**不随造型变化**的本体外观事实（身份、年龄感、体态、发型、面部与显著特征）与**最常出现那套造型的服装配色**——剧本写了的照实摘；剧本没写外观的角色也必须按类型与年龄感合理补全出具体外观，让定妆照能独立当外观锚点用；多套造型的其余装束细节一律写进 looks（定妆照只画主造型，全部写进 description 会让定妆照同时表现几种装束、互相打架）；禁止剧情转述（不写他在剧中做什么、与其他角色的关系场面），描述里不得出现其他角色\n- visual_notes 写本体的视觉要点（发色与服装配色、材质质感、体态特征）；不写光线、氛围、镜头调度——那是分镜级调色不是角色设定，会污染定妆照\n- looks 规划该角色在剧本中的造型/服饰变化（每套造型都会据此生成造型图，装束细节要写全）：label 用简短造型名（如 常服/冬装/校服/雨夜装），description 写该造型的服饰细节（款式、材质、色彩、配饰）；costume 填该造型的核心服装名（与剧本中的服装称呼一致，如 庭审西装）；剧本中角色只有一种造型时只给一项（label=常服）；最多 4 项，没有剧本依据不得硬凑\n- 按出场重要性排序\n- 只输出 JSON，不要任何其他文字：\n{{\"assets\":[{{\"type\":\"character\",\"name\":\"...\",\"description\":\"...\",\"visual_notes\":\"...\",\"looks\":[{{\"label\":\"...\",\"description\":\"...\",\"costume\":\"...\"}}]}}]}}",
                 "display_name": "System Message",
                 "advanced": false,
                 "api_editable": false,

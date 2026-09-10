@@ -13,15 +13,15 @@ import { chromium } from "playwright";
 import {
   applyOps,
   useCanvasStore,
-} from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/ops.ts";
+} from "../lib/canvas/ops.ts";
 import {
   episodeLabel,
   episodeList,
   episodeNoOf,
   nextEpisodeNo,
   summarizeCanvas,
-} from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/store.ts";
-import { sanitizeCanvas } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/sanitize.ts";
+} from "../lib/canvas/store.ts";
+import { sanitizeCanvas } from "../lib/canvas/sanitize.ts";
 
 const BASE = "http://127.0.0.1:8008";
 const API = `${BASE}/agent-service`;

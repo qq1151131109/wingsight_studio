@@ -9,8 +9,8 @@
  * 运行：pnpm dlx tsx scripts/canvas-read-channel-test.mjs（tsx 解析 TS 与
  * extensionless import；node 原生 strip-types 不行）
  */
-import { validateOps, applyOps, useCanvasStore } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/ops.ts";
-import { summarizeCanvas } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/store.ts";
+import { validateOps, applyOps, useCanvasStore } from "../lib/canvas/ops.ts";
+import { summarizeCanvas } from "../lib/canvas/store.ts";
 
 let pass = 0, fail = 0;
 const check = (name, ok, detail = "") => { ok ? pass++ : fail++; console.log(`${ok ? "✓" : "✗"} ${name}${detail ? " — " + detail : ""}`); };
@@ -168,7 +168,7 @@ check("links 来源行计入卡高（2 条 +38）",
   JSON.stringify(sizeOf("N_links")));
 
 // —— links 透传（候选落卡 P1：可点来源行）——
-import { sanitizeCanvas } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/sanitize.ts";
+import { sanitizeCanvas } from "../lib/canvas/sanitize.ts";
 const d2 = applyOps([
   {
     op: "add_node", nodeType: "note", id: "N_cand", title: "候选·民族资产解冻",
@@ -235,7 +235,7 @@ check("画布摘要候选卡行带「来源 N 条」标记", s2.includes("来源
 
 // —— 系列卡跨轮成列 + 同批收框（2026-09-09 罪案策划0909 项目散射事故：
 // 11 卡跨轮逐张建、斜跨 2700×2800 无组框、集序视觉错乱）——
-import { absolutePosition, nodeSize } from "/home/shenglin/Desktop/wingsight-studio/lib/canvas/store.ts";
+import { absolutePosition, nodeSize } from "../lib/canvas/store.ts";
 // 1) 同批系列落卡：数组顺序=网格阅读序，group_nodes 占位 id 同批收框
 const epBody = "字".repeat(150);
 const dSer = applyOps([
@@ -274,6 +274,127 @@ const dMix = applyOps([
 const mixChar = useCanvasStore.getState().nodes.find((n) => n.data?.title === "混排角色");
 check("混合批次资产带仍走全局锚点", mixChar?.position.x === globalMinX,
   `charX=${mixChar?.position.x} 全局minX=${globalMinX}`);
+
+// —— 造型计划（looks）链路：ops 透传 / 物化幂等 / 未出图计划保留 ——
+// 造型计划是角色卡的结构化数据（拆解产出）：造型图据此出图、分镜引用按行文
+// 造型词自动选卡。此前只物化「已带图」的项，计划整条被丢弃（2026-09-10 修复）
+const dLook = applyOps([
+  {
+    op: "add_node",
+    nodeType: "character",
+    id: "LK_CHAR",
+    title: "冯太后",
+    body: "北魏太后",
+    // 混合合法/非法项：缺 label 的应被剔除；costumeId 由 agent 提供可保留
+    looks: [
+      { label: "朝服", description: "十二旒朝服", costume: "十二旒朝服" },
+      { description: "没有造型名，应被剔除" },
+      { label: "常服", costume: "素色常服", costumeId: "n_cos_1" },
+      { label: "  " },
+    ],
+  },
+]);
+const lkChar = useCanvasStore.getState().nodes.find((n) => n.id === "LK_CHAR");
+check(
+  "ops add_node：角色卡 looks 透传（非法项剔除、字段保留）",
+  lkChar?.data.looks?.length === 2 &&
+    lkChar.data.looks[0].label === "朝服" &&
+    lkChar.data.looks[0].description === "十二旒朝服" &&
+    lkChar.data.looks[1].costumeId === "n_cos_1",
+  JSON.stringify(lkChar?.data.looks),
+);
+check(
+  "ops add_node：looks 不收出图产物字段（imageUrl/nodeId 由流程回填）",
+  !("imageUrl" in (lkChar?.data.looks?.[0] ?? {})) &&
+    !("nodeId" in (lkChar?.data.looks?.[0] ?? {})),
+  JSON.stringify(lkChar?.data.looks?.[0] ?? {}),
+);
+
+// 物化：已出图但还没成卡的造型 → 建独立造型卡 + 角色→造型卡连线 + 回填 nodeId
+const migrated = sanitizeCanvas(
+  [
+    {
+      id: "CH_M",
+      type: "character",
+      position: { x: 0, y: 0 },
+      data: {
+        nodeType: "character",
+        title: "冯氏",
+        body: "北魏太后",
+        looks: [
+          { label: "朝服", description: "十二旒朝服", imageUrl: "/assets/a.png" },
+          { label: "常服", description: "素色常服" }, // 未出图：应保留在卡上
+        ],
+      },
+    },
+  ],
+  [],
+);
+const migNode = migrated.nodes.find((n) => n.id === "CH_M");
+const lookCards = migrated.nodes.filter((n) => n.data?.nodeType === "image");
+check(
+  "sanitize：已出图造型物化成独立卡（角色→造型卡连线 + 回填 nodeId）",
+  lookCards.length === 1 &&
+    lookCards[0].data.title === "冯氏·朝服" &&
+    migNode?.data.looks?.[0]?.nodeId === lookCards[0].id &&
+    migrated.edges.some((e) => e.source === "CH_M" && e.target === lookCards[0].id),
+  `cards=${lookCards.length} title=${lookCards[0]?.data.title} nodeId=${migNode?.data.looks?.[0]?.nodeId}`,
+);
+check(
+  "sanitize：造型计划完整留在卡上（已物化的记账 nodeId + 未出图的计划都保留）",
+  Array.isArray(migNode?.data.looks) &&
+    migNode.data.looks.length === 2 &&
+    migNode.data.looks[0].nodeId === lookCards[0].id &&
+    migNode.data.looks[1].label === "常服" &&
+    !migNode.data.looks[1].imageUrl,
+  JSON.stringify(migNode?.data.looks),
+);
+
+// 幂等：把物化结果再喂一次 sanitize，不应重复建卡
+const again = sanitizeCanvas(migrated.nodes, migrated.edges);
+const lookCards2 = again.nodes.filter((n) => n.data?.nodeType === "image");
+check("sanitize 幂等：二次装载不重复建造型卡", lookCards2.length === 1,
+  `cards=${lookCards2.length}`);
+
+// update_node 重写造型计划：已出图的产物字段必须保留（否则已出图的造型会
+// 被当「待出」重复出图，nodeId 丢失后还会重复建卡）
+useCanvasStore.getState().updateNodeData("LK_CHAR", {
+  looks: [
+    {
+      label: "朝服",
+      description: "十二旒朝服",
+      imageUrl: "/assets/done.png",
+      nodeId: "n_look_done",
+    },
+    { label: "常服", costume: "素色常服" },
+  ],
+});
+applyOps([
+  {
+    op: "update_node",
+    id: "LK_CHAR",
+    looks: [
+      { label: "朝服", description: "描述被改过", costume: "十二旒朝服" },
+      { label: "常服", costume: "素色常服" },
+      { label: "雨夜装", description: "新增第三套" },
+    ],
+  },
+]);
+const afterUpd = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_CHAR")?.data.looks;
+check(
+  "ops update_node：重写造型计划保留已出图产物（imageUrl/nodeId 不丢）",
+  afterUpd?.[0]?.imageUrl === "/assets/done.png" &&
+    afterUpd?.[0]?.nodeId === "n_look_done" &&
+    afterUpd?.[0]?.description === "描述被改过",
+  JSON.stringify(afterUpd?.[0]),
+);
+check(
+  "ops update_node：新造型照常追加（计划字段生效）",
+  afterUpd?.length === 3 && afterUpd?.[2]?.label === "雨夜装",
+  JSON.stringify(afterUpd?.map((l) => l.label)),
+);
 
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

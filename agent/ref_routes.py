@@ -101,6 +101,72 @@ def api_get_batch_ref_research(pid: str, batch_id: str, user: auth.CurrentUser):
     }
 
 
+@router.get("/projects/{pid}/refs/report")
+def api_ref_report(pid: str, user: auth.CurrentUser):
+    """项目考证报告：条目（按资产）+ 已采纳参考图底账 + 待补考据清单 + 报告正文。
+
+    服务端权威——条目在简报产出时即入库（imgresearch.upsert_entry），报告由
+    它拼装；画布上的报告卡与资产卡简报是这份数据的呈现，打开项目对账一次
+    即可自愈（不再依赖前端轮询窗口，见「考证条目与报告」节注释）。"""
+    projects.assert_access(user, pid)
+    return imgresearch.build_report(pid)
+
+
+@router.get("/projects/{pid}/refs/outline")
+def api_get_ref_outline(pid: str, user: auth.CurrentUser):
+    """考证大纲：主题（检索词 + 服务哪些卡 + 状态 + 已有事实）。"""
+    projects.assert_access(user, pid)
+    return imgresearch.build_outline_report(pid)
+
+
+@router.post("/projects/{pid}/refs/outline")
+async def api_set_ref_outline(pid: str, req: dict, user: auth.CurrentUser):
+    """整份替换考证大纲（主题 → 检索词 → 服务哪些卡）。
+
+    节点 id 不在画布上报错并列出可用卡清单（防幻觉，同 research_asset_references
+    口径）；空大纲 400——没有要考据的题材就别建大纲。"""
+    projects.assert_access(user, pid)
+    topics = req.get("topics")
+    if not isinstance(topics, list):
+        return Response(
+            status_code=400, content="topics 必须是数组", media_type="text/plain"
+        )
+    try:
+        imgresearch.replace_topics(pid, topics)
+    except ValueError as exc:
+        return Response(status_code=400, content=str(exc), media_type="text/plain")
+    return imgresearch.build_outline_report(pid)
+
+
+@router.post("/projects/{pid}/refs/outline/run")
+async def api_run_ref_outline(pid: str, req: dict, user: auth.CurrentUser):
+    """执行大纲主题（缺省=全部未完成的）：并发跑，状态写回主题行（大纲即进度板）。"""
+    projects.assert_access(user, pid)
+    keys_in = req.get("topicKeys")
+    keys = (
+        [str(k).strip() for k in keys_in if str(k).strip()]
+        if isinstance(keys_in, list)
+        else None
+    )
+    if keys is not None:
+        known = {t["topicKey"] for t in imgresearch.list_topics(pid)}
+        unknown = [k for k in keys if k not in known]
+        if unknown:
+            return Response(
+                status_code=400,
+                content=f"大纲里没有这些主题：{'、'.join(unknown)}；现有主题：{'、'.join(sorted(known)) or '（空）'}",
+                media_type="text/plain",
+            )
+    started = imgresearch.run_topics(pid, keys)
+    if not started:
+        return Response(
+            status_code=400,
+            content="没有可执行的主题（大纲为空，或指定主题都已完成）",
+            media_type="text/plain",
+        )
+    return {"started": started, "outline": imgresearch.build_outline_report(pid)}
+
+
 @router.get("/projects/{pid}/refs/candidates")
 def api_list_ref_candidates(pid: str, nodeId: str = "", user: auth.CurrentUser = None):  # type: ignore[assignment]
     projects.assert_access(user, pid)

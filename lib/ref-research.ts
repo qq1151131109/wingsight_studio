@@ -199,3 +199,97 @@ export async function getBatchRefResearchJob(
   if (!r.ok) throw new Error(`批量调研查询失败（${r.status}）`);
   return (await r.json()) as BatchRefJob;
 }
+
+// ---------- 考证报告（服务端权威：条目 + 参考图底账 + 待补清单） ----------
+
+/** 考据条目（服务端 research_entries 表的一行）：调研文字产物的落点。
+ *  era 相同且资产名相同的历史条目可跨项目复用（`/refs/report` 是它的人读视图）。 */
+export interface RefEntry {
+  id: string;
+  projectId: string;
+  nodeId: string;
+  assetName: string;
+  assetType: string;
+  era: string;
+  /** 主题归属（考证大纲的主题；未归类为空） */
+  topicKey: string;
+  body: string;
+  sources: { title: string; url: string; domain: string }[];
+  updatedAt: string;
+}
+
+export interface RefReport {
+  projectId: string;
+  projectName: string;
+  era: string;
+  entries: RefEntry[];
+  /** 画布上还没有考据的资产卡（报告「待补」段，也是用户该动手的清单） */
+  missing: { nodeId: string; title: string; nodeType: string }[];
+  /** 已采纳候选按节点分组（前端对账物化参考卡用；已物化的按图 URL 去重） */
+  adopted: { nodeId: string; candidates: RefCandidate[] }[];
+  /** 考证大纲的主题（报告首节） */
+  outline: RefTopic[];
+  /** 卡片简报：本资产条目 + 服务它的主题条目合成（卡上显示的 = 出图发出去的） */
+  cardBriefs: Record<string, string>;
+  /** 报告正文（纯文本，含来源底账与待补清单）——落成画布报告卡 */
+  text: string;
+  generatedAt: string;
+}
+
+/** 考证大纲的一个主题：检索词 + 服务哪些卡 + 状态（调研单位是题材不是资产）。 */
+export interface RefTopic {
+  topicKey: string;
+  title: string;
+  rationale: string;
+  queries: string[];
+  nodeIds: string[];
+  status: "planned" | "running" | "done" | "reused" | "error";
+  /** status=reused 时的来源项目名 */
+  reusedFrom: string;
+  error: string;
+  serves: { nodeId: string; title: string }[];
+  entry: RefEntry | null;
+}
+
+export interface RefOutline {
+  projectId: string;
+  projectName: string;
+  era: string;
+  topics: RefTopic[];
+  /** 未被任何主题覆盖的资产（缺口清单，用来补主题） */
+  uncovered: { nodeId: string; title: string; nodeType: string }[];
+  assetCount: number;
+  doneCount: number;
+  /** 大纲正文（纯文本，不含事实正文）——落成画布大纲卡 */
+  text: string;
+  generatedAt: string;
+}
+
+/** 拉项目考证报告。条目在简报产出时即落库，与谁发起调研、画布开没开无关。 */
+export async function getRefReport(projectId: string): Promise<RefReport> {
+  const r = await apiFetch(`/agent-service/projects/${projectId}/refs/report`);
+  if (!r.ok) throw new Error(`考证报告加载失败（${r.status}）`);
+  return (await r.json()) as RefReport;
+}
+
+/** 拉项目考证大纲（主题计划 + 执行状态 + 缺口）。 */
+export async function getRefOutline(projectId: string): Promise<RefOutline> {
+  const r = await apiFetch(`/agent-service/projects/${projectId}/refs/outline`);
+  if (!r.ok) throw new Error(`考证大纲加载失败（${r.status}）`);
+  return (await r.json()) as RefOutline;
+}
+
+/** 执行大纲主题（缺省全部未完成的）。状态写回主题行，大纲卡即进度板。 */
+export async function runRefOutline(
+  projectId: string,
+  topicKeys: string[] = [],
+): Promise<{ started: string[]; outline: RefOutline }> {
+  const r = await apiFetch(`/agent-service/projects/${projectId}/refs/outline/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topicKeys }),
+  });
+  const text = await r.text();
+  if (!r.ok) throw new Error(text || `执行失败（${r.status}）`);
+  return JSON.parse(text) as { started: string[]; outline: RefOutline };
+}

@@ -218,7 +218,6 @@ async def start_storyboard_gen_job(
     return job_id
 IMAGEGEN_FLOW_ID = os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID", "")
 DMX_API_KEY = os.environ.get("DMX_API_KEY", "")
-VOLC_SEARCH_API_KEY = os.environ.get("VOLC_SEARCH_API_KEY", "")
 # 出图参考图回给 langflow 下载用的本机地址（/assets 未鉴权、文件名随机 hex）
 AGENT_BASE_URL = os.environ.get("AGENT_BASE_URL", "http://127.0.0.1:8123")
 # 本 agent 服务的资产基地址（/assets 未鉴权）。注意 AGENT_BASE_URL 是
@@ -227,6 +226,10 @@ ASSET_BASE_URL = os.environ.get("ASSET_BASE_URL", "http://127.0.0.1:8123")
 
 # 生成图片的对外暴露目录（main.py 挂 /assets 端点，前端经 /agent-service/assets/ 访问）
 ASSETS_DIR = Path(__file__).resolve().parent / "static" / "assets"
+
+# 项目库路径（与 projects.DB_PATH 同一文件）：画布 meta / 节点解析的唯一定位。
+# 测试换绑到临时库（agent/test_*.py 范式）
+DB_PATH = Path(__file__).resolve().parent / "data" / "wingsight.db"
 
 MAX_RESULT_CHARS = 1500
 
@@ -447,9 +450,23 @@ async def decompose_script(script: str) -> str:
     for i, a in enumerate(assets, 1):
         # 未知类型不炸整条拆解（四路 flow 并行，类型集合随配置浮动）
         label = ASSET_TYPE_LABELS.get(a["type"], a["type"])
+        looks = [
+            l for l in (a.get("looks") or []) if str(l.get("label") or "").strip()
+        ]
+        looks_note = (
+            "｜造型：" + "、".join(str(l.get("label")) for l in looks) if looks else ""
+        )
         lines.append(
             f"{i}. [{label}] {a['name']}｜{a['description']}"
             + (f"｜视觉：{a['visual_notes']}" if a["visual_notes"] else "")
+            + looks_note
+        )
+    if any(a.get("looks") for a in assets):
+        lines.append(
+            "（带「造型：」的角色：建卡时把造型计划一并写进角色卡的 looks 字段——"
+            'looks=[{"label":"朝服","description":"该造型的服饰细节","costume":"核心服装名"}]。'
+            "造型计划是出造型图的数据源（定妆照锁身份 + 服饰结构图锁形制），别丢；"
+            "分镜引用时系统还会按行文里的造型词自动选中对应造型卡）"
         )
     if errors:
         lines.append(
@@ -973,7 +990,7 @@ def _project_imagegen_from_config(config: Any = None) -> Dict[str, Any]:
             return {}
         import sqlite3
 
-        db_path = Path(__file__).resolve().parent / "data" / "wingsight.db"
+        db_path = DB_PATH
         db = sqlite3.connect(str(db_path))
         try:
             row = db.execute(
@@ -1001,7 +1018,7 @@ def _project_style_from_config(config: Any = None) -> str:
             return ""
         import sqlite3
 
-        db_path = Path(__file__).resolve().parent / "data" / "wingsight.db"
+        db_path = DB_PATH
         db = sqlite3.connect(str(db_path))
         try:
             row = db.execute(
@@ -1015,6 +1032,335 @@ def _project_style_from_config(config: Any = None) -> str:
         return str(meta.get("visualStyle") or "")
     except Exception:
         return ""
+
+
+def _project_id_from_config(config: Any = None) -> str:
+    """聊天线程 → 所属项目 id（考据简报注入等按项目解析用）。
+
+    非聊天路径、未知线程或读库失败返回空串。"""
+    try:
+        thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+        if not thread_id:
+            return ""
+        import sqlite3
+
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            row = db.execute(
+                "select project_id from chat_threads where id = ?", (thread_id,)
+            ).fetchone()
+        finally:
+            db.close()
+        return str(row[0]) if row and row[0] else ""
+    except Exception:
+        return ""
+
+
+def _canvas_meta(project_id: str) -> Dict[str, Any]:
+    """项目画布 meta（题材真伪/时代口径的唯一读取口）。读不到给空表。"""
+    if not project_id:
+        return {}
+    try:
+        import sqlite3
+
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            row = db.execute(
+                "select meta from canvases where project_id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+        meta = json.loads(row[0]) if row and row[0] else {}
+        return meta if isinstance(meta, dict) else {}
+    except Exception:
+        return {}
+
+
+def _project_factuality(project_id: str) -> str:
+    """项目题材真伪（画布 meta.factuality）。只有显式 "fiction" 才跳过考据；
+    缺省/脏值/读库失败一律按 "real"——历史/罪案纪录片是主力片型
+    （2026-09-10 用户口径：除了动画片都是真实题材）。"""
+    return "fiction" if str(_canvas_meta(project_id).get("factuality") or "") == "fiction" else "real"
+
+
+def _project_era(project_id: str) -> str:
+    """项目时代/题材口径（画布 meta.era，如「北魏·平城时期」）。
+
+    跨项目复用考据条目的作用域键：条目按 era 归档，出图补考据时先查同 era
+    同资产名的历史条目。为空一律不复用（宁可重搜，不可错用年代）。"""
+    return str(_canvas_meta(project_id).get("era") or "").strip()
+
+
+def _entry_briefs(project_id: str) -> tuple[Dict[str, str], Dict[str, str]]:
+    """项目考据条目索引：(按节点 id, 按资产名)——出图注入的权威来源。
+
+    条目在简报产出时即由调研侧落库（imgresearch.upsert_entry），不依赖画布卡
+    是否被写过；画布卡的 researchBrief 是它的呈现（历史项目里可能存在只有卡
+    没有条目的存量，故 _inject_research_briefs 两张表都收、条目优先）。"""
+    if not project_id:
+        return {}, {}
+    try:
+        import imgresearch
+
+        rows = imgresearch.list_entries(project_id)
+    except Exception:
+        return {}, {}
+    by_id: Dict[str, str] = {}
+    by_name: Dict[str, str] = {}
+    for e in rows:
+        brief = str(e.get("body") or "").strip()
+        if not brief:
+            continue
+        nid = str(e.get("nodeId") or "").strip()
+        if nid:
+            by_id[nid] = brief
+        name = str(e.get("assetName") or "").strip()
+        if name:
+            by_name[name] = brief
+    return by_id, by_name
+
+
+def _canvas_research_briefs(
+    project_id: str,
+) -> tuple[Dict[str, str], Dict[str, str]]:
+    """项目画布上的考据简报索引：(按节点 id, 按卡片标题)。
+
+    调研流程的文字考据（视觉细节/时代与语境/常见误用）本来就落在资产卡的
+    researchBrief 上，但此前只有「AI 扩写」那条路径会带它进提示词，补资产图
+    /资产卡出图/分镜行出图全部漏掉——图照着搜来的真实参考图画、却缺文字约束，
+    形似而考据不对（2026-09-10 用户反馈「生成资产图不够尊重史实」）。故在
+    出图服务端统一注入。两张索引分别服务画布路径（载荷带 rid）与聊天路径
+    （载荷只有资产名）。空项目 ID / 读库失败返回两张空表（不阻塞出图）。"""
+    if not project_id:
+        return {}, {}
+    try:
+        import sqlite3
+
+        db_path = DB_PATH
+        db = sqlite3.connect(str(db_path))
+        try:
+            row = db.execute(
+                "select nodes from canvases where project_id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+        nodes = json.loads(row[0]) if row and row[0] else []
+    except Exception:
+        return {}, {}
+    by_id: Dict[str, str] = {}
+    by_title: Dict[str, str] = {}
+    for n in nodes if isinstance(nodes, list) else []:
+        if not isinstance(n, dict):
+            continue
+        data = n.get("data")
+        if not isinstance(data, dict):
+            continue
+        brief = str(data.get("researchBrief") or "").strip()
+        if not brief:
+            continue
+        nid = str(n.get("id") or "")
+        if nid:
+            by_id[nid] = brief
+        title = str(data.get("title") or "").strip()
+        if title:
+            by_title[title] = brief
+    return by_id, by_title
+
+
+def _topic_briefs(
+    project_id: str,
+) -> tuple[Dict[str, List[List[str]]], Dict[str, List[List[str]]]]:
+    """考证大纲的主题考据索引：(按节点 id, 按资产名) → [[主题名, 事实], …]。
+
+    主题条目是时代共有事实，按主题的服务范围分发给成员资产——这是「同一时代
+    的资产拿到同一套形制约束」的机制（旧流程按资产各搜一遍，同一时代会得出
+    互相矛盾的两套说法）。空项目/无大纲返回两张空表。"""
+    if not project_id:
+        return {}, {}
+    try:
+        import imgresearch
+
+        return imgresearch.topic_briefs(project_id)
+    except Exception:
+        return {}, {}
+
+
+def _inject_research_briefs(
+    shots: List[Dict[str, Any]], project_id: str
+) -> List[Dict[str, Any]]:
+    """把考据简报并进出图载荷的 visual_notes。
+
+    命中顺序：rid → rid 去「#序号」前缀（图片卡/分镜行形态）→ 资产名
+    （聊天侧载荷没有 rid）。服务端以 DB 为准解析（同画风解析范式：前端只传
+    标识，约束不可被模型改写）。都取不到（分镜行 id / 无简报）时原样放行。
+
+    三个来源合并：**考据条目**（简报产出时即落库，权威）> 画布卡的 researchBrief
+    （前者的呈现，历史项目有只有卡没条目的存量）> **主题考据**（考证大纲里服务
+    该卡的时代共有事实，一个主题喂多张卡——同一时代的所有资产因此拿到同一套
+    形制约束，而不是各搜各的得出互相矛盾的两套说法）。"""
+    c_by_id, c_by_title = _canvas_research_briefs(project_id)
+    e_by_id, e_by_name = _entry_briefs(project_id)
+    by_id = {**c_by_id, **e_by_id}
+    by_title = {**c_by_title, **e_by_name}
+    t_by_id, t_by_name = _topic_briefs(project_id)
+    if not by_id and not by_title and not t_by_id and not t_by_name:
+        return shots
+    out: List[Dict[str, Any]] = []
+    for s in shots:
+        if not isinstance(s, dict):
+            out.append(s)
+            continue
+        rid = str(s.get("rid") or "")
+        base = rid.split("#")[0]
+        name = str(s.get("name") or "").strip()
+        # 载荷两种 rid 形态：资产卡直出=节点 id；图片卡/分镜行={节点id}#{序号}
+        own = by_id.get(rid) or by_id.get(base, "") or by_title.get(name, "")
+        topics = t_by_id.get(rid) or t_by_id.get(base) or t_by_name.get(name) or []
+        parts: List[str] = []
+        if own:
+            parts.append(own)
+        for item in topics:
+            t_title, t_body = str(item[0]), str(item[1])
+            parts.append(f"〈{t_title}〉{t_body}")
+        if not parts:
+            out.append(s)
+            continue
+        out.append(_attach_brief(s, "；".join(parts)))
+    return out
+
+
+def _attach_brief(shot: Dict[str, Any], brief: str) -> Dict[str, Any]:
+    """把考据简报并进载荷的 visual_notes。
+
+    载荷两种键名都收（前端 camelCase / 工具 snake_case），沿用调用方原键；
+    「考据依据」标记兼作去重哨兵（已带的不再补，见 _ensure_research_brief）。"""
+    key = "visualNotes" if "visualNotes" in shot else "visual_notes"
+    notes = str(shot.get(key) or "").strip()
+    return {
+        **shot,
+        key: "；".join(
+            p
+            for p in (
+                notes,
+                f"考据依据（真实形制与年代，优先遵循）：{brief}",
+            )
+            if p
+        ),
+    }
+
+
+# 进程内考据缓存（"{project_id}:{资产名}" → 简报）：真实题材补考据时同一资产
+# 反复重出不再重复搜索。进程重启即清空；要持久化就点卡上「调研」——那条路会
+# 把简报落卡 data.researchBrief，下次直接由 _inject_research_briefs 取用
+_BRIEF_CACHE: Dict[str, str] = {}
+# 补考据并发（Serper 号池限速，低于出图并发 30）
+_BRIEF_CONCURRENCY = 6
+
+
+async def _research_brief_for(
+    asset: Dict[str, Any],
+) -> tuple[str, List[Dict[str, Any]]]:
+    """单资产文字考据：出词（plan flow）→ Serper 搜抓 → flow 提纯。
+
+    返回 (简报, 来源底账)；复用参考图调研的文路原语，任何一步失败抛错由调用方
+    软处理。"""
+    # 函数内 import：imgresearch 顶层 import skills，反向顶层 import 会成环
+    import imgresearch
+
+    plan = await run_ref_plan_flow(asset, [])
+    queries = [
+        str(q).strip() for q in (plan.get("text_queries") or []) if str(q).strip()
+    ]
+    if not queries:
+        raise RuntimeError("考据搜索词为空（plan flow 未产出 text_queries）")
+    return await imgresearch._run_text_research(asset, queries, {})
+
+
+def _reusable_brief(
+    project_id: str, name: str, asset_type: str
+) -> tuple[str, str]:
+    """跨项目复用查询：同 era + 同资产名的历史考据条目 → (简报, 出处项目名)。
+
+    作用域键是项目的时代口径（画布 meta.era）；era 为空一律不复用——名字像
+    而时代不同的资产（「朝服」在唐宋与在北魏是两回事）宁可重搜，不可错用。"""
+    import imgresearch
+
+    era = _project_era(project_id)
+    if not era:
+        return "", ""
+    for e in imgresearch.lookup_entries(era, name, asset_type):
+        body = str(e.get("body") or "").strip()
+        if not body:
+            continue
+        src_pid = str(e.get("projectId") or "")
+        if src_pid == project_id:
+            continue  # 本项目已在 _inject_research_briefs 命中过，这里只找别的项目
+        _, src_name = imgresearch._project_scope(src_pid)
+        return body, src_name or "同题材项目"
+    return "", ""
+
+
+async def _ensure_research_brief(
+    shot: Dict[str, Any],
+    project_id: str,
+    factuality: str,
+    sem: asyncio.Semaphore,
+) -> Dict[str, Any]:
+    """真实题材出图前补考据：先查条目（含跨项目复用），都没有才现搜一次。
+
+    查表顺序：本项目条目（在 _inject_research_briefs 已注入，走到这里说明没有）
+    → 同 era 同资产名的跨项目条目（复用即零成本、且与别处结论一致）→ 现搜，
+    搜完落条目库（下次任何项目遇到同一时代同一资产直接命中）。
+
+    虚构题材（动画等）/ 已带考据依据的载荷直接放行；失败原样放行并落日志
+    ——考据是增强项，绝不拦出图（与调研文路「软失败」同语义）。"""
+    if factuality == "fiction" or not project_id:
+        return shot
+    notes = str(shot.get("visual_notes") or shot.get("visualNotes") or "")
+    if "考据依据" in notes:
+        return shot
+    name = str(shot.get("name") or "").strip()
+    if not name:
+        return shot
+    asset_type = str(shot.get("assetType") or "character")
+    key = f"{project_id}:{name}"
+    brief = _BRIEF_CACHE.get(key)
+    if not brief:
+        brief, reused_from = _reusable_brief(project_id, name, asset_type)
+        if brief:
+            print(f"[考据] 复用条目 {key} ← {reused_from}", flush=True)
+            brief = f"{brief}（复用《{reused_from}》同题材考据条目）"
+            _BRIEF_CACHE[key] = brief
+            return _attach_brief(shot, brief)
+    if not brief:
+        asset = {
+            "name": name,
+            "type": asset_type,
+            "description": str(shot.get("description") or ""),
+        }
+        try:
+            async with sem:
+                # 双查：排队等锁期间别的资产可能已把同名简报填进缓存
+                brief = _BRIEF_CACHE.get(key)
+                if not brief:
+                    brief, sources = await _research_brief_for(asset)
+                    # 落条目库：与调研链同一条服务端落点（重启不丢、跨项目可查）
+                    import imgresearch
+
+                    imgresearch.upsert_entry(
+                        project_id,
+                        body=brief,
+                        node_id=str(shot.get("rid") or "").split("#")[0],
+                        asset_name=name,
+                        asset_type=asset_type,
+                        era=_project_era(project_id),
+                        sources=sources,
+                    )
+            _BRIEF_CACHE[key] = brief
+        except Exception as exc:  # noqa: BLE001 软失败：考据不成不拦出图
+            print(f"[考据] 补考据失败 {key}：{str(exc)[:160]}", flush=True)
+            return shot
+    return _attach_brief(shot, brief)
 
 
 # ---------- 聊天长任务（取消 + 任务面板数据源；「停止」/ 切会话透传后端） ----------
@@ -1129,10 +1475,13 @@ async def generate_asset_images(
             for a in assets
         ]
 
-    # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
-    # 搜索 key，剥掉后走纯文生图（参考图是增强项，不影响出图）
-    if not VOLC_SEARCH_API_KEY:
-        assets = [{k: v for k, v in a.items() if k != "search_query"} for a in assets]
+    # 考据简报注入（同 start_storyboard_image_job 的服务端统一注入）：聊天侧
+    # 资产载荷没有 rid，按资产名匹配画布卡片上的 researchBrief
+    chat_project_id = _project_id_from_config(config)
+    assets = _inject_research_briefs(assets, chat_project_id)
+    # 真实题材：画布上还没有考据的资产，出图前现补一次（虚构题材跳过）
+    chat_factuality = _project_factuality(chat_project_id)
+    brief_sem = asyncio.Semaphore(_BRIEF_CONCURRENCY)
 
     # 画幅预检（任一不合法整批不跑，点名报错让 LLM 修正重调——与批量出图
     # 端点同一铁律）；合法值随资产进 shot，_generate_single_image 认 shot.aspect
@@ -1179,6 +1528,10 @@ async def generate_asset_images(
                     [str(shot.get("visual_notes") or ""), f"全局视觉风格：{style}"],
                 )
             )
+        # 真实题材且卡上无考据 → 出图前现补一次（软失败不拦出图）
+        shot = await _ensure_research_brief(
+            shot, chat_project_id, chat_factuality, brief_sem
+        )
         async with sem:
             result = await _generate_single_image(shot, params=params)
         done[0] += 1
@@ -1372,7 +1725,7 @@ async def _generate_single_image(
     请求（name/description/visualNotes?/assetType?/referenceImages?），
     params 为模型/分辨率覆盖（models.resolve_imagegen_params 产物），
     返回 {ok, imageUrl?|error}。拆解自动出图链与批量出图任务共用。"""
-    # flow 载荷只认 {type,name,description,visual_notes,reference_images?,search_query?}：
+    # flow 载荷只认 {type,name,description,visual_notes,reference_images?}：
     # rid 不能进 payload（会被渲染进出图提示词）。
     # 字段一律拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，
     # 组件里 json.loads 会报 Invalid control character
@@ -1552,10 +1905,14 @@ async def start_storyboard_image_job(
         raise ValueError("；".join(invalid))
     _prune_storyboard_image_jobs()
 
-    # 未配置豆包搜索 key 时剥掉 search_query：组件对带该字段的资产强制要求
-    # 搜索 key，剥掉后走纯文生图
-    if not VOLC_SEARCH_API_KEY:
-        shots = [{k: v for k, v in s.items() if k != "search_query"} for s in shots]
+    # 考据简报注入：调研产出的文字考据（年代/形制/常见误用）随画布资产卡
+    # 落库，出图前按 rid 并入提示词——此前只在「AI 扩写」路径生效，补资产图
+    # 与资产卡直出都拿不到（2026-09-10 用户反馈「资产图不够尊重史实」）
+    shots = _inject_research_briefs(shots, project_id)
+    # 真实题材：画布上还没有考据的资产，出图前现补一次（虚构题材跳过）。
+    # 逐资产独立预热、与出图流水线重叠——每张只等自己那份简报，互不拖累
+    factuality = _project_factuality(project_id)
+    brief_sem = asyncio.Semaphore(_BRIEF_CONCURRENCY)
 
     job_id = uuid.uuid4().hex[:12]
     STORYBOARD_IMAGE_JOBS[job_id] = {
@@ -1570,7 +1927,9 @@ async def start_storyboard_image_job(
 
     sem = asyncio.Semaphore(30)
 
-    async def one(shot: Dict[str, Any]) -> None:
+    async def one(
+        shot: Dict[str, Any], brief_task: Optional[asyncio.Task] = None
+    ) -> None:
         rid = str(shot.get("rid", ""))
         p = resolved.get(rid) or {}
         # 请求级画幅落到无显式画幅的镜头（flow 载荷只认 shot.aspect；
@@ -1578,6 +1937,9 @@ async def start_storyboard_image_job(
         if not str(shot.get("aspect") or "").strip() and p.get("aspect"):
             shot = {**shot, "aspect": p["aspect"]}
         tweaks = {k: v for k, v in p.items() if k != "aspect"} or None
+        if brief_task is not None:
+            # 补考据结果（任务内部已兜底：失败/虚构题材原样返回本 shot）
+            shot = await brief_task
         try:
             async with sem:
                 if STORYBOARD_IMAGE_JOBS[job_id]["cancelled"]:
@@ -1596,10 +1958,24 @@ async def start_storyboard_image_job(
 
     async def run() -> None:
         job = STORYBOARD_IMAGE_JOBS[job_id]
-        job["tasks"] = [asyncio.create_task(one(s)) for s in shots]
+        # 考据预热：立即起任务（受限并发），出图各自 await 自己那份——考据与
+        # 出图重叠，不串行等待整批考据跑完
+        brief_tasks = [
+            asyncio.create_task(
+                _ensure_research_brief(s, project_id, factuality, brief_sem)
+            )
+            for s in shots
+        ]
+        job["tasks"] = [
+            asyncio.create_task(one(s, t)) for s, t in zip(shots, brief_tasks)
+        ]
         try:
             await asyncio.gather(*job["tasks"], return_exceptions=True)
         finally:
+            # 取消/收尾时未完成的考据一并取消（不留孤儿请求继续烧 Serper 额度）
+            for t in brief_tasks:
+                if not t.done():
+                    t.cancel()
             job["status"] = "cancelled" if job["cancelled"] else "done"
             # 终态以内存完整结果为准权威落库（自愈中途漏写的单项）
             try:
@@ -1912,7 +2288,7 @@ async def start_prompt_optimize_job(
     model: str = "",
 ) -> str:
     """mode：调用方（前端按按钮态）显式路由——
-    "optimize" 优化扩写（prompt 必填，纯文本，model 可覆盖文本模型，空=出厂 deepseek-v4-flash）；
+    "optimize" 优化扩写（prompt 必填，纯文本，model 可覆盖文本模型，空=出厂 deepseek-flash）；
     "reversal" 看图反推（参考图必填，gpt-5.6-luna 视觉，模型在 flow 的 model_name 字段换）。"""
     if mode == "optimize":
         if not PROMPT_OPTIMIZE_TEXT_FLOW_ID:

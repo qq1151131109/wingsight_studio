@@ -27,6 +27,7 @@ import {
   subscribeAgentEvents,
   type AgentJobEvent,
 } from "@/lib/agent-events";
+import { reconcileRefResearch } from "@/lib/canvas/refReconcile";
 import { useCanvasStore } from "@/lib/canvas/store";
 
 /** 自动续跑消息的统一前缀（Sidebar 据此把气泡渲染成系统样式而非用户口吻） */
@@ -132,6 +133,37 @@ export default function TaskEvents() {
   const [notice, setNotice] = useState<{ ok: boolean; title: string; detail: string } | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // 调研产物对账（打开项目时一次）：简报落资产卡 / 已采纳图物化成参考卡 /
+  // 考证报告落报告卡。此前这些只在前端轮询窗口里写，agent 从聊天发起的调研
+  // 没人写 batchId 锚 → 产物永远留在库里画布上看不见（见 refReconcile 注释）。
+  // 等装载完成（hydration 前对账会把不属于当前画布的产物写进来）。
+  useEffect(() => {
+    if (!projectId) return;
+    let cancelled = false;
+    const run = async (tries: number) => {
+      if (cancelled) return;
+      if (!useCanvasStore.getState().hydrated) {
+        if (tries < 20) setTimeout(() => void run(tries + 1), 500);
+        return;
+      }
+      try {
+        const r = await reconcileRefResearch(projectId);
+        if (r.refsCreated || r.report === "created") {
+          console.info(
+            `[调研对账] 参考卡 +${r.refsCreated} · 报告卡 ${r.report} · 简报 ${r.briefsWritten}`,
+          );
+        }
+      } catch (err) {
+        // 对账失败不拦任何事：下轮打开/调研完成事件会再试一次
+        console.warn("[调研对账] 失败，下次打开项目重试", err);
+      }
+    };
+    void run(0);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
   useEffect(() => {
     const requestAutoRun = (e: AgentJobEvent) => {
       if (ranJobs.current.has(e.job_id)) return;
@@ -164,7 +196,14 @@ export default function TaskEvents() {
         if (e.status === "done") requestAutoRun(e);
         return;
       }
-      if (e.kind === "ref_research" && e.status === "done") requestAutoRun(e);
+      if (e.kind === "ref_research" && e.status === "done") {
+        // 先对账再续跑：让 agent 汇报时画布上报告卡/参考卡已经就位（汇报里
+        // 说的产物用户看得到）；对账失败不拦续跑
+        reconcileRefResearch(projectId ?? "").catch((err) => {
+          console.warn("[调研对账] 失败，下次打开项目重试", err);
+        });
+        requestAutoRun(e);
+      }
       const line = noticeLine(e);
       if (!line) return;
       setNotice(line);

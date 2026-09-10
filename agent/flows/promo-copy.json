@@ -710,7 +710,7 @@
                 "name": "model",
                 "value": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "deepseek-flash",
                     "provider": "DeepSeek",
                     "category": "OpenAI",
                     "icon": "DeepSeek"
@@ -732,7 +732,7 @@
                 "_input_type": "ModelInput",
                 "options": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -745,7 +745,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-pro",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -758,7 +758,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-flash-vision-exp",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -1292,7 +1292,7 @@
                 "_input_type": "ModelInput",
                 "options": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -1305,7 +1305,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-pro",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -1318,7 +1318,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-flash-vision-exp",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -1861,7 +1861,7 @@
                 "_input_type": "ModelInput",
                 "options": [
                   {
-                    "name": "deepseek-v4-flash",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -1874,7 +1874,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-pro",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",
@@ -1887,7 +1887,7 @@
                     }
                   },
                   {
-                    "name": "deepseek-v4-flash-vision-exp",
+                    "name": "deepseek-flash",
                     "icon": "DeepSeek",
                     "category": "OpenAI",
                     "provider": "DeepSeek",

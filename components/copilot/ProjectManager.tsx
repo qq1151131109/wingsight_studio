@@ -11,7 +11,7 @@
 
 import { useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
-import { useCanvasStore } from "@/lib/canvas/store";
+import { useCanvasStore, saneEra, saneFactuality } from "@/lib/canvas/store";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
 import { saneImagegen } from "@/lib/imagegen";
 import { showToast } from "@/lib/toast";
@@ -89,6 +89,8 @@ export default function ProjectManager() {
   const edges = useCanvasStore((s) => s.edges);
   const viewport = useCanvasStore((s) => s.viewport);
   const projectStyle = useCanvasStore((s) => s.projectStyle);
+  const projectFactuality = useCanvasStore((s) => s.projectFactuality);
+  const projectEra = useCanvasStore((s) => s.projectEra);
   const imagegen = useCanvasStore((s) => s.imagegen);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -101,13 +103,18 @@ export default function ProjectManager() {
         nodes: s.nodes,
         edges: s.edges,
         viewport: s.viewport,
-        meta: { visualStyle: s.projectStyle, imagegen: s.imagegen },
+        meta: {
+          visualStyle: s.projectStyle,
+          factuality: s.projectFactuality,
+          era: s.projectEra,
+          imagegen: s.imagegen,
+        },
       });
     }, SYNC_DEBOUNCE_MS);
     return () => {
       if (timer.current) clearTimeout(timer.current);
     };
-  }, [projectId, nodes, edges, viewport, projectStyle, imagegen]);
+  }, [projectId, nodes, edges, viewport, projectStyle, projectFactuality, projectEra, imagegen]);
 
   // ---------- 离开工作台：冲刷未落盘的修改 ----------
   useEffect(() => {
@@ -119,7 +126,12 @@ export default function ProjectManager() {
           nodes: s.nodes,
           edges: s.edges,
           viewport: s.viewport,
-          meta: { visualStyle: s.projectStyle, imagegen: s.imagegen },
+          meta: {
+            visualStyle: s.projectStyle,
+            factuality: s.projectFactuality,
+            era: s.projectEra,
+            imagegen: s.imagegen,
+          },
         });
       }
     };
@@ -187,7 +199,12 @@ async function persist(
     nodes: unknown[];
     edges: unknown[];
     viewport: unknown;
-    meta?: { visualStyle?: string; imagegen?: { model: string; resolution: string } };
+    meta?: {
+      visualStyle?: string;
+      factuality?: "real" | "fiction";
+      era?: string;
+      imagegen?: { model: string; resolution: string };
+    };
   },
 ) {
   const run = saveChain.then(async () => {
@@ -312,6 +329,12 @@ async function activateProject(p: ProjectMeta) {
       // 乐观锁基准：装载时的服务端版本 + 本次装载快照（409 合并的 base）
       useCanvasStore.setState({
         projectStyle: String((canvas as { meta?: { visualStyle?: string } }).meta?.visualStyle ?? ""),
+        projectFactuality: saneFactuality(
+          (canvas as { meta?: { factuality?: unknown } }).meta?.factuality,
+        ),
+        projectEra: saneEra(
+          (canvas as { meta?: { era?: unknown } }).meta?.era,
+        ),
         canvasRevision: canvas.revision ?? null,
       });
       lastSaved = { pid: p.id, nodes: clean.nodes, edges: clean.edges };

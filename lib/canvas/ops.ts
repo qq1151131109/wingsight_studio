@@ -74,6 +74,8 @@ export type AddNodeOp = {
   /** 生成快照（聊天侧落卡与前端出图按钮同语义：重跑/面板预填吃真实载荷） */
   genPrompt?: string;
   genShot?: WingNodeData["genShot"];
+  /** 角色卡：造型计划（拆解产出，label 必填；造型图据此出图并物化成卡） */
+  looks?: WingNodeData["looks"];
   /** 参考资产卡 id（连线即引用；资产→镜头图卡穿线） */
   refIds?: string[];
   styleSnapshot?: string;
@@ -141,6 +143,8 @@ export type UpdateNodeOp = {
   /** 生成快照（补挂/修正用，字段同 add_node） */
   genPrompt?: string;
   genShot?: WingNodeData["genShot"];
+  /** 角色卡：造型计划（拆解产出，label 必填；造型图据此出图并物化成卡） */
+  looks?: WingNodeData["looks"];
   refIds?: string[];
   styleSnapshot?: string;
   /** 文本卡：可点来源行（补挂/修正用，字段同 add_node） */
@@ -231,6 +235,60 @@ function sanitizeLinks(
     .slice(0, 6)
     .map((l) => ({ title: l.title.slice(0, 60), url: l.url.slice(0, 500) }));
   return clean.length > 0 ? { links: clean } : {};
+}
+
+/** looks 白名单整形（add_node/update_node 共用）：造型计划是角色卡的结构化
+ *  数据（拆解产出，造型图据此出图）。label 必填否则整项剔除，description
+ *  500 字、costume 60 字，最多 8 项。**不收 imageUrl/nodeId**——那是出图与
+ *  物化流程回填的产物，agent 不该写。返回 {} 表示无有效 looks，不写字段。 */
+function sanitizeLooks(
+  looks: unknown,
+): { looks: NonNullable<WingNodeData["looks"]> } | Record<string, never> {
+  if (!Array.isArray(looks)) return {};
+  const clean = looks
+    .filter((l): l is Record<string, unknown> =>
+      Boolean(l) && typeof l === "object",
+    )
+    .map((l) => {
+      const label = String(l.label ?? "").trim().slice(0, 40);
+      if (!label) return null;
+      const item: NonNullable<WingNodeData["looks"]>[number] = { label };
+      const description = String(l.description ?? "").trim();
+      if (description) item.description = description.slice(0, 500);
+      const costume = String(l.costume ?? "").trim();
+      if (costume) item.costume = costume.slice(0, 60);
+      const costumeId = String(l.costumeId ?? "").trim();
+      if (costumeId) item.costumeId = costumeId.slice(0, 64);
+      return item;
+    })
+    .filter((x): x is NonNullable<WingNodeData["looks"]>[number] => x !== null)
+    .slice(0, 8);
+  return clean.length > 0 ? { looks: clean } : {};
+}
+
+/** update_node 的造型计划合并：按 label 保留既有项的出图产物（imageUrl/
+ *  nodeId/error）。agent 重写造型计划时会传全量 looks，若直接覆盖，已出图的
+ *  造型会丢掉记账——轻则被当「待出」重复出图，重则 nodeId 丢失后装载时重建
+ *  卡片。add_node 用 sanitizeLooks 即可（新卡没有既有项）。 */
+function lookPatchMerged(
+  existing: WingNodeData["looks"],
+  incoming: unknown,
+): { looks: NonNullable<WingNodeData["looks"]> } | Record<string, never> {
+  const clean = sanitizeLooks(incoming);
+  if (!("looks" in clean)) return {};
+  const prev = new Map((existing ?? []).map((l) => [l.label, l]));
+  return {
+    looks: clean.looks.map((l) => {
+      const old = prev.get(l.label);
+      if (!old) return l;
+      return {
+        ...l,
+        ...(old.imageUrl ? { imageUrl: old.imageUrl } : {}),
+        ...(old.nodeId ? { nodeId: old.nodeId } : {}),
+        ...(old.error ? { error: old.error } : {}),
+      };
+    }),
+  };
 }
 
 /** 干跑校验（canvas_validate_ops 前端工具用；影策 validateCanvasOps 范式）：
@@ -796,6 +854,7 @@ export function applyOps(rawOps: unknown): OpResult {
                 ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
                 : {}),
               ...(sanitizeLinks(op.links)),
+              ...(sanitizeLooks(op.looks)),
               ...(episodeId !== undefined ? { episodeId } : {}),
               // 集号：显式给了就带上，缺省由 store.addNode 自动排到末尾
               ...(op.episodeNo !== undefined ? { episodeNo: op.episodeNo } : {}),
@@ -896,6 +955,10 @@ export function applyOps(rawOps: unknown): OpResult {
               ? { styleSnapshot: op.styleSnapshot.slice(0, 300) }
               : {}),
             ...(sanitizeLinks(op.links)),
+            ...(lookPatchMerged(
+              live.nodes.find((n) => n.id === op.id)?.data.looks,
+              op.looks,
+            )),
             ...(op.episodeId !== undefined
               ? { episodeId: op.episodeId.slice(0, 40) }
               : {}),

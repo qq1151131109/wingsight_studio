@@ -191,12 +191,12 @@ _GEN_ASSETS_DOC = f"""为资产批量生成设定图（并发出图，每张完�
 正文会被后续出图当事实注入提示词，状态残留会永久污染生成（2026-09-07 实锤事故）。
 
 用户确认资产清单后要求出图时调用。输入是资产数组 JSON，每个元素：
-{{"type":"character|scene|prop|costume|shot","name":"...","description":"...","visual_notes":"...","search_query":"可公开搜索的参考词","aspect":"9:16"}}
+{{"type":"character|scene|prop|costume|shot","name":"...","description":"...","visual_notes":"...","aspect":"9:16"}}
 （字段与 decompose_script 的输出一致；type 决定版式契约：shot=有人物
 有剧情的电影剧照，分镜/镜头类用 shot 而不是 scene；**单件物件的道具图
 （报纸/文件/告示/信件/包装等）必须用 prop——浅灰背景结构图布局，
 不要用 shot**，shot 版式会注入人物与环境把白底道具图带成剧情剧照；
-服饰卡用 costume——服装结构图三视图布局，不要改成 prop）。
+服饰卡用 costume——服装结构图三视图布局，不要改成 prop；**scene 是多视角空间基准图**（主视/反打/四分之三斜角/关键区域近景四格，建筑构件按真实人体尺度关系呈现）——要「空间关系与大小看得全」就用 scene）。
 另可选 final_prompt 字段：用户给出完整提示词要求**原样出图**（不走版式
 契约）时传它——整体替换渲染，其余字段仍必填但只作记录。
 **分镜表的镜头出图必须带行绑定**：type=shot 且属于某分镜表行时，项里
@@ -214,6 +214,11 @@ aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：**只在用户明确
 /agent-service/assets/ URL（从画布摘要里取带图卡的 imageUrl），配合
 reference_labels（[{{type,name}}]，type=character 时锁身份不继承白底
 排版）——用户要求「按某角色的设定图出」「保持形象一致」时必须带上。
+**考据不用你搬**：真实题材项目（缺省；动画/架空等虚构题材由
+set_project_factuality 声明）出图时，服务端会为画布上没有考据简报的资产
+自动补一次文字考据（年代/形制/常见误用）并注入提示词——不必在
+visual_notes 里手写考据，提示词里出现「考据依据」段是正常的。要让考据
+落卡持久化（卡上可见、可供 AI 写设定复用）走 research_asset_references。
 返回每个资产的成败与 image_url。
 用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
 与各模型支持档位：
@@ -414,11 +419,16 @@ generate_asset_images = tool(generate_asset_images)
 
 @tool
 async def research_asset_references(assets_json: str, config: RunnableConfig) -> str:
-    """为画布资产批量调研网络参考图（AI 出词 → 豆包搜图 + Wikimedia → 模型看图终选）。
+    """为画布资产批量调研网络参考图（AI 出词 → 联网搜图与下载 → 模型看图终选）。
 
     用户想给角色/场景/道具/服饰找考据参考图、历史画像、实物照片时调用；
     历史纪实类题材出图前先调研能显著提升形制/材质一致性。纯虚构或动画
     风格、用户明确不需要参考时不要调用。不要在用户没要求时自作主张调研。
+
+    **一批资产要考据（≥3 个）时先走考证大纲**（get_research_material →
+    propose_research_outline → run_research_outline，见 real-documentary 手册
+    「考证大纲」节）：文字考据的单位是时代不是资产，按资产各搜一遍会得出互相
+    矛盾的结论。本工具服务单个/少量资产的**参考图**需求。
 
     **范围默认全量**：用户说「给资产做调研」没点名具体几个/哪类时，画布上
     的资产卡（character/scene/prop/costume）**全部传入一次调用**——不要
@@ -619,6 +629,184 @@ async def adopt_asset_references(
         "「补资产图」批量出图会自动带上；用户可在资产卡「找参考图」面板改选。"
     )
     return "\n".join([head, *lines])
+
+
+@tool
+async def get_research_material(config: RunnableConfig) -> str:
+    """读本项目的考据现状：画布资产清单 + 已有考据条目（全文与来源）+ 尚无考据的资产 + 现有考证大纲。
+
+    要做考证大纲（propose_research_outline）之前先调它——大纲是从已有条目里
+    聚类、再补上没人认领的时代事实，不看现状就切主题等于拍脑袋。用户问
+    「现在考据到什么程度了 / 还缺什么」也用它回答。
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return "无法定位当前项目：会话上下文缺少 thread_id"
+    pid = projects.project_id_of_thread(thread_id)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    report = imgresearch.build_report(pid)
+    outline = imgresearch.build_outline_report(pid)
+    assets = imgresearch.canvas_assets(pid)
+    if not assets:
+        return "画布上还没有命名过的资产卡——先建资产卡（拆解剧本或手动建），再谈考据。"
+
+    lines = [
+        f"项目：{report['projectName'] or '未命名'}"
+        f" · 时代口径：{report['era'] or '未设置（set_project_era 记下才能跨项目复用考据）'}"
+        f" · 资产 {len(assets)} 个 · 已有考据 {len([e for e in report['entries'] if e['assetType'] != 'topic'])} 条"
+    ]
+    lines.append("")
+    lines.append("一、画布资产（node_id 取这里的）")
+    for a in assets:
+        lines.append(f"- {a['nodeId']} {a['title']}（{a['nodeType']}）")
+
+    asset_entries = [e for e in report["entries"] if e["assetType"] != "topic"]
+    lines.append("")
+    lines.append(f"二、已有考据条目（{len(asset_entries)} 条，全文）")
+    if not asset_entries:
+        lines.append("（无——还没做过参考图调研，或调研失败）")
+    for e in asset_entries:
+        doms = "、".join(
+            str(s.get("domain") or "") for s in e["sources"] if isinstance(s, dict)
+        )
+        lines.append(f"■ {e['assetName']}（{e['assetType']}）" + (f" 来源：{doms}" if doms else ""))
+        lines.append(str(e["body"]).strip())
+
+    if report["missing"]:
+        lines.append("")
+        lines.append(f"三、尚无任何考据的资产（{len(report['missing'])} 个）")
+        for m in report["missing"]:
+            lines.append(f"- {m['title']}（{m['nodeType']}）")
+
+    lines.append("")
+    lines.append(f"四、现有考证大纲：{len(outline['topics'])} 个主题")
+    if outline["topics"]:
+        for t in outline["topics"]:
+            serves = "、".join(s["title"] for s in t.get("serves") or [])
+            lines.append(
+                f"- {t['title']}（{t['status']}）服务：{serves or '（未绑定卡）'}"
+                + (f" 检索词：{' · '.join(t['queries'])}" if t["queries"] else "")
+            )
+    else:
+        lines.append("（还没建大纲）")
+    if outline["uncovered"]:
+        lines.append(
+            "未被任何主题覆盖的资产：" + "、".join(a["title"] for a in outline["uncovered"])
+        )
+    return "\n".join(lines)
+
+
+@tool
+async def propose_research_outline(topics_json: str, config: RunnableConfig) -> str:
+    """写/改本项目的考证大纲（整份替换）：把考据需求切成若干主题，每个主题写明为什么、检索词、服务哪些卡。
+
+    调研的单位是「题材/时代」不是「资产」——同一时代的事实（服制、发式、
+    宫室形制、器物）被几十张卡共享，按资产各搜一遍既是浪费、又会搜出互相
+    矛盾的结论。先调 get_research_material 看现状，再切主题：
+
+    1. 已有条目里内容重叠的一组卡 → 收成一个主题（它们的事实本来就是一套）；
+    2. 没有任何卡认领的时代共有事实 → 必须单独成主题（这类影响面最大，
+       旧流程里因为「不属于任何单个资产」而无人做）；
+    3. 只影响一张卡、且没有时代共性的 → 不必进大纲（参考图调研按资产走就够）。
+
+    整份替换语义：每次提交的都是项目当前完整的计划，不要只提交增量。切完把
+    大纲讲给用户听（哪几个主题、分别服务哪些卡、先做哪个），用户确认后再
+    run_research_outline；主题切法与优先级判断见 real-documentary 手册「考证大纲」节。
+
+    Args:
+        topics_json: 主题数组 JSON 文本：
+            [{"title":"主题名（如「北魏早期服制」）","rationale":"为什么需要（影响哪些卡/不做会错在哪）","queries":["检索词1","检索词2"],"nodeIds":["画布节点id"]}]
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return "无法定位当前项目：会话上下文缺少 thread_id"
+    pid = projects.project_id_of_thread(thread_id)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    try:
+        topics = json.loads(topics_json)
+        if not isinstance(topics, list):
+            return "topics_json 必须是数组 JSON"
+    except json.JSONDecodeError as e:
+        return (
+            f"topics_json 不是合法 JSON：{e}——JSON 到 ] 即止，"
+            "不要在 JSON 后追加说明文字。修正后原样重发。"
+        )
+    try:
+        imgresearch.replace_topics(pid, topics)
+    except ValueError as exc:
+        return str(exc)
+    outline = imgresearch.build_outline_report(pid)
+    lines = [f"考证大纲已更新：{len(outline['topics'])} 个主题（整份替换）"]
+    for t in outline["topics"]:
+        serves = "、".join(s["title"] for s in t.get("serves") or [])
+        lines.append(
+            f"- {t['title']}｜服务 {len(t.get('serves') or [])} 张卡"
+            f"{f'（{serves}）' if serves else ''}"
+        )
+    if outline["uncovered"]:
+        lines.append(
+            "未被任何主题覆盖的资产：" + "、".join(a["title"] for a in outline["uncovered"])
+            + "——要么给它们立主题，要么在回复里说明为什么不考据。"
+        )
+    lines.append(
+        "画布上会有一张考证大纲卡（人读版）。请把大纲讲给用户：" 
+        "哪几个主题、各服务哪些卡、先做哪个（按服务卡数排优先级），请他确认或增删。"
+    )
+    return "\n".join(lines)
+
+
+@tool
+async def run_research_outline(topic_keys_json: str, config: RunnableConfig) -> str:
+    """执行考证大纲的主题（缺省执行全部未完成的）：逐主题搜网络取证，结果落项目考据条目。
+
+    用户确认大纲后调用。同题材已考据过的主题会自动复用（不再重搜），状态可
+    用 get_research_material 或画布上的考证大纲卡查看。完成后各资产出图时
+    自动带上所属主题的考据依据。
+
+    Args:
+        topic_keys_json: 要执行的主题名数组 JSON（如 ["北魏早期服制"]）；
+            传 "[]" 表示执行全部未完成的主题。
+    """
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return "无法定位当前项目：会话上下文缺少 thread_id"
+    pid = projects.project_id_of_thread(thread_id)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    if not imgresearch.list_topics(pid):
+        return "项目还没有考证大纲——先调 get_research_material 看现状，再调 propose_research_outline 切主题。"
+    try:
+        raw = json.loads(topic_keys_json) if topic_keys_json.strip() else []
+        if not isinstance(raw, list):
+            return "topic_keys_json 必须是数组 JSON"
+    except json.JSONDecodeError as e:
+        return f"topic_keys_json 不是合法 JSON：{e}"
+    keys = [str(k).strip() for k in raw if str(k).strip()]
+    if keys:
+        known = {t["topicKey"] for t in imgresearch.list_topics(pid)}
+        unknown = [k for k in keys if k not in known]
+        if unknown:
+            return (
+                f"大纲里没有这些主题：{'、'.join(unknown)}；"
+                f"现有主题：{'、'.join(sorted(known))}"
+            )
+    started = imgresearch.run_topics(pid, keys or None)
+    if not started:
+        return "没有可执行的主题（都已完成，或大纲为空）。"
+    return (
+        f"已开始执行 {len(started)} 个主题：{'、'.join(started)}。"
+        "逐主题搜网络取证，完成后自动落考据条目（重启不丢，跨项目可复用）；"
+        "进度与结果见画布上的考证大纲卡，用户问进展时用 get_research_material 查。"
+        "执行期间可以继续聊别的，完成后我会收到通知。"
+    )
 
 
 @tool
@@ -1116,7 +1304,7 @@ async def list_free_images(config: RunnableConfig, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。

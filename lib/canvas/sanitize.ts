@@ -139,8 +139,9 @@ export function sanitizeCanvas(
     }
     cleanNodes.push(n);
   }
-  // 遗留 looks[] 迁移（一张卡一张图）：角色卡上的 Look 变体拆成独立图片卡，
-  // 角色卡 → Look卡 连线表达派生关系；迁后 looks 字段剥离，再次装载即幂等
+  // 造型图物化（一张卡一张图）：角色卡 looks 里**已出图但还没成卡**的项拆成
+  // 独立图片卡（角色卡 → 造型卡 连线表达派生），并回填 nodeId——再次装载即
+  // 幂等。**未出图的项保留在卡上**：造型计划是补造型图的数据源，不再剥离
   const byId = new Map(cleanNodes.map((n) => [n.id, n]));
   const extraNodes: WingNode[] = [];
   const extraEdges: WingEdge[] = [];
@@ -150,7 +151,6 @@ export function sanitizeCanvas(
     if (n.data.nodeType !== "character" || !Array.isArray(looks) || looks.length === 0) {
       continue;
     }
-    delete n.data.looks;
     const parent = n.parentId ? byId.get(n.parentId) : undefined;
     const abs = parent
       ? {
@@ -169,6 +169,13 @@ export function sanitizeCanvas(
     const gen = () => Math.random().toString(36).slice(2, 10);
     looks.forEach((l, i) => {
       if (!l?.imageUrl) return;
+      const title = `${n.data.title || "角色"}·${l.label || "造型"}`.slice(0, 40);
+      // 幂等：有 nodeId = 已物化过，直接跳过——卡被用户删了也不复活
+      // （删掉就是不想要了；要重建走重拆或剧本卡「造型图」按钮）。
+      // 历史遗留行没有 nodeId，退化为按同标题的造型卡判重
+      if (l.nodeId) return;
+      if (cleanNodes.some((m) => m.data.nodeType === "image" && m.data.title === title))
+        return;
       const lid = `n_${gen()}`;
       extraNodes.push({
         id: lid,
@@ -181,13 +188,14 @@ export function sanitizeCanvas(
         style: { width: NODE_FOOTPRINT.image.w, height: NODE_FOOTPRINT.image.h },
         data: {
           nodeType: "image",
-          title: `${n.data.title || "角色"}·${l.label || "造型"}`.slice(0, 40),
-          body: "",
+          title,
+          body: l.description ?? "",
           imageUrl: l.imageUrl,
           status: "ready",
         },
       });
       extraEdges.push({ id: `e_${gen()}`, source: n.id, target: lid });
+      l.nodeId = lid;
       migratedLooks += 1;
     });
   }
