@@ -150,7 +150,7 @@ export default function PlanTools() {
     name: "propose_plan",
     description:
       "把多步任务的执行计划展示给用户（卡片内联在聊天里，展示后直接开始执行，无需等待确认）。" +
-      "≥3 步的任务必须先出计划再执行；每完成一步调用 update_plan 打勾。",
+      "≥3 步的任务必须先出计划再执行；打勾规则：该步产物实际落卡/落库且工具返回成功后才调用 update_plan 勾它，凭「应该做好了」打勾是违规；全部步骤勾完（或显式说明跳过原因）并汇报后，本轮才算完成。",
     available: "remote",
     parameters: [
       {
@@ -172,7 +172,7 @@ export default function PlanTools() {
       const id = `plan${Date.now().toString(36)}${++planSeq}`;
       const ok = await requestPlanConfirm(id, title, steps);
       return ok
-        ? `用户已确认计划（planId=${id}）。现在按顺序执行：每完成一步就调用 update_plan(planId="${id}", step=步程序号) 打勾后再继续下一步；全部完成后简短汇报结果。`
+        ? `用户已确认计划（planId=${id}）。现在按顺序执行：每步实际做完且验证过（产物落卡/落库、工具返回成功）再调用 update_plan(planId="${id}", step=步程序号) 打勾；受阻或只做了一半的步保持未勾并在汇报里说明卡在哪；全部勾完（或说明跳过原因）后简短汇报结果。`
         : `用户暂缓了这个计划（planId=${id}）。不要执行任何步骤；先简短问清用户想调整什么。`;
     },
     render: ({ status, args, result }) => (
@@ -188,7 +188,7 @@ export default function PlanTools() {
   useCopilotAction({
     name: "update_plan",
     description:
-      "计划被用户确认后，每完成一步调用它打勾（计划卡上的勾选会实时更新）。计划被暂缓时不要调用。",
+      "计划被用户确认后，每完成一步调用它打勾（计划卡上的勾选会实时更新）。打勾前该步必须实际做完且验证过（产物已落卡/落库、工具返回成功）——凭意图或假设打勾是违规；受阻或只做了一半的步保持未勾，在汇报里说明卡在哪；跳过的步骤要给原因。计划被暂缓时不要调用。",
     available: "remote",
     parameters: [
       {
