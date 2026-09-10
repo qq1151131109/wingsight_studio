@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 # Wingsight Studio 一键启动/停止
-#   ./start_wingsight.sh            启动 agent(8123) + 前端(8008)
+#   ./start_wingsight.sh            启动 agent(8123) + 前端(8008)——前端默认生产模式
+#                                   （远程/隧道访问必须用生产模式——dev 模式按需编译，
+#                                   一次导航 119 请求 18MB；源码比构建新时自动先 pnpm build）
+#   ./start_wingsight.sh dev        前端以开发模式启动（本机开发用）
+#   ./start_wingsight.sh build      只构建前端生产包
 #   ./start_wingsight.sh --tunnel   额外启动 bore 公网隧道（临时端口）
 #   ./start_wingsight.sh status     查看状态
 #   ./start_wingsight.sh stop       全部停止
@@ -31,9 +35,32 @@ start_agent() {
   is_up "$AGENT_PORT" && echo "✓ agent 就绪 (:$AGENT_PORT)" || { echo "✗ agent 启动失败，看 logs/agent.log"; exit 1; }
 }
 
-start_web() {
+build_web() {
+  echo "… 构建前端生产包 (pnpm build)"
+  (cd "$ROOT" && pnpm build > "$LOGS/web-build.log" 2>&1) \
+    || { echo "✗ 构建失败，看 logs/web-build.log"; exit 1; }
+}
+
+# 源码比上次构建新（或从未构建）时需要重建——否则生产服务器吐的是旧页面
+web_stale() {
+  [ -f "$ROOT/.next/BUILD_ID" ] || return 0
+  [ -n "$(find "$ROOT/app" "$ROOT/components" "$ROOT/lib" "$ROOT/public" \
+        "$ROOT/next.config.ts" -newer "$ROOT/.next/BUILD_ID" -print -quit 2>/dev/null)" ]
+}
+
+start_web_prod() {
   if web_up "$WEB_PORT"; then echo "✓ 前端已在运行 (:$WEB_PORT)"; return; fi
-  echo "… 启动 Next.js 前端 (:$WEB_PORT)"
+  if web_stale; then echo "检测到源码比构建新（或从未构建）"; build_web; fi
+  echo "… 启动 Next.js 前端·生产模式 (:$WEB_PORT)"
+  (cd "$ROOT" && nohup pnpm start --port "$WEB_PORT" \
+     > "$LOGS/web.log" 2>&1 & echo $! > "$LOGS/web.pid")
+  for i in $(seq 1 30); do web_up "$WEB_PORT" && break; sleep 1; done
+  web_up "$WEB_PORT" && echo "✓ 前端就绪 : http://localhost:$WEB_PORT" || { echo "✗ 前端启动失败，看 logs/web.log"; exit 1; }
+}
+
+start_web_dev() {
+  if web_up "$WEB_PORT"; then echo "✓ 前端已在运行 (:$WEB_PORT)"; return; fi
+  echo "… 启动 Next.js 前端·开发模式 (:$WEB_PORT)"
   (cd "$ROOT" && nohup pnpm dev --port "$WEB_PORT" \
      > "$LOGS/web.log" 2>&1 & echo $! > "$LOGS/web.pid")
   for i in $(seq 1 30); do web_up "$WEB_PORT" && break; sleep 1; done
@@ -61,9 +88,13 @@ do_stop() {
       rm -f "$pidfile"
     fi
   done
-  # 兜底清孤儿（按命令行匹配本项目）
+  # 兜底清孤儿（按命令行匹配本项目；dev/start 两种模式都要清）
   pkill -f "wingsight-studio/agent.*uvicorn" 2>/dev/null && echo "✓ 清理 agent 孤儿进程"
   pkill -f "wingsight-studio.*next dev --port $WEB_PORT" 2>/dev/null && echo "✓ 清理前端孤儿进程"
+  pkill -f "wingsight-studio.*next start --port $WEB_PORT" 2>/dev/null && echo "✓ 清理前端孤儿进程"
+  # pid 文件失效但端口仍被占（nohup 孙进程脱离 pid 记录）——按端口兜底
+  _port_pids="$(ss -tlnpH "sport = :$WEB_PORT" 2>/dev/null | grep -oE 'pid=[0-9]+' | cut -d= -f2 | sort -u)"
+  if [ -n "$_port_pids" ]; then kill $_port_pids 2>/dev/null && echo "✓ 清理占用 :$WEB_PORT 的残留进程 ($_port_pids)"; fi
   echo "全部停止"
 }
 
@@ -77,9 +108,11 @@ do_status() {
 }
 
 case "${1:-start}" in
-  start)   start_agent; start_web; echo "完成。日志在 logs/ 目录" ;;
-  --tunnel) start_agent; start_web; start_tunnel ;;
+  start)   start_agent; start_web_prod; echo "完成。日志在 logs/ 目录" ;;
+  dev)     start_agent; start_web_dev; echo "完成（开发模式）。日志在 logs/ 目录" ;;
+  build)   build_web ;;
+  --tunnel) start_agent; start_web_prod; start_tunnel ;;
   stop)    do_stop ;;
   status)  do_status ;;
-  *) echo "用法: $0 [start|--tunnel|stop|status]" ;;
+  *) echo "用法: $0 [start|dev|build|--tunnel|stop|status]" ;;
 esac
