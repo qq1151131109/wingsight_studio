@@ -225,8 +225,8 @@ const readSkill = (calls, skill) =>
   check("R6a 候选给全（≥6 条清单项）", bullets >= 6, `清单项=${bullets}`);
   check("R6b 带推荐（推荐/建议/首选）", /推荐|建议选|首选|优先选/.test(text), text.slice(-120).replace(/\n/g, " "));
   check(
-    "R6c 说明取舍（放弃/没放进/排除/不选）",
-    /放弃|没放进|不选|排除|未纳入|取舍/.test(text),
+    "R6c 说明取舍（放弃/没放进/排除/不选/放下）",
+    /放弃|没放进|不选|排除|未纳入|取舍|放下/.test(text),
     "",
   );
   check("R6d 数量诚实或来源依据", /来源|出处|https?:\/\//.test(text), "");
