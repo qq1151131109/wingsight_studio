@@ -351,9 +351,10 @@ def _strip_html(raw: str) -> str:
 
 
 async def fetch_page_text(url: str) -> str:
-    """抓网页正文：httpx 直抓为主（快），失败自动回退本地 Jina Reader
-    （无头浏览器，过 TLS 指纹反爬 + PDF 文本提取；juben 同款部署）。
-    双败抛异常，由调用方记为 snippet 级来源（逐源诚实标注，不静默降级整轮）。"""
+    """抓网页正文：httpx 直抓为主（快），失败回退 Jina 双层（本地 OSS 实例
+    → 官方 API，后者需 JINA_READER_API_KEY；无头浏览器，过 TLS 指纹反爬
+    + PDF 文本提取）。全败抛异常，由调用方记为 snippet 级来源
+    （逐源诚实标注，不静默降级整轮）。"""
     direct_error = ""
     try:
         async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=True) as client:
@@ -385,7 +386,7 @@ async def fetch_page_text(url: str) -> str:
             md = await jina_reader.fetch_markdown(url)
             return md[:_MAX_PAGE_CHARS]
         except jina_reader.WebSourceUnreachableError:
-            pass  # 本地实例未部署：静默退回直抓结论
+            pass  # 双层皆不可达（本地实例没起 + 官方层未配/4xx）：退回直抓结论
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"{direct_error}；Jina 回退失败：{str(exc)[:80]}") from exc
     raise ValueError(direct_error)

@@ -1,11 +1,17 @@
-"""本地 Jina Reader（OSS）客户端：URL → markdown 正文。
+"""Jina Reader 双层客户端：URL → markdown 正文（本地 OSS → 官方 API）。
 
-部署：docker ghcr.io/jina-ai/reader:oss，默认 127.0.0.1:3000（juben 同款，
-JINA_READER_BASE_URL 可覆盖；服务器未部署时连接失败自动走直抓，不阻塞）。
-定位 = fetch_page_text 的**回退通道**：直抓（httpx）对 TLS 指纹级反爬
-（知乎/academia）和 PDF 无能为力，Jina 内置无头浏览器能过大部分——
-实测解锁 academia.edu 与学术 PDF（hanspub），知乎登录墙仍不可（军备竞赛
-常态，靠多源冗余消化）。
+定位 = fetch_page_text 的**回退通道**，内部再分两层（调用方无感）：
+1. 本地 OSS docker（ghcr.io/jina-ai/reader:oss，默认 127.0.0.1:3000，
+   JINA_READER_BASE_URL 可覆盖）——免费不限量；实例未在跑时连接失败降层。
+2. 官方 API（https://r.jina.ai，**配置 JINA_READER_API_KEY 才启用**，
+   JINA_READER_API_BASE_URL 可覆盖）——免部署随处可用，按输出 token 计费
+   （2026-09-11 口径 $0.05/百万 token、新 key 送 10M ≈ 数千次正文抓取），
+   生产服务器没部署 docker 就靠这层兜住 Jina 级抓取。
+本地判定不算终审：官方有无头浏览器集群与住宅代理，本地过不去的反爬
+（Cloudflare/地理封锁级）官方常常能过；真 404 双层皆败，多烧一次调用
+可忽略。直抓（httpx）对 TLS 指纹级反爬（知乎/academia）和 PDF 无能为力，
+Jina 内置无头浏览器能过大部分——实测解锁 academia.edu 与学术 PDF（hanspub），
+知乎登录墙两层都不可（军备竞赛常态，靠 TikHub 专项通道与多源冗余消化）。
 
 错误分类（juben lib/web_search/jina.py 移植精简）：
 - WebSourceUnreachableError：4xx——目标源永久不可抓，重试无效应换源
@@ -21,6 +27,7 @@ from typing import Any
 import httpx
 
 DEFAULT_BASE_URL = "http://127.0.0.1:3000"
+DEFAULT_API_BASE_URL = "https://r.jina.ai"
 _TIMEOUT = httpx.Timeout(45.0)
 
 # 4xx = 永久不可达（含付费层 402），与 5xx/超时等瞬时故障区分，防死循环重试
@@ -82,15 +89,12 @@ def _strip_reader_header(text: str) -> str:
     return "\n".join(lines[start:]).strip()
 
 
-async def fetch_markdown(url: str) -> str:
-    """经本地 Jina Reader 抓正文，返回 markdown 文本。失败抛
-    WebSourceUnreachableError / WebSourceContentError / httpx 异常。"""
-    base = (os.environ.get("JINA_READER_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-    endpoint = f"{base}/{url.strip()}"
-    headers = {"Accept": "text/markdown"}
-    api_key = os.environ.get("JINA_READER_API_KEY", "").strip()
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
+def _api_key() -> str:
+    return os.environ.get("JINA_READER_API_KEY", "").strip()
+
+
+async def _request_markdown(endpoint: str, headers: dict[str, str], tier: str) -> str:
+    """单层请求：5xx/超时重试一次，4xx=永久不可达，正文过短/拦截页=内容错误。"""
     async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         last_exc: Exception | None = None
         for attempt in range(2):
@@ -104,8 +108,7 @@ async def fetch_markdown(url: str) -> str:
                     raise WebSourceContentError(reason)
                 return content
             except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-                # 本地实例未部署（服务器环境）：直接放弃通道，让调用方走直抓
-                raise WebSourceUnreachableError("Jina Reader 不可达（本地实例未部署？）") from exc
+                raise WebSourceUnreachableError(f"Jina {tier}不可达") from exc
             except httpx.HTTPStatusError as exc:
                 last_exc = exc
                 if attempt == 0:
@@ -115,8 +118,40 @@ async def fetch_markdown(url: str) -> str:
     raise last_exc or RuntimeError("Jina Reader 请求未完成")
 
 
+async def fetch_markdown(url: str) -> str:
+    """双层抓正文：本地 OSS 实例 → 官方 API。本地判定不算终审——官方的
+    无头浏览器集群+住宅代理常能过本地过不去的反爬；官方层需
+    JINA_READER_API_KEY，未配置时本地失败即终局。失败抛
+    WebSourceUnreachableError / WebSourceContentError / httpx 异常。"""
+    target = url.strip()
+    local_error: Exception | None = None
+    try:
+        base = (os.environ.get("JINA_READER_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+        return await _request_markdown(f"{base}/{target}", {"Accept": "text/markdown"}, "本地实例")
+    except Exception as exc:  # noqa: BLE001
+        local_error = exc
+    if not (key := _api_key()):
+        raise local_error
+    api_base = (os.environ.get("JINA_READER_API_BASE_URL") or DEFAULT_API_BASE_URL).rstrip("/")
+    try:
+        return await _request_markdown(
+            f"{api_base}/{target}",
+            {
+                "Accept": "text/markdown",
+                # 图片 markdown 链接对正文提取无价值，丢弃省输出 token（计费按输出算）
+                "X-Retain-Images": "none",
+                "Authorization": f"Bearer {key}",
+            },
+            "官方 API",
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise exc from local_error
+
+
 def enabled() -> bool:
-    return bool((os.environ.get("JINA_READER_BASE_URL") or DEFAULT_BASE_URL).strip())
+    return bool(
+        (os.environ.get("JINA_READER_BASE_URL") or DEFAULT_BASE_URL).strip() or _api_key()
+    )
 
 
 __all__ = [

@@ -83,6 +83,40 @@ start_tunnel() {
   grep -oE "bore.pub:[0-9]+" "$LOGS/tunnel.log" | head -1 | sed 's/^/✓ 公网地址: http:\/\//' || echo "（隧道地址稍后见 logs/tunnel.log）"
 }
 
+# 调研抓取回退层（fetch_page_text：直抓 → TikHub → 本地 jina → 官方 API）。
+# 软保障：只在 3000 没人听时动手，且任何失败只警告不阻塞——jina 是可选
+# 依赖，没有它链路自动降级（直抓 + 官方 API）。绝不隐式 pull 镜像（2GB，
+# 生产机不装它是有意为之——那边靠官方 API 层）。
+ensure_jina() {
+  curl -s -o /dev/null --max-time 2 http://127.0.0.1:3000/ && { echo "✓ jina-reader :3000 已在运行"; return; }
+  command -v docker >/dev/null 2>&1 || { echo "⚠ 无 docker，本地 jina 不启用（抓取走直抓+官方 API）"; return; }
+  if ! docker info >/dev/null 2>&1; then
+    command -v colima >/dev/null 2>&1 || { echo "⚠ docker 未运行且无 colima，本地 jina 不启用（直抓+官方 API 兜底）"; return; }
+    echo "… 启动 colima（jina-reader 依赖）"
+    colima start >/dev/null 2>&1 || { echo "⚠ colima 启动失败，本地 jina 不启用（docker start colima 排查）"; return; }
+  fi
+  if docker ps -a --format '{{.Names}}' | grep -qx jina-reader; then
+    docker start jina-reader >/dev/null 2>&1 || { echo "⚠ jina-reader 容器启动失败（docker logs jina-reader）"; return; }
+  elif docker image inspect ghcr.io/jina-ai/reader:oss >/dev/null 2>&1; then
+    # 容器访问宿主代理必须走 colima 网关地址（127.0.0.1 在容器里指向容器自己；
+    # 旧容器烘过 172.17.0.1:7898 死地址，wikisource 等境外源全 ERR_PROXY_CONNECTION）
+    local proxy=""
+    if command -v colima >/dev/null 2>&1; then
+      proxy="$(colima ssh -- sh -c 'grep -m1 "^http_proxy=" /etc/environment 2>/dev/null | cut -d= -f2' 2>/dev/null || true)"
+    fi
+    local run_args=(-d --name jina-reader --restart unless-stopped -p 3000:8081)
+    [ -n "$proxy" ] && run_args+=(-e HTTP_PROXY="$proxy" -e HTTPS_PROXY="$proxy")
+    docker run "${run_args[@]}" ghcr.io/jina-ai/reader:oss >/dev/null 2>&1 \
+      || { echo "⚠ jina-reader 容器创建失败（docker run 手跑排查）"; return; }
+  else
+    echo "⚠ 本地 jina 镜像未部署，抓取走直抓+官方 API（要启用：docker pull ghcr.io/jina-ai/reader:oss 后重跑本脚本）"
+    return
+  fi
+  for i in $(seq 1 25); do curl -s -o /dev/null --max-time 2 http://127.0.0.1:3000/ && break; sleep 1; done
+  curl -s -o /dev/null --max-time 2 http://127.0.0.1:3000/ \
+    && echo "✓ jina-reader 就绪 :3000" || echo "⚠ jina-reader 启动超时（docker logs jina-reader；抓取暂走直抓+官方 API）"
+}
+
 # 按端口找占用进程：**两种工具都问、取并集**（macOS 只有 lsof；Linux 生产机实测
 # lsof 存在却查不到 socket、返回空而 ss 查得到——只信一个都会漏，漏掉就是「以为
 # 重启了其实跑的还是旧进程」）。任一工具不存在就只用另一个。
@@ -170,6 +204,8 @@ $(port_pids "$WEB_PORT")"
 do_status() {
   is_up "$AGENT_PORT" && echo "✓ agent  :$AGENT_PORT" || echo "✗ agent 未运行"
   web_up "$WEB_PORT" && echo "✓ 前端   :$WEB_PORT" || echo "✗ 前端未运行"
+  curl -s -o /dev/null --max-time 2 http://127.0.0.1:3000/ \
+    && echo "✓ jina    :3000（调研抓取回退层，docker 容器 jina-reader）" || echo "⚠ jina :3000 未运行（抓取回退降级：直抓+官方 API，start 会自动拉起）"
   curl -s -o /dev/null --max-time 2 http://127.0.0.1:7860/health 2>/dev/null \
     && echo "✓ langflow :7860（langflow/ 内置，scripts/setup-langflow.sh 管理）" || echo "⚠ langflow :7860 未运行（拆解/出图需要它，跑 ./scripts/setup-langflow.sh）"
   curl -s --max-time 2 http://127.0.0.1:1200/healthz 2>/dev/null | grep -q ok \
@@ -177,10 +213,10 @@ do_status() {
 }
 
 case "${1:-start}" in
-  start)   start_agent; start_web_prod; echo "完成。日志在 logs/ 目录" ;;
-  dev)     start_agent; start_web_dev; echo "完成（开发模式）。日志在 logs/ 目录" ;;
+  start)   start_agent; start_web_prod; ensure_jina; echo "完成。日志在 logs/ 目录" ;;
+  dev)     start_agent; start_web_dev; ensure_jina; echo "完成（开发模式）。日志在 logs/ 目录" ;;
   build)   build_web ;;
-  --tunnel) start_agent; start_web_prod; start_tunnel ;;
+  --tunnel) start_agent; start_web_prod; start_tunnel; ensure_jina ;;
   stop)    do_stop ;;
   status)  do_status ;;
   *) echo "用法: $0 [start|dev|build|--tunnel|stop|status]" ;;
