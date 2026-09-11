@@ -249,20 +249,73 @@ export async function cancelChatJob(threadId: string, jobId: string): Promise<vo
 }
 
 /** 重新生成的服务端分叉：把 messageId 之前的 checkpoint 变成会话当前头。
- *  必须在客户端截断历史 + 重跑之前调用（否则旧回答仍留在模型上下文里）。 */
+ *  必须在客户端截断历史 + 重跑之前调用（否则旧回答仍留在模型上下文里）。
+ *
+ *  turnMessages = 这次会被放弃的那一版助手消息。前端手上有实时内容，直接传；
+ *  服务端会连「当前头的 checkpoint」一起存档成可切回的版本（见分支切换）。 */
 export async function regenerateChatRun(
   threadId: string,
   messageId: string,
+  turnMessages?: { id?: string; role?: string; content?: string }[],
 ): Promise<boolean> {
   try {
     const r = await apiFetch(`/agent-service/chat/regenerate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ threadId, messageId }),
+      body: JSON.stringify({ threadId, messageId, turnMessages: turnMessages ?? [] }),
     });
     return r.ok;
   } catch {
     return false;
+  }
+}
+
+/** 一轮的某个版本（‹ i/N › 用） */
+export type ChatBranchVersion = {
+  idx: number;
+  active: boolean;
+  messages: { id?: string; role?: string; content?: string }[];
+};
+
+/** 该会话里有多版本的轮次清单（单版轮不返回——不需要切换器） */
+export async function loadChatBranches(
+  threadId: string,
+): Promise<{ turnId: string; versions: ChatBranchVersion[] }[]> {
+  try {
+    const r = await apiFetch(
+      `/agent-service/chat/branches?threadId=${encodeURIComponent(threadId)}`,
+    );
+    if (!r.ok) return [];
+    const data = (await r.json()) as {
+      turns?: { turnId: string; versions: ChatBranchVersion[] }[];
+    };
+    return Array.isArray(data.turns) ? data.turns : [];
+  } catch {
+    return [];
+  }
+}
+
+/** 切到某个历史版本：服务端把会话头挪到那一版（显示与模型上下文一起切），
+ *  返回该版本的助手消息供直接上屏；失败返回 null（调用方明报，不静默）。 */
+export async function switchChatBranch(
+  threadId: string,
+  turnId: string,
+  idx: number,
+  turnMessages?: { id?: string; role?: string; content?: string }[],
+): Promise<{ id?: string; role?: string; content?: string }[] | null> {
+  try {
+    const r = await apiFetch(`/agent-service/chat/branch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ threadId, turnId, idx, turnMessages: turnMessages ?? [] }),
+    });
+    if (!r.ok) return null;
+    const data = (await r.json()) as {
+      messages?: { id?: string; role?: string; content?: string }[];
+    };
+    return Array.isArray(data.messages) ? data.messages : null;
+  } catch {
+    return null;
   }
 }
 

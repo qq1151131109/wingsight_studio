@@ -1,12 +1,22 @@
 "use client";
 
 /**
- * 会话内搜索（Cmd/Ctrl+F 或头部放大镜）：
- *  - 高亮走 CSS Custom Highlight API（不改 DOM，流式重排不打架），
- *    样式在 globals.css 的 ::highlight(ws-search*) 里
- *  - Enter / ↓ 下一处，Shift+Enter / ↑ 上一处，Esc 关闭；滚动容器内居中定位
- *  - 搜索期间长消息自动展开（useChatSearch 的 active 派生值）
- *  - 超长会话（>50 条）框架会虚拟化，只能搜到已挂载的消息——无结果时如实提示
+ * 会话内搜索（Cmd/Ctrl+F 或头部放大镜）。
+ *
+ * **命中计数走数据源，DOM 只负责「画」**（2026-09-11 重构）：此前在
+ * `.copilotKitMessages` 里走 DOM 文本节点，而框架对 >50 条消息做虚拟化——
+ * 未挂载的消息搜不到，只能诚实提示「仅搜索已加载部分」（生产实测 14 个会话
+ * 里 2 个已越阈值，最长 70 条 / 19 轮）。现在：
+ *  - 命中清单 = 扫 `langgraphAgent.messages` 的正文（count 天然是全集，
+ *    `cur/total` 是可信数字，不随滚动变化）；
+ *  - 每条命中记 (消息 id, 该消息内第几处)；跳转时按 id 找容器
+ *    （`[data-ws-msg-id]`，AssistantMessage 与用户气泡都盖章）；
+ *  - 目标消息被虚拟化卸载时：按消息序位估滚 → 挂载后精定位（与 TurnLocator
+ *    的轮次跳转同一手法）；
+ *  - 高亮仍用 CSS Custom Highlight API（不改 DOM，流式重排不打架）。
+ * 口径：只搜**消息正文**，不搜工具卡（结果 JSON/文件清单是 UI 部件，不是对话
+ * 内容）；渲染层与数据层的 markdown 差异（链接地址、列表符号）可能让某条命中
+ * 定位不到，此时退化为该消息的首处命中。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
@@ -16,8 +26,48 @@ import { useChatSearch } from "@/lib/chat/search";
 
 const HL_ALL = "ws-search";
 const HL_CUR = "ws-search-current";
-/** 框架虚拟化阈值（node_modules/@copilotkit/react-core 的 VIRTUALIZE_THRESHOLD） */
-const VIRTUALIZE_THRESHOLD = 50;
+
+type ChatMsg = { id?: string; role?: string; content?: unknown };
+
+/** AG-UI content → 纯文本（与 TurnLocator 同口径：text part 拼接 + 空白折叠） */
+function plainText(content: unknown): string {
+  const parts: string[] = [];
+  if (typeof content === "string") parts.push(content);
+  else if (Array.isArray(content))
+    for (const b of content) {
+      if (!b || typeof b !== "object") continue;
+      const p = b as Record<string, unknown>;
+      if (p.type === "text" && typeof p.text === "string") parts.push(p.text);
+    }
+  return parts.join("\n").replace(/\s+/g, " ").trim();
+}
+
+/** 一条命中：消息 id + 该消息内的第几处（1-based） */
+type Hit = { msgId: string; occ: number };
+
+/** 扫数据源得命中清单（含虚拟化未挂载的消息——这正是重构的目的） */
+function collectHits(messages: ChatMsg[], query: string): Hit[] {
+  const q = query.toLowerCase();
+  const out: Hit[] = [];
+  for (const m of messages) {
+    const id = typeof m.id === "string" ? m.id : "";
+    // 瞬时进度消息（progress_*）不是会话正文，跳过（与轮次索引同口径）
+    if (!id || id.startsWith("progress_")) continue;
+    const text = plainText(m.content);
+    if (!text) continue;
+    const lower = text.toLowerCase();
+    let from = 0;
+    let occ = 0;
+    for (;;) {
+      const i = lower.indexOf(q, from);
+      if (i === -1) break;
+      occ += 1;
+      out.push({ msgId: id, occ });
+      from = i + q.length;
+    }
+  }
+  return out;
+}
 
 function clearHighlights() {
   if (typeof CSS === "undefined" || !("highlights" in CSS)) return;
@@ -25,7 +75,7 @@ function clearHighlights() {
   CSS.highlights.delete(HL_CUR);
 }
 
-/** 在消息区里收集所有命中的 Range（文本节点级，忽略脚本/样式/输入控件） */
+/** 在给定容器内收集所有命中的 Range（文本节点级，跳过脚本/样式/控件/工具卡） */
 function collectRanges(root: HTMLElement, query: string): Range[] {
   const q = query.toLowerCase();
   const ranges: Range[] = [];
@@ -33,6 +83,8 @@ function collectRanges(root: HTMLElement, query: string): Range[] {
     acceptNode(node) {
       const tag = node.parentElement?.tagName;
       if (tag === "SCRIPT" || tag === "STYLE" || tag === "TEXTAREA")
+        return NodeFilter.FILTER_REJECT;
+      if (node.parentElement?.closest("[data-ws-toolcard]"))
         return NodeFilter.FILTER_REJECT;
       return NodeFilter.FILTER_ACCEPT;
     },
@@ -61,79 +113,188 @@ export default function ChatSearch() {
 
   const [count, setCount] = useState(0);
   const [cur, setCur] = useState(0);
-  const [partial, setPartial] = useState(false);
-  const rangesRef = useRef<Range[]>([]);
+  const hitsRef = useRef<Hit[]>([]);
   const curRef = useRef(0);
   const inputRef = useRef<HTMLInputElement>(null);
+  /** 每个已挂载消息容器内的 Range 缓存（同一次查询内复用；recompute 时清空） */
+  const rangesCache = useRef(new Map<string, Range[]>());
+
+  const containerOf = useCallback((msgId: string): HTMLElement | null => {
+    const root = document.querySelector(".copilotKitMessages");
+    if (!root) return null;
+    const esc = window.CSS && CSS.escape ? CSS.escape(msgId) : msgId;
+    return root.querySelector<HTMLElement>(`[data-ws-msg-id="${esc}"]`);
+  }, []);
+
+  const rangesFor = useCallback(
+    (msgId: string): Range[] => {
+      const cached = rangesCache.current.get(msgId);
+      if (cached) return cached;
+      const c = containerOf(msgId);
+      const rs = c ? collectRanges(c, query.trim()) : [];
+      rangesCache.current.set(msgId, rs);
+      return rs;
+    },
+    [containerOf, query],
+  );
+
+  /** 一条命中对应的 DOM Range。occ 落空时退该消息首处——数据层命中数与渲染层
+   *  可能不等（markdown 差异：链接地址、列表符号、代码围栏在渲染后变了样），
+   *  这时宁可在该消息里指出第一处，也不要「计数有它、高亮没有」。 */
+  const rangeOf = useCallback(
+    (hit: Hit): Range | null => {
+      const rs = rangesFor(hit.msgId);
+      return rs[hit.occ - 1] ?? rs[0] ?? null;
+    },
+    [rangesFor],
+  );
 
   const paint = useCallback(() => {
     if (typeof CSS === "undefined" || !("highlights" in CSS)) return;
-    const ranges = rangesRef.current;
-    if (ranges.length === 0) {
+    const hits = hitsRef.current;
+    if (hits.length === 0) {
       clearHighlights();
       return;
     }
-    const i = Math.min(curRef.current, ranges.length - 1);
+    const i = Math.min(curRef.current, hits.length - 1);
+    const others: Range[] = [];
+    hits.forEach((h, idx) => {
+      if (idx === i) return;
+      const r = rangeOf(h);
+      if (r) others.push(r);
+    });
     // 当前命中从「全部命中」里排除——两个 highlight 覆盖同一段文字时绘制
     // 顺序不保证，accent 色可能被 dim 色盖住（实测看不出区别）
-    CSS.highlights.set(
-      HL_ALL,
-      new Highlight(...ranges.filter((_, idx) => idx !== i)),
-    );
-    CSS.highlights.set(HL_CUR, new Highlight(ranges[i]));
+    CSS.highlights.set(HL_ALL, new Highlight(...others));
+    const curRange = rangeOf(hits[i]);
+    if (curRange) CSS.highlights.set(HL_CUR, new Highlight(curRange));
+    else CSS.highlights.delete(HL_CUR);
+  }, [rangeOf]);
+
+  const scrollTo = useCallback((r: Range) => {
+    const vp = findViewport(document.querySelector(".copilotKitMessages"));
+    if (!vp) return;
+    escapeStickToBottom(vp);
+    const rect = r.getBoundingClientRect();
+    vp.scrollTo({
+      top: vp.scrollTop + (rect.top - vp.getBoundingClientRect().top) - vp.clientHeight / 2,
+      behavior: "smooth",
+    });
   }, []);
+
+  /** 目标消息被虚拟化卸载：按消息序位估滚 → 轮询等挂载 → 精定位 */
+  const jumpToUnmounted = useCallback(
+    (hit: Hit) => {
+      const vp = findViewport(document.querySelector(".copilotKitMessages"));
+      const msgs = ((langgraphAgent?.messages ?? []) as ChatMsg[]).slice();
+      const idx = msgs.findIndex((m) => m.id === hit.msgId);
+      if (!vp || idx < 0) return;
+      escapeStickToBottom(vp);
+      vp.scrollTop = Math.round(
+        (vp.scrollHeight - vp.clientHeight) * (idx / Math.max(msgs.length - 1, 1)),
+      );
+      const t0 = Date.now();
+      const tick = () => {
+        // 等待期间用户关掉搜索（Esc）→ 立刻收手：否则回落时 paint 会把刚清掉的
+        // 高亮重新注册回去（「Esc 后高亮诈尸」）
+        if (!useChatSearch.getState().open) return;
+        if (containerOf(hit.msgId)) {
+          // 挂载成功：DOM 变了，缓存与命中清单重算，再按 (id, occ) 认回当前位置
+          rangesCache.current.clear();
+          hitsRef.current = collectHits(
+            (langgraphAgent?.messages ?? []) as ChatMsg[],
+            query.trim(),
+          );
+          const back = hitsRef.current.findIndex(
+            (x) => x.msgId === hit.msgId && x.occ === hit.occ,
+          );
+          if (back >= 0) {
+            curRef.current = back;
+            setCur(back);
+          }
+          setCount(hitsRef.current.length);
+          paint();
+          const r = rangeOf(hit);
+          if (r) scrollTo(r);
+          return;
+        }
+        if (Date.now() - t0 > 1500) return; // 挂不上就放弃（不长期空转）
+        window.requestAnimationFrame(tick);
+      };
+      window.requestAnimationFrame(tick);
+    },
+    [containerOf, paint, query, rangeOf, scrollTo],
+  );
 
   const goTo = useCallback(
     (target: number) => {
-      const ranges = rangesRef.current;
-      if (ranges.length === 0) return;
-      const idx = ((target % ranges.length) + ranges.length) % ranges.length;
+      const hits = hitsRef.current;
+      if (hits.length === 0) return;
+      const idx = ((target % hits.length) + hits.length) % hits.length;
       curRef.current = idx;
       setCur(idx);
+      const hit = hits[idx];
+      const r = rangeOf(hit);
       paint();
-      const vp = findViewport(document.querySelector(".copilotKitMessages"));
-      const rect = ranges[idx].getBoundingClientRect();
-      if (!vp) return;
-      escapeStickToBottom(vp);
-      vp.scrollTo({
-        top: vp.scrollTop + (rect.top - vp.getBoundingClientRect().top) - vp.clientHeight / 2,
-        behavior: "smooth",
-      });
+      if (r) {
+        scrollTo(r);
+        return;
+      }
+      // 没有 Range 只有两种可能：消息未挂载（去把它滚出来）或渲染层与数据层
+      // 对不上（markdown 差异，paint 已退到首处）。后者仍去估滚是乱跳，拦掉。
+      if (!containerOf(hit.msgId)) jumpToUnmounted(hit);
     },
-    [paint],
+    [containerOf, jumpToUnmounted, paint, rangeOf, scrollTo],
   );
 
-  const recompute = useCallback(() => {
-    const q = query.trim();
-    const root = document.querySelector(".copilotKitMessages");
-    if (!q || !root) {
-      rangesRef.current = [];
-      setCount(0);
-      setPartial(false);
-      clearHighlights();
-      return;
-    }
-    const ranges = collectRanges(root as HTMLElement, q);
-    rangesRef.current = ranges;
-    setCount(ranges.length);
-    setPartial(
-      ranges.length === 0 &&
-        (langgraphAgent.messages?.length ?? 0) > VIRTUALIZE_THRESHOLD,
-    );
-    curRef.current = Math.min(curRef.current, Math.max(ranges.length - 1, 0));
-    setCur(curRef.current);
-    paint();
-    if (ranges.length > 0) goTo(curRef.current);
-  }, [query, paint, goTo]);
+  /** 重算命中清单。`navigate` 只在**用户显式动作**（改词/回车）时为真：
+   *  流式追加也走这条重算，若顺带 goTo 就会每来一段文字调一次
+   *  escapeStickToBottom（合成 wheel 向上）——等于不停告诉贴底跟随「用户上滚了」，
+   *  自动跟随被自己打断（2026-09-11 review 抓到），还附带每段一次平滑滚动。 */
+  const recompute = useCallback(
+    (navigate: boolean) => {
+      const q = query.trim();
+      rangesCache.current.clear();
+      if (!q) {
+        hitsRef.current = [];
+        setCount(0);
+        clearHighlights();
+        return;
+      }
+      hitsRef.current = collectHits(
+        (langgraphAgent?.messages ?? []) as ChatMsg[],
+        q,
+      );
+      setCount(hitsRef.current.length);
+      // 改词从第一处起（输入框 onChange 已把 curRef 归零）；流式重算保持当前位置
+      if (navigate) curRef.current = 0;
+      else
+        curRef.current = Math.max(
+          Math.min(curRef.current, hitsRef.current.length - 1),
+          0,
+        );
+      setCur(curRef.current);
+      paint();
+      // 显式动作才导航；流式重算只把当前命中重新上色（不碰滚动）
+      if (navigate && hitsRef.current.length > 0) goTo(0);
+    },
+    [query, paint, goTo],
+  );
 
-  // 搜索词变化：防抖重算（等长消息展开的布局落定）
+  // 搜索词变化：防抖重算（等长消息展开的布局落定）；改词是显式动作 → 导航到首处
   useEffect(() => {
     if (!open) return;
-    const t = window.setTimeout(recompute, 180);
+    const t = window.setTimeout(() => recompute(true), 180);
     return () => window.clearTimeout(t);
   }, [open, recompute]);
 
-  // 流式追加时重算（消息是外部源，回调里 setState 合规）
+  // 流式追加时重算（消息是外部源，回调里 setState 合规）——只刷新命中与高亮，
+  // 不导航（否则每段文字都会打断贴底跟随，见 recompute 注释）
+  //
+  // 注意订阅必须建立在 effect **体**里：旧实现把 `agent.subscribe(...)` 写在
+  // 返回的清理函数里，于是「建立时从不订阅、每次清理才订阅并立刻退订」——
+  // 这条「消息变了就重算」的链其实一直是断的（只有改词才重算，故一直没被发现，
+  // 2026-09-11 review 的 C8 断言才把它逼出来）
   useEffect(() => {
     if (!open || !query.trim()) return;
     const agent = langgraphAgent;
@@ -141,11 +302,12 @@ export default function ChatSearch() {
     let raf = 0;
     const update = () => {
       window.cancelAnimationFrame(raf);
-      raf = window.requestAnimationFrame(recompute);
+      raf = window.requestAnimationFrame(() => recompute(false));
     };
+    const sub = agent.subscribe({ onMessagesChanged: update, onEvent: update });
     return () => {
       window.cancelAnimationFrame(raf);
-      agent.subscribe({ onMessagesChanged: update, onEvent: update }).unsubscribe();
+      sub.unsubscribe();
     };
   }, [open, query, recompute]);
 
@@ -206,17 +368,13 @@ export default function ChatSearch() {
           }
         }}
       />
+      {/* 计数来自数据源（全量正文），不再是「已挂载部分里的第几处」——
+          虚拟化卸载的消息也计入，跳转时先估滚再挂载精定位 */}
       <span
         data-testid="chat-search-count"
         className="shrink-0 tabular-nums text-[10px] text-text-4"
       >
-        {count > 0
-          ? `${cur + 1}/${count}`
-          : query.trim()
-            ? partial
-              ? "仅搜索已加载部分"
-              : "无匹配"
-            : ""}
+        {count > 0 ? `${cur + 1}/${count}` : query.trim() ? "无匹配" : ""}
       </span>
       <button
         type="button"

@@ -90,6 +90,9 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
     // data-turn-id：TurnLocator 轮次跳转的 DOM 锚（系统代发的通知不盖章）
     <div
       className="group flex justify-end px-1"
+      // 会话内搜索的定位锚：系统代发的通知也盖章（与 data-turn-id 的轮次锚
+      // 语义分开——通知不进轮次索引，但它仍是可搜索的消息正文）
+      data-ws-msg-id={typeof message?.id === "string" ? message.id : undefined}
       data-turn-id={
         !isSystemNotice &&
         typeof message?.id === "string" &&

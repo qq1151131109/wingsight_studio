@@ -109,7 +109,14 @@ function PlanCard({
   else if (executing) label = `执行中 · ${done}/${stepsN}`;
 
   return (
-    <div className="rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
+    <div
+      // 同 toolCards：计划卡是「过程 UI」，正文不在 message.content 里——会话内
+      // 搜索（ChatSearch）的计数走数据源，这里必须一并跳过，否则「计数 12 却
+      // 高亮 13 处」。**新加渲染在消息里、正文不落 message.content 的卡片，
+      // 都要打这个标记**
+      data-ws-toolcard="1"
+      className="rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs"
+    >
       <p className="flex items-center gap-1.5 font-medium text-text">
         <ClipboardList className="h-3.5 w-3.5 text-accent" />
         {label}：

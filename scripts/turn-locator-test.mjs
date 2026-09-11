@@ -219,32 +219,52 @@ try {
 
   // 1.5) 动效：悬停展宽 + 变 accent（回归死代码——裸类被 inline width 压住）
   const dotBtn = page.locator('[data-testid="chat-turn-rail"] button[aria-label^="跳到"]').nth(1);
+  const dotStyle = (i) =>
+    page.evaluate((k) => {
+      const d = [
+        ...document.querySelectorAll('[data-testid="chat-turn-rail"] .ws-turn-dot'),
+      ][k];
+      const cs = d ? getComputedStyle(d) : null;
+      return {
+        w: d ? Math.round(d.getBoundingClientRect().width) : 0,
+        bg: cs?.backgroundColor ?? "",
+        // 回弹曲线（任意值类 ease-[…] 编译失败会静默退回默认 ease）
+        ease: cs?.transitionTimingFunction ?? "",
+      };
+    }, i);
+  const rest = await dotStyle(1);
   await dotBtn.hover();
   await page.waitForTimeout(320); // 过渡 200ms 走完
-  const hoverInfo = await page.evaluate(() => {
-    const dots = [...document.querySelectorAll('[data-testid="chat-turn-rail"] button[aria-label^="跳到"]')];
-    const span = dots[1]?.querySelector(".ws-turn-dot");
-    // 末点 inline 就是 var(--color-accent)，作悬停变色的参照
-    const lastBg = getComputedStyle(dots.at(-1)?.querySelector(".ws-turn-dot")).backgroundColor;
-    return { w: span ? Math.round(span.getBoundingClientRect().width) : 0, bg: getComputedStyle(span).backgroundColor, lastBg };
-  });
+  const hoverInfo = await dotStyle(1);
   await page.mouse.move(50, 500); // 撤离悬停
   await page.waitForTimeout(320);
-  const rest = await page.evaluate(() => {
-    const btn = [...document.querySelectorAll('[data-testid="chat-turn-rail"] button[aria-label^="跳到"]')][1];
-    const span = btn?.querySelector(".ws-turn-dot");
-    return {
-      w: Math.round(span?.getBoundingClientRect().width ?? 0),
-      // 回弹曲线（任意值类 ease-[…] 编译失败会静默退回默认 ease）
-      ease: span ? getComputedStyle(span).transitionTimingFunction : "",
-    };
-  });
-  check("悬停展宽 10→20px（! 压过 inline）", hoverInfo.w === 20, `${hoverInfo.w}px`);
-  check("悬停变 accent 色", hoverInfo.bg !== "" && hoverInfo.bg === hoverInfo.lastBg, `${hoverInfo.bg} vs ${hoverInfo.lastBg}`);
-  check("撤离回缩 10px", rest.w === 10, `${rest.w}px`);
+  const back = await dotStyle(1);
+  check("悬停展宽 10→20px（! 压过 inline）", rest.w === 10 && hoverInfo.w === 20, `${rest.w} → ${hoverInfo.w}px`);
+  check(
+    "悬停变 accent 色（与静止态自身对比，不依赖末点形态）",
+    rest.bg !== hoverInfo.bg && hoverInfo.bg !== "rgba(0, 0, 0, 0)",
+    `${rest.bg} → ${hoverInfo.bg}`,
+  );
+  check("撤离回缩 10px", back.w === 10, `${back.w}px`);
+  check(
+    "圆点过渡为回弹曲线",
+    back.ease.includes("cubic-bezier(0.34, 1.4, 0.64, 1)"),
+    back.ease.slice(0, 48),
+  );
   check("圆点过渡为回弹曲线", rest.ease.includes("cubic-bezier(0.34, 1.4, 0.64, 1)"), rest.ease.slice(0, 48));
 
-  // 2) 悬停展开面板
+  // 2) 悬停展开面板（顺带断言：面板里为当前轮做的 scrollIntoView 不能外溢到
+  //    消息区——悬停一下画面自己滚起来是最恼人的那类副作用）
+  const msgScrollTop = () =>
+    page.evaluate(() => {
+      let el = document.querySelector(".copilotKitMessages");
+      for (let i = 0; i < 12 && el && el !== document.body; i++) {
+        if (i > 0 && el.scrollHeight > el.clientHeight + 2) return Math.round(el.scrollTop);
+        el = el.parentElement;
+      }
+      return -1;
+    });
+  const hoverScrollBefore = await msgScrollTop();
   await page.hover('[data-testid="chat-turn-rail"] .group');
   await page.waitForTimeout(400);
   const panel = await page.evaluate(() => {
@@ -264,6 +284,12 @@ try {
     `display=${panel.display} rows=${panel.rows}`,
   );
   check("面板行带 18 字摘要+轮次号", /第一轮：帮我拆解这个剧本的核心冲突\s*1$/.test(panel.firstRow.replace("…", "")), panel.firstRow.slice(0, 30));
+  const hoverScrollAfter = await msgScrollTop();
+  check(
+    "悬停展开面板不滚动消息区",
+    hoverScrollBefore >= 0 && hoverScrollBefore === hoverScrollAfter,
+    `scrollTop ${hoverScrollBefore} → ${hoverScrollAfter}`,
+  );
 
   // 3) 跳转第 2 轮
   const scrollTop = () =>
@@ -316,6 +342,90 @@ try {
     return false;
   });
   check("末点跳回对话底部", atEnd);
+
+  // 5) scroll-sync：当前阅读轮跟着滚动走（2026-09-11 新增）
+  //    语义——实心 accent 18px = 你正在读的那一轮；accent 空心环 = 最新一轮
+  //    先把指针移开：第 2 段的悬停停在轨道上、正压着中间的圆点，它会一直保持
+  //    悬停宽度（实测把「当前轮」探测出两个匹配项）
+  await page.mouse.move(400, 500);
+  await page.waitForTimeout(350);
+  const dotProbe = () =>
+    page.evaluate(() => {
+      const dots = [
+        ...document.querySelectorAll('[data-testid="chat-turn-rail"] .ws-turn-dot'),
+      ];
+      const rows = [
+        ...document.querySelectorAll(
+          '[data-testid="chat-turn-rail"] button[data-track="chat.turnJump"][data-active]',
+        ),
+      ];
+      const style = dots.map((d) => {
+        const cs = getComputedStyle(d);
+        return {
+          w: Math.round(d.getBoundingClientRect().width),
+          bg: cs.backgroundColor,
+          ring: cs.boxShadow.includes("inset"),
+        };
+      });
+      return {
+        // 实心 accent（当前轮）：不透明背景 + 宽 18 + 非空心环
+        solids: style
+          .map((s, i) => (s.bg !== "rgba(0, 0, 0, 0)" && !s.ring && s.w >= 18 ? i : -1))
+          .filter((i) => i >= 0),
+        rings: style.map((s, i) => (s.ring ? i : -1)).filter((i) => i >= 0),
+        widths: style.map((s) => s.w),
+        activeRows: rows.filter((r) => r.dataset.active === "1").length,
+        n: dots.length,
+      };
+    });
+  const atBottom = await dotProbe();
+  check(
+    "scroll-sync：滚到底时当前轮 = 末轮（实心 accent，无空心环）",
+    atBottom.solids.length === 1 && atBottom.solids[0] === atBottom.n - 1 && atBottom.rings.length === 0,
+    JSON.stringify(atBottom),
+  );
+  // 滚到顶 → 当前轮应变成第一轮，末轮退化为空心环
+  await page.evaluate(() => {
+    let el = document.querySelector(".copilotKitMessages");
+    for (let i = 0; i < 12 && el && el !== document.body; i++) {
+      if (i > 0 && el.scrollHeight > el.clientHeight + 2) {
+        el.scrollTop = 0;
+        return;
+      }
+      el = el.parentElement;
+    }
+  });
+  await page.waitForTimeout(700);
+  const atTop = await dotProbe();
+  check(
+    "scroll-sync：滚到顶时当前轮变第一轮、末轮呈空心环",
+    atTop.solids.length === 1 && atTop.solids[0] === 0 && atTop.rings.length === 1 && atTop.rings[0] === atTop.n - 1,
+    JSON.stringify(atTop),
+  );
+  check(
+    "scroll-sync：面板当前轮那行高亮（恰一行）",
+    atTop.activeRows === 1,
+    `activeRows=${atTop.activeRows}`,
+  );
+
+  // 6) 键盘导航：Alt+↓ 下一轮（侧栏打开时接管）
+  const topBefore = await scrollTop();
+  await page.keyboard.press("Alt+ArrowDown");
+  await page.waitForTimeout(1200);
+  const afterKey = await dotProbe();
+  check(
+    "Alt+↓ 跳到下一轮（当前轮前移）",
+    afterKey.solids.length === 1 && afterKey.solids[0] > (atTop.solids[0] ?? 0),
+    `solid ${JSON.stringify(atTop.solids)} → ${JSON.stringify(afterKey.solids)}（scrollTop ${topBefore} → ${await scrollTop()}）`,
+  );
+  await page.keyboard.press("Alt+End");
+  await page.waitForTimeout(1200);
+  const afterEnd = await dotProbe();
+  check(
+    "Alt+End 跳到末轮",
+    afterEnd.solids.length === 1 && afterEnd.solids[0] === afterEnd.n - 1,
+    JSON.stringify(afterEnd),
+  );
 
   const relevant = errors.filter((e) => !e.includes("404"));
   check("无新增 console 错误", relevant.length === 0, relevant.slice(0, 3).join(" | ") || "clean");

@@ -963,47 +963,21 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 .ws-asst-msg[data-ws-toolbar="0"] [data-testid="copilot-assistant-toolbar"] {
     display: none;
 }
-.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button:not(.ws-msg-toggle) {
+.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button {
     width: 26px;
     height: 26px;
     padding: 0;
     justify-content: center;
 }
-.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button:not(.ws-msg-toggle) svg {
+.copilotKitAssistantMessage [data-testid="copilot-assistant-toolbar"] button svg {
     width: 15px;
     height: 15px;
 }
 
-.ws-asst-msg[data-ws-collapsed="1"] .cpk\:prose {
-    position: relative;
-    /* 与 AssistantMessage.COLLAPSE_LIMIT_PX 同源（480px ≈ 600 字）；
-       旧值 340px ≈ 430 字，与 700 字的触发阈值只差 1.6 倍——一折就砍掉
-       近四成正文，2026-09-11 起限高与「溢出 1.6 倍才折」配套 */
-    max-height: 480px;
-    overflow: hidden;
-}
-.ws-asst-msg[data-ws-collapsed="1"] .cpk\:prose::after {
-    content: "";
-    position: absolute;
-    inset-inline: 0;
-    bottom: 0;
-    height: 72px;
-    background: linear-gradient(to bottom, transparent, var(--color-surface-1));
-    pointer-events: none;
-}
-.ws-msg-toggle {
-    margin-left: 4px;
-    padding: 0 6px;
-    height: 26px;
-    width: auto;
-    white-space: nowrap;
-    font-size: 11px;
-    color: var(--color-accent);
-    transition: color 120ms ease;
-}
-.ws-msg-toggle:hover {
-    text-decoration: underline;
-}
+/* 答案正文的自动折叠已删（2026-09-11 折叠口径改为行业共识「过程折叠、答案展开」）：
+   此前按「实测溢出 >480px×1.6」自动折答案并挂「展开全文」钮，方向与主流相反
+   （ChatGPT/Claude/Perplexity 折的是思考块与工具调用，助手正文一律完整铺开）。
+   过程侧折叠仍在：工具卡长结果进 <details>、框架的思考块自带收起。 */
 
 ::highlight(ws-search) {
     background-color: var(--color-accent-dim);
@@ -1089,3 +1063,28 @@ aside.copilotKitSidebar[aria-hidden="false"] {
    字段芯片）。不支持的浏览器回落到 rows 兜底行数 */
 .ws-autota { field-sizing: content; }
 
+
+/* 会话分支切换器（‹ i/N ›，ChatGPT/Claude 范式）：与工具栏同族的小按钮 */
+.ws-branch-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    margin-left: 4px;
+}
+.ws-branch-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    color: var(--color-text-3);
+    transition: color 120ms ease;
+}
+.ws-branch-btn:hover:not(:disabled) {
+    color: var(--color-text);
+}
+.ws-branch-btn:disabled {
+    opacity: 0.35;
+    cursor: default;
+}

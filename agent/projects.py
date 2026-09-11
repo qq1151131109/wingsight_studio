@@ -88,6 +88,23 @@ def init_db() -> None:
                 PRIMARY KEY (project_id, id)
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_assets_url ON assets (project_id, url);
+            -- 会话分支（2026-09-11 行业共识：「重新生成/编辑重发」产生新版本，旧版本
+            -- 可 ‹ i/N › 切回，且模型上下文跟着切换的版本走——不是只改显示）。
+            -- 一条 = 某一「轮」被放弃的那一版：turn_id 是该轮的用户消息 id，
+            -- checkpoint_id 是它作为会话头时的 checkpoint（切回时据此复原上下文），
+            -- messages 是那一版的助手消息（切回后前端直接渲染，不必重跑）。
+            CREATE TABLE IF NOT EXISTS chat_branches (
+                thread_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                idx INTEGER NOT NULL,
+                messages TEXT NOT NULL DEFAULT '[]',
+                checkpoint_id TEXT NOT NULL DEFAULT '',
+                -- active=1：这一版就是会话当前头（切回来的那版保留原 idx = 位置稳定，
+                -- 与 ChatGPT/Claude 一致：切回第 1 版就显示 1/2，而不是把它排到末尾）
+                active INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (thread_id, turn_id, idx)
+            );
             """
         )
         # 存量库升级：归属与协作者列（幂等）
@@ -254,6 +271,13 @@ def delete_project(pid: str, viewer: Any = ANON_VIEWER) -> bool:
         cur = conn.execute("DELETE FROM projects WHERE id = ?", (pid,))
         conn.execute("DELETE FROM canvases WHERE project_id = ?", (pid,))
         conn.execute("DELETE FROM chat_messages WHERE project_id = ?", (pid,))
+        # 分支表按 thread_id 存（无 project_id 列），删线程前先把它们的行清掉，
+        # 否则项目一删就留下再也无人认领的孤儿行
+        conn.execute(
+            "DELETE FROM chat_branches WHERE thread_id IN"
+            " (SELECT id FROM chat_threads WHERE project_id = ?)",
+            (pid,),
+        )
         conn.execute("DELETE FROM chat_threads WHERE project_id = ?", (pid,))
         conn.execute("DELETE FROM assets WHERE project_id = ?", (pid,))
     return cur.rowcount > 0
@@ -491,6 +515,8 @@ def delete_thread(pid: str, tid: str, viewer: Any = ANON_VIEWER) -> bool:
         conn.execute(
             "DELETE FROM chat_messages WHERE project_id = ? AND thread_id = ?", (pid, tid)
         )
+        # 分支表按 thread_id 存（没有 project_id 列），会话删除时一并清干净
+        conn.execute("DELETE FROM chat_branches WHERE thread_id = ?", (tid,))
         cur = conn.execute(
             "DELETE FROM chat_threads WHERE id = ? AND project_id = ?", (tid, pid)
         )
@@ -509,6 +535,121 @@ def load_chat_messages(
             (pid, tid),
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ── 会话分支（‹ i/N › 版本切换，2026-09-11 行业共识）─────────────────────────
+# 语义：一轮（= 一条用户消息）的答复可以有 N 个版本。「重新生成」时被放弃的那一版
+# 连同**当时作为会话头的 checkpoint** 一起落库；切回旧版本时用那个 checkpoint 复原
+# 模型上下文（Claude/ChatGPT 的分支切换是「显示与上下文一起切」，不是只改显示）。
+# 当前生效的那一版不落库——它就是会话的实时头，需要时从 chat_messages 现算。
+
+
+def turn_messages_after(messages: List[Dict[str, Any]], turn_id: str) -> List[Dict[str, Any]]:
+    """取某轮（turn_id 那条用户消息）之后、下一条用户消息之前的消息 = 该轮答复。"""
+    out: List[Dict[str, Any]] = []
+    started = False
+    for m in messages:
+        if not started:
+            if str(m.get("id") or "") == turn_id:
+                started = True
+            continue
+        if str(m.get("role") or "") == "user":
+            break
+        out.append(m)
+    return out
+
+
+def save_branch(
+    thread_id: str,
+    turn_id: str,
+    idx: int,
+    messages: List[Dict[str, Any]],
+    checkpoint_id: str,
+    active: int = 0,
+) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO chat_branches"
+            " (thread_id, turn_id, idx, messages, checkpoint_id, active, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                thread_id,
+                turn_id,
+                int(idx),
+                json.dumps(messages, ensure_ascii=False),
+                str(checkpoint_id or ""),
+                int(active),
+                _now(),
+            ),
+        )
+
+
+def list_branches(thread_id: str) -> List[Dict[str, Any]]:
+    """该会话已落库的（被放弃的）分支版本，按轮、按序。"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT turn_id, idx, messages, checkpoint_id, active FROM chat_branches"
+            " WHERE thread_id = ? ORDER BY turn_id, idx",
+            (thread_id,),
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        try:
+            msgs = json.loads(r["messages"] or "[]")
+        except (ValueError, TypeError):
+            msgs = []
+        out.append(
+            {
+                "turn_id": r["turn_id"],
+                "idx": int(r["idx"]),
+                "messages": msgs if isinstance(msgs, list) else [],
+                "checkpoint_id": r["checkpoint_id"] or "",
+                "active": int(r["active"] or 0) == 1,
+            }
+        )
+    return out
+
+
+def get_branch(thread_id: str, turn_id: str, idx: int) -> Dict[str, Any] | None:
+    for b in list_branches(thread_id):
+        if b["turn_id"] == turn_id and b["idx"] == int(idx):
+            return b
+    return None
+
+
+def next_branch_idx(thread_id: str, turn_id: str) -> int:
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(idx) AS m FROM chat_branches WHERE thread_id = ? AND turn_id = ?",
+            (thread_id, turn_id),
+        ).fetchone()
+    return int(row["m"] or 0) + 1
+
+
+def set_branch_active(thread_id: str, turn_id: str, idx: int, active: bool) -> None:
+    """把某一版标为/取消「当前头」。切回的版本**保留原 idx**——位置稳定，
+    前端显示 1/2 而不是把它排到末尾（ChatGPT/Claude 同口径）。"""
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE chat_branches SET active = ?"
+            " WHERE thread_id = ? AND turn_id = ? AND idx = ?",
+            (1 if active else 0, thread_id, turn_id, int(idx)),
+        )
+
+
+def clear_branch_active(thread_id: str, turn_id: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE chat_branches SET active = 0 WHERE thread_id = ? AND turn_id = ?",
+            (thread_id, turn_id),
+        )
+
+
+def get_active_branch(thread_id: str, turn_id: str) -> Dict[str, Any] | None:
+    for b in list_branches(thread_id):
+        if b["turn_id"] == turn_id and b["active"]:
+            return b
+    return None
 
 
 def thread_title_is_mechanical(title: str, messages: list) -> bool:

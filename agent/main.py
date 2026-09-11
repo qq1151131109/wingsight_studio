@@ -55,6 +55,8 @@ import imgresearch  # noqa: E402
 import imagejobs  # noqa: E402
 import jobstore  # noqa: E402
 import models  # noqa: E402
+from typing import Any, Dict, List  # noqa: E402
+
 import projects  # noqa: E402
 import prompt_presets  # noqa: E402
 import ref_routes  # noqa: E402
@@ -576,6 +578,11 @@ async def api_chat_regenerate(req: dict, user: auth.CurrentUser):
     is_continuation 判定把「子集消息」当成续跑（补全工具调用场景），不触发它的
     time-travel 分叉——旧回答仍留在 checkpoint 里，模型下一轮能逐字复述出被
     「删掉」的答案。fork 后旧回答从模型上下文真正消失，与界面所见一致。
+
+    **分支落库（2026-09-11 行业共识「旧版本可 ‹ i/N › 切回」）**：fork 之前先把
+    「被放弃的这一版」存档——助手消息（前端传 turnMessages，缺省读库里该轮消息）
+    + 它作为会话头时的 checkpoint id。切回旧版时用那个 checkpoint 复原模型上下文
+    （Claude/ChatGPT 的分支切换是显示与上下文一起切，不是只改显示）。
     """
     thread_id = str(req.get("threadId") or "")
     message_id = str(req.get("messageId") or "")
@@ -588,6 +595,12 @@ async def api_chat_regenerate(req: dict, user: auth.CurrentUser):
         raise HTTPException(status_code=404, detail=f"找不到该消息的检查点：{e}") from e
     if ckpt is None:
         raise HTTPException(status_code=404, detail="找不到该消息的检查点")
+    # 存档要在 fork 之前做：要的是「当前头」的状态，不是 fork 点的
+    try:
+        await _archive_current_branch(thread_id, message_id, req.get("turnMessages"))
+    except Exception as e:  # noqa: BLE001
+        # 存档失败不该拦住重新生成（用户的主诉是重跑这一轮）；落日志供排查
+        print(f"[分支] 存档失败（不阻止重新生成）：{e}", flush=True)
     next_nodes = getattr(ckpt, "next", None) or ()
     await agent.graph.aupdate_state(
         ckpt.config,
@@ -595,6 +608,164 @@ async def api_chat_regenerate(req: dict, user: auth.CurrentUser):
         as_node=next_nodes[0] if next_nodes else "__start__",
     )
     return {"ok": True}
+
+
+async def _archive_current_branch(
+    thread_id: str, turn_id: str, turn_messages: Any = None
+) -> None:
+    """把「当前生效的这一版」存档为该轮的下一个版本（切回时的退路）。
+
+    - 助手消息：优先用前端传来的 `turnMessages`（它手上是实时的）；缺省读库里该轮
+      消息（chat_messages 由 ChatPersistence 持续落库）。两者都没有就不存档——
+      没有内容可切回。
+    - checkpoint：当前头的 checkpoint id。切回该版本时用 aget_state + aupdate_state
+      把会话头挪回那一版（与框架 prepare_regenerate_stream 同手法）。
+    """
+    state = await agent.graph.aget_state({"configurable": {"thread_id": thread_id}})
+    try:
+        ckpt_id = str(state.config["configurable"].get("checkpoint_id") or "")
+    except (KeyError, TypeError, AttributeError):
+        ckpt_id = ""
+    if not ckpt_id:
+        raise RuntimeError("拿不到当前头的 checkpoint id")
+    msgs: List[Dict[str, Any]] = []
+    if isinstance(turn_messages, list):
+        for m in turn_messages:
+            if isinstance(m, dict) and str(m.get("role") or "") == "assistant":
+                msgs.append(
+                    {
+                        "id": str(m.get("id") or ""),
+                        "role": "assistant",
+                        "content": str(m.get("content") or ""),
+                    }
+                )
+    if not msgs:
+        pid = projects.project_id_of_thread(thread_id)
+        if pid:
+            msgs = projects.turn_messages_after(
+                projects.load_chat_messages(pid, thread_id), turn_id
+            )
+    if not msgs:
+        return
+    live = projects.get_active_branch(thread_id, turn_id)
+    if live is not None:
+        # 当前头是一条已存档的行（= 切回来的那一版）→ 就地更新它的内容与检查点，
+        # 保留它的 idx：位置稳定（切回第 1 版仍显示第 1 版）
+        projects.save_branch(
+            thread_id, turn_id, live["idx"], msgs, ckpt_id, active=0
+        )
+    else:
+        projects.save_branch(
+            thread_id, turn_id, projects.next_branch_idx(thread_id, turn_id), msgs, ckpt_id
+        )
+    projects.clear_branch_active(thread_id, turn_id)
+
+
+@app.get("/chat/branches")
+def api_chat_branches(threadId: str, user: auth.CurrentUser):
+    """该会话各轮的版本清单（前端 ‹ i/N › 的数据源）。
+
+    被放弃的版本取自 chat_branches；**当前生效的那一版不落库**——它就是会话的实时
+    头，这里从 chat_messages 现算（前端一直在落库），编号接在存档版本之后。
+    只返回有 ≥2 版的轮（单版轮不需要切换器）。
+    """
+    tid = str(threadId or "")
+    if not tid:
+        raise HTTPException(status_code=400, detail="threadId 必填")
+    pid = projects.project_id_of_thread(tid)
+    if not pid:
+        raise HTTPException(status_code=404, detail="会话不存在")
+    stored = projects.load_chat_messages(pid, tid, user)
+    turns: Dict[str, Dict[str, Any]] = {}
+    for b in projects.list_branches(tid):
+        t = turns.setdefault(b["turn_id"], {"turnId": b["turn_id"], "versions": []})
+        t["versions"].append(
+            {"idx": b["idx"], "active": b["active"], "messages": b["messages"]}
+        )
+    # 没有 active 行 = 当前版本是刚生成的那一版（还没被放弃过）→ 从 chat_messages
+    # 现算，编号接在末尾。已被切回的版本有自己的行（active=1），不在此追加
+    for m in stored:
+        if str(m.get("role") or "") != "user":
+            continue
+        turn_id = str(m.get("id") or "")
+        t = turns.get(turn_id)
+        if t is not None and any(v["active"] for v in t["versions"]):
+            continue
+        live = projects.turn_messages_after(stored, turn_id)
+        if not live:
+            continue
+        t = turns.setdefault(turn_id, {"turnId": turn_id, "versions": []})
+        t["versions"].append(
+            {
+                "idx": max([v["idx"] for v in t["versions"]] or [0]) + 1,
+                "active": True,
+                "messages": live,
+            }
+        )
+    out = [t for t in turns.values() if len(t["versions"]) > 1]
+    for t in out:
+        t["versions"].sort(key=lambda v: v["idx"])
+    return {"turns": out}
+
+
+@app.post("/chat/branch")
+async def api_chat_branch(req: dict, user: auth.CurrentUser):
+    """切到某个历史版本：显示与模型上下文一起切（行业共识）。
+
+    ① 先把「当前生效版本」按与 regenerate 相同的手法存档，保证还能切回来；
+    ② 用目标版本的 checkpoint 把会话头挪过去（aget_state → aupdate_state）；
+    ③ 返回该版本的助手消息：前端直接上屏，不重跑、不烧额度。
+    """
+    thread_id = str(req.get("threadId") or "")
+    turn_id = str(req.get("turnId") or "")
+    try:
+        idx = int(req.get("idx"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="idx 必须是整数") from None
+    if not thread_id or not turn_id:
+        raise HTTPException(status_code=400, detail="threadId 与 turnId 必填")
+    rec = projects.get_branch(thread_id, turn_id, idx)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="该版本不存在（可能已被新版本取代）")
+    if not projects.project_id_of_thread(thread_id):
+        raise HTTPException(status_code=404, detail="会话不存在")
+    try:
+        await _archive_current_branch(thread_id, turn_id, req.get("turnMessages"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[分支] 切换前存档失败（不阻止切换）：{e}", flush=True)
+    ckpt_id = rec.get("checkpoint_id") or ""
+    if not ckpt_id:
+        raise HTTPException(status_code=409, detail="该版本没有可复原的检查点")
+    try:
+        state = await agent.graph.aget_state(
+            {"configurable": {"thread_id": thread_id, "checkpoint_id": ckpt_id}}
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail=f"找不到该版本的检查点：{e}") from e
+    next_nodes = getattr(state, "next", None) or ()
+    # config 显式构造，**必须带 checkpoint_ns**：aget_state 回来的 config 不带它，
+    # 而 aupdate_state 内部写 writes 时我们的 checkpointer 直接索引该键
+    # （实测 KeyError: 'checkpoint_ns'，500）。缺省命名空间是空串。
+    ns = ""
+    try:
+        ns = str((state.config or {}).get("configurable", {}).get("checkpoint_ns") or "")
+    except (AttributeError, TypeError):
+        ns = ""
+    await agent.graph.aupdate_state(
+        {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": ns,
+                "checkpoint_id": ckpt_id,
+            }
+        },
+        state.values,
+        as_node=next_nodes[0] if next_nodes else "__start__",
+    )
+    # 目标版本已成为会话当前头：标 active 并**保留它的 idx**（位置稳定，
+    # 切回第 1 版就显示 1/2，而不是被排到末尾）
+    projects.set_branch_active(thread_id, turn_id, idx, True)
+    return {"ok": True, "messages": rec["messages"]}
 
 
 @app.get("/projects/{pid}/threads/{tid}/messages")

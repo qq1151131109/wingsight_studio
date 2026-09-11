@@ -14,7 +14,8 @@
 import fs from "node:fs";
 import { chromium } from "playwright";
 
-const WEB = "http://127.0.0.1:8008";
+// WS_BASE 可指别的实例（如本地 dev:8009），默认生产口 8008
+const WEB = process.env.WS_BASE || "http://127.0.0.1:8008";
 const AGENT = "http://127.0.0.1:8123";
 const GAP = 20; // 与 app/globals.css「消息间距单一事实源」同源
 

@@ -110,7 +110,13 @@ export function ToolCard({
   children?: ReactNode;
 }) {
   return (
-    <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
+    <div
+      // 会话内搜索跳过整个工具卡子树：搜索口径是「消息正文」，工具卡是 UI 部件
+      // （结果 JSON/文件清单不是对话内容）。计数走数据源时天然不含它们，这里
+      // 保持一致——避免「计数 12 却高亮 15 处」
+      data-ws-toolcard="1"
+      className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs"
+    >
       <div
         className={`flex items-center gap-1.5 font-medium ${
           ok === false ? "text-warn" : ok ? "text-good" : "text-text-2"

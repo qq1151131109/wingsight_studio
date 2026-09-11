@@ -32,6 +32,12 @@
  * 锚点按 id keyed，新轮只在尾部挂载）、点击即时脉冲（ws-turn-dot-pulse，补
  * smooth 滚动到落点闪圈之间的反馈空窗）、轨道整体淡入、落点闪圈升级为 accent
  * 竖条+底色冲刷；prefers-reduced-motion 由 globals.css 的全局钳制兜住。
+ *
+ * 「读到哪」= scroll-sync（2026-09-11，此前轨道只标「最新一轮」）：滚动/流式/
+ * 尺寸变化都走 measure → syncActive，按可读带上部 1/3 的阅读线判定当前轮。
+ * 视觉语义——**实心 accent 加宽 = 你正在读的这一轮**，**accent 空心环 = 最新一轮
+ * （还没读到）**，灰点 = 其余；面板展开时当前轮那行同步高亮并滚进面板视口。
+ * 键盘：Alt+↑/↓ 上/下一轮、Alt+Home/End 首/末轮（侧栏打开时接管）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -97,6 +103,16 @@ type Region = { top: number; height: number; right: number };
 export default function TurnLocator() {
   const [anchors, setAnchors] = useState<Anchor[]>([]);
   const [region, setRegion] = useState<Region | null>(null);
+  /** 正在读的那一轮（scroll-sync 判定，见 syncActive） */
+  const [activeId, setActiveId] = useState<string | null>(null);
+  /** 锚点清单的镜像：syncActive 每帧要读「真正的末轮」，但它不能把 anchors 收进
+   *  依赖（那会连带 measure 的依赖变化 → 几何订阅随流式反复重挂），故用 ref 转发 */
+  const anchorsRef = useRef<Anchor[]>([]);
+  useEffect(() => {
+    anchorsRef.current = anchors;
+  }, [anchors]);
+  /** 面板里当前轮那一行：面板展开时滚进可视区（否则长对话里高亮在面板外） */
+  const activeRowRef = useRef<HTMLButtonElement | null>(null);
   // rAF 合并：订阅每帧都触发（流式），量 rect 不必跟着每帧走
   const measureScheduled = useRef(false);
   /** 滚动视口元素 pin（2026-09-07「上下跳」事故的根因）：爬升判据
@@ -112,6 +128,58 @@ export default function TurnLocator() {
     vpRef.current = findViewport(document.querySelector(".copilotKitMessages"));
     return vpRef.current;
   }, []);
+
+  /** 当前阅读位置那一轮（scroll-sync，2026-09-11）。轨道此前只标「最新一轮」，
+   *  19 轮对话翻到中间时给不出任何位置感——而「高亮跟随阅读位置」正是第三方
+   *  导航扩展（Flex & Nav for Gemini / Chat Index Navigator）的核心卖点。
+   *
+   *  判据两条（缺一不可，实测各补过一次错）：
+   *  ① **末轮的提问已进入可视带**（它的 top 在带底之上）→ 当前轮就是末轮。
+   *     贴底读最新答复是最常见姿态，而末轮往往很长、提问气泡早已滚出带上沿；
+   *     只按阅读线判会把「正在读最新一轮」错报成倒数第 N 轮（实测贴底判成第 5 轮）。
+   *     跳末轮时若因内容到底无法顶到带上沿，这条同样兜住。
+   *     **必须认「真正的末轮」而不是最后一个已挂载的锚**：长对话虚拟化时视口附近
+   *     挂着的那几轮里，最后一个是视口下方某一轮，拿它当末轮会把当前轮顶到那里
+   *     （anchorsRef 取消息数据里的末轮，DOM 里找不到就说明它未挂载 = 不在视口）。
+   *  ② 否则按**阅读线**（可视带上部 25%）取最后一个越过它的轮次——跳转到某一轮
+   *     后该轮起点贴在带上沿，取 %25 而不是 %50 才不会把「上一轮」算成当前。
+   *  虚拟化把锚点整段卸载时（els 为空）保留上一次判定——宁可不动也不要闪。 */
+  const syncActive = useCallback(() => {
+    const vp = resolveViewport();
+    if (!vp) return;
+    const els = [
+      ...document.querySelectorAll<HTMLElement>(
+        ".copilotKitMessages [data-turn-id]",
+      ),
+    ];
+    if (els.length === 0) return;
+    const rect = vp.getBoundingClientRect();
+    const composer = document.querySelector(".copilotKitInputContainer");
+    const bandBottom = composer
+      ? Math.min(rect.bottom, composer.getBoundingClientRect().top)
+      : rect.bottom;
+    const lastId = anchorsRef.current.at(-1)?.id ?? null;
+    const lastEl = lastId
+      ? document.querySelector<HTMLElement>(
+          `.copilotKitMessages [data-turn-id="${window.CSS && CSS.escape ? CSS.escape(lastId) : lastId}"]`,
+        )
+      : null;
+    let found: string | null;
+    if (lastEl && lastEl.getBoundingClientRect().top <= bandBottom) {
+      found = lastId;
+    } else {
+      const line = rect.top + (bandBottom - rect.top) * 0.25;
+      found = null;
+      for (const el of els) {
+        // DOM 顺序 == 轮次顺序；最后一个越过阅读线的锚就是「正在读的轮」
+        if (el.getBoundingClientRect().top <= line) found = el.dataset.turnId ?? null;
+        else break;
+      }
+      // 全部在阅读线下方（刚进会话）→ 取第一个挂载的锚
+      if (!found) found = els[0].dataset.turnId ?? null;
+    }
+    setActiveId((prev) => (prev === found ? prev : found));
+  }, [resolveViewport]);
 
   const measure = useCallback(() => {
     if (measureScheduled.current) return;
@@ -151,8 +219,10 @@ export default function TurnLocator() {
           ? prev
           : next;
       });
+      // 同一帧里顺带更新「读到哪」——滚动、流式重排、窗口变化都走这条
+      syncActive();
     });
-  }, [resolveViewport]);
+  }, [resolveViewport, syncActive]);
 
   // 锚点清单：消息数据订阅（虚拟化时 DOM 不全，清单不能靠查 DOM）
   useEffect(() => {
@@ -191,6 +261,9 @@ export default function TurnLocator() {
     if (aside) attach(aside);
     attach(document.body);
     window.addEventListener("resize", measure);
+    // 滚动 = 阅读位置变化：同一条 measure 里顺带同步「读到哪」（rAF 合并，
+    // passive 不阻塞滚动）
+    vp?.addEventListener("scroll", measure, { passive: true });
     // v2 开/关是 transform 过渡，RO 不报——收尾补一拍
     aside?.addEventListener("transitionend", measure);
     // 头部页签行高度变化会让滚动区挪位（不变形，RO 不报），轮询兜底轻量校准
@@ -198,38 +271,68 @@ export default function TurnLocator() {
     return () => {
       ros.forEach((ro) => ro.disconnect());
       window.removeEventListener("resize", measure);
+      vp?.removeEventListener("scroll", measure);
       aside?.removeEventListener("transitionend", measure);
       window.clearInterval(timer);
     };
   }, [noRegion, measure, resolveViewport]);
 
-  const jump = (id: string) => {
-    const list = document.querySelector(".copilotKitMessages");
-    const q = `[data-turn-id="${(window.CSS && CSS.escape) ? CSS.escape(id) : id}"]`;
-    const el = list?.querySelector(q);
-    const vp = resolveViewport();
-    if (el) {
-      escapeStickToBottom(vp);
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      flash(el);
-      return;
-    }
-    // >50 条消息 v2 虚拟化卸载了目标轮：按序位比例估滚 → 挂载后精跳
-    const idx = anchors.findIndex((a) => a.id === id);
-    if (!vp || idx < 0) return;
-    escapeStickToBottom(vp);
-    vp.scrollTop = Math.round(
-      (vp.scrollHeight - vp.clientHeight) *
-        (idx / Math.max(anchors.length - 1, 1)),
-    );
-    window.setTimeout(() => {
-      const el2 = list?.querySelector(q);
-      if (el2) {
-        el2.scrollIntoView({ behavior: "smooth", block: "start" });
-        flash(el2);
+  const jump = useCallback(
+    (id: string) => {
+      const list = document.querySelector(".copilotKitMessages");
+      const q = `[data-turn-id="${window.CSS && CSS.escape ? CSS.escape(id) : id}"]`;
+      const el = list?.querySelector(q);
+      const vp = resolveViewport();
+      if (el) {
+        escapeStickToBottom(vp);
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        flash(el);
+        return;
       }
-    }, 200);
-  };
+      // >50 条消息 v2 虚拟化卸载了目标轮：按序位比例估滚 → 挂载后精跳
+      const idx = anchors.findIndex((a) => a.id === id);
+      if (!vp || idx < 0) return;
+      escapeStickToBottom(vp);
+      vp.scrollTop = Math.round(
+        (vp.scrollHeight - vp.clientHeight) *
+          (idx / Math.max(anchors.length - 1, 1)),
+      );
+      window.setTimeout(() => {
+        const el2 = list?.querySelector(q);
+        if (el2) {
+          el2.scrollIntoView({ behavior: "smooth", block: "start" });
+          flash(el2);
+        }
+      }, 200);
+    },
+    [anchors, resolveViewport],
+  );
+
+  // 键盘导航（2026-09-11）：Alt+↑/↓ 上/下一轮、Alt+Home/End 首/末轮。三家 CLI
+  // 都有对应键位（codex Ctrl+U/D、gemini-cli ctrl+home/end），Web 侧扩展生态统一
+  // 补 Alt+↑/↓。只在侧栏打开时接管（与搜索的 Cmd+F 同一守卫口径）。
+  useEffect(() => {
+    if (anchors.length === 0) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+      const aside = document.querySelector("aside.copilotKitSidebar");
+      if (aside?.getAttribute("aria-hidden") !== "false") return;
+      // 尚未判定出当前轮（刚进会话还没滚过）→ 记 -1，让 ↓ 落到第一轮而不是第二
+      const at = anchors.findIndex((a) => a.id === activeId);
+      const cur = at < 0 ? -1 : at;
+      let target: string | undefined;
+      if (e.key === "ArrowDown") target = anchors[Math.min(cur + 1, anchors.length - 1)]?.id;
+      else if (e.key === "ArrowUp") target = anchors[Math.max(cur - 1, 0)]?.id;
+      else if (e.key === "Home") target = anchors[0]?.id;
+      else if (e.key === "End") target = anchors[anchors.length - 1]?.id;
+      else return;
+      if (!target) return;
+      e.preventDefault();
+      jump(target);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [anchors, activeId, jump]);
 
   const dotCls = useMemo(() => {
     const n = anchors.length;
@@ -256,7 +359,12 @@ export default function TurnLocator() {
         right: `${Math.max(window.innerWidth - region.right + 22, 0)}px`,
       }}
     >
-      <div className="group pointer-events-auto flex items-center justify-end">
+      <div
+        className="group pointer-events-auto flex items-center justify-end"
+        // 展开面板时把「正在读的那一轮」滚进面板可视区——长对话里高亮若在
+        // 面板外，scroll-sync 的意义就丢了一半（面板本身可滚）
+        onMouseEnter={() => activeRowRef.current?.scrollIntoView({ block: "nearest" })}
+      >
         {/* 标签面板：悬停/聚焦轨道时展开（juben 同款右贴边左展开）；
             ws-turn-panel-in = 右滑淡入入场（display 翻转时重放） */}
         <div className="ws-turn-panel-in mr-1.5 hidden max-h-[300px] w-52 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-1/95 py-2 shadow-lg backdrop-blur group-focus-within:flex group-hover:flex">
@@ -264,41 +372,52 @@ export default function TurnLocator() {
             对话轮次 · {anchors.length}
           </p>
           <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5">
-            {anchors.map((a, i) => (
-              <button
-                key={a.id}
-                type="button"
-                title={a.label}
-                data-track="chat.turnJump"
-                onClick={(e) => {
-                  jump(a.id);
-                  e.currentTarget.blur();
-                }}
-                className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-              >
-                <span className="min-w-0 truncate">{a.label}</span>
-                <span className="shrink-0 text-[10px] text-text-4">
-                  {i + 1}
-                </span>
-              </button>
-            ))}
+            {anchors.map((a, i) => {
+              const isActive = a.id === activeId;
+              return (
+                <button
+                  key={a.id}
+                  ref={isActive ? activeRowRef : undefined}
+                  type="button"
+                  title={a.label}
+                  data-track="chat.turnJump"
+                  data-active={isActive ? "1" : "0"}
+                  onClick={(e) => {
+                    jump(a.id);
+                    e.currentTarget.blur();
+                  }}
+                  className={`flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-surface-2 hover:text-text ${
+                    isActive ? "bg-surface-2 text-text" : "text-text-2"
+                  }`}
+                >
+                  <span className="min-w-0 truncate">{a.label}</span>
+                  <span className="shrink-0 text-[10px] text-text-4">
+                    {i + 1}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
-        {/* 圆点轨：末轮加宽 accent（最新一轮的视觉锚），悬停展宽+变 accent。
+        {/* 圆点轨：**当前阅读轮 = 实心 accent 加宽**（scroll-sync 的「我在哪」），
+            **最新一轮（非当前）= accent 空心环**（还没读到那里的「最新」标记）；
+            其余灰点。悬停展宽+变 accent。
             按钮 = 24px 宽 ×（点高+间距）的命中列，圆点是列内居中的 span
             ——此前按钮本体只有 10×4~6px，实际点不中（2026-09-09 review）。
-            宽度/透明度写在 inline style（E2E 按此断言末点形态），悬停态必须
+            宽度/透明度写在 inline style（E2E 按此断言圆点形态），悬停态必须
             用 `!` 后缀的工具类压过 inline——初版裸类 group-hover/dot:w-5 被
             inline width 永远压住，是从来没有生效过的死代码（2026-09-11） */}
         <div className="flex flex-col items-end justify-center py-1.5">
           {anchors.map((a, i) => {
             const last = i === anchors.length - 1;
+            const isActive = a.id === activeId;
             return (
               <button
                 key={a.id}
                 type="button"
                 aria-label={`跳到第 ${i + 1} 轮：${a.label}`}
                 data-track="chat.turnJump"
+                aria-current={isActive ? "true" : undefined}
                 onClick={(e) => {
                   jump(a.id);
                   pulse(e.currentTarget);
@@ -315,16 +434,29 @@ export default function TurnLocator() {
                     // 回弹曲线：10px 小点直线过渡没有手感，back-out 微过冲
                     "ease-[cubic-bezier(0.34,1.4,0.64,1)]",
                     "group-hover/dot:bg-accent! group-hover/dot:opacity-100!",
-                    // 悬停展宽按末点分档（两颗 ! 宽度类并存会靠样式表排序碰运气）
-                    last
-                      ? "ws-turn-dot-in group-hover/dot:w-6! group-focus-visible/dot:w-6!"
+                    // 入场动画只挂最新一点（锚点按 id keyed，新轮只在尾部挂载）
+                    last ? "ws-turn-dot-in" : "",
+                    // 悬停展宽分档：当前/最新点已宽（改 24），普通点 10 → 20
+                    // （两颗 ! 宽度类并存会靠样式表排序碰运气，故按档只挂一颗）
+                    isActive || last
+                      ? "group-hover/dot:w-6! group-focus-visible/dot:w-6!"
                       : "group-hover/dot:w-5! group-focus-visible/dot:w-5!",
                   ].join(" ")}
                   style={{
                     height: `${dotCls.h}px`,
-                    width: last ? 18 : 10,
-                    background: last ? "var(--color-accent)" : "var(--color-text-4)",
-                    opacity: last ? 1 : 0.55,
+                    // 当前轮最宽（位置锚）> 最新轮次之 > 普通点
+                    width: isActive ? 18 : last ? 14 : 10,
+                    background: isActive
+                      ? "var(--color-accent)"
+                      : last
+                        ? "transparent"
+                        : "var(--color-text-4)",
+                    // 最新轮的「空心环」：小点上用 inset 阴影比 border 稳
+                    boxShadow:
+                      last && !isActive
+                        ? "inset 0 0 0 2px var(--color-accent)"
+                        : undefined,
+                    opacity: isActive || last ? 1 : 0.55,
                   }}
                 />
               </button>
