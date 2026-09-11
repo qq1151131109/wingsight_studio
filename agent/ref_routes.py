@@ -79,6 +79,10 @@ async def api_start_batch_ref_research(pid: str, req: dict, user: auth.CurrentUs
                 "name": name[:60],
                 "type": str(a.get("type") or "character"),
                 "description": str(a.get("description") or "")[:600],
+                # 可选手填检索词（≤5）：给了就不跑文字考据（手填词同语义）
+                "queries": [
+                    str(q).strip() for q in (a.get("queries") or []) if str(q).strip()
+                ][:5],
             }
         )
     if not assets:

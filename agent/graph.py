@@ -900,7 +900,11 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
 
     Args:
         assets_json: 资产数组 JSON 文本，每个元素：
-            {"node_id":"画布节点id","name":"资产名","type":"character|scene|prop|costume","description":"设定描述（外形/朝代/材质越具体越好）"}
+            {"node_id":"画布节点id","name":"资产名","type":"character|scene|prop|costume","description":"设定描述（外形/朝代/材质越具体越好）","queries":["可选检索词"]}
+            queries 可选（≤5，缺省由出词 flow 按描述生成）：指定该资产的首轮搜索词。
+            **给了 queries 就不为它跑文字考据**（与面板手填词同语义）——所以只在
+            你已经有可靠的词时才给（如考证大纲里该时代的形制检索词），否则留空
+            让系统先出词+考据。
     """
     thread_id = ""
     if isinstance(config, dict):
@@ -934,6 +938,11 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
                 "name": name,
                 "type": str(a.get("type") or "character"),
                 "description": str(a.get("description") or ""),
+                # 可选检索词（≤5）：给了就用手填词搜图、不跑文字考据——考证大纲
+                # 的形制结论可以直接当搜索词喂进来（「文字定边界 → 图像做选择」）
+                "queries": [
+                    str(q).strip() for q in (a.get("queries") or []) if str(q).strip()
+                ][:5],
             }
         )
     if not parsed:
@@ -1324,10 +1333,12 @@ async def propose_research_outline(topics_json: str, config: RunnableConfig) -> 
     3. 只影响一张卡、且没有时代共性的 → 不必进大纲（**但它的参考图仍要走
        research_asset_references**——「不进大纲」不等于「不做考据」）。
 
-    **本工具只产文字考据**（主题事实 → 注入出图提示词），**不产参考图**：
-    参考图是资产级的另一条路，用 research_asset_references 单独发起（一次
-    带全部资产），**不受本大纲影响**。大纲跑完 ≠ 参考图有了——真实题材
-    两条都要走（091101 武则天项目事故：只跑大纲，全片没有一张实物参考）。
+    **本工具排的是主题计划；主题执行时文字与时代参考图一起产**：文字事实注入
+    提示词，参考池（该时代搜下来的一批实物参考）发给该主题的**全部成员卡**——
+    同框角色的形制因此同源。**资产自己的参考图仍是另一条路**：用
+    research_asset_references 单独发起（一次带全部资产，管「这个角色长什么样」）。
+    大纲跑完 ≠ 每个资产的参考图有了——真实题材两条都要走（091101 武则天项目
+    事故：只跑大纲，全片没有一张实物参考）。
 
     整份替换语义：每次提交的都是项目当前完整的计划，不要只提交增量。切完把
     大纲讲给用户听（哪几个主题、分别服务哪些卡、先做哪个），用户确认后再
@@ -1387,9 +1398,15 @@ async def run_research_outline(topic_keys_json: str, config: RunnableConfig) -> 
     自动带上所属主题的考据依据。切主题之前先 `list_research_library` 看一眼
     库里有什么——库里已有的主体直接用 import_research 引用，不必立主题重搜。
 
-    **执行完只补齐了文字考据——参考图不在本工具职责内**（大纲不产图）：
-    返回后确认参考图那一路也已发起（research_asset_references，一次带全部
-    资产），没有就补上一次再做出图。
+    **主题执行会同时产出两样东西**：① 该时代的**文字事实**（注入成员资产的出图
+    提示词）；② 该时代的**实物参考池**——用主题检索词搜图 → 下载 → 模型终选，
+    归档进主题图集、**服务该主题的全部成员卡**（同一批实物参考发给所有成员，
+    这是「十二个大臣戏里同框、官服形制却各挑各的互斥」的解法）。因此比只跑文字
+    贵：每个主题约 3 次搜索 + 最多 12 张候选下载 + 1 次选图模型调用；已有图集的
+    主题不重搜（幂等）。汇报时如实说清这个量级，别让用户以为是纯文字。
+    **资产级参考图仍要单独发起**（research_asset_references）：主题图集是时代
+    共性参考（形制、陈设、妆容），「这个角色长什么样」（选角、脸）得按资产搜——
+    两条不是替代关系，别互相顶替。
 
     Args:
         topic_keys_json: 要执行的主题名数组 JSON（如 ["北魏早期服制"]）；

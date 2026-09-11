@@ -346,6 +346,105 @@ expect(out == shot_topic, "已带考据依据应原样放行（主题考据也�
 expect(calls.count("补子") == 0, f"主题已覆盖的资产不该再搜：{calls}")
 
 skills._research_brief_for = orig_brief_for
+
+# ---------- T. 主题图集（时代参考池）：第三来源进参考序列 ----------
+# 同框一致的落点：跑过考证大纲的项目，成员卡出图时带上该主题的实物参考池。
+TP = "p-topic-album"
+skills.DB_PATH = imgresearch.DB_PATH
+seed_canvas(
+    TP,
+    [
+        {"id": "t_a", "data": {"nodeType": "costume", "title": "三品官服"}},
+        {"id": "t_b", "data": {"nodeType": "costume", "title": "五品官服"}},
+    ],
+    {"era": "唐·武周"},
+)
+imgresearch.replace_topics(
+    TP, [{"title": "唐制官服品级", "queries": ["唐 官服 品级"], "nodeIds": ["t_a", "t_b"]}]
+)
+imgresearch.upsert_entry(
+    TP,
+    body="唐制：三品以上服紫，五品浅绯。",
+    asset_name="唐制官服品级",
+    asset_type="topic",
+    era="唐·武周",
+    topic_key="唐制官服品级",
+)
+_tskey = imgresearch.topic_subject("唐·武周", TP, "唐制官服品级")
+imgresearch.add_subject_refs(
+    "唐·武周",
+    _tskey,
+    [
+        {"assetUrl": "/agent-service/assets/topic1.png", "title": "唐官服实物一"},
+        {"assetUrl": "/agent-service/assets/topic2.png", "title": "唐官服实物二"},
+    ],
+)
+
+# T1. 只跑过大纲的卡：参考序列来自主题图集，标签写明「时代参考」
+out = skills._inject_canvas_refs([{"rid": "t_a", "name": "三品官服", "assetType": "costume"}], TP)
+imgs = out[0].get("reference_images") or []
+expect(imgs == ["/agent-service/assets/topic1.png", "/agent-service/assets/topic2.png"],
+       f"主题图集应进参考序列：{imgs}")
+expect("时代参考" in out[0]["reference_labels"][0]["name"],
+       f"标签应写明时代参考（不是当成本卡自己的图）：{out[0]['reference_labels']}")
+expect(all(l["type"] == "reference" for l in out[0]["reference_labels"]), "职责类型应为考据参考")
+
+# T2. 未被主题覆盖的卡不沾时代参考（不能无差别发）
+out_other = skills._inject_canvas_refs(
+    [{"rid": "t_x", "name": "无关角色", "assetType": "character"}], TP
+)
+expect(not (out_other[0].get("reference_images") or []), f"非成员卡不该有时代参考：{out_other[0]}")
+
+# T3. 席位优先级：本项目参考卡 > 自身主体图集 > 主题图集（上限 4 张）
+_conn = sqlite3.connect(str(imgresearch.DB_PATH))
+# 本测试早期的 seed_canvas 建的是三列表；连线判定要 edges，补列（不重建，避免
+# 抹掉前面几组已经写进去的画布）
+if "edges" not in {r[1] for r in _conn.execute("PRAGMA table_info(canvases)")}:
+    _conn.execute("ALTER TABLE canvases ADD COLUMN edges TEXT NOT NULL DEFAULT '[]'")
+_conn.execute(
+    "UPDATE canvases SET nodes = ?, edges = ? WHERE project_id = ?",
+    (
+        json.dumps(
+            [
+                {"id": "t_a", "data": {"nodeType": "costume", "title": "三品官服"}},
+                {"id": "t_b", "data": {"nodeType": "costume", "title": "五品官服"}},
+                {"id": "ref_card", "data": {"nodeType": "image", "title": "本项目采纳图",
+                                            "imageUrl": "/agent-service/assets/own1.png",
+                                            "refSource": "research"}},
+            ],
+            ensure_ascii=False,
+        ),
+        json.dumps([{"source": "ref_card", "target": "t_a"}], ensure_ascii=False),
+        TP,
+    ),
+)
+_conn.commit()
+_conn.close()
+imgresearch.upsert_entry(
+    TP, body="三品官服本卡考据：紫袍金玉带。", node_id="t_a",
+    asset_name="三品官服", asset_type="costume", era="唐·武周",
+)
+_askey = imgresearch.asset_subject("唐·武周", TP, "三品官服")
+imgresearch.add_subject_refs(
+    "唐·武周", _askey, [{"assetUrl": "/agent-service/assets/self1.png", "title": "本主体图"}]
+)
+out3 = skills._inject_canvas_refs([{"rid": "t_a", "name": "三品官服", "assetType": "costume"}], TP)
+imgs3 = out3[0].get("reference_images") or []
+expect(imgs3[0] == "/agent-service/assets/own1.png", f"本项目参考卡应占首位：{imgs3}")
+expect(imgs3[1] == "/agent-service/assets/self1.png", f"自身主体图集次之：{imgs3}")
+expect(imgs3[2:] == ["/agent-service/assets/topic1.png", "/agent-service/assets/topic2.png"],
+       f"主题图集补剩余席位：{imgs3}")
+expect(len(imgs3) == 4, f"总数不超席位上限：{imgs3}")
+
+# T4. 席位打满时主题图集让位（不越上限）
+imgresearch.add_subject_refs(
+    "唐·武周", _askey,
+    [{"assetUrl": f"/agent-service/assets/self{i}.png"} for i in range(2, 5)],
+)
+out4 = skills._inject_canvas_refs([{"rid": "t_a", "name": "三品官服", "assetType": "costume"}], TP)
+imgs4 = out4[0].get("reference_images") or []
+expect(len(imgs4) == 4, f"上限 4：{imgs4}")
+expect(not any("topic" in u for u in imgs4), f"自身来源已打满时主题图集不挤进来：{imgs4}")
 skills._BRIEF_CACHE.clear()
 
 # R. 端到端：start_storyboard_image_job 把简报注入到真正送出的出图载荷

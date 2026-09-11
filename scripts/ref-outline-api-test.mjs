@@ -60,12 +60,13 @@ const check = (name, ok, detail = "") => {
 // 否则 fixture 会与真实项目的主体同名同域——既覆盖别人的事实，
 // 清理时还会按 project_id 把共用的那条一起删掉。
 const ERA = `e2e-era-${Date.now().toString(36)}`;
+const PID_NAME = `e2e-ref-api-${Date.now().toString(36)}`;
 const REF_URL = "/agent-service/assets/e2e00000api1.png";
 
 const { body: proj } = await api("/projects", {
   method: "POST",
   headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ name: `e2e-ref-api-${Date.now()}` }),
+  body: JSON.stringify({ name: PID_NAME }),
 });
 const pid = proj.id ?? proj.project?.id;
 
@@ -190,7 +191,10 @@ check("C5 被移出大纲的主题不再分发（uncovered 增加）",
   (replaced.body?.uncovered ?? []).length === 2,
   JSON.stringify(replaced.body?.uncovered?.map((a) => a.title)));
 
-// ---------- D. 执行端点的参数校验（不真跑：本机 Serper 号池为空） ----------
+// ---------- D. 执行端点的参数校验（走库命中路径：零搜索，不烧额度） ----------
+// 主题执行现在会连带搜该时代的实物参考池，所以这里**不能**让它真跑：先用另一个
+// 项目在同 era 下落一条主题事实，执行就命中库（status=reused）——既验证了「显式
+// 点名被接受」，又验证了复用路径，且一次网络调用都不发。
 const unknown = await api(`/projects/${pid}/refs/outline/run`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
@@ -199,15 +203,35 @@ const unknown = await api(`/projects/${pid}/refs/outline/run`, {
 check("D1 未知主题 → 400 并列出现有主题",
   unknown.status === 400 && String(unknown.body).includes("北魏早期服制"),
   String(unknown.body).slice(0, 120));
+const { body: proj2 } = await api("/projects", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ name: `${PID_NAME}-src` }),
+});
+const pid2 = proj2.id ?? proj2.project?.id;
+py(`
+import imgresearch as ir
+ir.upsert_entry(${JSON.stringify(pid2)}, body="北魏早期服制：窄袖交领左衽，鲜卑辫发。",
+                asset_name="北魏早期服制", asset_type="topic", era=${JSON.stringify(ERA)},
+                topic_key="北魏早期服制")
+`);
 const dup = await api(`/projects/${pid}/refs/outline/run`, {
   method: "POST",
   headers: { "Content-Type": "application/json" },
   body: JSON.stringify({ topicKeys: ["北魏早期服制"] }),
 });
-// 该主题已有条目，但 run 只跳过 done 状态；此处主题已 done 之外还会跑 → 允许启动
-check("D2 执行端点接受合法主题（返回 started）",
-  dup.status === 200 && Array.isArray(dup.body?.started),
+check("D2 显式点名合法主题 → 202/200 且返回 started",
+  dup.status === 200 && Array.isArray(dup.body?.started) && dup.body.started.includes("北魏早期服制"),
   `status=${dup.status} started=${JSON.stringify(dup.body?.started)}`);
+await new Promise((r) => setTimeout(r, 2500));
+const { body: afterRun } = await api(`/projects/${pid}/refs/outline`);
+const ranTopic = (afterRun.topics ?? []).find((t) => t.topicKey === "北魏早期服制");
+check("D2b 命中同题材库：标 reused 且零搜索（不烧额度）",
+  String(ranTopic?.status) === "reused",
+  JSON.stringify({ status: ranTopic?.status, from: ranTopic?.reusedFrom }));
+check("D2c 大纲主题带图集张数字段（产物可见）",
+  typeof ranTopic?.refCount === "number",
+  `refCount=${ranTopic?.refCount}`);
 
 // ---------- E. 取消采纳（删参考卡 = 这张参考不要了） ----------
 const cands0 = await api(`/projects/${pid}/refs/candidates?nodeId=N_FENG`);
@@ -238,6 +262,7 @@ check("E4 缺参数 → 400", badUn.status === 400, `status=${badUn.status}`);
 
 // ---------- 清理 ----------
 await api(`/projects/${pid}`, { method: "DELETE" });
+await api(`/projects/${pid2}`, { method: "DELETE" });
 py(`
 import sqlite3, imgresearch as ir
 db = sqlite3.connect(str(ir.DB_PATH))

@@ -1402,12 +1402,14 @@ def _inject_canvas_refs(
     上限（各模型最小 4）。命中顺序 rid → rid 去「#序号」→ 资产名（聊天载荷
     没有 rid），与 _inject_research_briefs 同口径。空项目原样放行。
 
-    两个来源有优先级：**本项目自己采纳的参考卡在前**（那是为本项目这套设定挑的
-    图），**主体图集补剩余席位**（同一主体的历史考据图，可能来自别的项目）——
-    图集标签写明「复用《X》」，让模型和用户都看得出这张图是从哪来的判断。"""
+    三个来源有优先级：**本项目自己采纳的参考卡在前**（那是为本项目这套设定挑的
+    图）→ **主体图集**（同一主体的历史考据图，可能来自别的项目）→ **服务该卡的
+    主题图集**（时代参考池，同框一致靠它）。图集标签写明出处（「复用《X》」/
+    「时代参考」），让模型和用户都看得出这张图是从哪来的判断。"""
     refs_by_node, id_by_title = _canvas_ref_cards(project_id)
     e_by_id, e_by_name, _ = _entry_index(project_id)
-    if not refs_by_node and not e_by_id and not e_by_name:
+    t_album = _topic_album_refs(project_id)
+    if not refs_by_node and not e_by_id and not e_by_name and not t_album:
         return shots
     out: List[Dict[str, Any]] = []
     for s in shots:
@@ -1423,7 +1425,7 @@ def _inject_canvas_refs(
             name = str(s.get("name") or "").strip()
             node_id = ""
             for cand in (rid, base):
-                if cand and (cand in refs_by_node or cand in e_by_id):
+                if cand and (cand in refs_by_node or cand in e_by_id or cand in t_album):
                     node_id = cand
                     break
             if not node_id:
@@ -1431,24 +1433,32 @@ def _inject_canvas_refs(
             rec = e_by_id.get(node_id) or e_by_name.get(name) or {}
             album = rec.get("album") or []
             bucket = list(refs_by_node.get(node_id) or [])
-            if bucket or album:
-                seen_urls = {u for u, _t, _n in bucket}
-                label_name = str(rec.get("assetName") or name or "参考")
-                src = str(rec.get("source") or "")
-                for r in album:
+            seen_urls = {u for u, _t, _n in bucket}
+
+            def _fill(rows: List[tuple]) -> None:
+                for url, ltype, label in rows:
                     if len(bucket) >= _MAX_REF_IMAGES:
-                        break
-                    url = str(r.get("url") or "")
+                        return
                     if not url or url in seen_urls:
                         continue
                     seen_urls.add(url)
-                    bucket.append(
+                    bucket.append((url, ltype, label))
+
+            if album:
+                label_name = str(rec.get("assetName") or name or "参考")
+                src = str(rec.get("source") or "")
+                _fill(
+                    [
                         (
-                            url,
+                            str(r.get("url") or ""),
                             "reference",
                             f"{label_name}（{'复用《' + src + '》' if src else '主体图集'}）",
                         )
-                    )
+                        for r in album
+                    ]
+                )
+            if t_album.get(node_id):
+                _fill(t_album[node_id])
             if bucket:
                 out.append(_attach_refs(s, bucket))
                 continue
@@ -1472,6 +1482,63 @@ def _topic_briefs(
         return imgresearch.topic_briefs(project_id)
     except Exception:
         return {}, {}
+
+
+def _topic_album_refs(
+    project_id: str,
+) -> Dict[str, List[tuple]]:
+    """卡片节点 id → 服务它的主题图集参考 [(url, 'reference', 标签), …]。
+
+    **同框一致的机械基础**：主题图集是时代级实物参考池（主题执行时按主题检索词
+    搜下来，见 `imgresearch._topic_images`），按「服务哪些卡」分发——同一时代的
+    成员资产因此带上同一批实物参考，而不是各搜各的挑回形制互斥的图（十二个大臣
+    在剧本里还要同框）。标签写明时代与出处，模型与用户都看得见这是哪来的依据。"""
+    if not project_id:
+        return {}
+    try:
+        import imgresearch
+
+        serving = imgresearch.topic_serving(project_id)
+        if not serving:
+            return {}
+        keys: List[str] = []
+        for recs in serving.values():
+            for r in recs:
+                skey = str(r.get("subjectKey") or "")
+                if skey:
+                    keys.append(skey)
+        album = imgresearch.subject_refs(keys, _project_era(project_id))
+    except Exception:
+        return {}
+    names: Dict[str, str] = {}
+    out: Dict[str, List[tuple]] = {}
+    for node_id, recs in serving.items():
+        bucket: List[tuple] = []
+        seen: set[str] = set()
+        for r in recs:
+            skey = str(r.get("subjectKey") or "")
+            src_pid = str(r.get("source") or "")
+            if src_pid and src_pid != project_id:
+                if src_pid not in names:
+                    names[src_pid] = _project_name_of(src_pid) or "同题材项目"
+                src = f"复用《{names[src_pid]}》"
+            else:
+                src = "本项目"
+            for ref in album.get(skey, []):
+                url = str(ref.get("url") or "")
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                bucket.append(
+                    (
+                        url,
+                        "reference",
+                        f"{r.get('title') or '时代参考'}（时代参考·{src}）",
+                    )
+                )
+        if bucket:
+            out[node_id] = bucket
+    return out
 
 
 def _inject_research_briefs(

@@ -1457,13 +1457,18 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
     covered_nodes: list[str] = []
     done = 0
     produced_by: dict[str, str] = {}
+    # 主题图集张数（一次批量取）：大纲卡上「这个主题除了文字还有几张实物参考」
+    all_topics = list_topics(project_id)
+    topic_albums = subject_refs(
+        [topic_subject(era, project_id, t["topicKey"]) for t in all_topics], era
+    )
 
     def _produced_by(pid: str) -> str:
         if pid not in produced_by:
             produced_by[pid] = _project_scope(pid)[0] or "同题材项目"
         return produced_by[pid]
 
-    for t in list_topics(project_id):
+    for t in all_topics:
         entry = topic_entry(project_id, t["topicKey"])
         if entry:
             done += 1
@@ -1489,8 +1494,10 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
                 "error": f"失败：{t['error'] or '未知原因'}",
             }.get(t["status"], t["status"])
         lines.append("")
+        n_figs = len(topic_albums.get(topic_subject(era, project_id, t["topicKey"]), []))
         lines.append(
-            f"■ {t['title']}（服务 {len(serves)} 张卡 · {status_label}）"
+            f"■ {t['title']}（服务 {len(serves)} 张卡 · {status_label}"
+            f"{f' · 图 {n_figs} 张' if n_figs else ''}）"
         )
         if t["rationale"]:
             lines.append(f"  为什么：{t['rationale']}")
@@ -1512,7 +1519,17 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
                     if d not in seen:
                         seen.append(d)
                 lines.append("  —— 来源：" + "、".join(seen[:6]))
-        topics_out.append({**t, "serves": serves, "entry": entry})
+        topics_out.append(
+            {
+                **t,
+                "serves": serves,
+                "entry": entry,
+                # 主题图集张数（时代参考池）——出图时按服务范围分发给成员资产
+                "refCount": len(
+                    topic_albums.get(topic_subject(era, project_id, t["topicKey"]), [])
+                ),
+            }
+        )
     return {
         "era": era,
         "topics": topics_out,
@@ -1523,11 +1540,56 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
     }
 
 
+def topic_serving(project_id: str) -> dict[str, list[dict[str, Any]]]:
+    """卡片节点 id → 服务它的主题主体记录（标题/主体键/era/产出项目）。
+
+    主题图集按「服务哪些卡」分发到成员资产——这是**时代参考池**的作用机制：
+    `topic_briefs` 只带标题与事实正文（提示词用），这里带主体记录，
+    出图参考序列才能按主体键取到该主题的图集（同框一致的机械基础）。"""
+    out: dict[str, list[dict[str, Any]]] = {}
+    if not project_id:
+        return out
+    for t in list_topics(project_id):
+        entry = topic_entry(project_id, t["topicKey"])
+        if not entry:
+            continue
+        rec = {
+            "title": t["title"],
+            "entryId": str(entry.get("id") or ""),
+            "subjectKey": str(entry.get("subjectKey") or ""),
+            "era": str(entry.get("era") or ""),
+            "source": str(entry.get("projectId") or ""),
+        }
+        for nid in t["nodeIds"]:
+            out.setdefault(str(nid), []).append(rec)
+    return out
+
+
 def lookup_topic_entry(era: str, topic_key: str) -> dict[str, Any] | None:
     """库检索：同 era 同主题键的主体事实（别的项目已经考据过同一件事）。
 
     严格按主题键相等——主题键是标题归一，同键即同一件事。era 为空不进库。"""
     return lookup_subject(era, "topic", str(topic_key or "").strip())
+
+
+def _select_brief(
+    project_id: str, node_id: str, asset_name: str, brief: str
+) -> str:
+    """终选用考据 = 本资产简报 + 服务它的时代主题事实（与出图注入同口径）。
+
+    「文字定边界 → 图像做选择」要成立，挑图的模型必须同时看见两层边界：**这个
+    资产是什么**（自己的简报）与**这个时代什么形制才对**（它所属主题的事实）。
+    只给前者，模型只能判「像不像」，判不了「这个形制对不对时代」——同一批候选里
+    错年代的照样会被选中。合成口径与 `skills._inject_research_briefs`、报告卡
+    `cardBriefs` 三处同源（卡上显示的 = 挑图依据 = 出图发出去的）。"""
+    parts = [str(brief or "").strip()]
+    try:
+        t_by_node, t_by_name = topic_briefs(project_id)
+        for item in t_by_node.get(node_id) or t_by_name.get(str(asset_name or "").strip()) or []:
+            parts.append(f"〈{item[0]}〉{item[1]}")
+    except Exception:  # noqa: BLE001 主题读不到不影响本资产简报
+        pass
+    return "；".join(p for p in parts if p)
 
 
 async def _run_topic(
@@ -1604,12 +1666,104 @@ async def _run_topic(
                 topic_key=topic_key,
                 sources=sources,
             )
+            # 主题图路：时代级实物参考池（软失败，不拦文字产物）
+            await _topic_images(project_id, topic, era, queries, errors)
             _topic_status(
                 project_id, topic_key, "done", error="；".join(errors.values())[:160]
             )
         except Exception as exc:  # noqa: BLE001 单主题失败不中断整批
             print(f"[大纲] 主题执行失败 {project_id}/{topic_key}：{str(exc)[:160]}", flush=True)
             _topic_status(project_id, topic_key, "error", error=str(exc)[:160])
+
+
+# 主题图集保留张数：一张卡的参考席上限 4，池子留余量给不同卡的不同侧重
+TOPIC_REF_KEEP = 6
+# 主题图的候选上限（进终选的张数）：比单资产调研小一个量级——主题图是
+# 「同一时代一套参考」，不需要穷举；每批 50 张一次终选，别把额度烧在长尾上
+TOPIC_CANDIDATE_CAP = 12
+
+
+async def _topic_images(
+    project_id: str,
+    topic: dict[str, Any],
+    era: str,
+    queries: list[str],
+    errors: dict[str, str],
+) -> int:
+    """主题级图路：主题检索词 → 搜图 → 下载 → 终选 → 归档进主题主体图集。
+
+    这是**同框一致的机制落点**：主题图集挂在主题主体上、按「服务哪些卡」分发，
+    同一时代的成员资产出图时带上同一批实物参考——旧流程按资产各搜一遍，十二个
+    大臣会各自挑回形制互斥的官服（剧本里他们还要同框）。已有图集的主题不重搜
+    （幂等；要换图走资产级调研或「找参考图」面板改选）。
+
+    全程软失败：搜索/下载/终选任一步失败只记 errors，不拦文字产物。"""
+    import skills
+
+    skey = topic_subject(era, project_id, str(topic["topicKey"]))
+    if subject_refs([skey], era).get(skey):
+        return 0
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for q in queries[: _MAX_TEXT_QUERIES]:
+        items = await _guarded(search_serper_images(q), "google", errors)
+        for item in items:
+            key = _dedupe_key(item["sourceUrl"])
+            if key in seen:
+                continue
+            seen.add(key)
+            item["query"] = q
+            rows.append(item)
+        await asyncio.sleep(0.3)  # 查询间隔：号池在并发主题间轮转
+    if not rows:
+        return 0
+    rows = rows[:TOPIC_CANDIDATE_CAP]
+    dl_errors: list[str] = []
+
+    async def _fetch(item: dict[str, Any]) -> None:
+        async with _GLOBAL_DOWNLOAD_SEM:
+            try:
+                item["assetUrl"] = await download_image(
+                    item["sourceUrl"], item.get("pageUrl") or ""
+                )
+            except Exception as exc:  # noqa: BLE001 单张失败留痕不入库
+                dl_errors.append(f"{item.get('title') or item['sourceUrl']}：{str(exc)[:60]}")
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*[_fetch(item) for item in rows]), timeout=150.0
+        )
+    except (asyncio.TimeoutError, TimeoutError):
+        dl_errors.append("整体下载超时，仅保留已完成部分")
+    if dl_errors:
+        errors["主题下载"] = "；".join(dl_errors[:3])
+    kept = [r for r in rows if r.get("assetUrl")]
+    if not kept:
+        return 0
+    picks = kept[:TOPIC_REF_KEEP]
+    try:
+        entry = topic_entry(project_id, topic["topicKey"])
+        selection = await skills.run_ref_select_flow(
+            {
+                "name": str(topic["title"]),
+                "type": "topic",
+                "description": str(topic.get("rationale") or topic["title"]),
+                "research_brief": str((entry or {}).get("body") or ""),
+            },
+            _select_payload(kept),
+        )
+        rec: list[int] = []
+        for raw in selection.get("recommended") or []:
+            try:
+                rec.append(int(raw))
+            except (TypeError, ValueError):
+                continue
+        chosen = [kept[i] for i in rec if 0 <= i < len(kept)]
+        # 模型没给推荐也别把已下好的图扔了（钱已经花过）——按搜索序取前 K
+        picks = (chosen or kept)[:TOPIC_REF_KEEP]
+    except Exception as exc:  # noqa: BLE001 终选失败不拦归档
+        errors["主题终选"] = str(exc)[:160]
+    return add_subject_refs(era, skey, picks)
 
 
 def run_topics(project_id: str, topic_keys: list[str] | None = None) -> list[str]:
@@ -2078,10 +2232,13 @@ async def _run_batch(
             try:
                 if attempt == 1 and jitter_max > 0:
                     await asyncio.sleep(random.uniform(0, jitter_max))
+                # 手填/主题检索词逐资产透传（空 = AI 出词）。给了词就不跑文路
+                # ——与前端单资产面板的「手填词」同语义：用户/agent 亲自掌舵搜图，
+                # 不替它先搜一轮文字（见 _run_research 的 manual 分支）
                 job_id = start_research_job(
                     project_id,
                     node_id,
-                    [],
+                    [str(q) for q in (a.get("queries") or []) if str(q).strip()],
                     {
                         "name": name,
                         "type": str(a.get("type") or "character"),
@@ -2332,10 +2489,21 @@ async def _run_research(
             except Exception as exc:  # noqa: BLE001 落库失败不拦出图链路
                 print(f"[考据] 条目落库失败 {project_id}/{node_id}：{exc}", flush=True)
                 errors["条目落库"] = str(exc)[:120]
-        # LLM 终选（失败只记 errors，不影响候选展示与人工采纳）；带考据简报
-        # 挑图——文字考据纠正选图（错年代/错形制的候选降权）
+        # LLM 终选（失败只记 errors，不影响候选展示与人工采纳）；带考据挑图——
+        # 文字考据纠正选图（错年代/错形制的候选降权）。**时代主题事实也在这时
+        # 上场**：同一资产既属于自己（具名个体），也属于它所在时代的若干主题，
+        # 「文字定边界 → 图像做选择」要成立就得让挑图的模型同时看见两层边界，
+        # 否则它只能按单资产简报判「像不像」，判不了「这个形制对不对时代」
+        # （合成口径与出图注入、报告卡 cardBriefs 三处同源）
         try:
-            select_asset = ({**asset, "research_brief": brief} if brief else asset)
+            brief_for_select = _select_brief(
+                project_id, node_id, str(asset.get("name") or ""), brief
+            )
+            select_asset = (
+                {**asset, "research_brief": brief_for_select}
+                if brief_for_select
+                else asset
+            )
             selection = await skills.run_ref_select_flow(select_asset, _select_payload(rows))
             _apply_recommendation(project_id, node_id, rows, selection)
             job["note"] = selection.get("note") or ""

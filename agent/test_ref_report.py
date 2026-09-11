@@ -515,4 +515,178 @@ expect(imgresearch.unadopt_candidates(PID, "n_feng", []) == imgresearch.list_can
        "空 ids 应原样返回候选列表")
 expect(imgresearch.unadopt_candidates(PID, "", ["x"]) == [], "空 node_id 返回空列表（不炸）")
 
+# ---------- M. 主题图路：时代参考池（同框一致的机制） ----------
+# 主题执行 = 文字事实 + 该时代的实物参考池：主题图集按「服务哪些卡」分发，
+# 同一时代的多张卡出图带上同一批实物参考（旧流程各搜各的 → 形制互斥）。
+MP = "p-topic-refs"
+seed_project(MP, "主题图路项目")
+seed_canvas(
+    MP,
+    [
+        {"id": "m_a", "data": {"nodeType": "costume", "title": "三品官服"}},
+        {"id": "m_b", "data": {"nodeType": "costume", "title": "五品官服"}},
+        {"id": "m_c", "data": {"nodeType": "character", "title": "无关角色"}},
+    ],
+    {"era": "唐·武周"},
+)
+imgresearch.replace_topics(
+    MP,
+    [
+        {"title": "唐制官服品级", "rationale": "形制按品级分色", "queries": ["唐 官服 品级"], "nodeIds": ["m_a", "m_b"]},
+        {"title": "不重搜的主题", "queries": ["x"], "nodeIds": ["m_c"]},
+    ],
+)
+
+# M1. 未执行的主题没有事实 → 没有可分发的参考（空表，不是「服务了但没图」）
+expect(
+    imgresearch.topic_serving(MP) == {},
+    "未执行的主题不进服务索引（无事实即无产物）",
+)
+expect(imgresearch.topic_serving("p-no-such") == {}, "未知项目空表")
+
+
+# M2. 主题图路：搜→下→终选→归档（mock 掉网络与选图模型）
+async def _fake_search(q, limit=10):
+    return [
+        {"provider": "google", "title": f"{q}-图1", "sourceUrl": f"http://ex.com/{q}1.jpg",
+         "pageUrl": "http://ex.com/p1", "sourceDomain": "ex.com", "width": 900, "height": 1200},
+        {"provider": "google", "title": f"{q}-图2", "sourceUrl": f"http://ex.com/{q}2.jpg",
+         "pageUrl": "http://ex.com/p2", "sourceDomain": "ex.com", "width": 800, "height": 1000},
+    ]
+
+
+async def _fake_select(asset, candidates):
+    # 形制判据的来源（考据正文）必须进了终选载荷
+    assert "唐制" in str(asset.get("research_brief") or ""), asset
+    assert len(candidates) == 2, candidates
+    return {"recommended": [1], "note": "mock"}
+
+
+_orig_search = imgresearch.search_serper_images
+_orig_dl = imgresearch.download_image
+_orig_text = imgresearch._run_text_research
+import skills as _skills_mod
+
+_orig_select_fn = _skills_mod.run_ref_select_flow
+
+
+async def _fake_dl(url, referer=""):
+    return f"/agent-service/assets/{Path(url).stem}.jpg"
+
+
+async def _fake_text(asset, queries, errors):
+    return "唐制：三品以上服紫，五品浅绯。", [
+        {"title": "唐会要", "url": "http://ex.com/t", "domain": "ex.com"}
+    ]
+
+
+imgresearch.search_serper_images = _fake_search
+imgresearch.download_image = _fake_dl
+imgresearch._run_text_research = _fake_text
+_skills_mod.run_ref_select_flow = _fake_select
+try:
+    asyncio.run(imgresearch._run_topic(MP, "唐制官服品级", asyncio.Semaphore(1)))
+finally:
+    imgresearch.search_serper_images = _orig_search
+    imgresearch.download_image = _orig_dl
+    imgresearch._run_text_research = _orig_text
+    _skills_mod.run_ref_select_flow = _orig_select_fn
+
+_tkey = imgresearch.topic_subject("唐·武周", MP, "唐制官服品级")
+_album = imgresearch.subject_refs([_tkey], "唐·武周").get(_tkey, [])
+expect(len(_album) == 1, f"终选推荐的 1 张应进主题图集：{_album}")
+expect("品级2.jpg" in _album[0]["url"], f"应取模型推荐的那张（index=1，即 -图2）：{_album[0]}")
+expect(_album[0]["title"] == "唐 官服 品级-图2", f"图集应保留标题与来源：{_album[0]}")
+expect(imgresearch.topic_entry(MP, "唐制官服品级") is not None, "文字与图集同一次执行产出")
+
+# M2b. 服务范围反查：主题事实就位后，成员卡各带主体键（图集按它分发）
+_srv = imgresearch.topic_serving(MP)
+expect(set(_srv.keys()) == {"m_a", "m_b"}, f"只服务该主题声明的卡：{set(_srv.keys())}")
+expect(
+    _srv["m_a"][0]["subjectKey"] == _tkey and _srv["m_b"][0]["subjectKey"] == _tkey,
+    f"两卡指向同一主体（同一批时代参考）：{_srv}",
+)
+
+# M3. 已有图集不重搜（幂等）：搜索换成抛错探针，重跑不应再搜
+async def _boom(*_a, **_k):
+    raise AssertionError("已有图集不该重搜")
+
+
+imgresearch.search_serper_images = _boom
+try:
+    asyncio.run(imgresearch._run_topic(MP, "唐制官服品级", asyncio.Semaphore(1), force=True))
+finally:
+    imgresearch.search_serper_images = _orig_search
+expect(
+    len(imgresearch.subject_refs([_tkey], "唐·武周").get(_tkey, [])) == 1,
+    "重跑不重复归档",
+)
+
+# M4. 大纲视图带上图集张数（产物可见）
+_out = imgresearch.build_outline(MP)
+_t = next(x for x in _out["topics"] if x["topicKey"] == "唐制官服品级")
+expect(_t["refCount"] == 1, f"大纲主题应带图集张数：{_t['refCount']}")
+expect("图 1 张" in "\n".join(_out["lines"]), f"大纲行应显示图张数：{_out['lines']}")
+_ob = imgresearch.build_outline_report(MP)
+expect(_ob["topics"][0]["refCount"] == 1, "大纲卡视图同口径")
+
+# M5. 终选合成口径：本资产简报 + 服务它的时代主题事实（与出图注入同源）
+_sb = imgresearch._select_brief(MP, "m_a", "三品官服", "本资产：三品以上佩金玉带。")
+expect("本资产：三品以上佩金玉带" in _sb, f"本资产简报在前：{_sb}")
+expect("〈唐制官服品级〉" in _sb and "三品以上服紫" in _sb, f"应追加时代主题事实：{_sb}")
+expect(
+    imgresearch._select_brief(MP, "m_c", "无关角色", "本资产：某角色") == "本资产：某角色",
+    "不被主题覆盖的资产不带主题事实",
+)
+_only_topic = imgresearch._select_brief(MP, "m_a", "三品官服", "")
+expect(_only_topic.startswith("〈唐制官服品级〉") and "三品以上服紫" in _only_topic,
+       f"没有自身简报时主题事实独撑（边界仍可见）：{_only_topic!r}")
+
+# M6. 逐资产检索词透传（手填/主题词 → 该资产的图路首轮词）
+_batch = {}
+_orig_start = imgresearch.start_research_job
+
+
+def _fake_start(project_id, node_id, queries, asset=None):
+    _batch[node_id] = list(queries)
+    return "job-fake"
+
+
+imgresearch.start_research_job = _fake_start
+_assets = [
+    {"nodeId": "m_a", "name": "三品官服", "type": "costume", "description": "d", "queries": ["唐 三品 官服"]},
+    {"nodeId": "m_c", "name": "无关角色", "type": "character", "description": "d"},
+]
+# 照 start_batch_research 的注册形态造 job 档案（_run_batch 读 BATCH_JOBS）
+imgresearch.BATCH_JOBS["batch-x"] = {
+    "batchId": "batch-x",
+    "projectId": MP,
+    "status": "running",
+    "total": len(_assets),
+    "done": 0,
+    "current": "三品官服",
+    "items": [
+        {"nodeId": a["nodeId"], "name": a["name"], "status": "pending", "error": ""}
+        for a in _assets
+    ],
+}
+# 假任务立即终态（真 poll 循环会一直等 REF_JOBS 里的 "job-fake"）
+_orig_get = imgresearch.REF_JOBS.get
+
+
+class _Done(dict):
+    def get(self, k, d=None):
+        return "done" if k == "status" else super().get(k, d)
+
+
+imgresearch.REF_JOBS["job-fake"] = _Done()
+try:
+    asyncio.run(imgresearch._run_batch("batch-x", MP, _assets))
+finally:
+    imgresearch.start_research_job = _orig_start
+    imgresearch.BATCH_JOBS.pop("batch-x", None)
+    imgresearch.REF_JOBS.pop("job-fake", None)
+expect(_batch.get("m_a") == ["唐 三品 官服"], f"带 queries 的资产应原样透传：{_batch.get('m_a')}")
+expect(_batch.get("m_c") == [], f"没给 queries 的资产应传空（AI 出词）：{_batch.get('m_c')}")
+
 print(f"✅ 考证报告 {PASS[0]} 项断言全部通过")
