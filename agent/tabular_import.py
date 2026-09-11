@@ -1,10 +1,11 @@
 """分镜表批量导入解析（doc/image-node-ops-spec.md §11，open-storyboard
 PromptImportDialog 范式的服务端简化版）。
 
-前端上传 xlsx/csv/txt → 本模块解析为统一行结构 [{name, prompt}] → 前端
+前端上传 xlsx/xls/ods/csv/txt → 本模块解析为统一行结构 [{name, prompt}] → 前端
 列映射向导（选名称列/提示词列）→ 批量建图片卡。解析与建卡分离：解析
 只做格式转换，行数上限 200（防一次建爆画布）；xlsx 只读第一张 sheet，
 csv/txt 按 gb18030→utf-8 顺序解码兜底（国内 Excel 导出的常见编码）。
+xls/ods 经 soffice 转 xlsx 后走同一条读表路径（见 doc_extract.soffice_convert_sync）。
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import io
 import json
 
 import openpyxl
+
+import doc_extract
 
 MAX_ROWS = 200
 MAX_BYTES = 10 * 1024 * 1024
@@ -60,12 +63,19 @@ def parse_tabular(filename: str, raw: bytes) -> dict:
     lower = (filename or "").lower()
     if lower.endswith(".xlsx"):
         grid = _parse_xlsx(raw)
+    elif lower.endswith((".xls", ".ods")):
+        # 老 BIFF / ODF 表格：先经 soffice 转 xlsx 再按同一路径读（保住多表与单元格结构）
+        src_ext = lower[lower.rfind(".") :]
+        try:
+            grid = _parse_xlsx(doc_extract.soffice_convert_sync(raw, src_ext, "xlsx"))
+        except RuntimeError as exc:
+            raise ValueError(str(exc)) from None
     elif lower.endswith(".csv"):
         grid = _parse_csv(raw)
     elif lower.endswith(".txt"):
         grid = _parse_txt(raw)
     else:
-        raise ValueError("仅支持 xlsx / csv / txt")
+        raise ValueError("仅支持 xlsx / xls / ods / csv / txt")
     grid = [r for r in grid if any(c for c in r)]
     if not grid:
         raise ValueError("文件内容为空")

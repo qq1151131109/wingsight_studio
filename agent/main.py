@@ -250,7 +250,9 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
     """粘贴/拖拽/附件上传：body 为二进制；返回同源可访问 URL。
 
     图片 ≤50MB（4K PNG 常见 10-25MB，15MB 曾把正常工作图全挡下）、
-    视频 ≤200MB、文档（pdf/txt/md/json/csv/srt/docx…）≤20MB。
+    视频 ≤200MB、文档（pdf/txt/md/json/csv/srt/vtt/ass/docx…）≤20MB。
+    图片除 png/jpg/webp/gif 外收 avif/bmp/tiff/svg；HEIC/HEIF（iPhone 实拍）
+    落盘前转 JPEG——服务器 ffmpeg 无 libheif、Chrome 也解不了 HEIC。
     扩展名推断：mime 映射优先，认不出的再看 ?name= 原始文件名的后缀，
     仍无法确定则 415 拒收（避免存成错误的 .png 之类）。
     """
@@ -272,6 +274,14 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
         "image/jpeg": ".jpg",
         "image/webp": ".webp",
         "image/gif": ".gif",
+        "image/avif": ".avif",
+        "image/bmp": ".bmp",
+        "image/x-ms-bmp": ".bmp",
+        "image/tiff": ".tiff",
+        "image/svg+xml": ".svg",
+        # HEIC/HEIF 落盘前转 JPEG（见下），这里只用来放行
+        "image/heic": ".heic",
+        "image/heif": ".heif",
         "video/mp4": ".mp4",
         "video/webm": ".webm",
         "video/quicktime": ".mov",
@@ -294,14 +304,30 @@ async def upload_asset(request: Request, user: auth.CurrentUser, name: str = "")
         "text/csv": ".csv",
         "text/html": ".html",
         "text/xml": ".xml",
+        "text/vtt": ".vtt",
+        "text/x-ssa": ".ssa",
+        "text/x-ass": ".ass",
     }.get(ctype)
     if not ext and is_doc:
         # 文档类认不出 mime：从原始文件名借后缀（限定白名单，防可执行文件）
         suffix = ("." + name.rsplit(".", 1)[-1].lower()) if "." in name else ""
-        allowed = {".pdf", ".txt", ".md", ".json", ".csv", ".srt", ".docx", ".doc", ".rtf", ".xml", ".log"}
+        allowed = {
+            ".pdf", ".txt", ".md", ".markdown", ".json", ".csv", ".srt", ".vtt", ".ass", ".ssa",
+            ".docx", ".doc", ".rtf", ".xml", ".log",
+        }
         ext = suffix if suffix in allowed else None
     if not ext:
         return Response(status_code=415)  # type: ignore[return-value]
+    if ext in (".heic", ".heif"):
+        try:
+            body = await run_in_threadpool(thumbs.heic_to_jpeg, body)
+        except Exception as exc:  # noqa: BLE001
+            return Response(
+                status_code=422,
+                content=f"HEIC 转换失败：{type(exc).__name__}: {exc}",
+                media_type="text/plain",
+            )
+        ext = ".jpg"
     skills.ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     fname = f"{_uuid.uuid4().hex[:12]}{ext}"
     (skills.ASSETS_DIR / fname).write_bytes(body)
@@ -676,7 +702,7 @@ def api_compose(pid: str, req: dict, user: auth.CurrentUser):
 
 @app.post("/import/tabular")
 async def api_import_tabular(file: UploadFile, user: auth.CurrentUser):
-    """分镜/提示词表格解析：xlsx/csv/txt → 统一行结构（前端列映射后批量建卡）。"""
+    """分镜/提示词表格解析：xlsx/xls/ods/csv/txt → 统一行结构（前端列映射后批量建卡）。"""
     _ = user
     raw = await file.read()
     try:

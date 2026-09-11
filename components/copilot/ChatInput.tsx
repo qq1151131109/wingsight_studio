@@ -108,12 +108,17 @@ interface Attachment {
   inlineText?: string;
 }
 
-const TEXT_LIKE_EXT = [".txt", ".md", ".json", ".csv", ".srt", ".xml", ".log"];
+const TEXT_LIKE_EXT = [
+  ".txt", ".md", ".markdown", ".json", ".csv", ".xml", ".log",
+  ".srt", ".vtt", ".ass", ".ssa",
+];
 /** 二进制文档 → 服务端 /extract-text 提取后内联（docx/xlsx zip 直解、doc/rtf/xls
  *  走 soffice、pdf 走 pdftotext——浏览器里读不了这些格式，只有服务端能转）。
  *  表类（xlsx/xlsm/xls）转 Markdown 表格；**漏登记会把整包字节当正文发出去**
  *  （2026-09-11 大宋异事录事故：.xlsx 掉进下面的「文本直读」兜底） */
-const EXTRACT_TEXT_EXT = [".doc", ".docx", ".rtf", ".pdf", ".xlsx", ".xlsm", ".xls"];
+const EXTRACT_TEXT_EXT = [
+  ".doc", ".docx", ".rtf", ".pdf", ".xlsx", ".xlsm", ".xls", ".pptx", ".ppt",
+];
 /** 文本类文件直读上限：超过就落到上传分支（拿不到正文、agent 也读不了）。
  *  2MB 覆盖典型剧本/大纲（中文 5 万字 ≈ 150KB）；曾用 64KB，把 100KB+ 的
  *  剧本 .txt 静默踢出「落卡 + 内联」两条路（2026-09-08 review 发现） */
@@ -123,18 +128,21 @@ const TEXT_READ_MAX = 2 * 1024 * 1024;
 const INLINE_TEXT_CHARS = 50000;
 
 const ACCEPT_ATTR =
-  "image/*,video/*,audio/*,.pdf,.txt,.md,.json,.csv,.srt,.docx,.doc,.rtf,.xlsx,.xlsm,.xls,.xml,.log";
+  "image/*,video/*,audio/*,.pdf,.txt,.md,.markdown,.json,.csv,.srt,.vtt,.ass,.ssa," +
+  ".docx,.doc,.rtf,.pptx,.ppt,.xlsx,.xlsm,.xls,.xml,.log";
 
-/** 二进制嗅探：zip/OLE/可执行这类容器按 UTF-8 硬解会满屏替换字符（U+FFFD），
- *  这种文件绝不能当正文发出去——只给「不在白名单、又要直读」的兜底档把关
- *  （2026-09-11 大宋异事录：.xlsx 落到直读档，17000 字正文里 6967 个替换字符
- *  + 446 个 NUL，`PK\x03\x04` 一路进到 prompt） */
-function looksBinary(t: string): boolean {
+/** 文本直读的三态判定（2026-09-11 大宋异事录：.xlsx 落到直读档，17000 字正文里
+ *  6967 个替换字符 + 446 个 NUL，`PK\x03\x04` 一路进到 prompt）：
+ *  - NUL → 二进制容器（本地明报，不发出去）
+ *  - 替换字符成片、但没有 NUL → 编码不对（国内编辑器默认 ANSI/GBK、Windows 的
+ *    UTF-16）——交服务端按 UTF-8/GB18030/BOM 统一解码，别在这里瞎猜
+ *  - 其余 → 就是正文 */
+function sniffText(t: string): "ok" | "binary" | "encoding" {
   const sample = t.slice(0, 20000);
-  if (sample.includes("\x00")) return true;
+  if (sample.includes("\x00")) return "binary";
   let bad = 0;
   for (let i = 0; i < sample.length; i += 1) if (sample.charCodeAt(i) === 0xfffd) bad += 1;
-  return bad / Math.max(1, sample.length) > 0.01;
+  return bad / Math.max(1, sample.length) > 0.01 ? "encoding" : "ok";
 }
 
 function kindOf(mime: string, name: string): AttachmentKind {
@@ -323,65 +331,59 @@ export default function ChatInput({
         const ext = a.name.includes(".")
           ? a.name.slice(a.name.lastIndexOf(".")).toLowerCase()
           : "";
-        // 二进制文档（doc/docx/rtf/pdf）：服务端提取文本后内联——浏览器读不了
-        // 这些格式，失败明报（扫描件/加密/损坏都会给原因）
-        if (kind === "document" && EXTRACT_TEXT_EXT.includes(ext)) {
-          const t = await extractText(f, a.name);
+        const fail = (errorMessage: string) =>
+          writeAttachments(
+            attachmentsRef.current.map((x) =>
+              x.key === a.key ? { ...x, status: "error", errorMessage } : x,
+            ),
+          );
+        const isTextLike = TEXT_LIKE_EXT.includes(ext) || a.mime.startsWith("text/");
+        // 二进制文档（doc/docx/rtf/pdf/xlsx/pptx…）浏览器读不了，交服务端提取；
+        // 文本类超过直读上限（2MB）也走服务端——它的解码上限是 20MB，此前这种
+        // 大剧本会掉到上传分支变成一条 URL，agent 根本拿不到正文
+        const viaServer =
+          kind === "document" &&
+          (EXTRACT_TEXT_EXT.includes(ext) || (isTextLike && f.size > TEXT_READ_MAX));
+        if (viaServer || (kind === "document" && f.size <= TEXT_READ_MAX)) {
+          let text: string | null = null;
+          if (viaServer) {
+            const t = await extractText(f, a.name);
+            if (!t.ok) return fail(t.error);
+            text = t.text;
+          } else {
+            const head = new Uint8Array(await f.slice(0, 2).arrayBuffer());
+            // UTF-16 BOM（Windows 记事本「Unicode」存的剧本）：本地必然读成乱码，
+            // 直接交服务端按 BOM 解码
+            const utf16Bom =
+              (head[0] === 0xff && head[1] === 0xfe) || (head[0] === 0xfe && head[1] === 0xff);
+            const raw = utf16Bom ? "" : await f.text().catch(() => "");
+            if (!raw.trim() && !utf16Bom) return fail("文件为空或不是文本格式");
+            const sniff = utf16Bom ? "encoding" : sniffText(raw);
+            // 二进制容器（zip/OLE…）漏登记时的最后一道闸：曾把整包字节当正文发出
+            if (sniff === "binary") {
+              return fail(
+                `无法解析 ${ext || "该文件"}：不是可读文本（二进制格式）。文档附件支持 .doc/.docx/.rtf/.pdf/.xlsx/.xlsm/.xls/.pptx/.ppt 与文本类文件，其余请转成 .md/.txt/.csv 后重传`,
+              );
+            }
+            if (sniff === "encoding") {
+              // 编码不对（ANSI/GBK/UTF-16）→ 服务端统一解码（一份实现，别在浏览器里猜）
+              const t = await extractText(f, a.name);
+              if (!t.ok) return fail(t.error);
+              text = t.text;
+            } else {
+              text = raw;
+            }
+          }
+          if (!text.trim()) return fail("未提取到文本（文件可能是空的或没有文字层）");
           // 落资料卡（2026-09-08 @ 体系补缺）：文档此前只内联在当轮消息里，
           // 后续轮次无法点名引用、不落卡、不进素材库——用户上传资料的主要
           // 形态恰好走这条路。建卡后 @/连线/跨会话/跨视图全通。
-          if (t?.ok && t.text.trim()) {
-            const id = addDocCard(a.name, t.text);
-            if (id) showToast(`已存为资料卡，可在画布 @ 引用`);
-          }
-          writeAttachments(
-            attachmentsRef.current.map((x) =>
-              x.key === a.key
-                ? t === null
-                  ? x
-                  : t.ok
-                    ? { ...x, status: "inline", inlineText: t.text.slice(0, INLINE_TEXT_CHARS) }
-                    : { ...x, status: "error", errorMessage: t.error }
-                : x,
-            ),
-          );
-          return;
-        }
-        // 文本类文件：直读内联 + 落资料卡（不上传）。读空/读失败要明报错误态，
-        // 否则附件永远停在「上传中」、submit 三分支全不匹配被静默丢弃
-        if (kind === "document" && f.size <= TEXT_READ_MAX) {
-          const t = await f.text().catch(() => "");
-          if (!t.trim()) {
-            writeAttachments(
-              attachmentsRef.current.map((x) =>
-                x.key === a.key
-                  ? { ...x, status: "error", errorMessage: "文件为空或不是文本格式" }
-                  : x,
-              ),
-            );
-            return;
-          }
-          // 二进制容器（zip/OLE…）漏登记时的最后一道闸：曾把整包字节当正文发出
-          if (looksBinary(t)) {
-            writeAttachments(
-              attachmentsRef.current.map((x) =>
-                x.key === a.key
-                  ? {
-                      ...x,
-                      status: "error",
-                      errorMessage: `无法解析 ${ext || "该文件"}：不是可读文本（二进制或非 UTF-8 编码）。文档附件支持 .doc/.docx/.rtf/.pdf/.xlsx/.xls/.xlsm，其余请转成 .md/.txt/.csv 后重传`,
-                    }
-                  : x,
-              ),
-            );
-            return;
-          }
-          const id = addDocCard(a.name, t);
+          const id = addDocCard(a.name, text);
           if (id) showToast(`已存为资料卡，可在画布 @ 引用`);
           writeAttachments(
             attachmentsRef.current.map((x) =>
               x.key === a.key
-                ? { ...x, status: "inline", inlineText: t.slice(0, INLINE_TEXT_CHARS) }
+                ? { ...x, status: "inline", inlineText: text.slice(0, INLINE_TEXT_CHARS) }
                 : x,
             ),
           );

@@ -11,6 +11,7 @@
   previews 只在首次请求时现场生成（多数资产不会被放大，不必落盘时全量产）。
 """
 
+import io
 import subprocess
 from pathlib import Path
 
@@ -68,6 +69,24 @@ def make_for(orig_name: str) -> None:
         print(f"[thumbs 生成失败] {orig_name}: {type(e).__name__}: {e}", flush=True)
 
 
+def heic_to_jpeg(body: bytes) -> bytes:
+    """HEIC/HEIF → JPEG（iPhone 实拍参考图，落盘前转）。
+
+    两条硬约束逼出这一步：服务器 ffmpeg 不带 libheif（实测 `moov atom not found`）、
+    浏览器 Chrome 也解不了 HEIC——原样存下来就是「卡片裂图 + 参考图出图必失败」。
+    JPEG 是浏览器、缩略图管线、上游出图模型三者都认的形态，故在这里一次性转掉
+    （EXIF 方向先摆正，手机竖拍不会躺着）。失败由调用方明报，不静默存原字节。
+    """
+    from PIL import Image, ImageOps
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    with Image.open(io.BytesIO(body)) as im:
+        out = io.BytesIO()
+        ImageOps.exif_transpose(im).convert("RGB").save(out, format="JPEG", quality=92)
+    return out.getvalue()
+
+
 def _ensure(webp_file: str, dest_dir: Path, long_edge: int, quality: int, label: str) -> Path | None:
     safe = Path(webp_file).name
     if not safe.endswith(".webp"):
@@ -77,7 +96,12 @@ def _ensure(webp_file: str, dest_dir: Path, long_edge: int, quality: int, label:
         return dest
     stem = Path(safe).stem
     for src in sorted(ASSETS_DIR.glob(f"{stem}.*")):
-        if src.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        # ffmpeg 能解的图片扩展名（svg 靠 librsvg、avif 靠 dav1d/aom 滤镜；
+        # heic 不在列——它在上传时就被转成 .jpg 落盘）
+        if src.suffix.lower() in {
+            ".png", ".jpg", ".jpeg", ".webp", ".gif",
+            ".avif", ".bmp", ".tiff", ".tif", ".svg",
+        }:
             try:
                 _generate(src, dest, long_edge, quality)
                 return dest

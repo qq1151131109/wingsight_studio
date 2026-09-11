@@ -14,4 +14,6 @@ dependencies = [
     "pwdlib[argon2]>=0.2",
     "python-multipart>=0.0.9",
     "openpyxl>=3.1.5",
+    "pillow>=10.0",
+    "pillow-heif>=0.18",
 ]

@@ -8,16 +8,22 @@
 
 通道：
 - .docx：zipfile 直读 word/document.xml（w:t 串段，零外部依赖，最快）
-- .doc/.rtf/.xls：soffice --headless 转 txt/xlsx（每请求独立 profile 防并发锁）
+- .pptx：zipfile 直读 ppt/slides/slideN.xml（a:t 串段，同上）
+- .doc/.rtf/.xls/.ppt：soffice --headless 转 txt/xlsx/pptx（每请求独立 profile 防并发锁）
 - .pdf：pdftotext
 - .xlsx/.xlsm：openpyxl 读表 → Markdown 表格（多表分节、超限明示截断）
+- 文本类（.txt/.md/.csv/.srt/.vtt/.ass…）：按 UTF-8 → GB18030 顺序解码——
+  国内编辑器默认 ANSI/GBK，前端按 UTF-8 硬读会满屏替换字符（超 2MB 的文本
+  也走这里，此前落到上传分支、agent 根本拿不到正文）
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import re
+import subprocess
 import tempfile
 import zipfile
 
@@ -30,8 +36,13 @@ SHEET_MAX = 5
 ROWS_MAX = 300
 COLS_MAX = 40
 
-SUPPORTED_EXT = (".doc", ".docx", ".rtf", ".pdf", ".xlsx", ".xlsm", ".xls")
-SUPPORTED_HINT = ".doc/.docx/.rtf/.pdf/.xlsx/.xlsm/.xls"
+TEXT_EXTS = (
+    ".txt", ".md", ".markdown", ".json", ".csv", ".srt", ".vtt", ".ass", ".ssa", ".xml", ".log",
+)
+SUPPORTED_EXT = (
+    ".doc", ".docx", ".rtf", ".pdf", ".xlsx", ".xlsm", ".xls", ".pptx", ".ppt",
+) + TEXT_EXTS
+SUPPORTED_HINT = ".doc/.docx/.rtf/.pdf/.xlsx/.xlsm/.xls/.pptx/.ppt 与文本类（.txt/.md/.csv/.srt/.vtt/.ass…）"
 
 
 class DocExtractError(Exception):
@@ -43,21 +54,92 @@ class DocExtractError(Exception):
         self.status = status
 
 
-async def _run(cmd: list[str], timeout: float = 40.0) -> bytes:
-    """跑外部转换器（soffice/pdftotext）：非零退出与超时都明报。"""
-    import asyncio
+def soffice_convert_sync(body: bytes, src_ext: str, target: str, timeout: float = 120.0) -> bytes:
+    """soffice --headless 转换 → 目标文件字节（同步；调用方需要用 to_thread 包）。
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
+    `target` 是 LibreOffice 的转换目标（如 "txt:Text" / "xlsx" / "pptx"），
+    产出文件名固定是 `src.<目标扩展名>`。每请求独立 profile——共用 profile 时
+    并发转换会互相锁死（历史踩过）。失败与超时都抛 RuntimeError（中文原因）。
+    """
+    out_ext = target.split(":")[0]
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, f"src{src_ext}")
+        with open(src, "wb") as f:
+            f.write(body)
+        profile = os.path.join(td, "lo-profile")
+        cmd = [
+            "soffice", "--headless", "--norestore",
+            f"-env:UserInstallation=file://{profile}",
+            "--convert-to", target, "--outdir", td, src,
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"转换超时（>{timeout:.0f}s）") from None
+        out_path = os.path.join(td, f"src.{out_ext}")
+        if not os.path.exists(out_path):
+            err = (proc.stderr or b"").decode(errors="replace").strip()[:160]
+            raise RuntimeError(
+                f"转换失败（soffice 未产出 .{out_ext}）——{err or '文件可能损坏或加密'}"
+            )
+        return open(out_path, "rb").read()
+
+
+def _pdftotext(body: bytes) -> str:
+    """pdftotext 抽文字层（超时/非零退出明报）。"""
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+        f.write(body)
+        pdf_path = f.name
     try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        proc.kill()
-        raise RuntimeError(f"转换超时（>{timeout:.0f}s）") from None
-    if proc.returncode != 0:
-        raise RuntimeError(f"转换失败：{err.decode(errors='replace')[:120]}")
-    return out
+        proc = subprocess.run(
+            ["pdftotext", "-enc", "UTF-8", pdf_path, "-"], capture_output=True, timeout=120
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"转换失败：{proc.stderr.decode(errors='replace')[:120]}")
+        return proc.stdout.decode("utf-8", errors="replace")
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("转换超时（>120s）") from None
+    finally:
+        os.unlink(pdf_path)
+
+
+def decode_text(body: bytes) -> str:
+    """文本类附件解码：BOM 优先（UTF-8 / UTF-16），其余 UTF-8 → GB18030。
+
+    GB18030 兜底是国内编辑器默认 ANSI 的常态（Excel/记事本导出的 .txt/.csv），
+    按 UTF-8 硬读就是满屏替换字符。都不成才明报（不静默返回乱码）。
+    """
+    if body.startswith(b"\xef\xbb\xbf"):
+        return body.decode("utf-8-sig", errors="strict")
+    if body[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return body.decode("utf-16", errors="strict")
+    for enc in ("utf-8", "gb18030"):
+        try:
+            return body.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    raise DocExtractError("无法识别文件编码（试过 UTF-8 / GB18030）", 422)
+
+
+def _pptx_text(body: bytes) -> str:
+    """pptx → 逐页文本：段落 a:p 分段、a:t 取文本（与 docx 同款零依赖解法）。"""
+    with zipfile.ZipFile(io.BytesIO(body)) as z:
+        slides = [n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)]
+        if not slides:
+            raise DocExtractError("没有找到幻灯片（不是合法的 .pptx？）", 422)
+        slides.sort(key=lambda n: int(re.search(r"(\d+)\.xml$", n).group(1)))  # type: ignore[union-attr]
+        chunks = []
+        for i, name in enumerate(slides, start=1):
+            xml = z.read(name).decode("utf-8", errors="replace")
+            lines = []
+            for p in re.findall(r"<a:p[ >].*?</a:p>", xml, re.DOTALL):
+                t = "".join(re.findall(r"<a:t[^>]*>(.*?)</a:t>", p, re.DOTALL))
+                t = re.sub(r"<[^>]+>", "", t)
+                if t.strip():
+                    lines.append(t)
+            if lines:
+                chunks.append(f"## 第 {i} 页\n\n" + "\n".join(lines))
+    return "\n\n".join(chunks)
 
 
 def _docx_text(body: bytes) -> str:
@@ -150,51 +232,23 @@ async def extract_text(name: str, body: bytes) -> str:
     try:
         if ext == ".docx":
             text = _docx_text(body)
+        elif ext == ".pptx":
+            text = _pptx_text(body)
         elif ext in (".xlsx", ".xlsm"):
             text = _xlsx_text(body)
+        elif ext in TEXT_EXTS:
+            text = decode_text(body)
         elif ext == ".pdf":
-            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-                f.write(body)
-                pdf_path = f.name
-            try:
-                out = await _run(["pdftotext", "-enc", "UTF-8", pdf_path, "-"])
-            finally:
-                os.unlink(pdf_path)
-            text = out.decode("utf-8", errors="replace")
+            text = await asyncio.to_thread(_pdftotext, body)
         elif ext == ".xls":  # 老 BIFF：先转 xlsx 再读表，保住多表与单元格结构
-            with tempfile.TemporaryDirectory() as td:
-                src = os.path.join(td, "src.xls")
-                with open(src, "wb") as f:
-                    f.write(body)
-                profile = os.path.join(td, "lo-profile")
-                await _run(
-                    [
-                        "soffice", "--headless", "--norestore",
-                        f"-env:UserInstallation=file://{profile}",
-                        "--convert-to", "xlsx", "--outdir", td, src,
-                    ]
-                )
-                out_path = os.path.join(td, "src.xlsx")
-                if not os.path.exists(out_path):
-                    raise RuntimeError("soffice 未产出表格（文件可能损坏或加密）")
-                text = _xlsx_text(open(out_path, "rb").read())
+            converted = await asyncio.to_thread(soffice_convert_sync, body, ".xls", "xlsx")
+            text = _xlsx_text(converted)
+        elif ext == ".ppt":  # 老 BIFF：先转 pptx 再逐页取文本
+            converted = await asyncio.to_thread(soffice_convert_sync, body, ".ppt", "pptx")
+            text = _pptx_text(converted)
         else:  # .doc / .rtf → soffice 转纯文本
-            with tempfile.TemporaryDirectory() as td:
-                src = os.path.join(td, f"src{ext}")
-                with open(src, "wb") as f:
-                    f.write(body)
-                profile = os.path.join(td, "lo-profile")
-                await _run(
-                    [
-                        "soffice", "--headless", "--norestore",
-                        f"-env:UserInstallation=file://{profile}",
-                        "--convert-to", "txt:Text", "--outdir", td, src,
-                    ]
-                )
-                out_path = os.path.join(td, "src.txt")
-                if not os.path.exists(out_path):
-                    raise RuntimeError("soffice 未产出文本（文件可能损坏或加密）")
-                text = open(out_path, encoding="utf-8", errors="replace").read()
+            out = await asyncio.to_thread(soffice_convert_sync, body, ext, "txt:Text")
+            text = out.decode("utf-8", errors="replace")
     except zipfile.BadZipFile:
         raise DocExtractError(
             "docx 解包失败：文件不是合法的 .docx（老 .doc 请直接用 .doc 后缀上传）", 422

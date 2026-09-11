@@ -123,7 +123,7 @@ export default function ImportStoryboardDialog({ onClose }: { onClose: () => voi
               导入分镜表
             </h3>
             <p className="mt-0.5 text-[11px] text-text-4">
-              xlsx / csv / txt → 批量建图片卡（标题列 + 提示词列），每卡在下方输入条出图
+              xlsx / xls / ods / csv / txt → 批量建图片卡（标题列 + 提示词列），每卡在下方输入条出图
             </p>
           </div>
           <button
@@ -139,7 +139,7 @@ export default function ImportStoryboardDialog({ onClose }: { onClose: () => voi
         <input
           ref={fileRef}
           type="file"
-          accept=".xlsx,.csv,.txt"
+          accept=".xlsx,.xls,.ods,.csv,.txt"
           className="hidden"
           onChange={(e) => void onFile(e.target.files?.[0])}
         />

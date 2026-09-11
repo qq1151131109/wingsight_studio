@@ -3,7 +3,7 @@
  * 素材库拖入输入条建卡+引用。
  * 前置：agent(8123) + 前端(8008) 在跑；无 LLM（不发送消息）。
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { chromium } from "playwright";
 import { zipSync, strToU8 } from "fflate";
 
@@ -342,6 +342,78 @@ try {
   check(
     "G10b 二进制附件不落卡",
     !(canvasPptx.nodes ?? []).some((n) => (n.data?.title ?? "") === "演示稿"),
+  );
+
+  // ---------- G11: 上传白名单新格式（HEIC 转 JPEG / AVIF / SVG / 字幕） ----------
+  const uploadRaw = async (name, mime, buf) => {
+    const r = await fetch(`${API}/assets?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), "Content-Type": mime },
+      body: buf,
+    });
+    return { status: r.status, body: await r.text() };
+  };
+  for (const [name, mime, wantExt] of [
+    ["参考图.avif", "image/avif", ".avif"],
+    ["分镜矢量图.svg", "image/svg+xml", ".svg"],
+    ["对白.vtt", "text/vtt", ".vtt"],
+    ["对白.ass", "text/x-ssa", ".ssa"],
+  ]) {
+    const r = await uploadRaw(name, mime, Buffer.from("x"));
+    const url = r.status === 200 ? (JSON.parse(r.body).url ?? "") : "";
+    check(`G11 上传 ${name}`, r.status === 200 && url.endsWith(wantExt), `${r.status} ${url}`);
+  }
+  const psd = await uploadRaw("设计稿.psd", "application/octet-stream", Buffer.from("8BPS"));
+  check("G11b 未放行格式仍 415（不静默存成图）", psd.status === 415, `${psd.status}`);
+
+  const heicPath = new URL("./fixtures/sample.heic", import.meta.url);
+  if (!existsSync(heicPath)) {
+    console.log("⚠ 跳过：scripts/fixtures/sample.heic 不存在——HEIC 转码档跳过");
+  } else {
+    const hr = await uploadRaw("实拍参考.heic", "image/heic", readFileSync(heicPath));
+    const hurl = hr.status === 200 ? (JSON.parse(hr.body).url ?? "") : "";
+    check("G11c HEIC 上传转 JPEG 落盘", hr.status === 200 && hurl.endsWith(".jpg"), `${hr.status} ${hurl}`);
+    const jb = new Uint8Array(await (await fetch(`${BASE}${hurl}`)).arrayBuffer());
+    check(
+      "G11d 转出的确实是 JPEG 字节",
+      jb.length > 100 && jb[0] === 0xff && jb[1] === 0xd8 && jb[2] === 0xff,
+      `${jb.length} bytes / ${jb.slice(0, 3).join(",")}`,
+    );
+  }
+
+  // ---------- G12: 文本编码兜底（GBK / UTF-16 / >2MB 大文本走服务端） ----------
+  const GBK_TEXT = "南宋赈灾官粮袋，纯白影棚背景。";
+  // Node 的 Buffer 不支持 gb18030（国内编辑器/Excel 导出的默认编码），
+  // 这里直接写死该句的 GB18030 字节（hex），别用 latin1 糊弄——
+  // 那样测的就不是编码兜底了
+  const GBK_BYTES = Buffer.from(
+    "c4cfcbceeae2d4d6b9d9c1b8b4fca3acb4bfb0d7d3b0c5efb1b3beb0a1a3",
+    "hex",
+  );
+  await page.locator("aside input[type=file]").first().setInputFiles([
+    { name: "GBK剧本.txt", mimeType: "text/plain", buffer: GBK_BYTES },
+  ]);
+  await page.waitForTimeout(4000);
+  const { body: canvasGbk } = await api(`/projects/${pid}/canvas`);
+  const gbkCard = (canvasGbk.nodes ?? []).find((n) => (n.data?.title ?? "") === "GBK剧本");
+  check(
+    "G12 GBK(ANSI) 文本经服务端解码落卡（无乱码）",
+    Boolean(gbkCard) && gbkCard.data.body === GBK_TEXT,
+    gbkCard ? JSON.stringify((gbkCard.data.body ?? "").slice(0, 24)) : "未建卡",
+  );
+
+  const BIG2 = "长剧本压测：白骨精在典籍中的记载。".repeat(60000) + "【大文本结尾】";
+  await page.locator("aside input[type=file]").first().setInputFiles([
+    { name: "长剧本-big.txt", mimeType: "text/plain", buffer: Buffer.from(BIG2, "utf-8") },
+  ]);
+  await page.waitForTimeout(9000);
+  const { body: canvasBig2 } = await api(`/projects/${pid}/canvas`);
+  const big2Card = (canvasBig2.nodes ?? []).find((n) => (n.data?.title ?? "") === "长剧本-big");
+  const big2Mb = Math.round(Buffer.byteLength(BIG2, "utf-8") / 1024 / 1024 * 10) / 10;
+  check(
+    `G12b ${big2Mb}MB 文本（超 2MB 直读上限）走服务端提取，正文完整落卡`,
+    Boolean(big2Card) && (big2Card.data.body ?? "").endsWith("【大文本结尾】"),
+    big2Card ? `正文 ${(big2Card.data.body ?? "").length} 字 / 期望 ${BIG2.length}` : "未建卡",
   );
 
 } finally {
