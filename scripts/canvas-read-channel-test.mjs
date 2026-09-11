@@ -631,5 +631,37 @@ check(
   JSON.stringify(vid?.versions),
 );
 
+// —— 考据缺口标记（2026-09-11 091101 武则天事故：52 张卡文字考据全到、参考图
+// 0 张，agent 每轮都读摘要却看不见缺口，手册写错时也没有任何运行时信号能反驳）。
+// 头部告警给总数（恒定在、永不丢），资产行给「是哪几张」。口径 = 参考卡连线
+// （与出图参考通道同一事实源），项目还没有任何考据活动时不标。
+const rgapBase = [
+  { id: "g_char", type: "character", position: { x: 0, y: 0 }, data: { nodeType: "character", title: "武则天" } },
+  { id: "g_scene", type: "scene", position: { x: 1, y: 0 }, data: { nodeType: "scene", title: "感业寺 大殿" } },
+  { id: "g_prop", type: "prop", position: { x: 2, y: 0 }, data: { nodeType: "prop", title: "茶盏" } },
+  { id: "g_note", type: "note", position: { x: 3, y: 0 }, data: { nodeType: "note", title: "策划案", body: "正文" } },
+];
+const rgap0 = summarizeCanvas(rgapBase, [], [], 4000, 1);
+check("未开工的项目不催考据（零考据活动 → 不标缺口）",
+  !rgap0.includes("缺参考图"), rgap0.split("\n")[1]);
+const rgapBrief = rgapBase.map((n) => ({ ...n, data: { ...n.data, researchBrief: "初唐形制：软脚幞头…" } }));
+const rgap1 = summarizeCanvas(rgapBrief, [], [], 4000, 1);
+check("头部告警给总数（091101 形态：文字到账、图没到）",
+  rgap1.includes("参考图缺 3/3 个资产"), rgap1.split("\n").find((l) => l.startsWith("⚠")) ?? "无告警行");
+const rgap1Marked = rgap1.split("\n").filter((l) => l.includes("⟨缺参考图⟩"));
+check("资产行逐卡标记（agent 不必再查就能点名）", rgap1Marked.length === 3, `标记 ${rgap1Marked.length} 行`);
+check("非资产卡不标（note 不参与考据）",
+  !(rgap1.split("\n").find((l) => l.includes("策划案")) ?? "").includes("缺参考图"),
+  rgap1.split("\n").find((l) => l.includes("策划案")) ?? "行缺失");
+const rgapRefCard = { id: "g_ref", type: "image", position: { x: 4, y: 0 }, data: { nodeType: "image", title: "武则天像", imageUrl: "/agent-service/assets/r1.png", refSource: "research" } };
+const rgap2 = summarizeCanvas([...rgapBrief, rgapRefCard], [{ id: "ge1", source: "g_ref", target: "g_char" }], [], 4000, 1);
+check("已采纳参考图的资产不标、计数跟着降（参考卡连线判定，与出图参考通道同源）",
+  rgap2.includes("参考图缺 2/3 个资产") &&
+    !(rgap2.split("\n").find((l) => l.startsWith("- g_char ")) ?? "").includes("缺参考图"),
+  rgap2.split("\n").find((l) => l.startsWith("⚠")) ?? "无告警行");
+const rgap3 = summarizeCanvas([...rgapBrief, rgapRefCard], [{ id: "ge2", source: "g_char", target: "g_ref" }], [], 4000, 1);
+check("用户手连的反向也算已覆盖（提示信号不因连线方向误报缺口）",
+  rgap3.includes("参考图缺 2/3 个资产"), rgap3.split("\n").find((l) => l.startsWith("⚠")) ?? "无告警行");
+
 console.log(`\n${fail === 0 ? `全部通过（${pass} 项）` : `${fail} 项失败`}`);
 process.exit(fail === 0 ? 0 : 1);

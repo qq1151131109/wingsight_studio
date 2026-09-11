@@ -811,4 +811,85 @@ expect(_row["finalPrompt"] == "最终发送提示词" and _row["description"] ==
        "应带最终提示词与用户原文（genShot 与 genPrompt 两个数据源）")
 expect(_row["shotlistId"] == "", "非分镜资产不应有 shotlist 绑定")
 
+# ---------- N. 出图前的参考图核查（2026-09-11 091101 事故：参考图缺了不报错） ----------
+# 图缺参考照样出得来（形制有文字约束、长相看不出来），agent 一路出图不会觉得
+# 不对——出图是花真金白银的那一步，整批不带实物参考必须明报，不能等用户看图
+# 才发现。口径 = 本批载荷**实际带的** reference_images（与出图消费同一事实源）；
+# 虚构题材不提示（口径上就不做考据）。
+GAP_PID = "p-gap-1"
+seed_canvas(
+    GAP_PID,
+    [
+        {"id": "gap_c1", "data": {"nodeType": "character", "title": "武则天"}},
+        {"id": "gap_s1", "data": {"nodeType": "scene", "title": "感业寺 大殿"}},
+    ],
+    {},
+)
+seed_canvas(
+    "p-gap-fiction",
+    [{"id": "fic_c1", "data": {"nodeType": "character", "title": "赛博武士"}}],
+    {"factuality": "fiction"},
+)
+conn = sqlite3.connect(str(skills.DB_PATH))
+conn.execute("CREATE TABLE IF NOT EXISTS chat_threads (id TEXT PRIMARY KEY, project_id TEXT)")
+for _tid, _pid in (("t-gap", GAP_PID), ("t-ref", REF_PID), ("t-gap-fiction", "p-gap-fiction")):
+    conn.execute("INSERT OR REPLACE INTO chat_threads (id, project_id) VALUES (?, ?)", (_tid, _pid))
+conn.commit()
+conn.close()
+
+_gap_brief_backup = skills._ensure_research_brief
+_gap_single_backup = skills._generate_single_image
+_gap_emit_backup = skills._emit_progress
+_gap_flow_backup, _gap_key_backup = skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY
+skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY = "f-img", "test-key"
+skills._ensure_research_brief = _passthrough_brief
+skills._generate_single_image = _one_img
+
+
+async def _gap_no_emit(config, message):  # 探针没有真 run，播报只会刷 RuntimeError 噪声
+    return None
+
+
+skills._emit_progress = _gap_no_emit
+
+
+def _gap_run(assets: list, thread: str) -> str:
+    return asyncio.run(
+        skills.generate_asset_images(assets, config={"configurable": {"thread_id": thread}})
+    )["lines"]
+
+
+try:
+    _gap_lines = _gap_run(
+        [
+            {"type": "character", "name": "武则天", "node_id": "gap_c1", "description": "唐宫昭仪"},
+            {"type": "scene", "name": "感业寺 大殿", "node_id": "gap_s1", "description": "唐代佛殿"},
+        ],
+        "t-gap",
+    )
+    expect(
+        "参考图核查" in _gap_lines and "2 个不带实物参考" in _gap_lines,
+        f"整批无参考应明报：{_gap_lines[:200]}",
+    )
+    expect(
+        "未带参考：武则天、感业寺 大殿" in _gap_lines,
+        f"应点名是哪几个资产（补调研要按名字操作）：{_gap_lines[:200]}",
+    )
+    expect(_gap_lines.startswith("⚠️ 参考图核查"), "核查报告应在最前面（别被逐张结果淹没）")
+    _ref_lines = _gap_run(
+        [{"type": "character", "name": "冯太后", "node_id": "c1", "description": "北魏"}],
+        "t-ref",
+    )
+    expect("参考图核查" not in _ref_lines, "有已采纳参考的资产不报缺口（不制造噪声）")
+    _fic_lines = _gap_run(
+        [{"type": "character", "name": "赛博武士", "node_id": "fic_c1", "description": "虚构"}],
+        "t-gap-fiction",
+    )
+    expect("参考图核查" not in _fic_lines, "虚构题材不提示（口径上就不做考据）")
+finally:
+    skills._ensure_research_brief = _gap_brief_backup
+    skills._generate_single_image = _gap_single_backup
+    skills._emit_progress = _gap_emit_backup
+    skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY = _gap_flow_backup, _gap_key_backup
+
 print(f"✅ 出图考据注入与补考据 {PASS[0]} 项断言全部通过")

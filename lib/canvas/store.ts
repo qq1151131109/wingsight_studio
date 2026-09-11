@@ -14,6 +14,11 @@ import {
 } from "@xyflow/react";
 import { IMAGEGEN_DEFAULT, type ImagegenParams } from "@/lib/imagegen";
 import { notifyRefCardsDeleted } from "@/lib/canvas/refDismiss";
+// 资产卡四类型：与 shotRefs 同源（那边只 import 本文件的**类型**，运行时不成环）
+import { ASSET_TYPES } from "@/lib/canvas/shotRefs";
+
+/** 资产卡四类型集合（画布摘要的考据缺口标记按它筛卡） */
+const ASSET_NODE_TYPES: ReadonlySet<string> = new Set(ASSET_TYPES);
 
 /** 题材真伪（存画布 meta.factuality）：真实题材（历史/罪案纪录片等）出图前
  *  会为缺考据的资产补一次文字考据（年代/形制/常见误用），虚构题材（动画片）
@@ -1838,6 +1843,38 @@ export function summarizeCanvas(
     );
   const loadingCount = nodes.filter((n) => n.data.status === "loading").length;
   if (loadingCount > 0) warnings.push(`生成中 ${loadingCount}`);
+  // —— 考据缺口（2026-09-11 091101 武则天事故）：参考图缺了**不会报错**——图照
+  // 出得来，只是没有实物比对（形制有文字约束、长相反正看不出来）。那项目 52 张
+  // 卡文字考据全到、参考图 0 张，agent 每轮都读摘要却看不见这个缺口，手册写错时
+  // 也没有任何运行时信号能反驳。这里把缺口标成告警（头部恒定在、永不丢），
+  // agent 不必再查就看得见；逐卡标记在下面的资产行上。
+  // 「有没有参考图」按**参考卡连线**判定——与出图参考通道同一事实源（出图收的
+  // 正是这些卡），不另算一套口径；项目还没有任何考据活动时不标（动画/架空与
+  // 尚未开工的项目不该被催着做考据）。
+  const refCovered = new Set<string>();
+  {
+    const byNodeId = new Map(nodes.map((n) => [n.id, n]));
+    const isRefCard = (id: string) => byNodeId.get(id)?.data.refSource === "research";
+    const isAsset = (id: string) =>
+      ASSET_NODE_TYPES.has(byNodeId.get(id)?.data.nodeType ?? "");
+    for (const e of edges) {
+      // 物化布局是「参考卡 → 资产卡」；用户手连的反向也算（这是提示信号，
+      // 不是契约，宁可少报一次缺口也不要凭方向判错）
+      if (isRefCard(e.source) && isAsset(e.target)) refCovered.add(e.target);
+      else if (isRefCard(e.target) && isAsset(e.source)) refCovered.add(e.source);
+    }
+  }
+  const hadResearch = nodes.some(
+    (n) => n.data.researchBrief || n.data.refSource === "research",
+  );
+  const refGapCards = hadResearch
+    ? nodes.filter((n) => ASSET_NODE_TYPES.has(n.data.nodeType) && !refCovered.has(n.id))
+    : [];
+  if (refGapCards.length > 0) {
+    warnings.push(
+      `参考图缺 ${refGapCards.length}/${nodes.filter((n) => ASSET_NODE_TYPES.has(n.data.nodeType)).length} 个资产（可 research_asset_references 全量补发起）`,
+    );
+  }
   if (warnings.length > 0) header.push(`⚠ ${warnings.join(" · ")}`);
 
   // —— 锚点卡置顶：剧本/分镜表/调研是叙事与分镜的唯一入口，大画布丢行
@@ -1934,7 +1971,13 @@ export function summarizeCanvas(
       ? `（上传文档·正文已落卡 ${(n.data.body ?? "").length} 字，read_node 可取全文）`
       : "";
     const label = n.data.docCard ? "资料卡" : meta.label;
-    return `- ${n.id} [${label}] ${title}${docNote}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${linksNote}${body}${sel}`;
+    // 逐卡考据缺口标记：头部告警给总数，这里给「是哪几张」——agent 不必再查
+    // 就能点名（补调研/换参考都按名字操作）。项目没有任何考据活动时不标
+    const refMark =
+      hadResearch && ASSET_NODE_TYPES.has(n.data.nodeType) && !refCovered.has(n.id)
+        ? "⟨缺参考图⟩"
+        : "";
+    return `- ${n.id} [${label}] ${title}${refMark}${docNote}${genNote}${panoNote}${mediaTag}${researchNote}${epNote}${epMark}${shot}${rowCount}${kids}${linksNote}${body}${sel}`;
   };
 
   // 连线列清单设上限：大画布连线行会吃光预算（旧版连线永不丢行，
@@ -1964,8 +2007,18 @@ export function summarizeCanvas(
         : [];
     return { lines: [...header, ...nodeLines.slice(0, take), ...tail, ...edgeLines], dropped };
   };
-  let { lines } = assemble(true);
-  if (lines.join("\n").length > budget) lines = assemble(false).lines;
+  // 先试带正文：装得下就用它（信息最全）
+  const withBody = assemble(true);
+  let lines = withBody.lines;
+  // 装不下（丢过行）→ 改试省正文版：正文是最可省的信息（行在、标题在、
+  // read_node 可取全文），省掉它往往能把行全留下。**旧实现先丢行**——尾部
+  // 整卡消失，而前面留下的卡还拖着一长段正文，与本节注释写明的「先降正文、
+  // 仍超从尾部收」正好相反（context-summary-test「超预算先全省正文」一直红）。
+  // 省正文仍装不下就认丢行（反正 bodyless 丢得比 withBody 少，不会更差）
+  if (withBody.dropped > 0) {
+    const lean = assemble(false);
+    if (lean.dropped <= withBody.dropped) lines = lean.lines;
+  }
   let text = lines.join("\n");
   if (text.length > budget) text = text.slice(0, budget) + "\n…（已截断）";
   return text;

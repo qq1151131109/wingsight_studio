@@ -74,8 +74,11 @@ const nodes = [
     data: { nodeType: "research", title: "卓文君调研", researchId: "e2e_research_id" },
   },
 ];
-// 30 张长正文卡：把摘要顶超预算，验证「先全省正文」降级
-for (let i = 0; i < 30; i++) {
+// 60 张长正文卡：把摘要顶超预算，验证「超预算先全省正文、行不丢」降级。
+// **卡数不能少**：摘要里正文只取前 24 字（body.slice(0,24)），单卡正文最多省
+// ~28 字——30 张的夹具（约 1600 字）根本顶不到 2000 预算，这条断言因此长期假红
+// （2026-09-11 发现：断言名字喊着「超预算」，摘要其实没超，正文当然留着）。
+for (let i = 0; i < 60; i++) {
   nodes.push({
     id: `long${i}`,
     type: "note",
@@ -116,7 +119,8 @@ try {
 
   // 超预算降级：正文先全省（LONGBODY 不出现），节点行不丢、无硬切半行
   check("超预算先全省正文", !summary.includes("LONGBODY"), `len=${summary.length}`);
-  check("节点行数完整（非硬切）", (summary.match(/^- /gm) ?? []).length === 34 && !summary.includes("…（已截断）"),
+  // 64 = 3 张原卡 + 60 张便签 + 1 条连线（正则 ^- 把连线行也算在内）
+  check("节点行数完整（非硬切）", (summary.match(/^- /gm) ?? []).length === 64 && !summary.includes("…（已截断）"),
     `行数=${(summary.match(/^- /gm) ?? []).length}`);
   check("选中卡正文保留", summary.includes("sum_img"), "");
 } catch (e) {

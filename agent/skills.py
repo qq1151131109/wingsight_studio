@@ -1691,6 +1691,31 @@ async def generate_asset_images(
     chat_factuality = _project_factuality(chat_project_id)
     brief_sem = asyncio.Semaphore(_BRIEF_CONCURRENCY)
 
+    # 参考图核查（2026-09-11 091101 武则天事故）：参考图缺了**不会报错**——图照
+    # 出得来，只是没有实物比对（形制有文字约束、长相看不出来）。那项目 52 张资产
+    # 的文字考据全到、参考图 0 张，agent 一路出图都没觉得不对。出图是花真金白银
+    # 的那一步，缺参考必须在这里明报，不能等用户看图才发现。
+    # 口径 = 本批载荷**实际带的** reference_images（与出图消费同一事实源：上面
+    # _inject_canvas_refs 注入的就是它，调用方自带参考的也不算缺）；虚构题材不提示
+    # （口径上就不做考据）。只提示不拦——用户要出就得能出。
+    ref_gap = [
+        str(a.get("name") or "?")
+        for a in assets
+        if not (a.get("reference_images") or a.get("referenceImages"))
+    ]
+    ref_note = ""
+    if chat_factuality == "real" and ref_gap:
+        shown = "、".join(ref_gap[:6])
+        more = f" 等 {len(ref_gap)} 个" if len(ref_gap) > 6 else ""
+        ref_note = (
+            f"⚠️ 参考图核查：本批 {len(assets)} 个资产里 {len(ref_gap)} 个不带实物参考"
+            f"（只有文字考据约束形制，长相没有实物比对）。真实题材应先做参考图调研："
+            f"research_asset_references（画布全部资产一次传入），或点考证报告卡工具条"
+            f"「补调研」；**只跑考证大纲不产生参考图**。补完对这几张重出即可"
+            f"（字面「重新生成」会按原提示词重跑，要带新参考得重发指令）。\n"
+            f"未带参考：{shown}{more}"
+        )
+
     # 画幅预检（任一不合法整批不跑，点名报错让 LLM 修正重调——与批量出图
     # 端点同一铁律）；合法值随资产进 shot，_generate_single_image 认 shot.aspect
     aspect_model = str((params or {}).get("model_name") or models.DEFAULT_MODEL_ID)
@@ -1830,6 +1855,10 @@ async def generate_asset_images(
     n_cancelled = sum(1 for r in results if not isinstance(r, str))
     if n_cancelled:
         lines.append(f"（已取消 {n_cancelled} 张，未计入结果）")
+    # 核查报告放最前面：agent 先看见缺口，再看见逐张结果（放在尾部会被
+    # 52 行出图结果淹没——091101 事故正是「一路顺利、没人提参考图」）
+    if ref_note:
+        lines.insert(0, ref_note)
     return {"lines": "\n".join(lines), "results": structured}
 
 
