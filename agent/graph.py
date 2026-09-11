@@ -71,14 +71,21 @@ async def list_langflow_skills() -> str:
 
 @tool
 async def decompose_script(script: str, config: RunnableConfig) -> str:
-    """把剧本拆解为资产清单（角色/场景/道具/服饰，含外形与视觉要点）。
+    """把创作素材拆解为资产清单（角色/场景/道具/服饰，含外形与视觉要点）。
 
     用户给出剧本（完整或片段）并想要资产卡/设定图时，先用这个工具拆解，
     再用 canvas_ops 把拆出的资产建成画布卡片（建完继续标准链的下一步，
     增删确认放在链尾汇报时，不要中途停下）。
 
+    标准链有两条分支（先拆分镜 / 先拆资产），**分镜先时**要把分镜表行文本
+    （read_node 分镜表卡取行）与剧本原文**一并传入**：分镜行提供「本镜有哪些
+    角色/场景/道具/服饰」的清单（换装、关键道具只有分镜里看得见），剧本原文
+    提供「它们长什么样」的依据。只给分镜行会让 flow 按「合理补全」条款编造
+    外形与造型计划，那些编造会一路进到出图提示词当事实用。
+
     Args:
-        script: 剧本原文（尽量完整传入，不要自行摘要）。
+        script: 创作素材全文——剧本原文；分镜先时 = 剧本原文 + 分镜表行文本
+            （尽量完整传入，不要自行摘要）。
     """
     await skills._emit_progress(config, "正在拆解剧本，提取角色 / 场景 / 道具清单…")
     job_id = skills.start_chat_job(
@@ -87,7 +94,7 @@ async def decompose_script(script: str, config: RunnableConfig) -> str:
     task = asyncio.current_task()
     if task is not None:
         skills.job_attach_task(job_id, task)
-    return await skills.decompose_script(script)
+    return await skills.decompose_script(script, skills._project_id_from_config(config))
 
 
 @tool
@@ -111,8 +118,10 @@ async def generate_storyboard(
         script: 剧本原文全文（从剧本卡取时先 read_node，不要自行摘要）。
         shot_count: 目标镜头数，用户点名了才传（如「压到 20 镜」），0=按剧本自定。
         assets_json: 画布已有资产名单 JSON 数组，如 [{"type":"character","name":"郑成功"}]；
-            生成的行会自动引用名单内资产；名单外但确属剧本的资产名会在返回里列出
-            「画布缺哪些资产」——那是缺卡的信号，按类型补建后再出图。画布没有资产卡时留空。
+            生成的行会自动引用名单内资产，行内提到时用「@名称」标记。**画布还没有资产卡时
+            留空**（分镜先分支）：分镜照样按剧本原名申报每镜出现的角色/场景/道具/服饰，
+            这些名字不在名单里就会在返回里列成「画布缺哪些资产」——缺卡信号（换装服饰/
+            关键道具漏拆就是靠它发现的），按类型补建后再出图。
         model: 文本模型 id（GET /models/text 目录），留空用默认 gpt-5.6-luna。
     """
     assets = None
@@ -150,9 +159,10 @@ async def generate_storyboard(
         more = f"（共 {len(missing)} 个，只列前 20）" if len(missing) > 20 else ""
         out += (
             f"\n\n【画布缺的资产】分镜引用了这些名字，画布上没有对应卡：{head}{more}。\n"
-            "这是缺卡信号（换装服饰/关键道具漏拆、或资产还没拆）——下一步先核对它们是否真在剧本里："
-            "在的按类型补建资产卡（canvas_ops add_node，character/scene/prop/costume）并在回复里点名补了哪几个；"
-            "纯属编造的不建、直接说明。补完再出图，否则相关镜头没有资产设定图可参考。"
+            "这是缺卡信号（换装服饰/关键道具漏拆；**分镜先时它就是你该盘点哪些资产的清单**）"
+            "——逐名核对：确实该建卡的（角色/场景/承载时代或身份信息的服饰/关键道具）按类型补建"
+            "（canvas_ops add_node，character/scene/prop/costume）并在回复里点名补了哪几个；"
+            "一次性的小物件与纯属编造的丢弃并说明。补完再出图，否则相关镜头没有资产设定图可参考。"
         )
     return out
 
@@ -217,7 +227,7 @@ _GEN_ASSETS_DOC = f"""为资产批量生成设定图（并发出图，每张完�
 的分镜行清单里取）；返回会附带「分镜图落卡 ops」（每镜一张图卡摆分镜表
 右侧 + 分镜表/资产→图卡连线 + 行挂载）——**经 canvas_ops 原样应用整批
 ops，不要改写、也不要自己手写行 imageUrl**（行图要跟着图卡走才有版本/
-重跑/裁剪等操作层）。不带行绑定的自由单镜出图照旧返回 URL 自行落卡。
+重跑/裁剪等操作层）。不带行绑定的自由单镜出图照旧返回 URL 自行落卡（见下）。
 aspect 可选画幅（w:h：16:9/9:16/1:1/4:3/3:4/21:9）：**只在用户明确对
 画幅提出要求**（竖版/横版/方图/宽幕，或重出带「画幅 N」标注的卡）时传。
 资产设定图一律不传 aspect——按类型默认**横版 16:9**（prop 曾 4:3、
@@ -244,7 +254,15 @@ visual_notes 里手写考据，提示词里出现「考据依据」段是正常�
 **补考据失败会留痕**：那样的图返回项带 researchNote（「未考证：…」），
 卡上「节点信息」也记「未考证」——遇到它不要当正常结果交付，向用户说明
 这几张形制没有依据，要补就引导先做资产考据（资产卡「找参考图」）再重出。
-返回每个资产的成败与 image_url。
+返回每个资产的成败与 image_url，**并附带落卡 ops**：
+- 资产卡（character/scene/prop/costume）→ update_node 挂回卡上媒体位（媒体位
+  靠节点 id 或资产名匹配画布卡）——**拿到 ops 先经 canvas_ops 原样应用，再向
+  用户汇报**：图出了不等于卡上有，没应用就说「已落卡」是错的（091101 事故：
+  模型口播「52 张都落在卡上了」而画布一片空白）。不要在返回的 ops 之外自己
+  手写 imageUrl/genShot。
+- 分镜行绑定（shotlist_id + rid）→ 每镜一张图卡 + 连线 + 行挂载。
+- 不带行绑定的自由单镜（type=shot 无 shotlist_id）不产 ops：照旧拿返回的
+  image_url 自己 canvas_ops add_node 落一张图卡。
 用户点名要换出图模型/清晰度/质量档时才传 model / resolution / quality；可用的模型
 与各模型支持档位：
 {_IMAGE_MODEL_LINE}
@@ -383,6 +401,287 @@ def _build_shot_card_ops(
     return ops, notes
 
 
+def _build_look_card_ops(
+    results: List[Dict[str, Any]], config: RunnableConfig
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """为造型图生成落卡 ops（与前端「补资产图 → 自动续跑造型图」同语义）：
+
+    每个造型一张 image 卡（**角色卡右侧同列纵向排列**，与前端
+    fillLookImages 的落点一致）+ 角色→造型卡、服饰→造型卡 连线 + 角色卡
+    looks[i] 回填 imageUrl/nodeId（幂等标记：装载时不再重复物化，卡被用户删了
+    也不复活）+ 同批 group_nodes 收「造型图」框。
+
+    ops 里的 id 是占位符（`lookimg_{角色id}_{造型序号}`），applyOps 会把它当
+    真实节点 id 用——所以 update_node 写进 looks 的 nodeId 与它是同一个值。"""
+    thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    pid = projects.project_id_of_thread(thread_id) if thread_id else ""
+    if not pid:
+        return [], ["会话未绑定项目，无法生成造型图落卡 ops"]
+    canvas = projects.load_canvas(pid) or {}
+    nodes = [n for n in (canvas.get("nodes") or []) if isinstance(n, dict)]
+    by_id = {str(n.get("id")): n for n in nodes}
+    style = str(skills._project_style_from_config(config) or "").strip()
+    # 已占用矩形（既有节点 + 本批已放的造型卡）：findFreePosition 同款——只纵移，
+    # x 保持「角色卡右侧」不漂
+    occupied: List[tuple] = []
+    for n in nodes:
+        p = n.get("position") or {}
+        occupied.append(
+            (
+                float(p.get("x") or 0),
+                float(p.get("y") or 0),
+                float((n.get("style") or {}).get("width") or 320),
+                float((n.get("style") or {}).get("height") or 220),
+            )
+        )
+    fp_w, fp_h, gap = 256, 200, 32
+    notes: List[str] = []
+
+    def _rel(u: Any) -> str:
+        s = str(u or "").strip()
+        if not s:
+            return ""
+        return "/agent-service/assets/" + s.rsplit("/", 1)[-1]
+
+    ok_items = [
+        r
+        for r in results
+        if isinstance(r, dict)
+        and r.get("ok")
+        and r.get("imageUrl")
+        and str(r.get("charId") or "") in by_id
+    ]
+    missing = [
+        str(r.get("charId") or "")
+        for r in results
+        if isinstance(r, dict) and r.get("ok") and str(r.get("charId") or "") not in by_id
+    ]
+    if missing:
+        notes.append(f"角色卡 {'、'.join(sorted(set(missing)))} 不在画布上，造型图落卡跳过")
+    if not ok_items:
+        return [], notes
+    by_char: Dict[str, List[Dict[str, Any]]] = {}
+    for r in ok_items:
+        by_char.setdefault(str(r["charId"]), []).append(r)
+
+    ops: List[Dict[str, Any]] = []
+    look_ids: List[str] = []
+    for cid, items in by_char.items():
+        char = by_id[cid]
+        cp = char.get("position") or {}
+        cdata = char.get("data") if isinstance(char.get("data"), dict) else {}
+        cw = float((char.get("style") or {}).get("width") or 320)
+        cx = float(cp.get("x") or 0) + cw + 48
+        cy = float(cp.get("y") or 0)
+        # 造型账带产物一起回填（label 匹配：agent 若同时重写了计划也不丢记账）
+        looks = [dict(l) for l in (cdata.get("looks") or []) if isinstance(l, dict)]
+        for slot, r in enumerate(items):
+            idx = int(r.get("lookIdx") or 0)
+            card_id = f"lookimg_{cid}_{idx}"
+            y = cy + slot * (fp_h + gap)
+            while any(
+                cx < ox + ow and ox < cx + fp_w and y < oy + oh and oy < y + fp_h
+                for ox, oy, ow, oh in occupied
+            ):
+                y += fp_h + gap
+            occupied.append((cx, y, fp_w, fp_h))
+            title = f"{r.get('charTitle') or '角色'}·{r.get('label') or '造型'}"[:40]
+            protocol = str(r.get("sentPrompt") or "")
+            ref_urls = [u for u in (_rel(r.get("identity")), _rel(r.get("costumeImg"))) if u]
+            ref_labels = [{"type": "character", "name": str(r.get("charTitle") or "")}]
+            if _rel(r.get("costumeImg")):
+                ref_labels.append(
+                    {"type": "costume", "name": str(r.get("costumeTitle") or "服饰")}
+                )
+            gen_shot: Dict[str, Any] = {
+                "description": protocol,
+                "assetType": "none",
+                "referenceImages": ref_urls,
+            }
+            if style:
+                gen_shot["visualNotes"] = f"全局视觉风格：{style}"
+            if len(ref_labels) == len(ref_urls) and ref_urls:
+                gen_shot["referenceLabels"] = ref_labels
+            fp = str(r.get("finalPrompt") or "").strip()
+            if fp:
+                gen_shot["finalPrompt"] = fp[:3000]
+            ref_ids = [cid] + ([str(r["costumeId"])] if r.get("costumeId") else [])
+            ops.append(
+                {
+                    "op": "add_node",
+                    "id": card_id,
+                    "nodeType": "image",
+                    "position": {"x": cx, "y": y},
+                    "title": title,
+                    "body": str(r.get("description") or "")[:500],
+                    "imageUrl": r["imageUrl"],
+                    "status": "ready",
+                    "genPrompt": protocol,
+                    "genShot": gen_shot,
+                    "refIds": ref_ids,
+                    **({"styleSnapshot": f"全局视觉风格：{style}"} if style else {}),
+                }
+            )
+            ops.append({"op": "connect_nodes", "fromId": cid, "toId": card_id})
+            if r.get("costumeId") and str(r["costumeId"]) in by_id:
+                ops.append(
+                    {"op": "connect_nodes", "fromId": str(r["costumeId"]), "toId": card_id}
+                )
+            # 造型账回填（imageUrl + nodeId 幂等标记）；计划里没有该项（agent 刚改过
+            # 计划）时追加，免得图出了却查不到
+            if idx < len(looks) and str(looks[idx].get("label") or "").strip() == str(
+                r.get("label") or ""
+            ):
+                looks[idx] = {
+                    **looks[idx],
+                    "imageUrl": r["imageUrl"],
+                    "nodeId": card_id,
+                }
+            else:
+                looks.append(
+                    {
+                        "label": str(r.get("label") or ""),
+                        **(
+                            {"description": str(r["description"])}
+                            if r.get("description")
+                            else {}
+                        ),
+                        **({"costumeId": str(r["costumeId"])} if r.get("costumeId") else {}),
+                        "imageUrl": r["imageUrl"],
+                        "nodeId": card_id,
+                    }
+                )
+            look_ids.append(card_id)
+        ops.append({"op": "update_node", "id": cid, "looks": looks})
+    # 造型图是 1:N 衍生物，收一个组框（同批占位符 id 已被 applyOps 识别）
+    if len(look_ids) >= 2:
+        ops.append({"op": "group_nodes", "ids": look_ids, "title": "造型图"})
+    return ops, notes
+
+
+# 画布上的资产卡类型（update_node 回填的目标；分镜图卡不在此列——那是
+# _build_shot_card_ops 的活，落的是新建的 image 卡）
+_ASSET_CARD_TYPES = ("character", "scene", "prop", "costume")
+
+
+def _norm_title(s: str) -> str:
+    return re.sub(r"\s+", "", str(s or ""))
+
+
+def _build_asset_card_ops(
+    results: List[Dict[str, Any]], config: RunnableConfig
+) -> Tuple[List[Dict[str, Any]], List[str], List[Dict[str, Any]]]:
+    """为非分镜资产卡生成落卡 ops（与前端「补资产图」同语义）。
+
+    **为什么必须由服务端算**（2026-09-11 091101 事故）：聊天路径此前只返回
+    image_url 文本 + 一段「把 finalPrompt 写进 genShot」的附录，落卡全靠模型
+    手抄几十条 update_node——52 张图出完后画布上 52 张卡还是空的（模型分三轮：
+    出图 → 又出一批 → 才发现没落卡），而中间那轮它已经在聊天里口播「都落在
+    卡上了」（返回文本里没有任何「尚未落卡」的信号，模型把「图出了」当「卡有
+    了」，用户看到的就是「对话框说生成了、画布一片空白」）。分镜图有
+    _build_shot_card_ops、造型图有 _build_look_card_ops，资产设定图这条路不能
+    是空白。
+
+    身份解析：node_id（调用方给的画布 id）优先且必须真落在画布资产卡上；
+    否则按标题精确匹配，再退一步按「去空白归一」匹配（场景名带空格，模型
+    常归一成「长安后宫祈福殿」）。两条都落空的结果进 unresolved（画布上没有
+    这张卡），由调用方把 genShot 快照交回 agent 建卡时带上。
+
+    失败项只在卡上**还没有图**时才写 error 态——否则一次重出失败会把卡上
+    原有的图换成重试面板（图被藏起来比报错更难查）。
+    """
+    thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    pid = projects.project_id_of_thread(thread_id) if thread_id else ""
+    if not pid:
+        return [], ["会话未绑定项目，无法生成资产落卡 ops"], []
+    canvas = projects.load_canvas(pid) or {}
+    asset_nodes = [
+        n
+        for n in (canvas.get("nodes") or [])
+        if str((n.get("data") or {}).get("nodeType") or "") in _ASSET_CARD_TYPES
+    ]
+    by_id = {str(n.get("id")): n for n in asset_nodes}
+    by_title: Dict[str, str] = {}
+    by_norm: Dict[str, str] = {}
+    for n in asset_nodes:
+        t = str((n.get("data") or {}).get("title") or "").strip()
+        if not t:
+            continue
+        by_title.setdefault(t, str(n.get("id")))
+        by_norm.setdefault(_norm_title(t), str(n.get("id")))
+    style = str(skills._project_style_from_config(config) or "").strip()
+    ops: List[Dict[str, Any]] = []
+    notes: List[str] = []
+    unresolved: List[Dict[str, Any]] = []
+    used: set = set()
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        # 分镜/镜头图走 _build_shot_card_ops（落独立图卡 + 行挂载），不进资产账
+        if str(r.get("assetType") or "") == "shot" or str(r.get("shotlistId") or ""):
+            continue
+        name = str(r.get("name") or "").strip()
+        nid = str(r.get("nodeId") or "").strip()
+        target = nid if (nid and nid in by_id) else by_title.get(name, "")
+        if not target or target in used:
+            if not target:
+                target = by_norm.get(_norm_title(name), "")
+        if not target or target in used:
+            if r.get("ok"):
+                unresolved.append(r)
+            continue
+        used.add(target)
+        if not r.get("ok") or not r.get("imageUrl"):
+            cur = (by_id[target].get("data") or {}).get("imageUrl")
+            if not cur:
+                ops.append(
+                    {
+                        "op": "update_node",
+                        "id": target,
+                        "status": "error",
+                        "errorMessage": str(r.get("error") or "出图失败")[:300],
+                    }
+                )
+            continue
+        gen_shot: Dict[str, Any] = {
+            "description": str(r.get("description") or ""),
+            "assetType": str(r.get("assetType") or "none"),
+            "visualNotes": str(r.get("visualNotes") or ""),
+            "referenceImages": [str(u) for u in (r.get("referenceImages") or [])],
+        }
+        labels = r.get("referenceLabels") or []
+        if gen_shot["referenceImages"] and isinstance(labels, list) and labels:
+            gen_shot["referenceLabels"] = labels[: len(gen_shot["referenceImages"])]
+        if r.get("aspect"):
+            gen_shot["aspect"] = str(r["aspect"])
+        fp = str(r.get("finalPrompt") or "").strip()
+        if fp:
+            gen_shot["finalPrompt"] = fp[:3000]
+        rn = str(r.get("researchNote") or "").strip()
+        if rn:
+            gen_shot["researchNote"] = rn
+        op: Dict[str, Any] = {
+            "op": "update_node",
+            "id": target,
+            "imageUrl": str(r["imageUrl"]),
+            "status": "ready",
+            "errorMessage": "",
+            "genShot": gen_shot,
+        }
+        if gen_shot["description"]:
+            op["genPrompt"] = gen_shot["description"][:4000]
+        if style:
+            op["styleSnapshot"] = f"全局视觉风格：{style}"
+        ops.append(op)
+    if unresolved:
+        notes.append(
+            "以下资产在画布上找不到同名的资产卡，图已出但没落卡："
+            + "、".join(str(r.get("name") or "?") for r in unresolved)[:160]
+            + "（按画布摘要里的真实节点 id 建卡时把 genShot 一并带上）"
+        )
+    return ops, notes, unresolved
+
+
 async def generate_asset_images(
     assets_json: str,
     config: RunnableConfig,
@@ -429,17 +728,35 @@ async def generate_asset_images(
                 ".finalPrompt 已带实际发送提示词）：\n"
                 + json.dumps({"ops": ops}, ensure_ascii=False)
             )
-    # 非分镜资产卡：把实际发送提示词交给 agent，写卡 genShot.finalPrompt
-    # 带上（卡上「实际提示词」查看/编辑重跑的数据源）
+    # 非分镜资产卡：服务端直接算好落卡 ops（update_node 挂回资产卡媒体位 +
+    # genShot 快照）——不再让模型手抄几十条 update_node（091101 事故：52 张
+    # 图出完画布全空，模型中间还口播「已落卡」）
+    asset_ops, asset_notes, unresolved = _build_asset_card_ops(
+        res.get("results") or [], config
+    )
+    for n in asset_notes:
+        out += f"\n⚠️ {n}"
+    if asset_ops:
+        n_ok = sum(1 for o in asset_ops if o.get("imageUrl"))
+        out += (
+            f"\n\n资产卡落卡 ops 已生成（{n_ok} 张 → 挂回对应资产卡媒体位；每张的"
+            "genPrompt/genShot（含实际发送提示词 finalPrompt）随 ops 落卡）——"
+            "**先经 canvas_ops 原样应用整批 ops，再向用户汇报**：图出了不等于"
+            "卡上有，没应用就说「已落卡」是错的；不要再自己手写 imageUrl/genShot"
+            "（ops 里已带全）：\n"
+            + json.dumps({"ops": asset_ops}, ensure_ascii=False)
+        )
+    # 画布上没有对应卡的新资产：ops 无从生成，genShot 快照交给 agent 建卡时带
     gen_meta = {
         str(r.get("name")): {"finalPrompt": str(r.get("finalPrompt") or "")}
-        for r in (res.get("results") or [])
+        for r in unresolved
         if isinstance(r, dict) and r.get("finalPrompt")
     }
     if gen_meta:
         out += (
-            "\n\n各资产实际发送的完整提示词（版式契约渲染后的最终版）——用 canvas_ops "
-            "写资产卡时把对应 finalPrompt 放进 genShot 快照（卡上可查看/编辑重跑）：\n"
+            "\n\n以上未落卡资产实际发送的完整提示词（版式契约渲染后的最终版）——"
+            "用 canvas_ops 按画布摘要里的真实节点 id 建卡时，把对应 finalPrompt "
+            "放进 genShot 快照（卡上可查看/编辑重跑）：\n"
             + json.dumps({"genShots": gen_meta}, ensure_ascii=False)
         )
     return out
@@ -449,13 +766,88 @@ generate_asset_images.__doc__ = _GEN_ASSETS_DOC
 generate_asset_images = tool(generate_asset_images)
 
 
+_LOOK_DOC = """为角色卡的造型计划（looks）批量出造型图（每个造型一张）。
+
+标准制作链的第三站：资产设定图 → **造型图** → 分镜镜头图。近景/特写镜头
+要用造型图当参考而不是定妆照（换装镜拿定妆照出一定穿错衣服），所以资产
+设定图出完就该走这一步。
+
+**硬前置**：项目画风已选（无画风会被拦下并告知，不要绕过）；角色卡已有
+定妆照（没有身份锚点，造型会长成另一个人——先出资产设定图）。关联的
+服饰卡有结构图时会自动当第二张参考锁形制（looks 里的 costumeId 绑定）。
+
+调用后返回「造型图落卡 ops」——**经 canvas_ops 原样应用整批 ops**（占位符
+id 不要改）：每个造型物化成独立图片卡（命名「角色名·造型名」，摆角色卡
+右侧）+ 角色/服饰→造型卡连线 + 角色卡造型账回填 imageUrl/nodeId。
+不要自己另建造型图卡或手写 looks 的 imageUrl——重复建卡与账目错位都从
+绕过 ops 来。
+
+Args:
+    char_json: 可选，圈定要出造型图的角色卡 JSON 数组 [{"node_id":"..."}]；
+        留空 = 画布上所有「有待出造型、且已有定妆照」的角色（常用）。
+"""
+
+
+async def generate_look_images(char_json: str = "", config: RunnableConfig = None) -> str:
+    """为角色卡的造型计划（looks）批量出造型图。
+
+    正文在 _LOOK_DOC（f-string 不能作 docstring：模型清单等由目录动态生成），
+    def 后赋 __doc__ 再 tool() 包装——与 generate_asset_images 同规。"""
+    char_ids: List[str] = []
+    if char_json.strip():
+        try:
+            parsed = json.loads(char_json)
+        except json.JSONDecodeError as e:
+            return f"char_json 不是合法 JSON：{e}"
+        if not isinstance(parsed, list):
+            return "char_json 必须是数组 JSON"
+        char_ids = [
+            str(x.get("node_id") or x.get("nodeId") or x)
+            for x in parsed
+            if isinstance(x, (dict, str)) and str(x).strip()
+        ]
+    await skills._emit_progress(
+        config, "正在出造型图（每个造型约 1 分钟，参考定妆照与服饰结构图）…"
+    )
+    job_id = skills.start_chat_job(
+        skills._thread_id_of_config(config), "tool", "生成造型图"
+    )
+    task = asyncio.current_task()
+    if task is not None:
+        skills.job_attach_task(job_id, task)
+    res = await skills.generate_look_images(config=config, char_ids=char_ids)
+    out = str(res.get("lines") or "")
+    ops, notes = _build_look_card_ops(res.get("results") or [], config)
+    for n in notes:
+        out += f"\n⚠️ {n}"
+    if ops:
+        n_card = sum(1 for o in ops if o.get("op") == "add_node")
+        out += (
+            f"\n\n造型图落卡 ops 已生成（{n_card} 张造型卡 + 角色/服饰连线 + "
+            "角色卡造型账回填，位置已按角色卡右侧算好）——**经 canvas_ops 原样"
+            "应用整批 ops**（占位符 id 不要改）：\n"
+            + json.dumps({"ops": ops}, ensure_ascii=False)
+        )
+    return out
+
+
+generate_look_images.__doc__ = _LOOK_DOC
+generate_look_images = tool(generate_look_images)
+
+
 @tool
 async def research_asset_references(assets_json: str, config: RunnableConfig) -> str:
     """为画布资产批量调研网络参考图（AI 出词 → 联网搜图与下载 → 模型看图终选）。
 
-    用户想给角色/场景/道具/服饰找考据参考图、历史画像、实物照片时调用；
-    历史纪实类题材出图前先调研能显著提升形制/材质一致性。纯虚构或动画
-    风格、用户明确不需要参考时不要调用。不要在用户没要求时自作主张调研。
+    给角色/场景/道具/服饰找考据参考图、历史画像、实物照片，提升形制与材质
+    一致性。**资产考据是标准制作链的一站，不是请示项**：真实题材（历史/罪案
+    纪实，画布缺省）在拆资产之后、出图之前**自动发起本工具或考证大纲，不必问
+    用户**（用户口径：除动画片外都是真实题材）；虚构题材（动画/架空/穿越，经
+    set_project_factuality 声明）不发起。用户点名只做哪几个/哪一类时才收窄。
+    注意时机：意图还没确立（用户只上传素材、没说要做）时先按决策原则问意图，
+    意图确立后走到这一站就直接发起。
+    **别与史实深度调研混淆**：链路里自动走的只有资产考据（本工具 / 考证大纲），
+    start_deep_research 永远由用户发起——「开始制作」不含它。
 
     **一批资产要考据（≥3 个）时先走考证大纲**（get_research_material →
     propose_research_outline → run_research_outline，见 real-documentary 手册
@@ -850,6 +1242,10 @@ async def start_deep_research(
     用户要选题论证、背景资料、史实核实、人物/事件深挖时调用（「帮我调研X」
     「查查X的资料」「X到底是怎么回事」）；闲聊、画布内已有答案、找参考图
     （那是 research_asset_references）时不要调用。
+
+    **史实深度调研永远由用户发起**——制作链的资产考据站（参考图调研 /
+    考证大纲）不用它，「开始制作」这类指令也不含它；用户没说要做史实核查
+    时发起本工具是事故（a768423e2069：调研二义被抢答）。
 
     本工具只做开题：返回观看问题与查证方向。请把开题讲给用户听（这个题材最值
     得讲什么、什么有据、什么是传闻），请其确认或修改方向；用户确认后立即调用
@@ -1350,7 +1746,7 @@ async def list_free_images(config: RunnableConfig, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_look_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。

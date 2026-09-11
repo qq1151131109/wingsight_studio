@@ -439,6 +439,124 @@ check(
   afterUpd?.length === 3 && afterUpd?.[2]?.label === "雨夜装",
   JSON.stringify(afterUpd?.map((l) => l.label)),
 );
+// 服务端出的造型图（generate_look_images）靠回填 ops 把产物写进造型账：
+// update_node 收 imageUrl/nodeId，add_node 仍然拒收（计划不许自带产物）
+applyOps([
+  {
+    op: "update_node",
+    id: "LK_CHAR",
+    looks: [
+      { label: "朝服", imageUrl: "/assets/look0.png", nodeId: "lookimg_c1_0" },
+      { label: "常服", costume: "素色常服" },
+    ],
+  },
+]);
+const backfilled = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_CHAR")?.data.looks;
+check(
+  "ops update_node：收造型产物的服务端回填（imageUrl/nodeId 写进造型账）",
+  backfilled?.[0]?.imageUrl === "/assets/look0.png" &&
+    backfilled?.[0]?.nodeId === "lookimg_c1_0",
+  JSON.stringify(backfilled?.[0]),
+);
+// 计划字段（description/costume）以入参为准——agent 重写计划就是重写；
+// **产物字段**（imageUrl/nodeId）入参没给时沿用既有记账，不能因为重写计划
+// 就丢掉「这张造型图已出」的事实（丢了下一次装载会重复物化造型卡）
+applyOps([
+  {
+    op: "update_node",
+    id: "LK_CHAR",
+    looks: [
+      { label: "朝服", description: "又一次改写" },
+      { label: "常服", costume: "素色常服" },
+    ],
+  },
+]);
+const rewritten = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_CHAR")?.data.looks;
+check(
+  "ops update_node：重写计划不抹掉既有产物记账（imageUrl/nodeId 沿用）",
+  rewritten?.[0]?.description === "又一次改写" &&
+    rewritten?.[0]?.imageUrl === "/assets/look0.png" &&
+  rewritten?.[0]?.nodeId === "lookimg_c1_0",
+  JSON.stringify(rewritten?.[0]),
+);
+// 造型账的 error 记账三条语义（2026-09-11 修：原判据 `old.error && !l.imageUrl`
+// 拿错字段——入参带新错误时反被旧错误盖住，用户重出失败后看到的还是上次原因）
+const seedLooks = (looks) =>
+  useCanvasStore.getState().updateNodeData("LK_CHAR", { looks });
+seedLooks([{ label: "朝服", imageUrl: "/assets/old.png", error: "旧错误" }]);
+applyOps([
+  {
+    op: "update_node",
+    id: "LK_CHAR",
+    looks: [{ label: "朝服", error: "新错误：上游 400" }],
+  },
+]);
+const errNew = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_CHAR")?.data.looks;
+check(
+  "ops update_node：入参新错误覆盖旧错误（error 入参优先）",
+  errNew?.[0]?.error === "新错误：上游 400" &&
+    errNew?.[0]?.imageUrl === "/assets/old.png",
+  JSON.stringify(errNew?.[0]),
+);
+seedLooks([{ label: "朝服", error: "旧错误" }]);
+applyOps([
+  {
+    op: "update_node",
+    id: "LK_CHAR",
+    looks: [{ label: "朝服", imageUrl: "/assets/ok.png" }],
+  },
+]);
+const errCleared = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_CHAR")?.data.looks;
+check(
+  "ops update_node：出新图后旧错误被清掉（失败已翻篇）",
+  errCleared?.[0]?.imageUrl === "/assets/ok.png" &&
+    errCleared?.[0]?.error === undefined,
+  JSON.stringify(errCleared?.[0]),
+);
+seedLooks([{ label: "朝服", error: "旧错误" }]);
+applyOps([
+  {
+    op: "update_node",
+    id: "LK_CHAR",
+    looks: [{ label: "朝服", description: "只重写计划" }],
+  },
+]);
+const errKept = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_CHAR")?.data.looks;
+check(
+  "ops update_node：纯重写计划（无图无错）沿用旧错误",
+  errKept?.[0]?.description === "只重写计划" &&
+    errKept?.[0]?.error === "旧错误",
+  JSON.stringify(errKept?.[0]),
+);
+applyOps([
+  {
+    op: "add_node",
+    id: "LK_NEW2",
+    nodeType: "character",
+    title: "测试角色2",
+    looks: [{ label: "朝服", imageUrl: "/assets/x.png", nodeId: "n_evil" }],
+  },
+]);
+const newLooks = useCanvasStore
+  .getState()
+  .nodes.find((n) => n.id === "LK_NEW2")?.data.looks;
+check(
+  "ops add_node：造型计划仍拒收产物字段（imageUrl/nodeId 被剥掉）",
+  newLooks?.[0]?.label === "朝服" &&
+    newLooks?.[0]?.imageUrl === undefined &&
+    newLooks?.[0]?.nodeId === undefined,
+  JSON.stringify(newLooks),
+);
 
 // ---------- 主图覆盖前归档（2026-09-10 改图闭环修复的纯函数回归）----------
 // agent 经 canvas_ops 回填 imageUrl 原本是纯覆盖：通道 A（改设定重出）在聊天里

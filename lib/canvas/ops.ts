@@ -237,12 +237,15 @@ function sanitizeLinks(
   return clean.length > 0 ? { links: clean } : {};
 }
 
-/** looks 白名单整形（add_node/update_node 共用）：造型计划是角色卡的结构化
- *  数据（拆解产出，造型图据此出图）。label 必填否则整项剔除，description
- *  500 字、costume 60 字，最多 8 项。**不收 imageUrl/nodeId**——那是出图与
- *  物化流程回填的产物，agent 不该写。返回 {} 表示无有效 looks，不写字段。 */
+/** looks 白名单整形：造型计划是角色卡的结构化数据（拆解产出，造型图据此出图）。
+ *  label 必填否则整项剔除，description 500 字、costume 60 字，最多 8 项。
+ *  **add_node 不收 imageUrl/nodeId**（withProduct=false）——那是出图与物化流程
+ *  回填的产物，造型计划不许自带；**update_node 收**（withProduct=true）：
+ *  服务端出的造型图（generate_look_images）就是靠回填 ops 把 imageUrl/nodeId
+ *  记回来，否则每次装载都会重新物化造型卡。返回 {} 表示无有效 looks，不写字段。 */
 function sanitizeLooks(
   looks: unknown,
+  withProduct = false,
 ): { looks: NonNullable<WingNodeData["looks"]> } | Record<string, never> {
   if (!Array.isArray(looks)) return {};
   const clean = looks
@@ -259,6 +262,14 @@ function sanitizeLooks(
       if (costume) item.costume = costume.slice(0, 60);
       const costumeId = String(l.costumeId ?? "").trim();
       if (costumeId) item.costumeId = costumeId.slice(0, 64);
+      if (withProduct) {
+        const imageUrl = String(l.imageUrl ?? "").trim();
+        if (imageUrl) item.imageUrl = imageUrl.slice(0, 600);
+        const nodeId = String(l.nodeId ?? "").trim();
+        if (nodeId) item.nodeId = nodeId.slice(0, 64);
+        const error = String(l.error ?? "").trim();
+        if (error) item.error = error.slice(0, 200);
+      }
       return item;
     })
     .filter((x): x is NonNullable<WingNodeData["looks"]>[number] => x !== null)
@@ -269,24 +280,37 @@ function sanitizeLooks(
 /** update_node 的造型计划合并：按 label 保留既有项的出图产物（imageUrl/
  *  nodeId/error）。agent 重写造型计划时会传全量 looks，若直接覆盖，已出图的
  *  造型会丢掉记账——轻则被当「待出」重复出图，重则 nodeId 丢失后装载时重建
- *  卡片。add_node 用 sanitizeLooks 即可（新卡没有既有项）。 */
+ *  卡片。add_node 用 sanitizeLooks 即可（新卡没有既有项）。
+ *
+ *  update_node 反向也要收**入参里的**产物字段：造型图由服务端出（agent 的
+ *  generate_look_images 返回落卡 ops），回填 imageUrl/nodeId 只能走这条路
+ *  （2026-09-11）。add_node 仍然拒收——造型计划不许自带产物，产物是生成的
+ *  结果，不是计划的一部分。
+ *
+ *  error 记账三条语义（2026-09-11 修：原判据 `old.error && !l.imageUrl` 会让
+ *  旧错误盖掉入参的新错误——条件里拿错了字段，应为「入参自己没报错」）：
+ *  ① 入参带 error → 以入参为准（重出又失败，用户看到的必须是这次的原因）；
+ *  ② 入参既没 error 也没 imageUrl（只是重写计划）→ 沿用旧错误；
+ *  ③ 入参带 imageUrl（出图成功）→ 上次的失败已翻篇，旧错误清掉。 */
 function lookPatchMerged(
   existing: WingNodeData["looks"],
   incoming: unknown,
 ): { looks: NonNullable<WingNodeData["looks"]> } | Record<string, never> {
-  const clean = sanitizeLooks(incoming);
+  const clean = sanitizeLooks(incoming, true);
   if (!("looks" in clean)) return {};
   const prev = new Map((existing ?? []).map((l) => [l.label, l]));
   return {
     looks: clean.looks.map((l) => {
       const old = prev.get(l.label);
       if (!old) return l;
-      return {
-        ...l,
-        ...(old.imageUrl ? { imageUrl: old.imageUrl } : {}),
-        ...(old.nodeId ? { nodeId: old.nodeId } : {}),
-        ...(old.error ? { error: old.error } : {}),
-      };
+      // 入参优先（服务端回填），缺省沿用既有记账
+      const merged = { ...l };
+      if (!merged.imageUrl && old.imageUrl) merged.imageUrl = old.imageUrl;
+      if (!merged.nodeId && old.nodeId) merged.nodeId = old.nodeId;
+      // error：入参没报错、又没出新图（纯重写计划）才沿用旧账
+      if (!merged.error && !merged.imageUrl && old.error)
+        merged.error = old.error;
+      return merged;
     }),
   };
 }

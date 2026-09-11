@@ -465,10 +465,47 @@ def _extract_json_object(text: str) -> Optional[str]:
     return None
 
 
-async def decompose_script(script: str) -> str:
-    """调拆解 flow 并严格校验，返回给 LLM 的清单文本。"""
+def _canvas_asset_roster(project_id: str) -> List[Dict[str, str]]:
+    """画布已有资产名单 [{type, name}]——拆解 flow 的 existing 入参。
+
+    聊天路径此前从不传它（只有前端 HTTP 路径传），重拆必重复建卡、名字漂移；
+    服务端按项目现读画布，模型不必也不会自己维护这份名单。"""
+    if not project_id:
+        return []
     try:
-        assets, errors = await decompose_script_assets(script)
+        import sqlite3
+
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            row = db.execute(
+                "select nodes from canvases where project_id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+        nodes = json.loads(row[0]) if row and row[0] else []
+    except Exception:
+        return []
+    out: List[Dict[str, str]] = []
+    for n in nodes if isinstance(nodes, list) else []:
+        if not isinstance(n, dict):
+            continue
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        ttype = str(data.get("nodeType") or "")
+        name = str(data.get("title") or "").strip()
+        if ttype in ("character", "scene", "prop", "costume") and name:
+            out.append({"type": ttype, "name": name})
+    return out
+
+
+async def decompose_script(script: str, project_id: str = "") -> str:
+    """调拆解 flow 并严格校验，返回给 LLM 的清单文本。
+
+    project_id：非空时把画布已有资产当 existing 名单喂给 flow（沿用旧名、
+    跨次拆解去重）——Agent 调用的路径此前漏传，重拆会重复建卡。"""
+    try:
+        assets, errors = await decompose_script_assets(
+            script, existing=_canvas_asset_roster(project_id)
+        )
     except RuntimeError as exc:
         return f"拆解技能调用失败：{exc}"
     if not assets:
@@ -909,7 +946,9 @@ async def _decompose_one_type(
     if roster:
         parts.append("已有资产名单：")
         parts.extend(f"- [{a.get('type', '')}] {a.get('name', '')}" for a in roster)
-    parts.append("剧本：")
+    # 输入可能是剧本原文、分镜表行，或两者的拼接（分镜先分支）——标签保持中性，
+    # 写死「剧本：」会让模型把分镜行当剧本读（2026-09-11 分镜先分支）
+    parts.append("创作素材（剧本原文与／或分镜表行）：")
     parts.append(script)
 
     raw = await run_flow_blocking(
@@ -1193,6 +1232,139 @@ def _canvas_research_briefs(
         if title:
             by_title[title] = brief
     return by_id, by_title
+
+
+def _canvas_raw(project_id: str) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """读画布的 nodes / edges（skills 层不 import projects：出图前的画布读取
+    一律直读 canvases 表，同 _canvas_research_briefs 范式）。读库失败返回两张空表。"""
+    if not project_id:
+        return [], []
+    try:
+        import sqlite3
+
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            row = db.execute(
+                "select nodes, edges from canvases where project_id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+        nodes = json.loads(row[0]) if row and row[0] else []
+        edges = json.loads(row[1]) if row and len(row) > 1 and row[1] else []
+    except Exception:
+        return [], []
+    return (
+        [n for n in nodes if isinstance(n, dict)] if isinstance(nodes, list) else [],
+        [e for e in edges if isinstance(e, dict)] if isinstance(edges, list) else [],
+    )
+
+
+def _canvas_ref_cards(
+    project_id: str,
+) -> tuple[Dict[str, List[tuple]], Dict[str, str]]:
+    """画布索引：(资产卡 id → 上游带图参考卡 [(url, 标签类型, 标签名)])、(卡标题 → 节点 id)。
+
+    已采纳的调研参考卡是「参考卡 → 资产卡」方向连线（lib/canvas/refAdopt.ts
+    connect），所以取 e.target == 资产卡 的上游 source。标签口径与前端
+    fillAssetImages 逐字同源：refSource == "research" → type "reference"，
+    否则用 source 卡自己的 nodeType（同地点多状态变体把连线指向母场景卡，
+    走的正是这条）。上限 4 与前端一致。
+
+    这是「基于调研结果出图」在 agent 路径上的机械连接：服务端此前**完全不读
+    edges**（唯一实现是前端 fillAssetImages），调研采纳的参考图到不了聊天
+    出图载荷，agent 出的图只能靠文字考据兜形制（2026-09-11）。"""
+    nodes, edges = _canvas_raw(project_id)
+    if not nodes:
+        return {}, {}
+    ASSET_TYPES = ("character", "scene", "prop", "costume")
+    url_by_id: Dict[str, str] = {}  # 任何带图卡（含参考图卡，都是候选 source）
+    asset_ids: set = set()
+    id_by_title: Dict[str, str] = {}
+    node_by_id: Dict[str, Dict[str, Any]] = {}
+    for n in nodes:
+        nid = str(n.get("id") or "")
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        if nid:
+            node_by_id[nid] = n
+        url = str(data.get("imageUrl") or "").strip()
+        if url:
+            url_by_id[nid] = url
+        if str(data.get("nodeType") or "") in ASSET_TYPES:
+            asset_ids.add(nid)
+            title = str(data.get("title") or "").strip()
+            if nid and title:
+                id_by_title[title] = nid
+    refs_by_node: Dict[str, List[tuple]] = {}
+    seen: set = set()
+    for e in edges:
+        tgt, src = str(e.get("target") or ""), str(e.get("source") or "")
+        url = url_by_id.get(src)
+        if not url or tgt not in asset_ids:
+            continue
+        if (tgt, url) in seen:
+            continue
+        seen.add((tgt, url))
+        bucket = refs_by_node.setdefault(tgt, [])
+        if len(bucket) >= 4:  # 与前端 fillAssetImages 的 slice(0,4) 同口径
+            continue
+        data = (node_by_id.get(src) or {}).get("data") or {}
+        label_type = (
+            "reference"
+            if data.get("refSource") == "research"
+            else str(data.get("nodeType") or "reference")
+        )
+        bucket.append((url, label_type, str(data.get("title") or "参考")))
+    return refs_by_node, id_by_title
+
+
+def _attach_refs(shot: Dict[str, Any], refs: List[tuple]) -> Dict[str, Any]:
+    """把参考图并进载荷的 reference_images / reference_labels。
+
+    两种键名都收（前端 camelCase / 工具 snake_case），沿用调用方原键。"""
+    img_key = "referenceImages" if "referenceImages" in shot else "reference_images"
+    lbl_key = "referenceLabels" if "referenceLabels" in shot else "reference_labels"
+    existing = shot.get(img_key)
+    urls = list(existing) if isinstance(existing, list) else []
+    labels = shot.get(lbl_key)
+    outs = list(labels) if isinstance(labels, list) else []
+    for url, ltype, lname in refs:
+        urls.append(url)
+        outs.append({"type": ltype, "name": lname})
+    return {**shot, img_key: urls, lbl_key: outs}
+
+
+def _inject_canvas_refs(
+    shots: List[Dict[str, Any]], project_id: str
+) -> List[Dict[str, Any]]:
+    """把画布上已采纳的参考卡（调研参考图 / 母场景图）并进出图载荷的参考序列。
+
+    只在载荷**没有**自带参考时补：调用方显式给的参考优先，叠加会越过模型参考
+    上限（各模型最小 4）。命中顺序 rid → 资产名（聊天载荷没有 rid），与
+    _inject_research_briefs 同口径。空项目/无连线原样放行。"""
+    refs_by_node, id_by_title = _canvas_ref_cards(project_id)
+    if not refs_by_node:
+        return shots
+    out: List[Dict[str, Any]] = []
+    for s in shots:
+        if not isinstance(s, dict):
+            out.append(s)
+            continue
+        for k in ("referenceImages", "reference_images"):
+            if isinstance(s.get(k), list) and s.get(k):
+                break
+        else:
+            rid = str(s.get("rid") or "")
+            node_id = (
+                rid
+                if rid in refs_by_node
+                else id_by_title.get(str(s.get("name") or "").strip(), "")
+            )
+            bucket = refs_by_node.get(node_id) or []
+            if bucket:
+                out.append(_attach_refs(s, bucket))
+                continue
+        out.append(s)
+    return out
 
 
 def _topic_briefs(
@@ -1512,6 +1684,9 @@ async def generate_asset_images(
     # 资产载荷没有 rid，按资产名匹配画布卡片上的 researchBrief
     chat_project_id = _project_id_from_config(config)
     assets = _inject_research_briefs(assets, chat_project_id)
+    # 已采纳的调研参考卡注入（「参考卡 → 资产卡」上游连线）：不带这一步，
+    # 「调研 → 基于调研结果出图」在聊天路径上不成立（参考图进不来）
+    assets = _inject_canvas_refs(assets, chat_project_id)
     # 真实题材：画布上还没有考据的资产，出图前现补一次（虚构题材跳过）
     chat_factuality = _project_factuality(chat_project_id)
     brief_sem = asyncio.Semaphore(_BRIEF_CONCURRENCY)
@@ -1536,8 +1711,11 @@ async def generate_asset_images(
     structured: List[Dict[str, Any]] = []
     last_emit = [0.0]
     thread_id = _thread_id_of_config(config)
+    # 任务条标题（用户误读事故：「设定图 ×52」被当成「选中了 52 个卡片」——
+    # ×N 记数没有单位、又和 chip 同区显示）。改「生成设定图（N 张）」：动宾
+    # 短语对齐「生成分镜表」，单位「张」明确指图片张数而非卡片选择
     job_id = (
-        start_chat_job(thread_id, "imagegen", f"设定图 ×{total}", total)
+        start_chat_job(thread_id, "imagegen", f"生成设定图（{total} 张）", total)
         if thread_id
         else ""
     )
@@ -1585,12 +1763,44 @@ async def generate_asset_images(
                     # 写卡 genShot.finalPrompt 的数据源（卡上查看/编辑重跑）
                     "finalPrompt": str(result.get("finalPrompt") or ""),
                     **({"researchNote": note} if note else {}),
+                    # 落卡身份与审计快照（graph._build_asset_card_ops 据此给资产卡
+                    # 生成 update_node ops：node_id 优先、标题兜底）；视觉笔记取
+                    # **注入后**的版本——卡上 genShot 记的就是实际发出去的东西
+                    "nodeId": str(asset.get("node_id") or asset.get("nodeId") or ""),
+                    "assetType": str(shot.get("assetType") or ""),
+                    "shotlistId": str(
+                        asset.get("shotlist_id") or asset.get("shotlistId") or ""
+                    ),
+                    "description": str(asset.get("description") or ""),
+                    "visualNotes": str(shot.get("visual_notes") or ""),
+                    "referenceImages": [
+                        str(u)
+                        for u in (
+                            shot.get("reference_images")
+                            or shot.get("referenceImages")
+                            or []
+                        )
+                        if str(u).strip()
+                    ],
+                    "referenceLabels": shot.get("reference_labels")
+                    or shot.get("referenceLabels")
+                    or [],
+                    "aspect": str(shot.get("aspect") or ""),
                 }
             )
         else:
             line = f"✗ {name}｜出图失败：{str(result.get('error') or '未知')[:100]}"
             structured.append(
-                {"name": name, "ok": False, "error": str(result.get("error") or "未知")[:160]}
+                {
+                    "name": name,
+                    "ok": False,
+                    "error": str(result.get("error") or "未知")[:160],
+                    "nodeId": str(asset.get("node_id") or asset.get("nodeId") or ""),
+                    "assetType": str(shot.get("assetType") or ""),
+                    "shotlistId": str(
+                        asset.get("shotlist_id") or asset.get("shotlistId") or ""
+                    ),
+                }
             )
         # 节流播报：只在静默 ≥3s 或全部完成时推一条累计行（并发 30 张时逐张
         # 播报会把聊天刷成 30 条进度；AG-UI 桥的 message_id 单次认领，
@@ -1897,6 +2107,205 @@ async def _generate_single_image(
             out["composeAction"] = composed["action"]
         return out
     return {"ok": False, "error": raw[:200]}
+
+
+# ---------- 造型图（Look）出图链 · agent 侧入口 ----------
+
+def _look_protocol(
+    char_title: str, label: str, description: str, has_costume: bool
+) -> str:
+    """造型图提示词。**与前端 fillLookImages 的 protocol 数组逐字同源**
+    （components/canvas/nodes.tsx）——两份实现共用一套措辞，改一处必须改另一处，
+    回归断言关键句一致。
+
+    assetType="none" 原话直传：单幅全身版式由本段自述，避开四格定妆契约
+    （角色表版式会把造型图压成四格，形制细节全丢）。"""
+    parts = [
+        f"生成角色「{char_title}」的造型定妆图：{label}。",
+        f"造型要求：{description}。" if description else "",
+        "参考图1（角色身份参考）：只继承脸型、五官、发型、体型比例，保持完全不变；"
+        "忽略其服装、配饰、姿态与背景。",
+        "参考图2（服饰结构参考）：形制、材质、配色以该服饰图为准；只取服装形制，"
+        "不继承其白底、三视图或转面排版。" if has_costume else "",
+        "画面为单幅全身造型图：完整呈现穿着该套造型的人物，不做分格、并排多视图或转面陈列。",
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def _look_jobs(project_id: str, char_ids: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """画布上待出图的造型任务清单（读画布卡）。
+
+    资格：角色卡（可被 char_ids 圈定）有定妆照（无身份锚点不出）+ 造型计划项
+    还没 imageUrl。服饰图按 looks[i].costumeId 解析（身份证绑定，改名不失联）。"""
+    nodes, _ = _canvas_raw(project_id)
+    by_id = {str(n.get("id")): n for n in nodes}
+    scope = {str(c) for c in (char_ids or []) if str(c).strip()}
+    jobs: List[Dict[str, Any]] = []
+    for n in nodes:
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        if str(data.get("nodeType") or "") != "character":
+            continue
+        cid = str(n.get("id") or "")
+        if not cid or (scope and cid not in scope):
+            continue
+        title = str(data.get("title") or "").strip()
+        ding = str(data.get("imageUrl") or "").strip()
+        if not ding:
+            continue  # 无定妆照=无身份锚点，造型图会退化成纯文生图
+        for idx, l in enumerate(data.get("looks") or []):
+            if not isinstance(l, dict):
+                continue
+            label = str(l.get("label") or "").strip()
+            if not label or str(l.get("imageUrl") or "").strip():
+                continue
+            costume_id = str(l.get("costumeId") or "").strip()
+            costume = by_id.get(costume_id) if costume_id else None
+            costume_img = (
+                str((costume.get("data") or {}).get("imageUrl") or "").strip()
+                if costume
+                else ""
+            )
+            jobs.append(
+                {
+                    "charId": cid,
+                    "charTitle": title,
+                    "lookIdx": idx,
+                    "label": label,
+                    "description": str(l.get("description") or "").strip(),
+                    "costumeId": costume_id if costume_img else "",
+                    "costumeTitle": str((costume.get("data") or {}).get("title") or "")
+                    if costume_img
+                    else "",
+                    "identity": ding,
+                    "costumeImg": costume_img,
+                    "params": (data.get("gen") if isinstance(data.get("gen"), dict) else {}),
+                }
+            )
+    return jobs
+
+
+async def generate_look_images(
+    config: Any = None,
+    char_ids: Optional[List[str]] = None,
+    params: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """为角色卡上还没出图的造型（looks）出造型图（agent 侧入口）。
+
+    与前端「造型图·N」按钮（fillLookImages）同一语义：参考图1=角色定妆照
+    （锁身份）、参考图2=绑定服饰的结构图（锁形制），assetType="none" 原话直传。
+    造型图是分镜近景/特写的参考锚点——没有它，换装镜头只能拿定妆照出
+    （2026-09-11 补齐 agent 侧入口，此前只有前端按钮能做）。
+
+    返回 {lines, results}：results 每项 =
+    {charId, charTitle, lookIdx, label, costumeId, ok, imageUrl?, error?}，
+    由 graph 侧构造成落卡 ops（物化造型卡 + 连线 + looks 回填）。
+    画风未选 / 项目定位不到 / 无待出造型：lines 里明报，results 空（不静默）。"""
+    if not IMAGEGEN_FLOW_ID or not DMX_API_KEY:
+        return {"lines": "（出图不可用：未配置 imagegen flow 或 DMX_API_KEY）", "results": []}
+    project_id = _project_id_from_config(config)
+    if not project_id:
+        return {"lines": "无法定位当前项目，造型图未生成", "results": []}
+    style = _project_style_from_config(config).strip()
+    if not style:
+        # 画风闸：与补资产图同规（无画风只拦视觉产物，不静默跳过让 agent 以为成了）
+        return {
+            "lines": "（未选画风：出图类操作要求全局画风已选——先 open_style_picker 让用户选，"
+            "或 set_project_style 设定后再出造型图）",
+            "results": [],
+        }
+    jobs = _look_jobs(project_id, char_ids)
+    if not jobs:
+        return {
+            "lines": "没有待出图的造型（角色卡上没有缺图的造型计划，或角色还没有定妆照）",
+            "results": [],
+        }
+
+    # 逐项预校验模型/档位/画幅（任一不合法整批不跑并点名——与批量出图同一铁律，
+    # 绝不静默回退默认值：卡级 gen 可能指向已下架的模型）
+    resolved: Dict[int, Dict[str, str]] = {}
+    invalid: List[str] = []
+    for i, j in enumerate(jobs):
+        merged = {**(params or {}), **(j.get("params") or {})}
+        if "model_name" in merged:
+            merged["model"] = merged.pop("model_name")
+        try:
+            p = models.resolve_imagegen_params(merged or None) or {}
+            p["aspect"] = models.resolve_aspect(
+                merged.get("aspect"), str(p.get("model_name") or models.DEFAULT_MODEL_ID)
+            )
+            resolved[i] = p
+        except ValueError as exc:
+            invalid.append(f"「{j['charTitle']}·{j['label']}」{exc}")
+    if invalid:
+        return {"lines": "；".join(invalid), "results": []}
+
+    # 载荷先全部备好、考据简报在这一步注入（rid 的 # 前缀落回角色卡，造型图
+    # 与角色图吃同一份事实依据），再并发跑——简报必须在出图前并进 visual_notes
+    payloads: List[Dict[str, Any]] = []
+    for i, j in enumerate(jobs):
+        has_costume = bool(j.get("costumeImg"))
+        refs = [j["identity"]] + ([j["costumeImg"]] if has_costume else [])
+        labels = [{"type": "character", "name": j["charTitle"]}]
+        if has_costume:
+            labels.append({"type": "costume", "name": j["costumeTitle"] or "服饰"})
+        payloads.append(
+            {
+                "rid": f"{j['charId']}#look{j['lookIdx']}",
+                "name": f"{j['charTitle']}·{j['label']}",
+                "description": _look_protocol(
+                    j["charTitle"], j["label"], j["description"], has_costume
+                ),
+                "assetType": "none",  # 原话直传，版式在 protocol 里
+                "visual_notes": f"全局视觉风格：{style}",
+                "reference_images": refs,
+                "reference_labels": labels,
+                "aspect": resolved[i].get("aspect") or "",
+            }
+        )
+    payloads = _inject_research_briefs(payloads, project_id)
+    sem = asyncio.Semaphore(8)
+
+    async def one(i: int, j: Dict[str, Any]) -> Dict[str, Any]:
+        async with sem:
+            r = await _generate_single_image(
+                payloads[i],
+                params={k: v for k, v in resolved[i].items() if k != "aspect"},
+            )
+        base = {
+            "charId": j["charId"],
+            "charTitle": j["charTitle"],
+            "lookIdx": j["lookIdx"],
+            "label": j["label"],
+            "costumeId": j["costumeId"],
+            "costumeTitle": j["costumeTitle"],
+            "description": j["description"],
+            # 参考图源（落卡 ops 写 genShot.referenceImages 用）
+            "identity": j["identity"],
+            "costumeImg": j["costumeImg"],
+        }
+        if r.get("ok") and r.get("imageUrl"):
+            return {
+                **base,
+                "ok": True,
+                "imageUrl": str(r["imageUrl"]),
+                "finalPrompt": str(r.get("finalPrompt") or ""),
+                "sentPrompt": str(payloads[i].get("description") or ""),
+            }
+        return {**base, "ok": False, "error": str(r.get("error") or "出图失败")[:200]}
+
+    results = list(await asyncio.gather(*[one(i, j) for i, j in enumerate(jobs)]))
+    made = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    lines = [
+        f"{'✓' if r.get('ok') else '✗'} {r['charTitle']}·{r['label']}"
+        + (f"｜image_url={r['imageUrl']}" if r.get("ok") else f"｜出图失败：{r['error']}")
+        for r in results
+    ]
+    head = f"造型图 {len(made)}/{len(results)} 张成功"
+    if failed:
+        names = "、".join(f"{r['charTitle']}·{r['label']}" for r in failed)
+        head += f"，失败 {len(failed)} 张（{names}）"
+    return {"lines": "\n".join([head] + lines), "results": results}
 
 
 async def start_storyboard_image_job(

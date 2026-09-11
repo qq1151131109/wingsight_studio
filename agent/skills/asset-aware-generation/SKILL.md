@@ -52,10 +52,14 @@ description: 出设定图/剧照、保持角色形象一致、为资产找参考
    canvas_ops update_node 把对应资产卡置为
    {imageUrl:返回 URL, status:"ready"}（与资产卡「AI 出图」按钮、拆解
    自动出图链同一范式——一张卡一张图，图上卡才算「资产有设定图」）。
-   不要为设定图另建 image 卡：独立图片卡只用于 1:N 衍生物（Look 造型图，
-   命名「资产名·造型名」）或用户明确要求单独成卡的场合，且此时要
+   不要为设定图另建 image 卡：独立图片卡只用于 1:N 衍生物（造型图，命名
+   「资产名·造型名」）或用户明确要求单独成卡的场合，且此时要
    connect_nodes 连回资产卡。失败如实报可重试（失败处置见
    generation-recovery 手册）。
+   **造型图别手工建卡**：那是 generate_look_images 的活（参考图1=定妆照锁
+   身份、参考图2=服饰结构图锁形制，出完返回落卡 ops 回填造型账）——手工建的
+   卡拿不到双参考协议与账目，按 character 版式还会被出成四格定妆图。时机与
+   顺序见 script-to-assets 手册第 4 站。
 6. **画幅**：调 generate_asset_images 时不传 aspect——按类型默认
    （character/scene/prop/costume=16:9 横版），角色表的「横版 16:9 四格
    构图」布局提示词与资产卡 16:9 媒体区都按默认幅面设计；自行改竖版
