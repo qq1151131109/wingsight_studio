@@ -496,11 +496,12 @@ export function sanitizeCanvas(
     }
   }
 
-  // 存量散落参考卡收进「考据参考」折叠组（2026-09-11 参考卡风暴善后）：
+  // 存量散落参考卡收进「考据参考」组（2026-09-11 参考卡风暴善后）：
   // 09-10 起对账把已采纳参考图物化成画布卡，旧落位是「资产列下方各占一条
   // 横带」——冯太后项目 52 资产 × 3 张一次性铺成 2350×4100px 的 sprawl。
-  // 新代码（refAdopt.adoptRefRows）一律落进折叠组框；这里把存量散卡按原
-  // 相对排布整体收进组（保位迁移，展开时资产邻接关系不乱）、默认折叠。
+  // 新代码（refAdopt.adoptRefRows）一律落进组框且**默认展开**；这里把存量
+  // 散卡按原相对排布整体收进组（保位迁移，展开时资产邻接关系不乱），组框
+  // 尺寸按内容实算（行距重叠与越界由打开项目时的 relayoutRefGroup 自愈）。
   // 守卫：组已存在时只收 ≥6 张的批量散卡——用户从组里拖出来的个别卡是
   // 刻意的画布安排，装载不该塞回去（组不存在时收任意张：首次迁移）。
   let regroupedRefs = 0;
@@ -523,30 +524,29 @@ export function sanitizeCanvas(
       maxX = Math.max(maxX, s.position.x + w);
       maxY = Math.max(maxY, s.position.y + h);
     }
-    const padX = 16;
+    const padX = 20;
     const padTop = 44;
-    const padBottom = 16;
+    const padBottom = 20;
     const gid = genNodeId();
     const refGroupNode: WingNode = {
       id: gid,
       type: "group",
       position: { x: minX - padX, y: minY - padTop },
-      style: { width: 172, height: 40 },
+      style: {
+        width: maxX - minX + padX * 2,
+        height: maxY - minY + padTop + padBottom,
+      },
       data: {
         nodeType: "group",
         title: "考据参考",
         refGroup: "research",
-        collapsed: true,
-        prevSize: {
-          w: maxX - minX + padX * 2,
-          h: maxY - minY + padTop + padBottom,
-        },
+        collapsed: false,
         body: "",
       },
     };
     for (const s of strays) {
       s.parentId = gid;
-      s.hidden = true;
+      s.hidden = false;
       s.position = {
         x: s.position.x - (minX - padX),
         y: s.position.y - (minY - padTop),

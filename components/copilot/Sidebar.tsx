@@ -28,6 +28,7 @@ import { Check, Copy, FileText, Layers, Megaphone, Pencil, Sparkles, type Lucide
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import ChatInput from "./ChatInput";
 import AssistantMessage from "./AssistantMessage";
+import ReasoningMessage from "./ReasoningMessage";
 import CapabilitiesDialog from "./CapabilitiesDialog";
 import TurnLocator from "./TurnLocator";
 import { useChatSession } from "@/lib/chat/session";
@@ -627,6 +628,9 @@ export default function ThemedSidebar() {
           // 一个操作按钮都没有，长回复只能手动拖选（2026-09-09 review）
           assistantMessage: asSlot<never>(AssistantMessage),
           userMessage: asSlot<never>(UserBubble),
+          // 思考行自绘（components/copilot/ReasoningMessage.tsx）：v2 默认流式
+          // 展开→结束折叠，高度跳变；这里单行贯穿（opencode 范式），布局不跳
+          reasoningMessage: asSlot<never>(ReasoningMessage),
         }}
         onError={(ev) => {
           if (!("error" in ev)) return;

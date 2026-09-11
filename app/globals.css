@@ -902,10 +902,11 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     margin-top: 10px;
 }
 
-/* 思考块（「Thought for…」折叠条，cpk:my-1）是 v2 的一条独立消息行：
-   自带 margin 4px 0，叠在容器 gap 20 上凑成 24px 双倍间距（墨迹口径实测）。
-   掐掉自我 margin，消息边界统一归 .copilotKitMessages 的 gap 说话 */
-.copilotKitSidebar .cpk\:my-1 {
+/* 思考块是 v2 的一条独立消息行：自带 margin 4px 0，叠在容器 gap 20 上凑成
+   24px 双倍间距（墨迹口径实测）。掐掉自我 margin，消息边界统一归
+   .copilotKitMessages 的 gap 说话——自绘 ReasoningMessage 同规则 */
+.copilotKitSidebar .cpk\:my-1,
+.copilotKitSidebar .ws-reasoning {
     margin-top: 0;
     margin-bottom: 0;
 }
@@ -1153,6 +1154,12 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 .copilotKitSidebar .copilotKitInput:focus-within {
     border-color: var(--color-accent-soft);
     box-shadow: 0 0 0 3px var(--color-accent-dim);
+}
+/* 生成中（回车排队窗）：焦点还在编辑器里，accent 描边会全程亮着——
+   运行态不是「正在输入」，压回纸面细线（ChatInput 落 data-running） */
+.copilotKitSidebar .copilotKitInput[data-running="true"]:focus-within {
+    border-color: var(--color-hairline);
+    box-shadow: none;
 }
 .copilotKitSidebar .copilotKitInputControls {
     display: flex;

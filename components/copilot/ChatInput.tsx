@@ -732,7 +732,11 @@ export default function ChatInput({
             </button>
           </div>
         ) : null}
-      <div className="copilotKitInput relative flex flex-col">
+      <div
+        className="copilotKitInput relative flex flex-col"
+        // 生成中压掉焦点描边（globals.css 按此属性停用 :focus-within 的 accent 圈）
+        data-running={inProgress ? "true" : undefined}
+      >
         {jobs.length > 0 ? (
           <div className="mb-1.5 flex flex-col gap-1">
             {jobs.map((j) => (

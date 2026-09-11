@@ -16,7 +16,11 @@
  * 天然幂等——简报按内容比、参考卡按图 URL 去重、报告卡按 reportKind 单例。
  */
 
-import { adoptRefRows, materializeTopicRefs } from "@/lib/canvas/refAdopt";
+import {
+  adoptRefRows,
+  materializeTopicRefs,
+  relayoutRefGroup,
+} from "@/lib/canvas/refAdopt";
 import { absolutePosition, nodeSize, useCanvasStore } from "@/lib/canvas/store";
 import { addCardAt } from "@/lib/canvas/ingest";
 import {
@@ -231,6 +235,11 @@ export async function reconcileRefResearch(
         .filter((tr) => tr.images.length > 0 && tr.servedNodeIds.length > 0);
       topicRefsCreated = materializeTopicRefs(rows, { history: "skip" }).length;
     }
+
+    // ②d 组框自愈：打开项目就把「考据参考」组内按真实卡高重排一次——固定行距
+    //     时代留下的重叠、以及组框高没跟上内容导致的越界卡（091102 那张挂在
+    //     框外 190px 的参考卡），都在这里修掉。无重叠时只同步组框尺寸。
+    relayoutRefGroup();
 
     // ③ 报告卡与大纲卡（各自单例）：有条目/主题才建——空卡是噪音。
     //    报告卡附带 reportPending（真待办清单）——「补调研 N」按钮的数据源
