@@ -40,10 +40,10 @@ export default function ActivityBar() {
   return (
     <aside className="flex w-14 shrink-0 flex-col items-center border-r border-hairline bg-surface-1/60 py-3 backdrop-blur">
       <div
-        className="font-editorial mb-2 flex h-8 w-8 select-none items-center justify-center rounded-lg bg-accent text-sm font-semibold text-white"
+        className="font-editorial mb-2 flex h-8 w-8 select-none items-center justify-center rounded-lg bg-accent text-[17px] font-semibold text-white"
         title="Wingsight Studio"
       >
-        翼
+        W
       </div>
       <button
         type="button"

@@ -70,8 +70,8 @@ export default function LoginPage() {
     <div className="flex h-dvh items-center justify-center bg-bg p-6">
       <form onSubmit={submit} className="ws-card w-full max-w-xs p-6">
         <div className="mb-1 flex items-center gap-2">
-          <span className="font-editorial flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-sm font-semibold text-white">
-            翼
+          <span className="font-editorial flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-[17px] font-semibold text-white">
+            W
           </span>
           <h1 className="font-editorial text-lg font-semibold text-text">
             Wingsight Studio

@@ -149,8 +149,8 @@ function HomeInner() {
       {/* 顶栏 */}
       <header className="sticky top-0 z-10 border-b border-hairline bg-bg/85 backdrop-blur">
         <div className="mx-auto flex max-w-5xl items-center gap-3 px-6 py-3.5">
-          <span className="font-editorial flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-sm font-semibold text-white">
-            翼
+          <span className="font-editorial flex h-8 w-8 items-center justify-center rounded-lg bg-accent text-[17px] font-semibold text-white">
+            W
           </span>
           <div className="mr-auto">
             <h1 className="font-editorial text-base font-semibold leading-tight text-text">
