@@ -245,6 +245,9 @@ export interface RefReport {
   entries: RefEntry[];
   /** 画布上还没有考据的资产卡（报告「待补」段，也是用户该动手的清单） */
   missing: { nodeId: string; title: string; nodeType: string }[];
+  /** 真待办 = missing 里连参考图都没有的（调研没成或从没跑过）——报告卡
+   *  「补调研 N」按钮的工作清单。有参考图只缺文字简报的不进这里（重跑浪费） */
+  pendingAssets: { nodeId: string; name: string; type: string }[];
   /** 已采纳候选按节点分组（前端对账物化参考卡用；已物化的按图 URL 去重） */
   adopted: { nodeId: string; candidates: RefCandidate[] }[];
   /** 考证大纲的主题（报告首节） */

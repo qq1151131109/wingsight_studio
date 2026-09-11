@@ -131,6 +131,10 @@ check("A2 条目两条（资产 + 主题）",
 check("A3 待补点名叫环首刀",
   rep.body?.missing?.length === 1 && rep.body.missing[0].title === "环首刀",
   JSON.stringify(rep.body?.missing));
+check("A3b 真待办清单只含无参考图的（pendingAssets）",
+  JSON.stringify(rep.body?.pendingAssets ?? []) ===
+    JSON.stringify([{ nodeId: "N_SWORD", name: "环首刀", type: "prop" }]),
+  JSON.stringify(rep.body?.pendingAssets));
 check("A4 era 口径读出", rep.body?.era === ERA, `era=${rep.body?.era}`);
 check("A5 报告正文含条目与来源",
   String(rep.body?.text ?? "").includes("鲜卑辫发") && String(rep.body?.text ?? "").includes("a.example"));
@@ -184,8 +188,12 @@ check("B4 报告卡标题带项目名",
   reportCards[0]?.data?.title);
 check("B5 报告卡正文是服务端报告",
   String(reportCards[0]?.data?.body ?? "").includes("鲜卑辫发") &&
-  String(reportCards[0]?.data?.body ?? "").includes("待补考据"),
+  String(reportCards[0]?.data?.body ?? "").includes("待补清单"),
   `len=${String(reportCards[0]?.data?.body ?? "").length}`);
+check("B5b 报告卡带真待办清单（补调研按钮的数据源）",
+  JSON.stringify(reportCards[0]?.data?.reportPending ?? []) ===
+    JSON.stringify([{ nodeId: "N_SWORD", name: "环首刀", type: "prop" }]),
+  JSON.stringify(reportCards[0]?.data?.reportPending));
 
 const outlineCards = (canvas?.nodes ?? []).filter((n) => n.data?.reportKind === "ref-outline");
 check("B9 大纲卡建了一张", outlineCards.length === 1, `count=${outlineCards.length}`);

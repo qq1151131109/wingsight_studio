@@ -215,6 +215,7 @@ import {
 import {
   reconcileRefResearch,
   REF_OUTLINE_KIND,
+  REF_REPORT_KIND,
 } from "@/lib/canvas/refReconcile";
 import { useRefStatusStore } from "@/lib/refStatus";
 
@@ -1933,6 +1934,33 @@ function TextCard({
       if (outlinePoll.current) clearInterval(outlinePoll.current);
     };
   }, []);
+  // 报告卡「补调研」续链（useBatchRefJob 同款：锚 refBatchJobId 在本卡数据上，
+  // 移出视口/刷新后凭锚续轮询）。简报落卡与自动采纳都由钩子处理，这里只管收尾
+  const reportJob = useBatchRefJob(id);
+  // 补调研收尾：终态清锚 + 对账刷新报告卡（正文与 reportPending 待办清单
+  // 一起更新——按钮的 N 随之消失或减少）+ 结果汇报
+  useEffect(() => {
+    const j = reportJob.job;
+    if (!j || reportJob.running) return;
+    useCanvasStore.getState().updateNodeData(id, { refBatchJobId: undefined });
+    void (async () => {
+      await Promise.resolve();
+      const ok = j.items.filter((it) => it.status === "done").length;
+      const err = j.items.length - ok;
+      showToast(
+        err
+          ? `补调研结束：${ok} 项完成、${err} 项失败（失败原因见报告卡待补清单）`
+          : `补调研结束：${ok} 项全部完成，报告已刷新`,
+      );
+      const pid = useCanvasStore.getState().projectId;
+      if (pid) await reconcileRefResearch(pid).catch(() => {});
+    })();
+  }, [reportJob.job, reportJob.running, id]);
+  // 续链查询失败（agent 重启丢任务表等）：清锚；报告内容下次打开项目对账自愈
+  useEffect(() => {
+    if (!reportJob.error) return;
+    useCanvasStore.getState().updateNodeData(id, { refBatchJobId: undefined });
+  }, [reportJob.error, id]);
   const lod = useLod();
   useEffect(() => {
     const onFocusEdit = (e: Event) => {
@@ -2046,10 +2074,63 @@ function TextCard({
       showToast(exc instanceof Error ? exc.message : "执行失败");
     }
   };
+  /** 报告卡「补调研 N」：对真待办资产（无参考图也无考据）重跑批量调研。
+   *  有参考图只缺文字简报的不在清单里——重跑它们是浪费，补文字走考证大纲。
+   *  失败项服务端会自动补跑一轮（2026-09-11 冯太后 18 资产 403 风暴教训） */
+  const runPendingResearch = async () => {
+    const st = useCanvasStore.getState();
+    const projectId = st.projectId;
+    if (!projectId) {
+      showToast("项目未保存：先等画布保存完成再调研");
+      return;
+    }
+    const ids = new Set((data.reportPending ?? []).map((p) => p.nodeId));
+    const targets = st.nodes.filter((n) => ids.has(n.id));
+    if (!targets.length) {
+      showToast("待办清单里的资产卡已不在画布上，刷新报告请打开项目重进");
+      return;
+    }
+    promptEraIfNeeded();
+    try {
+      const batchId = await startBatchRefResearch(
+        projectId,
+        targets.map((n) => ({
+          nodeId: n.id,
+          name: String(n.data.title ?? ""),
+          type: String(n.data.nodeType ?? "character"),
+          description: `${n.data.title ?? ""}。${String(n.data.body ?? "")}`.slice(0, 600),
+        })),
+      );
+      st.updateNodeData(id, { refBatchJobId: batchId });
+      showToast(`已发起 ${targets.length} 个资产的补调研，完成后报告自动刷新`);
+    } catch (exc) {
+      showToast(exc instanceof Error ? exc.message : "补调研发起失败");
+    }
+  };
   // 默认工具（extraTools 未传时注入，即文本卡）：生图/生视频/调研/导出
   const GenIcon = TYPE_ICONS.image;
   const VidIcon = TYPE_ICONS.video;
   const isOutline = data.reportKind === REF_OUTLINE_KIND;
+  const isRefReport = data.reportKind === REF_REPORT_KIND;
+  const pendingCount = (data.reportPending ?? []).length;
+  const reportTools =
+    isRefReport && pendingCount > 0 ? (
+      <ToolBtn
+        title={`对报告里缺参考图与考据的 ${pendingCount} 个资产重新发起批量调研（发起前会问一次考据年代；失败项服务端自动补跑一轮，完成后报告自动刷新）`}
+        label={
+          reportJob.running
+            ? `补调研中 ${reportJob.job?.done ?? 0}/${pendingCount}`
+            : `补调研 ${pendingCount}`
+        }
+        disabled={reportJob.running}
+        onClick={() => {
+          void trackEvent("report.research-pending", { count: pendingCount });
+          void runPendingResearch();
+        }}
+      >
+        <Search className="h-3.5 w-3.5" />
+      </ToolBtn>
+    ) : null;
   const outlineTools = isOutline ? (
     <ToolBtn
       title="执行考证大纲里未完成的主题：逐主题搜网络取证，结果落本项目考据条目（同题材已考据过的自动复用、不重搜）"
@@ -2070,6 +2151,7 @@ function TextCard({
   const textTools = editorial ? undefined : (
     <>
       {outlineTools}
+      {reportTools}
       <ToolBtn
         title="以本文为提示词，右侧新建图片卡并生成"
         label="生图"
@@ -6055,8 +6137,8 @@ async function fillLookImages(
           description: protocol,
           // 原话直传（版式已在 protocol 里说清），不走四格定妆契约；
           // 画幅跟随角色卡的卡片级设置（缺省走 flow 类型默认）——**不能硬编码
-          // 9:16**：默认模型 gpt-image-2.5-sunburst-cdx 只有 16:9/1:1/4:3/3:4，
-          // 硬传 9:16 会被服务端预校验拦成整批 400（2026-09-10 E2E 实测踩中）
+          // 9:16**：用户可能给角色卡选了别的画幅/别的模型（未必支持 9:16），
+          // 硬传会被服务端预校验拦成整批 400（2026-09-10 E2E 实测踩中）
           assetType: "none" as const,
           visualNotes: `全局视觉风格：${projectStyle}`,
           referenceImages: refs,

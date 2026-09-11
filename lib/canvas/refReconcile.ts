@@ -79,11 +79,13 @@ function materializedUrls(nodeId: string): Set<string> {
 }
 
 /** 报告卡/大纲卡共用的单例写卡：有内容才建，内容没变不动（幂等）。
+ *  extra = 随卡落的附加数据（报告卡的 reportPending 待办清单）。
  *  系统写入——不进撤销栈（用户打开项目不该改变 Ctrl+Z 的语义） */
 function upsertDocCard(
   kind: string,
   title: string,
   body: string,
+  extra?: Record<string, unknown>,
 ): CardState {
   const st = useCanvasStore.getState();
   // 用户删过这张卡 = 不要这张视图了，不再重建（2026-09-10 用户拍板，与参考卡
@@ -98,18 +100,28 @@ function upsertDocCard(
         title,
         body,
         reportKind: kind,
+        ...extra,
       },
       undefined,
       { history: "skip" },
     );
     return id ? "created" : "skipped";
   }
-  if (existing.data.body === body && existing.data.title === title) {
+  const sameExtra =
+    !extra ||
+    Object.entries(extra).every(
+      ([k, v]) => JSON.stringify(existing.data[k]) === JSON.stringify(v),
+    );
+  if (
+    existing.data.body === body &&
+    existing.data.title === title &&
+    sameExtra
+  ) {
     return "unchanged";
   }
   useCanvasStore
     .getState()
-    .updateNodeData(existing.id, { body, title }, { history: "skip" });
+    .updateNodeData(existing.id, { body, title, ...extra }, { history: "skip" });
   return "updated";
 }
 
@@ -188,13 +200,15 @@ export async function reconcileRefResearch(
       );
     }
 
-    // ③ 报告卡与大纲卡（各自单例）：有条目/主题才建——空卡是噪音
+    // ③ 报告卡与大纲卡（各自单例）：有条目/主题才建——空卡是噪音。
+    //    报告卡附带 reportPending（真待办清单）——「补调研 N」按钮的数据源
     const reportState: CardState =
       report.entries.length > 0 && report.text
         ? upsertDocCard(
             REF_REPORT_KIND,
             `《${report.projectName || "本项目"}》资产考证报告`,
             report.text,
+            { reportPending: report.pendingAssets ?? [] },
           )
         : "skipped";
     const outlineState: CardState =

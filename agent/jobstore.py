@@ -100,6 +100,29 @@ def load_job(job_id: str) -> Optional[Dict[str, Any]]:
         return {**state, "status": status}
 
 
+def latest_states(kind: str, limit: int = 8) -> list[Dict[str, Any]]:
+    """某类任务最近的若干份终态镜像（按更新时间倒序，含 running 行）。
+
+    诊断视图用（如考证报告读最近一次批量调研的逐项错误）——不做孤儿
+    终态化：running 行要么是本进程在跑的真任务，要么启动清扫已处理过。
+    """
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT state FROM async_jobs WHERE kind = ?"
+            " ORDER BY updated_at DESC LIMIT ?",
+            (kind, limit),
+        ).fetchall()
+    out: list[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            state = json.loads(row["state"] or "{}")
+        except Exception:  # noqa: BLE001 坏行跳过，不拖垮报告
+            continue
+        if isinstance(state, dict):
+            out.append(state)
+    return out
+
+
 def sweep_orphans() -> int:
     """启动清扫：async_jobs 的 running 孤儿全部终态化（产物保留+中断标记）。
 

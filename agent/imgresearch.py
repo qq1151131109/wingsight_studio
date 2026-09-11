@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import re
 import sqlite3
 import uuid
@@ -22,6 +23,7 @@ import httpx
 
 import eventbus  # noqa: E402  (与 main.py 同式：dotenv 之后导入)
 
+import jobstore  # noqa: E402  (与 main.py 同式：dotenv 之后导入)
 import thumbs  # noqa: E402  (与 main.py 同式：dotenv 之后导入)
 from skills import ASSETS_DIR
 
@@ -43,8 +45,12 @@ MAX_CANDIDATES_PER_JOB = 250
 MAX_ADOPT_PER_NODE = 10
 _DOWNLOAD_TIMEOUT = httpx.Timeout(30.0)
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
-# wikimedia 批量下载常撞 429/5xx 限流，带退避重试（juben fetch 同口径）
-_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+# wikimedia 批量下载常撞 429/5xx 限流，带退避重试（juben fetch 同口径）。
+# 403 也重试（2026-09-11 冯太后项目教训：70 资产批量跑时人物类图源集中在
+# 百科/知乎/搜狐几个大 CDN，开跑风暴触发防盗链 403、18 个资产候选图全灭
+# ——其中相当比例是瞬时挑战，退避后再来一次就过了；持续 403 的源重试两次
+# 后照旧失败，不白名单放行）
+_RETRYABLE_STATUS = {403, 429, 500, 502, 503, 504}
 _MAX_ATTEMPTS = 3
 _ALLOWED_MIMES = {"image/jpeg", "image/jpg", "image/png", "image/webp", "image/gif"}
 _EXT_BY_MIME = {
@@ -570,12 +576,36 @@ def build_report(project_id: str) -> dict[str, Any]:
                 }
             )
 
+    # 待补分级（2026-09-11 口径事故：旧头部「已有考据 1 · 待补 70」把 52 个
+    # 参考图调研成功的资产也计成待补，用户读作「70 个调研全失败」）：
+    # 「缺参考图」= 真待办（调研没成或从没跑过）；「有参考图、无文字考据」=
+    # 早期调研的简报未落库（research_entries 2026-09-10 才上线），参考图
+    # 家底是实的，只是文字简报缺档——重跑整轮调研会浪费搜索，补法是执行
+    # 考证大纲（按主题补文字）或出图时自动补考据
+    missing_no_refs = [m for m in missing if not adopted.get(m["nodeId"])]
+    missing_refs_only = [m for m in missing if adopted.get(m["nodeId"])]
+    ref_total = sum(len(v) for v in adopted.values())
+    # 最近一次批量调研的逐项错误（jobstore 镜像）：待补行带上「上次失败」
+    # 让用户分得清「无结果（该换词）」和「下载 403（重试能救）」
+    last_errors: dict[str, str] = {}
+    for mirror in jobstore.latest_states("ref_batch"):
+        if mirror.get("projectId") != project_id:
+            continue
+        for it in mirror.get("items") or []:
+            if it.get("status") == "error" and it.get("nodeId"):
+                last_errors.setdefault(str(it["nodeId"]), str(it.get("error") or ""))
+        break
+
     lines: list[str] = [f"《{project_name or '未命名项目'}》资产考证报告"]
     if era:
         lines.append(f"时代/题材：{era}")
+    # 文字考据口径 = 画布上有考据的资产数（孤儿条目单列在考据事实段，不进头部
+    # ——「资产 5 · 文字考据 4」的算术对不上会让人怀疑口径）
+    covered_on_canvas = [c for c in covered if not c.get("orphan")]
     lines.append(
-        f"资产 {len(assets)} 个 · 已有考据 {len(covered)} 个"
-        f" · 待补 {len(missing)} 个"
+        f"资产 {len(assets)} 个 ｜ 参考图已采纳 {ref_total} 张、覆盖"
+        f" {len(adopted)} 个 ｜ 文字考据 {len(covered_on_canvas)} 个 ｜ 缺参考图待补"
+        f" {len(missing_no_refs)} 个"
     )
     lines.append(f"生成于 {_now()[:16].replace('T', ' ')}")
 
@@ -644,12 +674,27 @@ def build_report(project_id: str) -> dict[str, Any]:
 
     sec += 1
     lines.append("")
-    lines.append(f"{_CN_NUM[sec]}、待补考据（{len(missing)} 个资产）")
-    if not missing:
-        lines.append("（画布资产已全部有考据）")
-    for m in missing:
+    lines.append(
+        f"{_CN_NUM[sec]}、待补清单（缺参考图与考据 {len(missing_no_refs)} 个资产）"
+    )
+    if not missing_no_refs:
+        lines.append("（画布资产的参考图与考据已齐）")
+    for m in missing_no_refs:
         label = _TYPE_LABELS.get(m["nodeType"], m["nodeType"])
-        lines.append(f"· {m['title']}（{label}）")
+        err = last_errors.get(m["nodeId"], "")
+        suffix = f"——上次失败：{err[:60]}" if err else ""
+        lines.append(f"· {m['title']}（{label}）{suffix}")
+    if missing_refs_only:
+        names = "、".join(m["title"] for m in missing_refs_only[:20])
+        more = f" 等 {len(missing_refs_only)} 个" if len(missing_refs_only) > 20 else ""
+        lines.append("")
+        lines.append(
+            f"另有 {len(missing_refs_only)} 个资产参考图已采纳、文字考据未存档"
+            f"（早期调研的简报未落库）：{names}{more}"
+        )
+        lines.append(
+            "（这些不用重跑调研：在「考证大纲」卡执行主题可按主题补齐文字考据，出图时也会自动补考据）"
+        )
 
     # 卡面简报 = 本资产条目 + 服务它的主题条目。出图注入的是同一个合成结果
     # （skills._inject_research_briefs），所以「卡上显示的」=「出图发出去的」
@@ -673,6 +718,12 @@ def build_report(project_id: str) -> dict[str, Any]:
         "era": era,
         "entries": entries,
         "missing": missing,
+        # 真待办（无参考图也无考据，报告卡「补调研 N」按钮的工作清单）；
+        # missing 里剩下的（有参考图、无文字考据）不进这里——重跑它们是浪费
+        "pendingAssets": [
+            {"nodeId": m["nodeId"], "name": m["title"], "type": m["nodeType"]}
+            for m in missing_no_refs
+        ],
         "adopted": [{"nodeId": k, "candidates": v} for k, v in adopted.items()],
         "outline": outline["topics"],
         "cardBriefs": card_briefs,
@@ -1529,16 +1580,31 @@ async def _run_batch(
     batch = BATCH_JOBS.get(batch_id)
     if batch is None:
         return
+    # 镜像落库（含 running 态）：重启丢内存任务表后，报告卡还能读到
+    # 「上次调研中断」而不是一片空白；逐项错误也在这里留档
+    jobstore.create_job(
+        batch_id,
+        "ref_batch",
+        {"projectId": project_id, "batchId": batch_id, "total": len(assets)},
+    )
     sem = asyncio.Semaphore(BATCH_CONCURRENCY)
+    # 批内启动抖动：整批同时开跑会把下载风暴压向同一批大 CDN（人物类图源
+    # 高度集中），2026-09-11 冯太后项目 18 资产候选图全灭于此。抖动上限随
+    # 批量缩放——小批不拖时间，大批摊开入场
+    jitter_max = min(12.0, 0.4 * len(assets))
 
-    async def _run_one(i: int, a: dict[str, Any]) -> None:
+    async def _run_one(i: int, a: dict[str, Any], attempt: int = 1) -> None:
         node_id = str(a.get("nodeId") or "")
         name = str(a.get("name") or "")
         batch["items"][i]["status"] = "running"
+        if attempt > 1:
+            batch["items"][i]["retried"] = True
         # 信号量在任务内抢：并发由它限（顺序循环里 async with 是串行的，
         # 信号量形同虚设——首版踩坑：12 资产一个一个跑）
         async with sem:
             try:
+                if attempt == 1 and jitter_max > 0:
+                    await asyncio.sleep(random.uniform(0, jitter_max))
                 job_id = start_research_job(
                     project_id,
                     node_id,
@@ -1573,15 +1639,49 @@ async def _run_batch(
                     )
             except Exception as exc:  # noqa: BLE001 单资产失败不中断整批
                 batch["items"][i].update(status="error", error=str(exc)[:160])
-        batch["done"] += 1
+        batch["done"] = sum(
+            1 for it in batch["items"] if it["status"] in ("done", "error")
+        )
         running = [
             it["name"] for it in batch["items"] if it["status"] == "running"
         ]
         batch["current"] = "、".join(running[:3]) + ("…" if len(running) > 3 else "")
 
     await asyncio.gather(*[_run_one(i, a) for i, a in enumerate(assets)])
+    # 失败项自动补跑一轮（产品自愈，2026-09-11）：失败集中在瞬时原因
+    # （防盗链 403 风暴 / 源站限流），隔 45s 冷却后重跑大概率能救回；
+    # 只重跑明确 error（未产出任何候选）的项——done 项的重跑会重复搜索
+    # 与采纳语义，不做。补跑后仍失败的项保持 error，报告卡与事件如实呈现
+    retry_plan = [
+        (i, a)
+        for i, (it, a) in enumerate(zip(batch["items"], assets))
+        if it["status"] == "error"
+    ]
+    if retry_plan:
+        await asyncio.sleep(45.0)
+        await asyncio.gather(
+            *[_run_one(i, a, attempt=2) for i, a in retry_plan]
+        )
     batch["status"] = "done"
     batch["current"] = ""
+    jobstore.finish_job(
+        batch_id,
+        {
+            "projectId": project_id,
+            "batchId": batch_id,
+            # brief 逐条 1200 字、整批几十 KB，镜像只留诊断需要的字段
+            "items": [
+                {
+                    "nodeId": it["nodeId"],
+                    "name": it["name"],
+                    "status": it["status"],
+                    "error": str(it.get("error") or "")[:160],
+                    "retried": bool(it.get("retried")),
+                }
+                for it in batch["items"]
+            ],
+        },
+    )
     # 终态广播：聊天侧自动续跑汇报采纳结果（AG-UI 轮次流早已关闭，只有事件流能到）
     n_ok = sum(1 for it in batch["items"] if it["status"] == "done")
     n_err = len(batch["items"]) - n_ok
@@ -1624,7 +1724,7 @@ async def _run_research(
     """调研主流程：搜索（≤2 轮，planner 判定补搜）→ LLM 终选 → 落库。
 
     手填 queries 时首轮用手工词；否则每轮由 planner flow 生成考据向搜索词
-    （第二轮起带已完成轮次摘要，自动换角度）。整体受 110s 死线约束。"""
+    （第二轮起带已完成轮次摘要，自动换角度）。下载段整体受 150s 死线约束。"""
     import skills
 
     job = REF_JOBS.get(job_id)
@@ -1692,9 +1792,12 @@ async def _run_research(
             job["error"] = "没有搜到候选图，请换个关键词"
             return
         merged = merged[:MAX_CANDIDATES_PER_JOB]
-        # 并发下载走全局信号量（10 路调研共享 8 并发，防叠加打爆源站）；
+        # 并发下载走全局信号量（10 路调研共享 32 并发，防叠加打爆源站）；
         # 单张失败不拖垮整批，失败者不入库。
-        # 整体 110s 死线：超时取消在途下载，保留已完成部分（前端轮询 300s 截止）
+        # 整体 150s 死线（与文路 _BRIEF_WAIT_S 同档）：超时取消在途下载，
+        # 保留已完成部分。曾为 110s——批量 20 路并发下共享信号量排队 +
+        # 403/429 退避重试会占住槽位，队尾资产的候选被死线整批掐掉
+        # （2026-09-11 冯太后项目 18 资产全灭的另一半根因）
         dl_errors: list[str] = []
 
         async def _fetch(item: dict[str, Any]) -> None:
@@ -1706,7 +1809,7 @@ async def _run_research(
 
         try:
             await asyncio.wait_for(
-                asyncio.gather(*[_fetch(item) for item in merged]), timeout=110.0
+                asyncio.gather(*[_fetch(item) for item in merged]), timeout=150.0
             )
         except (asyncio.TimeoutError, TimeoutError):
             dl_errors.append("整体下载超时，仅保留已完成部分")

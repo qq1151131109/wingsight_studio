@@ -16,9 +16,11 @@ import tempfile
 from pathlib import Path
 
 import imgresearch
+import jobstore
 
 _tmp = Path(tempfile.mkdtemp(prefix="ws-report-test-"))
 imgresearch.DB_PATH = _tmp / "test.db"
+jobstore.DB_PATH = imgresearch.DB_PATH
 
 PASS = [0]
 
@@ -67,6 +69,8 @@ seed_canvas(
         {"id": "n_robe", "data": {"nodeType": "costume", "title": "太后朝服"}},
         # 无考据的资产（报告「待补」段）
         {"id": "n_sword", "data": {"nodeType": "prop", "title": "环首刀"}},
+        # 有已采纳参考图但无文字考据（早期调研简报未落库的形态）：真待补不该算它
+        {"id": "n_chair", "data": {"nodeType": "prop", "title": "龙椅"}},
         # 空名卡不进报告（未命名资产不进 @ 名单，也不该进报告）
         {"id": "n_blank", "data": {"nodeType": "character", "title": ""}},
         # 非资产卡不进报告
@@ -122,6 +126,7 @@ with _db() as c:
             ("n_feng", "冯太后像", "commons.wikimedia.org"),
             ("n_feng", "北魏壁画", "baike.baidu.com"),
             ("n_hall", "平城遗址", "baike.baidu.com"),
+            ("n_chair", "龙椅实物", "chnmus.net"),
         ]
     ):
         c.execute(
@@ -149,11 +154,17 @@ with _db() as c:
 report = imgresearch.build_report(PID)
 text = report["text"]
 
-# A. 头部口径
+# A. 头部口径（三口径：2026-09-11 口径事故后，参考图家底与文字考据分开报，
+#    「待补」只数缺参考图的真待办——旧「待补 70」把 52 个参考图调研成功的
+#    资产也计成待补，用户读作「全部失败」）
 expect(report["projectName"] == "冯太后", "报告应带项目名")
 expect(report["era"] == "北魏·平城时期", "报告应带 era 口径")
 expect("《冯太后》资产考证报告" in text, f"应有报告标题：{text[:80]}")
 expect("时代/题材：北魏·平城时期" in text, "标题下应明标时代口径")
+expect(
+    "资产 5 个 ｜ 参考图已采纳 4 张、覆盖 3 个 ｜ 文字考据 3 个 ｜ 缺参考图待补 1 个" in text,
+    f"头部应三口径如实分开报：{text.splitlines()[2] if len(text.splitlines())>2 else text}",
+)
 
 # B. 考据事实分节（条目上卡）
 expect("■ 冯太后（角色）" in text, "已考据资产应成节")
@@ -168,11 +179,23 @@ expect("翟鸟纹" in text, "改名资产的条目正文应在")
 expect("漆案" in text, "卡已删除的条目仍应列出（条目不以卡的存在为前提）")
 expect("■ 漆案（道具）（画布上已无此卡）" in text, f"删卡条目应标明：{text}")
 
-# E. 待补清单：画布上有、库里的条目没有
-expect("三、待补考据（1 个资产）" in text, f"应报待补数量：{text}")
+# E. 待补清单分级：缺参考图 = 真待办；有参考图无文字考据 = 次级说明不进按钮清单
+expect("三、待补清单（缺参考图与考据 1 个资产）" in text, f"应报真待补数量：{text}")
 expect("· 环首刀（道具）" in text, "待补应点名到卡")
-expect(report["missing"] == [{"nodeId": "n_sword", "title": "环首刀", "nodeType": "prop"}],
-       f"待补清单结构应稳定：{report['missing']}")
+expect(
+    report["missing"] == [
+        {"nodeId": "n_sword", "title": "环首刀", "nodeType": "prop"},
+        {"nodeId": "n_chair", "title": "龙椅", "nodeType": "prop"},
+    ],
+    f"missing 保持全集（两口径的并集）：{report['missing']}",
+)
+expect(
+    report["pendingAssets"] == [{"nodeId": "n_sword", "name": "环首刀", "type": "prop"}],
+    f"真待办清单只含无参考图的：{report['pendingAssets']}",
+)
+expect("另有 1 个资产参考图已采纳、文字考据未存档" in text, "次级缺口应说明成因")
+expect("龙椅" in text.split("另有 1 个资产参考图已采纳")[1][:120], "次级缺口应点名资产")
+expect("不用重跑调研" in text, "次级缺口应指路（大纲/自动补考据），不误导重跑")
 expect(
     not any(m["title"] == "" for m in report["missing"]),
     "空名资产卡不进待补（未命名资产不进 @ 名单）",
@@ -182,15 +205,45 @@ expect(
     "非资产卡不进待补",
 )
 
+# E2. 待补行带「上次失败」：jobstore 镜像里 error 项的错误透传到报告
+jobstore.create_job("batch-err", "ref_batch", {"projectId": PID})
+jobstore.finish_job(
+    "batch-err",
+    {
+        "projectId": PID,
+        "batchId": "batch-err",
+        "items": [
+            {
+                "nodeId": "n_sword",
+                "name": "环首刀",
+                "status": "error",
+                "error": "候选图全部下载失败（疑似外链防盗链）；下载：xxx：403",
+                "retried": True,
+            },
+            {"nodeId": "n_feng", "name": "冯太后", "status": "done", "error": "", "retried": False},
+        ],
+    },
+)
+text2 = imgresearch.build_report(PID)["text"]
+expect(
+    "· 环首刀（道具）——上次失败：候选图全部下载失败" in text2,
+    f"待补行应带上次失败原因：{[l for l in text2.splitlines() if '环首刀' in l]}",
+)
+expect(
+    imgresearch.build_report("p-key")["text"].count("上次失败") == 0,
+    "别的项目不受镜像串扰",
+)
+
 # F. 参考图底账
-expect("二、参考图底账（已采纳 3 张）" in text, f"应报已采纳总数：{text}")
+expect("二、参考图底账（已采纳 4 张）" in text, f"应报已采纳总数：{text}")
 expect("■ 冯太后（2 张）" in text, "底账应按资产分组计张数")
+expect("■ 龙椅（1 张）" in text, "只缺文字考据的资产也进底账（参考图家底是实的）")
 expect("commons.wikimedia.org" in text, "底账应含来源域名")
 
 # G. 结构化载荷（前端对账用）
 expect(len(report["entries"]) == 4, f"条目应全量返回：{len(report['entries'])}")
 adopted_nodes = {g["nodeId"] for g in report["adopted"]}
-expect(adopted_nodes == {"n_feng", "n_hall"}, f"采纳分组应按节点：{adopted_nodes}")
+expect(adopted_nodes == {"n_feng", "n_hall", "n_chair"}, f"采纳分组应按节点：{adopted_nodes}")
 expect(all(c["adopted"] for g in report["adopted"] for c in g["candidates"]),
        "采纳分组只含 adopted=1 的候选")
 
@@ -198,7 +251,7 @@ expect(all(c["adopted"] for g in report["adopted"] for c in g["candidates"]),
 empty = imgresearch.build_report("p-empty")
 expect(empty["entries"] == [] and empty["missing"] == [], "空项目应给空报告")
 expect("（暂无——在资产卡「找参考图」发起调研后" in empty["text"], "空项目报告应给人话引导")
-expect("（画布资产已全部有考据）" in empty["text"], "无资产时待补段应说明")
+expect("（画布资产的参考图与考据已齐）" in empty["text"], "无资产时待补段应说明")
 expect(imgresearch.build_report("p-不存在")["projectName"] == "", "未知项目应给空项目名")
 
 # I. 归属键：有 node_id 用 id（改名不失联），无 id 按名归一（空格/标点不敏感）
@@ -268,7 +321,7 @@ expect("未被任何主题覆盖的资产" in outline["text"] and "环首刀" in
        "应点名未被主题覆盖的资产（缺口清单）")
 expect("环首刀" in [a["title"] for a in outline["uncovered"]],
        f"缺口应结构化返回：{outline['uncovered']}")
-expect(len(outline["uncovered"]) == 3, "只服务 n_feng 的主题之下，另 3 张卡都是缺口")
+expect(len(outline["uncovered"]) == 4, "只服务 n_feng 的主题之下，另 4 张卡（含龙椅）都是缺口")
 
 # L7. 主题执行产物 → 按服务范围分发（topic_briefs）
 imgresearch.upsert_entry(
@@ -318,7 +371,7 @@ imgresearch.replace_topics(
 report2 = imgresearch.build_report(PID)
 expect("一、考证大纲（2 个主题 · 已完成 2）" in report2["text"], f"大纲应进报告首节：{report2['text'][:400]}")
 expect("二、考据事实" in report2["text"], "资产考据段应顺移为第二节")
-expect("三、参考图底账" in report2["text"] and "四、待补考据" in report2["text"], "其余段号顺移")
+expect("三、参考图底账" in report2["text"] and "四、待补清单" in report2["text"], "其余段号顺移")
 expect("＋主题考据〈北魏早期服制〉" in report2["text"], "资产段应指向服务它的主题考据")
 expect("■ 冯太后（角色）" in report2["text"], "资产自己的条目仍在")
 
@@ -338,21 +391,27 @@ imgresearch.replace_topics(
         {"title": "北魏早期服制", "queries": ["q"], "nodeIds": ["n_feng", "n_robe"]},
         {"title": "平城宫室形制", "queries": ["q"], "nodeIds": ["n_hall"]},
         {"title": "北魏兵器", "queries": ["q"], "nodeIds": ["n_sword"]},
+        {"title": "北魏宫廷陈设", "queries": ["q"], "nodeIds": ["n_chair"]},
     ],
 )
 m1 = imgresearch.build_report(PID)
-expect([m["nodeId"] for m in m1["missing"]] == ["n_sword"],
+expect([m["nodeId"] for m in m1["missing"]] == ["n_sword", "n_chair"],
        f"主题没事实时成员卡仍待补：{m1['missing']}")
-expect("四、待补考据（1 个资产）" in m1["text"], f"段号与计数应一致：{m1['text'][-200:]}")
+expect("四、待补清单（缺参考图与考据 1 个资产）" in m1["text"], f"段号与计数应一致：{m1['text'][-300:]}")
 
 # 主题有了事实 → 成员卡（哪怕没有自己的条目）不再进待补，报告里指向主题
 imgresearch.upsert_entry(
     PID, body="北魏兵器：环首刀直刃长身，刀环作扁圆。", asset_name="北魏兵器",
     asset_type="topic", era="北魏·平城时期", topic_key="北魏兵器",
 )
+imgresearch.upsert_entry(
+    PID, body="北魏宫廷陈设：帷帐矮榻，席地而坐。", asset_name="北魏宫廷陈设",
+    asset_type="topic", era="北魏·平城时期", topic_key="北魏宫廷陈设",
+)
 m2 = imgresearch.build_report(PID)
 expect(m2["missing"] == [], f"主题覆盖后不该再催用户：{m2['missing']}")
-expect("四、待补考据（0 个资产）" in m2["text"] and "（画布资产已全部有考据）" in m2["text"],
+expect(m2["pendingAssets"] == [], f"全覆盖后真待办也应清空：{m2['pendingAssets']}")
+expect("四、待补清单（缺参考图与考据 0 个资产）" in m2["text"] and "（画布资产的参考图与考据已齐）" in m2["text"],
        "待补为空时应说明")
 expect("■ 环首刀（道具）" in m2["text"], "只有主题覆盖的卡也应成节")
 expect("＋主题考据〈北魏兵器〉" in m2["text"], "该节应指向服务它的主题")

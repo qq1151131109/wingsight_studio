@@ -122,7 +122,7 @@ const text = String(rep.body?.text ?? "");
 check("A5 报告首节是考证大纲", text.includes("一、考证大纲（2 个主题 · 已完成 1）"), text.slice(0, 120));
 check("A6 资产段顺移且带来源", text.includes("二、考据事实") && text.includes("a.example"));
 check("A7 底账段含采纳域名", text.includes("三、参考图底账") && text.includes("commons.wikimedia.org"));
-check("A8 待补段在末节", text.includes("四、待补考据（1 个资产）"));
+check("A8 待补段在末节", text.includes("四、待补清单（缺参考图与考据 1 个资产）"));
 check("A9 主题考据指向（不重复正文）",
   text.includes("＋主题考据〈北魏早期服制〉（全文见考证大纲）"));
 check("A10 cardBriefs 合成（资产条目 + 主题条目）",
