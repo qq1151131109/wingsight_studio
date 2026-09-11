@@ -58,6 +58,8 @@ import {
   Lock,
   LockOpen,
   AudioLines,
+  BookMarked,
+  CalendarClock,
   Loader2,
   Maximize2,
   Music,
@@ -194,6 +196,7 @@ import CompareCard from "./CompareCard";
 import UpscaleDialog from "./UpscaleDialog";
 import RefResearchDialog from "./RefResearchDialog";
 import RefReviewDialog from "./RefReviewDialog";
+import RefLibraryDialog from "./RefLibraryDialog";
 import ScriptReviewDialog from "./ScriptReviewDialog";
 import ImageReviewDialog from "./ImageReviewDialog";
 import {
@@ -1926,6 +1929,10 @@ function TextCard({
   const [forceEdit, setForceEdit] = useState(false);
   const [researching, setResearching] = useState(false);
   const [outlineRunning, setOutlineRunning] = useState(false);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  /** 时代口径（考证库的作用域键）：报告卡工具条上可见可改——它没有别的设置面，
+   *  只在调研入口弹一次 prompt 的话，用户不发起调研就永远设不上 */
+  const projectEra = useCanvasStore((s) => s.projectEra);
   const [docOpen, setDocOpen] = useState(false);
   /** 考证大纲执行的轮询句柄（执行在服务端跑，这里只刷状态；卸载即停） */
   const outlinePoll = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -2113,24 +2120,62 @@ function TextCard({
   const isOutline = data.reportKind === REF_OUTLINE_KIND;
   const isRefReport = data.reportKind === REF_REPORT_KIND;
   const pendingCount = (data.reportPending ?? []).length;
-  const reportTools =
-    isRefReport && pendingCount > 0 ? (
+  const reportTools = isRefReport ? (
+    <>
+      {pendingCount > 0 ? (
+        <ToolBtn
+          title={`对报告里缺参考图的 ${pendingCount} 个资产重新发起批量调研（含「已有文字考据、只缺参考图」的；发起前会问一次考据年代，失败项服务端自动补跑一轮，完成后报告自动刷新）`}
+          label={
+            reportJob.running
+              ? `补调研中 ${reportJob.job?.done ?? 0}/${pendingCount}`
+              : `补调研 ${pendingCount}`
+          }
+          disabled={reportJob.running}
+          onClick={() => {
+            void trackEvent("report.research-pending", { count: pendingCount });
+            void runPendingResearch();
+          }}
+        >
+          <Search className="h-3.5 w-3.5" />
+        </ToolBtn>
+      ) : null}
       <ToolBtn
-        title={`对报告里缺参考图的 ${pendingCount} 个资产重新发起批量调研（含「已有文字考据、只缺参考图」的；发起前会问一次考据年代，失败项服务端自动补跑一轮，完成后报告自动刷新）`}
-        label={
-          reportJob.running
-            ? `补调研中 ${reportJob.job?.done ?? 0}/${pendingCount}`
-            : `补调研 ${pendingCount}`
-        }
-        disabled={reportJob.running}
+        title="同题材可复用考据：别的项目已经考据过的现成主体（时代事实/具名个体），一键引用到本项目——不用重新调研；引用是活引用，库里的版本更新后跟着变"
+        label="同题材库"
         onClick={() => {
-          void trackEvent("report.research-pending", { count: pendingCount });
-          void runPendingResearch();
+          void trackEvent("report.library-open");
+          setLibraryOpen(true);
         }}
       >
-        <Search className="h-3.5 w-3.5" />
+        <BookMarked className="h-3.5 w-3.5" />
       </ToolBtn>
-    ) : null;
+      <ToolBtn
+        title={
+          projectEra
+            ? `本项目的时代口径：${projectEra}——考据库按它分域，同题材项目之间才能互相复用。点击修改`
+            : "设置本项目的时代口径（如「北魏·平城时期」「唐·武周」）：考据库按它分域复用；不设则本项目的考据只在项目内成立"
+        }
+        label={projectEra ? `年代：${projectEra}` : "年代未设"}
+        onClick={() => {
+          const cur = useCanvasStore.getState().projectEra;
+          const v = window.prompt(
+            "【考据归档】这个项目是什么年代？\n\n" +
+              "用于同题材项目之间复用考据结论（例：「北魏·平城时期」「北宋汴京」）。\n" +
+              "留空 = 不复用（本项目考据只在项目内成立）。",
+            cur,
+          );
+          if (v === null) return;
+          void trackEvent("report.set-era");
+          useCanvasStore.getState().setProjectEra(v.trim());
+          void reconcileRefResearch(useCanvasStore.getState().projectId ?? "").catch(
+            () => {},
+          );
+        }}
+      >
+        <CalendarClock className="h-3.5 w-3.5" />
+      </ToolBtn>
+    </>
+  ) : null;
   const outlineTools = isOutline ? (
     <ToolBtn
       title="执行考证大纲里未完成的主题：逐主题搜网络取证，结果落本项目考据条目（同题材已考据过的自动复用、不重搜）"
@@ -2212,22 +2257,32 @@ function TextCard({
       {lod === "full" ? (
         <>
           <div className="flex min-h-0 flex-1 flex-col">
-            <Editable
-              value={data.body ?? ""}
-              onSave={(body, opts) => update({ body }, opts)}
-              multiline
-              fill
-              always
-              editingOn={forceEdit}
-              placeholder={
-                editorial
-                  ? "直接输入剧本…选中后可在下方让 AI 写"
-                  : "直接输入内容…选中后可在下方让 AI 写"
-              }
-              className={`ws-detail min-h-0 flex-1 text-xs leading-relaxed text-text-2 ${
-                editorial ? "font-editorial" : ""
-              } nowheel`}
-            />
+            {data.reportKind ? (
+              // 考证报告卡 / 大纲卡 = 服务端权威的陈述（build_report / build_outline_report
+              // 渲染），对账按内容差回写。此前是可编辑 textarea：用户手改的正文会在
+              // 下一次对账（打开项目 / 调研完成）被静默覆盖，改了个寂寞——事实权威不
+              // 给人手改（与调研卷宗卡同款语义），改写走聊天，导出/复制照旧。
+              <div className="ws-detail nodrag nowheel min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-text-2">
+                {data.body ?? ""}
+              </div>
+            ) : (
+              <Editable
+                value={data.body ?? ""}
+                onSave={(body, opts) => update({ body }, opts)}
+                multiline
+                fill
+                always
+                editingOn={forceEdit}
+                placeholder={
+                  editorial
+                    ? "直接输入剧本…选中后可在下方让 AI 写"
+                    : "直接输入内容…选中后可在下方让 AI 写"
+                }
+                className={`ws-detail min-h-0 flex-1 text-xs leading-relaxed text-text-2 ${
+                  editorial ? "font-editorial" : ""
+                } nowheel`}
+              />
+            )}
           </div>
           {/* 可点来源行（候选落卡 P1）：候选的背景出处，样式同调研卡来源底账。
               nowheel+nodrag 让滚轮/点击留在链接上，不劫持给画布 */}
@@ -2253,6 +2308,10 @@ function TextCard({
             <p className="ws-detail mt-1.5 text-center text-[10px] text-text-4">
               选中卡片后可在下方输入区让 AI 撰写
             </p>
+          ) : data.reportKind ? (
+            <span className="ws-detail mt-1.5 text-[10px] text-text-4">
+              系统生成 · 只读（改写走聊天）· {(data.body ?? "").length} 字
+            </span>
           ) : !editorial ? (
             <span className="ws-detail mt-1.5 text-[10px] tabular-nums text-text-4">
               {(data.body ?? "").length} 字
@@ -2268,6 +2327,12 @@ function TextCard({
     </CardShell>
     {docOpen ? (
       <DocFullscreenEditor nodeId={id} onClose={() => setDocOpen(false)} />
+    ) : null}
+    {libraryOpen ? (
+      <RefLibraryDialog
+        projectId={useCanvasStore.getState().projectId ?? ""}
+        onClose={() => setLibraryOpen(false)}
+      />
     ) : null}
     </>
   );

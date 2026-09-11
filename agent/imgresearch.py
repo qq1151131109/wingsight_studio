@@ -74,6 +74,29 @@ def _conn() -> sqlite3.Connection:
     return conn
 
 
+# 主体表：调研产物的权威落点，键是「主体」（era + subject_key）而不是「项目+节点」
+# ——同一时代同一主体全库唯一一条，项目通过 research_uses 引用它（活引用，不存副本）。
+_ENTRIES_DDL = """
+    CREATE TABLE IF NOT EXISTS research_entries (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        subject_key TEXT NOT NULL,
+        node_id TEXT NOT NULL DEFAULT '',
+        asset_name TEXT NOT NULL DEFAULT '',
+        asset_type TEXT NOT NULL DEFAULT '',
+        era TEXT NOT NULL DEFAULT '',
+        topic_key TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        sources_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(era, subject_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_research_entries_subject
+        ON research_entries(era, subject_key);
+"""
+
+
 def init_ref_research_db() -> None:
     with _conn() as conn:
         conn.executescript(
@@ -100,30 +123,44 @@ def init_ref_research_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_ref_candidates_node
                 ON ref_candidates(project_id, node_id, idx_total);
 
-            -- 考据条目：调研文字产物的服务端权威落点（详见「考证条目与报告」节）。
-            -- era 是跨项目复用的作用域键；topic_key 留给考证大纲的主题归属。
-            CREATE TABLE IF NOT EXISTS research_entries (
+            -- 主体图集：调研采纳的参考图按「主体」归档（不是按项目节点）。
+            -- 图是最贵的产物（搜索 + 下载 + 视觉模型终选 + 存储），挂在主体上
+            -- 才可能跨项目复用；url 去重，与 research_entries 各自独立——手填
+            -- 检索词的调研不跑文路、没有事实条目，照样该把图收进图集。
+            CREATE TABLE IF NOT EXISTS research_subject_refs (
                 id TEXT PRIMARY KEY,
-                project_id TEXT NOT NULL,
-                asset_key TEXT NOT NULL,
-                node_id TEXT NOT NULL DEFAULT '',
-                asset_name TEXT NOT NULL DEFAULT '',
-                asset_type TEXT NOT NULL DEFAULT '',
                 era TEXT NOT NULL DEFAULT '',
-                topic_key TEXT NOT NULL DEFAULT '',
-                body TEXT NOT NULL DEFAULT '',
-                sources_json TEXT NOT NULL DEFAULT '[]',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE(project_id, asset_key)
+                subject_key TEXT NOT NULL,
+                url TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                source_domain TEXT NOT NULL DEFAULT '',
+                added_at TEXT NOT NULL,
+                UNIQUE(era, subject_key, url)
             );
-            CREATE INDEX IF NOT EXISTS idx_research_entries_era
-                ON research_entries(era, asset_name);
+
+            -- 项目 ↔ 主体：本项目的哪张卡/哪个主题用了哪个主体。
+            -- 「本项目有哪些考据」= 这张表（而不是「project_id 等于本项目的条目」）
+            -- ——主体全库唯一，谁产出的不重要，用了才该出现在本项目的报告里。
+            CREATE TABLE IF NOT EXISTS research_uses (
+                project_id TEXT NOT NULL,
+                entry_id TEXT NOT NULL,
+                target_kind TEXT NOT NULL,
+                target_key TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (project_id, target_kind, target_key, entry_id)
+            );
+
+            -- 一次性维护任务的完成标记（迁移/回填只跑一次）
+            CREATE TABLE IF NOT EXISTS ref_maintenance (
+                name TEXT PRIMARY KEY,
+                done_at TEXT NOT NULL
+            );
 
             -- 考证大纲：项目级研究计划（主题 → 检索词 → 服务哪些卡）。
             -- 调研的单位是「题材/时代」不是「资产」：40 个资产共享的时代事实
             -- 只有一套，按资产各搜一遍既是浪费又会得出互相矛盾的结论。
-            -- topic_key = 标题归一，跨项目复用按 (era, topic_key) 命中。
+            -- topic_key = 标题归一；主题事实的身份是 (era, topic:{topic_key}) 这个主体。
             CREATE TABLE IF NOT EXISTS research_topics (
                 id TEXT PRIMARY KEY,
                 project_id TEXT NOT NULL,
@@ -139,7 +176,8 @@ def init_ref_research_db() -> None:
                 updated_at TEXT NOT NULL,
                 UNIQUE(project_id, topic_key)
             );
-            CREATE INDEX IF NOT EXISTS idx_research_topics_era
+            DROP INDEX IF EXISTS idx_research_topics_era;
+            CREATE INDEX IF NOT EXISTS idx_research_topics_project
                 ON research_topics(project_id);
             """
         )
@@ -152,6 +190,176 @@ def init_ref_research_db() -> None:
         ):
             if col not in cols:
                 conn.execute(ddl)
+        _ensure_subject_entries(conn)
+        _maintain_once(conn, "subject_refs_backfill", _backfill_subject_refs)
+
+
+def _maintain_once(conn: sqlite3.Connection, name: str, fn: Any) -> None:
+    """一次性维护任务（迁移/回填）：跑过就记标记，不重复执行。
+
+    回填类任务必须只跑一次——它对存量行做 INSERT OR IGNORE，每次启动重跑会把
+    用户后来从主体图集里删掉的图悄悄塞回去。"""
+    if conn.execute("SELECT 1 FROM ref_maintenance WHERE name = ?", (name,)).fetchone():
+        return
+    fn(conn)
+    conn.execute(
+        "INSERT OR REPLACE INTO ref_maintenance (name, done_at) VALUES (?, ?)",
+        (name, _now()),
+    )
+
+
+def _ensure_subject_entries(conn: sqlite3.Connection) -> None:
+    """把 research_entries 迁到主体模型（旧库带 asset_key 列即为未迁）。
+
+    迁移做完库里**只有主体模型一种形态**——不留旧列的兼容读取路径：旧键
+    （node:/name:）与项目内唯一性都随主体化作废，留着只会让两种归属口径并存。"""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(research_entries)").fetchall()}
+    if "asset_key" not in cols:
+        conn.executescript(_ENTRIES_DDL)
+        return
+    legacy = [dict(r) for r in conn.execute("SELECT * FROM research_entries").fetchall()]
+    conn.execute("DROP TABLE research_entries")
+    conn.executescript(_ENTRIES_DDL)
+    now = _now()
+    for row in _merge_legacy_entries(legacy):
+        conn.execute(
+            """INSERT INTO research_entries (id, project_id, subject_key, node_id,
+               asset_name, asset_type, era, topic_key, body, sources_json,
+               created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                row["id"],
+                row["project_id"],
+                row["subject_key"],
+                row.get("node_id") or "",
+                row.get("asset_name") or "",
+                row.get("asset_type") or "",
+                row["era"],
+                row.get("topic_key") or "",
+                row.get("body") or "",
+                json.dumps(row["_sources"], ensure_ascii=False),
+                row.get("created_at") or now,
+                row.get("updated_at") or now,
+            ),
+        )
+        # 每个曾经拥有该主体的项目都要补一条引用：主体归并后「本项目有哪些
+        # 考据」只能靠引用表回答，不补的话旧项目的报告会整段消失
+        for use in row["_uses"]:
+            target_kind, target_key = _use_target(use["kind"], use["key"], use["node_id"])
+            conn.execute(
+                "INSERT OR IGNORE INTO research_uses"
+                " (project_id, entry_id, target_kind, target_key, created_at)"
+                " VALUES (?,?,?,?,?)",
+                (use["project_id"], row["id"], target_kind, target_key, now),
+            )
+
+
+def _merge_legacy_entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """旧条目按 (era, 主体键) 归并：最新正文为权威，来源底账取并集，引用全留。
+
+    归并是主体化的必然结果——同一时代同一主体过去可能在多个项目各存一行
+    （谁都不会被覆盖），现在全库只有一条，必须先把冲突收敛掉。被归并掉的
+    行不丢引用：每个原属项目都记一条 use，它的报告照旧看得见这套事实。"""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        kind = "topic" if str(r.get("asset_type") or "") == "topic" else "asset"
+        raw = (
+            str(r.get("topic_key") or "")
+            if kind == "topic"
+            else _norm_name(str(r.get("asset_name") or ""))
+        )
+        raw = raw or _norm_name(str(r.get("asset_name") or ""))
+        if not raw:
+            continue  # 无名无键的旧行无法归属主体，随迁移丢弃
+        era = str(r.get("era") or "").strip()
+        pid = str(r.get("project_id") or "")
+        skey = _subject_key(kind, raw, era, pid)
+        try:
+            srcs = json.loads(r.get("sources_json") or "[]")
+        except Exception:  # noqa: BLE001
+            srcs = []
+        use = {"project_id": pid, "kind": kind, "key": raw, "node_id": str(r.get("node_id") or "")}
+        slot = merged.get((era, skey))
+        if slot is None:
+            merged[(era, skey)] = {
+                **r,
+                "era": era,
+                "subject_key": skey,
+                "_sources": list(srcs or []),
+                "_uses": [use],
+            }
+            continue
+        if use not in slot["_uses"]:
+            slot["_uses"].append(use)
+        have = {str(s.get("url") or "") for s in slot["_sources"] if isinstance(s, dict)}
+        for s in srcs or []:
+            if isinstance(s, dict) and str(s.get("url") or "") not in have:
+                slot["_sources"].append(s)
+                have.add(str(s.get("url") or ""))
+        if str(r.get("updated_at") or "") > str(slot.get("updated_at") or ""):
+            for col in ("id", "project_id", "node_id", "asset_name", "asset_type", "topic_key", "body", "updated_at"):
+                slot[col] = r.get(col) or ""
+            slot["era"] = era
+            slot["subject_key"] = skey
+        slot["created_at"] = min(
+            str(slot.get("created_at") or ""), str(r.get("created_at") or "")
+        )
+    return list(merged.values())
+
+
+def _backfill_subject_refs(conn: sqlite3.Connection) -> None:
+    """存量已采纳候选图 → 主体图集（按 era + 画布资产名归属）。
+
+    主体图集是这次才有的表，此前采纳的图只躺在 ref_candidates 里、按节点挂——
+    不回填的话，老项目的图永远进不了复用域，而它们已经花过钱搜下来了。"""
+    rows = conn.execute(
+        "SELECT project_id, node_id, title, source_url, source_domain, asset_url, created_at"
+        " FROM ref_candidates WHERE adopted = 1 AND asset_url != ''"
+    ).fetchall()
+    if not rows:
+        return
+    cache: dict[str, tuple[dict[str, str], str]] = {}
+    for r in rows:
+        pid = str(r["project_id"])
+        if pid not in cache:
+            titles: dict[str, str] = {}
+            era = ""
+            try:
+                c = conn.execute(
+                    "SELECT nodes, meta FROM canvases WHERE project_id = ?", (pid,)
+                ).fetchone()
+                nodes = json.loads(c["nodes"]) if c and c["nodes"] else []
+                for n in nodes if isinstance(nodes, list) else []:
+                    if not isinstance(n, dict):
+                        continue
+                    d = n.get("data") if isinstance(n.get("data"), dict) else {}
+                    title = str(d.get("title") or "").strip()
+                    if title:
+                        titles[str(n.get("id") or "")] = title
+                if c and c["meta"]:
+                    era = str((json.loads(c["meta"]) or {}).get("era") or "").strip()
+            except Exception:  # noqa: BLE001 读不到就当无名，跳过该项目的图
+                titles, era = {}, ""
+            cache[pid] = (titles, era)
+        titles, era = cache[pid]
+        key = _norm_name(titles.get(str(r["node_id"]) or ""))
+        if not key:
+            continue
+        skey = _subject_key("asset", key, era, pid)
+        conn.execute(
+            "INSERT OR IGNORE INTO research_subject_refs"
+            " (id, era, subject_key, url, title, source_url, source_domain, added_at)"
+            " VALUES (?,?,?,?,?,?,?,?)",
+            (
+                uuid.uuid4().hex[:12],
+                era,
+                skey,
+                str(r["asset_url"]),
+                str(r["title"] or ""),
+                str(r["source_url"] or ""),
+                str(r["source_domain"] or ""),
+                str(r["created_at"] or _now()),
+            ),
+        )
 
 
 def _to_dict(r: sqlite3.Row) -> dict[str, Any]:
@@ -298,12 +506,351 @@ def _now() -> str:
 # era 是跨项目复用的作用域键——同一时代、同一资产的形制事实可以复用；
 # era 为空一律不复用（宁可重搜，不可错用年代）。
 
-ENTRY_LOOKUP_LIMIT = 3  # 跨项目复用单资产最多取几条历史条目
+ENTRY_LOOKUP_LIMIT = 3  # 库检索单次最多返回几条（主体全库唯一，留余量给同名前缀场景）
 
 
 def _norm_name(name: str) -> str:
     """资产名归一（去空白与常见标点、小写）：跨项目命中按它比，空格标点差异不漏命中。"""
     return re.sub(r"[\s·、,，.。()（）\[\]【】\-—_/]+", "", str(name or "").lower())
+
+
+def _subject_key(kind: str, key: str, era: str, project_id: str) -> str:
+    """主体键：`asset:{名归一}` / `topic:{主题键}`；era 为空时加 `local:{项目}:` 前缀。
+
+    era 空不是错误状态——它表示这个主体**只在项目内成立**（用户跳过年代询问、
+    或题材就是架空），给它一个项目私有键，既不会污染复用域，也不会和别的项目
+    撞成一条。分 kind 前缀同时消除了旧模型里「主题条目与资产条目共用一列键、
+    同名互相覆盖」的隐患。"""
+    key = str(key or "").strip()
+    if not key:
+        raise ValueError("主体键不能为空")
+    scope = "" if str(era or "").strip() else f"local:{project_id}:"
+    return f"{scope}{kind}:{key}"
+
+
+def asset_subject(era: str, project_id: str, asset_name: str) -> str:
+    """资产主体的键（era + 资产名归一）。"""
+    return _subject_key("asset", _norm_name(asset_name), era, project_id)
+
+
+def topic_subject(era: str, project_id: str, topic_key: str) -> str:
+    """主题主体的键（era + 主题键）。"""
+    return _subject_key("topic", str(topic_key or "").strip(), era, project_id)
+
+
+def _use_target(kind: str, key: str, node_id: str) -> tuple[str, str]:
+    """引用目标：主题挂主题键，资产优先挂节点 id（改名不失联），无 id 退按名。"""
+    if kind == "topic":
+        return "topic", key
+    nid = str(node_id or "").strip()
+    return ("node", nid) if nid else ("name", key)
+
+
+def record_use(
+    project_id: str, entry_id: str, kind: str, key: str, node_id: str = ""
+) -> None:
+    """记一条「本项目用了这个主体」（幂等）。
+
+    主体是全库共享的，谁产出的不重要——「本项目有哪些考据」这个问题的答案
+    只能是这张引用表：项目引用了它，它就该出现在本项目的报告与出图提示词里。"""
+    if not project_id or not entry_id:
+        return
+    target_kind, target_key = _use_target(kind, key, node_id)
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO research_uses"
+            " (project_id, entry_id, target_kind, target_key, created_at)"
+            " VALUES (?,?,?,?,?)",
+            (project_id, entry_id, target_kind, target_key, _now()),
+        )
+
+
+def upsert_entry(
+    project_id: str,
+    *,
+    body: str,
+    node_id: str = "",
+    asset_name: str = "",
+    asset_type: str = "",
+    era: str = "",
+    topic_key: str = "",
+    sources: list[dict[str, Any]] | None = None,
+) -> str:
+    """写入/覆盖一个**主体**的事实，并记下本项目的引用，返回条目 id。
+
+    重跑语义：同主体再次调研覆盖旧事实（与候选「重跑清掉旧未采纳」同口径）。
+    因为主体全库唯一，覆盖是**跨项目生效**的——这也是活引用的对称面：引用方
+    读的是源主体的最新版，源主体被谁改进都算改进。归属键取 kind（主题/资产）
+    + 归一名字，era 空则落项目私有的 local 键。"""
+    body = str(body or "").strip()
+    if not project_id or not body:
+        raise ValueError("考据条目需要 project_id 与正文")
+    kind = "topic" if str(asset_type or "") == "topic" or str(topic_key or "").strip() else "asset"
+    key = str(topic_key or "").strip() if kind == "topic" else _norm_name(asset_name)
+    if not key:
+        raise ValueError("考据条目需要可归属的主体名字")
+    skey = _subject_key(kind, key, era, project_id)
+    now = _now()
+    src = json.dumps(sources or [], ensure_ascii=False)
+    era = str(era or "").strip()
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM research_entries WHERE era = ? AND subject_key = ?",
+            (era, skey),
+        ).fetchone()
+        if row:
+            eid = str(row["id"])
+            conn.execute(
+                """
+                UPDATE research_entries SET project_id=?, node_id=?, asset_name=?,
+                    asset_type=?, topic_key=?, body=?, sources_json=?, updated_at=?
+                WHERE id=?
+                """,
+                (
+                    project_id,
+                    str(node_id or ""),
+                    str(asset_name or ""),
+                    str(asset_type or ""),
+                    str(topic_key or ""),
+                    body,
+                    src,
+                    now,
+                    eid,
+                ),
+            )
+        else:
+            eid = uuid.uuid4().hex[:12]
+            conn.execute(
+                """
+                INSERT INTO research_entries (id, project_id, subject_key, node_id,
+                    asset_name, asset_type, era, topic_key, body, sources_json,
+                    created_at, updated_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    eid,
+                    project_id,
+                    skey,
+                    str(node_id or ""),
+                    str(asset_name or ""),
+                    str(asset_type or ""),
+                    era,
+                    str(topic_key or ""),
+                    body,
+                    src,
+                    now,
+                    now,
+                ),
+            )
+    record_use(project_id, eid, kind, key, node_id)
+    return eid
+
+
+def _entry_row(r: sqlite3.Row) -> dict[str, Any]:
+    try:
+        sources = json.loads(r["sources_json"] or "[]")
+    except Exception:  # noqa: BLE001
+        sources = []
+    return {
+        "id": r["id"],
+        "projectId": r["project_id"],
+        "subjectKey": r["subject_key"],
+        "nodeId": r["node_id"],
+        "assetName": r["asset_name"],
+        "assetType": r["asset_type"],
+        "era": r["era"],
+        "topicKey": r["topic_key"],
+        "body": r["body"],
+        "sources": sources if isinstance(sources, list) else [],
+        "updatedAt": r["updated_at"],
+    }
+
+
+def list_entries(project_id: str) -> list[dict[str, Any]]:
+    """本项目引用的主体（含本项目自己产出、以及从库里引用/命中的）。
+
+    读的是引用表而不是「project_id = 本项目」：主体全库唯一，一个主体可能由
+    别的项目产出、本项目引用——活引用下正文每次从主体读，永远是最新版。"""
+    if not project_id:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT e.* FROM research_entries e"
+            " JOIN research_uses u ON u.entry_id = e.id"
+            " WHERE u.project_id = ? GROUP BY e.id ORDER BY e.updated_at",
+            (project_id,),
+        ).fetchall()
+    return [_entry_row(r) for r in rows]
+
+
+def used_entry(project_id: str, kind: str, key: str) -> dict[str, Any] | None:
+    """本项目在该目标上引用的主体（主题的执行产物、资产自己的考据都走它）。"""
+    if not project_id:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT e.* FROM research_entries e"
+            " JOIN research_uses u ON u.entry_id = e.id"
+            " WHERE u.project_id = ? AND u.target_kind = ? AND u.target_key = ?"
+            " ORDER BY e.updated_at DESC LIMIT 1",
+            (project_id, str(kind), str(key)),
+        ).fetchone()
+    return _entry_row(row) if row else None
+
+
+def lookup_subject(era: str, kind: str, key: str) -> dict[str, Any] | None:
+    """库检索：同 era 同主体的权威事实（不管哪个项目产出）。
+
+    严格相等——名字像而不同的主体（「朝服」vs「冯太后朝服」）不命中，宁可重搜，
+    不可把另一个形制的事实塞给出图。era 为空直接落空（无作用域即不进库）。"""
+    era = str(era or "").strip()
+    key = str(key or "").strip()
+    if not era or not key:
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM research_entries WHERE era = ? AND subject_key = ?",
+            (era, f"{kind}:{key}"),
+        ).fetchone()
+    return _entry_row(row) if row else None
+
+
+def list_library(era: str, project_id: str = "") -> list[dict[str, Any]]:
+    """列出某 era 下全库可复用的主体：事实 + 图集张数 + 出处项目 + 本项目是否已引用。
+
+    这是「复用」的读面——此前只有一个要求报出确切名字的索引抽屉（撞名才命中），
+    没有图书馆。era 为空返回空：不设年代的项目，主体键全是 local: 前缀，既没有
+    可复用的东西，它的产物也不会被别人复用。"""
+    era = str(era or "").strip()
+    if not era:
+        return []
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_entries WHERE era = ? ORDER BY updated_at DESC",
+            (era,),
+        ).fetchall()
+        used: set[str] = set()
+        if project_id:
+            used = {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT entry_id FROM research_uses WHERE project_id = ?",
+                    (project_id,),
+                )
+            }
+        counts = {
+            str(r["subject_key"]): int(r["n"])
+            for r in conn.execute(
+                "SELECT subject_key, COUNT(*) AS n FROM research_subject_refs"
+                " WHERE era = ? GROUP BY subject_key",
+                (era,),
+            )
+        }
+    names: dict[str, str] = {}
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        e = _entry_row(r)
+        pid = str(e.get("projectId") or "")
+        if pid and pid not in names:
+            names[pid] = _project_scope(pid)[0]
+        out.append(
+            {
+                "id": e["id"],
+                "subjectKey": e["subjectKey"],
+                "assetName": e["assetName"],
+                "assetType": e["assetType"],
+                "topicKey": e["topicKey"],
+                "kind": "topic" if str(e.get("assetType")) == "topic" else "asset",
+                "body": e["body"],
+                "sources": e["sources"],
+                "refCount": counts.get(e["subjectKey"], 0),
+                "fromProjectId": pid,
+                "fromProject": names.get(pid, ""),
+                "used": e["id"] in used,
+                "updatedAt": e["updatedAt"],
+            }
+        )
+    return out
+
+
+def get_entry(entry_id: str) -> dict[str, Any] | None:
+    """按 id 取主体（导入端点用：前端只传 id，正文不可被改写）。"""
+    if not str(entry_id or "").strip():
+        return None
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM research_entries WHERE id = ?", (str(entry_id),)
+        ).fetchone()
+    return _entry_row(row) if row else None
+
+
+# ---------- 主体图集（调研采纳的参考图，按主体归档、跨项目复用） ----------
+
+
+def add_subject_refs(
+    era: str, subject_key: str, rows: list[dict[str, Any]]
+) -> int:
+    """把采纳的参考图收进主体图集（url 去重），返回新增条数。
+
+    图与事实各自独立：手填检索词的调研不跑文路、没有事实条目，图照样该入库。"""
+    items = [
+        {
+            "url": str(r.get("assetUrl") or r.get("asset_url") or r.get("url") or "").strip(),
+            "title": str(r.get("title") or "")[:120],
+            "sourceUrl": str(r.get("sourceUrl") or r.get("source_url") or ""),
+            "sourceDomain": str(r.get("sourceDomain") or r.get("source_domain") or ""),
+        }
+        for r in rows
+        if str(r.get("assetUrl") or r.get("asset_url") or r.get("url") or "").strip()
+    ]
+    if not items:
+        return 0
+    now = _now()
+    added = 0
+    with _conn() as conn:
+        for it in items:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO research_subject_refs"
+                " (id, era, subject_key, url, title, source_url, source_domain, added_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    uuid.uuid4().hex[:12],
+                    str(era or "").strip(),
+                    subject_key,
+                    it["url"],
+                    it["title"],
+                    it["sourceUrl"],
+                    it["sourceDomain"],
+                    now,
+                ),
+            )
+            added += cur.rowcount or 0
+    return added
+
+
+def subject_refs(subject_keys: list[str], era: str) -> dict[str, list[dict[str, Any]]]:
+    """主体图集批量取：{主体键 → [{url,title,sourceUrl,sourceDomain}…]}（按入库序）。"""
+    keys = [k for k in dict.fromkeys(str(k or "") for k in subject_keys) if k]
+    if not keys:
+        return {}
+    marks = ",".join("?" for _ in keys)
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM research_subject_refs WHERE era = ?"
+            f" AND subject_key IN ({marks}) ORDER BY added_at",
+            (str(era or "").strip(), *keys),
+        ).fetchall()
+    out: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(str(r["subject_key"]), []).append(
+            {
+                "url": str(r["url"]),
+                "title": str(r["title"]),
+                "sourceUrl": str(r["source_url"]),
+                "sourceDomain": str(r["source_domain"]),
+            }
+        )
+    return out
 
 
 def _project_scope(project_id: str) -> tuple[str, str]:
@@ -332,144 +879,6 @@ def _project_scope(project_id: str) -> tuple[str, str]:
         except Exception:  # noqa: BLE001
             era = ""
     return name, era
-
-
-def upsert_entry(
-    project_id: str,
-    *,
-    body: str,
-    node_id: str = "",
-    asset_name: str = "",
-    asset_type: str = "",
-    era: str = "",
-    topic_key: str = "",
-    sources: list[dict[str, Any]] | None = None,
-) -> str:
-    """写入/覆盖一条考据条目，返回条目 id。
-
-    重跑语义：同资产再次调研覆盖旧条目（与候选「重跑清掉旧未采纳」同口径）。
-    归属键取节点 id（改名不失联），无 id 退回按名归一。"""
-    body = str(body or "").strip()
-    if not project_id or not body:
-        raise ValueError("考据条目需要 project_id 与正文")
-    key = f"node:{node_id}" if str(node_id or "").strip() else f"name:{_norm_name(asset_name)}"
-    now = _now()
-    src = json.dumps(sources or [], ensure_ascii=False)
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT id FROM research_entries WHERE project_id = ? AND asset_key = ?",
-            (project_id, key),
-        ).fetchone()
-        if row:
-            conn.execute(
-                """
-                UPDATE research_entries SET node_id=?, asset_name=?, asset_type=?,
-                    era=?, topic_key=?, body=?, sources_json=?, updated_at=?
-                WHERE id=?
-                """,
-                (
-                    str(node_id or ""),
-                    str(asset_name or ""),
-                    str(asset_type or ""),
-                    str(era or ""),
-                    str(topic_key or ""),
-                    body,
-                    src,
-                    now,
-                    row["id"],
-                ),
-            )
-            return str(row["id"])
-        eid = uuid.uuid4().hex[:12]
-        conn.execute(
-            """
-            INSERT INTO research_entries (id, project_id, asset_key, node_id,
-                asset_name, asset_type, era, topic_key, body, sources_json,
-                created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                eid,
-                project_id,
-                key,
-                str(node_id or ""),
-                str(asset_name or ""),
-                str(asset_type or ""),
-                str(era or ""),
-                str(topic_key or ""),
-                body,
-                src,
-                now,
-                now,
-            ),
-        )
-    return eid
-
-
-def _entry_row(r: sqlite3.Row) -> dict[str, Any]:
-    try:
-        sources = json.loads(r["sources_json"] or "[]")
-    except Exception:  # noqa: BLE001
-        sources = []
-    return {
-        "id": r["id"],
-        "projectId": r["project_id"],
-        "nodeId": r["node_id"],
-        "assetName": r["asset_name"],
-        "assetType": r["asset_type"],
-        "era": r["era"],
-        "topicKey": r["topic_key"],
-        "body": r["body"],
-        "sources": sources if isinstance(sources, list) else [],
-        "updatedAt": r["updated_at"],
-    }
-
-
-def list_entries(project_id: str) -> list[dict[str, Any]]:
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM research_entries WHERE project_id = ? ORDER BY updated_at",
-            (project_id,),
-        ).fetchall()
-    return [_entry_row(r) for r in rows]
-
-
-def lookup_entries(
-    era: str,
-    asset_name: str,
-    asset_type: str = "",
-    limit: int = ENTRY_LOOKUP_LIMIT,
-) -> list[dict[str, Any]]:
-    """跨项目复用查询：同 era + 同资产名（归一后相等）的历史条目。
-
-    严格相等——名字像但不同（「朝服」vs「冯太后朝服」）不命中，宁可重搜，
-    不可把另一个形制的事实塞给出图。era 为空直接返回空（无作用域即不复用）。
-
-    asset_type 只作同名不同物的负向护栏，且**两侧都是资产四类之一时才比**：
-    分镜出图载荷的类型是版式（shot/none），拿它当资产身份比会把该命中的全
-    漏掉（分镜行引冯太后时载荷类型是 shot，条目上是 character）。"""
-    era = str(era or "").strip()
-    want = _norm_name(asset_name)
-    if not era or not want:
-        return []
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM research_entries WHERE era = ?", (era,)
-        ).fetchall()
-    hits: list[dict[str, Any]] = []
-    for r in rows:
-        if _norm_name(r["asset_name"]) != want:
-            continue
-        got = str(r["asset_type"] or "")
-        if (
-            asset_type in _ASSET_NODE_TYPES
-            and got in _ASSET_NODE_TYPES
-            and got != asset_type
-        ):
-            continue
-        hits.append(_entry_row(r))
-    hits.sort(key=lambda e: str(e.get("updatedAt") or ""), reverse=True)
-    return hits[:limit]
 
 
 # 画布资产卡型（报告里「待补考据」与资产覆盖面按它统计）
@@ -546,6 +955,27 @@ def build_report(project_id: str) -> dict[str, Any]:
     adopted = adopted_by_node(project_id)
     outline = build_outline(project_id)
     t_by_node, t_by_name = topic_briefs(project_id)
+    # 主体图集：本项目的每个主体（资产/主题）名下累积了多少张可复用参考图。
+    # 图与事实各自独立归档在主体上，所以这里按主体取、不按画布节点取。
+    album: dict[str, list[dict[str, Any]]] = {}
+    try:
+        by_era: dict[str, list[str]] = {}
+        for e in entries:
+            by_era.setdefault(str(e.get("era") or ""), []).append(str(e.get("subjectKey") or ""))
+        for e_era, keys in by_era.items():
+            album.update(subject_refs(keys, e_era))
+    except Exception as exc:  # noqa: BLE001 图集读不到不影响报告主体
+        print(f"[图集] 读取失败 {project_id}：{exc}", flush=True)
+    producer_names: dict[str, str] = {}
+
+    def _source_of(e: dict[str, Any]) -> str:
+        """主体事实的来源标注：别的项目产出的写「复用自《X》」，本项目产出的留空。"""
+        pid = str(e.get("projectId") or "")
+        if not pid or pid == project_id:
+            return ""
+        if pid not in producer_names:
+            producer_names[pid] = _project_scope(pid)[0] or "同题材项目"
+        return producer_names[pid]
 
     def _topics_for(node_id: str, title: str) -> list[list[str]]:
         """服务该卡的考据主题（先按节点 id，再按资产名——名是各路径都有的键）。"""
@@ -613,11 +1043,20 @@ def build_report(project_id: str) -> dict[str, Any]:
     # 文字考据口径 = 画布上有考据的资产数（孤儿条目单列在考据事实段，不进头部
     # ——「资产 5 · 文字考据 4」的算术对不上会让人怀疑口径）
     covered_on_canvas = [c for c in covered if not c.get("orphan")]
+    reused_count = len([e for e in asset_entries if _source_of(e)])
     lines.append(
         f"资产 {len(assets)} 个 ｜ 参考图已采纳 {ref_total} 张、覆盖"
         f" {len(covered_refs)} 个 ｜ 文字考据 {len(covered_on_canvas)} 个 ｜ 缺参考图待补"
         f" {len(pending_refs)} 个"
     )
+    if reused_count or album:
+        album_total = sum(len(v) for v in album.values())
+        bits = []
+        if reused_count:
+            bits.append(f"复用同题材考据 {reused_count} 条")
+        if album_total:
+            bits.append(f"主体图集 {album_total} 张可跨项目复用")
+        lines.append(" · ".join(bits))
     lines.append(f"生成于 {_now()[:16].replace('T', ' ')}")
 
     sec = 0
@@ -643,6 +1082,9 @@ def build_report(project_id: str) -> dict[str, Any]:
         lines.append("")
         lines.append(f"■ {c['title']}（{label or '资产'}）{gone}")
         if e:
+            src = _source_of(e)
+            if src:
+                lines.append(f"（复用自《{src}》同题材考据——本项目未重搜，源更新此处跟着变）")
             lines.append(str(e["body"]).strip())
             doms = [
                 str(s.get("domain") or _domain(str(s.get("url") or "")))
@@ -656,6 +1098,9 @@ def build_report(project_id: str) -> dict[str, Any]:
                     if d not in seen:
                         seen.append(d)
                 lines.append("—— 来源：" + "、".join(seen[:6]))
+            n_album = len(album.get(str(e.get("subjectKey") or ""), []))
+            if n_album:
+                lines.append(f"—— 参考图集：{n_album} 张（同题材项目可直接复用）")
         for ttitle, _tbody in _topics_for(c["nodeId"], c["title"]):
             lines.append(f"＋主题考据〈{ttitle}〉（全文见考证大纲）")
 
@@ -744,6 +1189,8 @@ def build_report(project_id: str) -> dict[str, Any]:
         "adopted": [{"nodeId": k, "candidates": v} for k, v in adopted.items()],
         "outline": outline["topics"],
         "cardBriefs": card_briefs,
+        # 主体图集张数（主体键 → 张数）：报告卡头部与「同题材可复用」入口的数据源
+        "album": {k: len(v) for k, v in album.items()},
         "text": "\n".join(lines),
         "generatedAt": _now(),
     }
@@ -917,14 +1364,8 @@ def _topic_status(project_id: str, topic_key: str, status: str, **fields: Any) -
 
 
 def topic_entry(project_id: str, topic_key: str) -> dict[str, Any] | None:
-    """本项目该主题的考据条目（执行产物）。"""
-    with _conn() as conn:
-        row = conn.execute(
-            "SELECT * FROM research_entries WHERE project_id = ? AND topic_key = ?"
-            " ORDER BY updated_at DESC LIMIT 1",
-            (project_id, topic_key),
-        ).fetchone()
-    return _entry_row(row) if row else None
+    """本项目该主题引用的主体（主题执行产物，或从库里引用/命中的）。"""
+    return used_entry(project_id, "topic", topic_key)
 
 
 def build_outline_report(project_id: str) -> dict[str, Any]:
@@ -973,22 +1414,20 @@ def topic_briefs(
     """主题考据按资产分发的索引：(按节点 id, 按资产名) → [[主题名, 事实], …]。
 
     主题条目是「时代共有事实」，一个主题服务多张卡——出图与卡面展示都按主题的
-    服务范围分发到成员资产。状态为 reused 的主题在本项目没有条目，按 (era, 主题键)
-    取源项目的条目：复用是活引用不是拷贝，源项目改进后这里跟着变。"""
+    服务范围分发到成员资产。主题事实的身份是主体（era + topic:键）：本项目
+    引用它（自己产出或从库里命中）就分发；引用是活引用不是拷贝，主体被谁改进
+    这里都跟着变。"""
     empty: tuple[dict[str, list[list[str]]], dict[str, list[list[str]]]] = ({}, {})
     if not project_id:
         return empty
     topics = list_topics(project_id)
     if not topics:
         return empty
-    _, era = _project_scope(project_id)
     titles = {a["nodeId"]: a["title"] for a in canvas_assets(project_id)}
     by_node: dict[str, list[list[str]]] = {}
     by_name: dict[str, list[list[str]]] = {}
     for t in topics:
         entry = topic_entry(project_id, t["topicKey"])
-        if not entry and t["status"] == "reused":
-            entry = lookup_topic_entry(era, t["topicKey"], exclude_project=project_id)
         if not entry:
             continue
         body = str(entry.get("body") or "").strip()
@@ -1017,6 +1456,13 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
     lines: list[str] = []
     covered_nodes: list[str] = []
     done = 0
+    produced_by: dict[str, str] = {}
+
+    def _produced_by(pid: str) -> str:
+        if pid not in produced_by:
+            produced_by[pid] = _project_scope(pid)[0] or "同题材项目"
+        return produced_by[pid]
+
     for t in list_topics(project_id):
         entry = topic_entry(project_id, t["topicKey"])
         if entry:
@@ -1027,9 +1473,12 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
             if nid in assets
         ]
         covered_nodes.extend(s for s in t["nodeIds"] if s in assets)
-        # 有事实即已完成：状态机只记录过程，产物为准（条目可能是直接写入或补考据
-        # 落库的，状态还停在 planned，此时显示「待执行」会误导）
-        if entry and t["status"] != "reused":
+        # 状态以产物为准（条目可能是直接写入或补考据落库的，状态还停在 planned，
+        # 此时显示「待执行」会误导）；事实来自别的项目就是复用，出处写在行上。
+        src_pid = str((entry or {}).get("projectId") or "")
+        if entry and src_pid and src_pid != project_id:
+            status_label = f"复用自《{_produced_by(src_pid)}》"
+        elif entry:
             status_label = "已完成"
         elif t["status"] == "reused":
             status_label = f"复用自《{t['reusedFrom'] or '同题材项目'}》"
@@ -1074,42 +1523,37 @@ def build_outline(project_id: str, with_facts: bool = True) -> dict[str, Any]:
     }
 
 
-def lookup_topic_entry(
-    era: str, topic_key: str, exclude_project: str = ""
-) -> dict[str, Any] | None:
-    """跨项目复用：同 era 同主题键的历史条目（别的项目已经考据过同一件事）。
+def lookup_topic_entry(era: str, topic_key: str) -> dict[str, Any] | None:
+    """库检索：同 era 同主题键的主体事实（别的项目已经考据过同一件事）。
 
-    严格按主题键相等——主题键是标题归一，同键即同一件事。era 为空不复用。"""
-    era = str(era or "").strip()
-    if not era or not topic_key:
-        return None
-    with _conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM research_entries WHERE era = ? AND topic_key = ?"
-            " ORDER BY updated_at DESC",
-            (era, topic_key),
-        ).fetchall()
-    for r in rows:
-        if exclude_project and r["project_id"] == exclude_project:
-            continue
-        return _entry_row(r)
-    return None
+    严格按主题键相等——主题键是标题归一，同键即同一件事。era 为空不进库。"""
+    return lookup_subject(era, "topic", str(topic_key or "").strip())
 
 
-async def _run_topic(project_id: str, topic_key: str, sem: asyncio.Semaphore) -> None:
-    """执行一个主题：先查同题材历史条目（复用即零成本），否则搜一轮落条目。
+async def _run_topic(
+    project_id: str, topic_key: str, sem: asyncio.Semaphore, force: bool = False
+) -> None:
+    """执行一个主题：本项目已有（自己产出或引用）即完成；库里命中即挂引用；否则搜一轮。
 
-    文路原语与资产调研共用（_run_text_research）；失败记在主题行上明报，
-    不静默标完成。"""
+    复用即零成本、且是活引用（挂 uses，不拷贝正文）。失败记在主题行上明报，
+    不静默标完成。force=True（调用方点名要跑这个主题）跳过「已有事实」短路——
+    点名就是重跑意图，静默空转比花钱更糟；库命中仍然复用（那是零成本的既有
+    结论，不值得为「重跑」再搜一遍同样的东西）。"""
     # 函数内 import：与 _run_research 同式（imgresearch 顶层已 from skills import，
     # 但模块名 skills 只在函数内绑定，避免 import 顺序敏感）
     import skills
 
     _, era = _project_scope(project_id)
     async with sem:
-        reused = lookup_topic_entry(era, topic_key, exclude_project=project_id)
+        if not force and topic_entry(project_id, topic_key):
+            _topic_status(project_id, topic_key, "done", error="")
+            return
+        reused = lookup_topic_entry(era, topic_key)
         if reused:
-            _, src_name = _project_scope(str(reused.get("projectId") or ""))
+            # _project_scope 返回 (项目名, era)——别解包错了：旧代码把 era 当成
+            # 项目名，「复用自《北魏·平城时期》」这种年代当出处的标注一直是错的
+            src_name, _ = _project_scope(str(reused.get("projectId") or ""))
+            record_use(project_id, str(reused["id"]), "topic", topic_key)
             _topic_status(
                 project_id,
                 topic_key,
@@ -1169,18 +1613,30 @@ async def _run_topic(project_id: str, topic_key: str, sem: asyncio.Semaphore) ->
 
 
 def run_topics(project_id: str, topic_keys: list[str] | None = None) -> list[str]:
-    """执行主题（缺省=全部未完成的）：并发跑，状态写在主题行上（大纲即进度板）。"""
-    todos = [
-        t["topicKey"]
-        for t in list_topics(project_id)
-        if t["status"] != "done" and (not topic_keys or t["topicKey"] in topic_keys)
-    ]
+    """执行主题（缺省=全部未完成的）：并发跑，状态写在主题行上（大纲即进度板）。
+
+    **显式点名的主题一律跑**（调用方说了要跑就跑，那是重跑意图）；**缺省全量时
+    跳过已有事实的**（done/reused 或库里/项目里已有条目）——状态机只记过程、
+    产物为准：事实可能是直接写入或补考据落库的，状态还停在 planned，按旧口径
+    重跑就是白花一次搜索。"""
+    explicit = bool(topic_keys)
+    todos: list[str] = []
+    for t in list_topics(project_id):
+        if explicit and t["topicKey"] not in topic_keys:
+            continue
+        if not explicit and (
+            t["status"] in ("done", "reused") or topic_entry(project_id, t["topicKey"])
+        ):
+            continue
+        todos.append(t["topicKey"])
     if not todos:
         return []
     sem = asyncio.Semaphore(TOPIC_CONCURRENCY)
 
     async def _all() -> None:
-        await asyncio.gather(*[_run_topic(project_id, k, sem) for k in todos])
+        await asyncio.gather(
+            *[_run_topic(project_id, k, sem, force=explicit) for k in todos]
+        )
 
     task = asyncio.create_task(_all())
     task.add_done_callback(
@@ -1847,6 +2303,8 @@ async def _run_research(
             )
         _insert_candidates(project_id, node_id, rows)
         job["phase"] = "考据与终选"
+        _, era = _project_scope(project_id)
+        asset_name = str(asset.get("name") or "")
         # join：收文路考据简报（超时/失败记软错误，不拦终选与采纳）
         brief = ""
         brief_sources: list[dict[str, Any]] = []
@@ -1859,15 +2317,14 @@ async def _run_research(
                 errors["考据"] = str(exc)[:160]
         if brief:
             job["researchBrief"] = brief
-            # 服务端权威落点：简报一产出即入条目表，与谁发起调研、画布开没开、
+            # 服务端权威落点：简报一产出即入主体表，与谁发起调研、画布开没开、
             # agent 进程活没活都无关（此前只活在内存 job 字典里，重启即蒸发）
-            _, era = _project_scope(project_id)
             try:
                 upsert_entry(
                     project_id,
                     body=brief,
                     node_id=node_id,
-                    asset_name=str(asset.get("name") or ""),
+                    asset_name=asset_name,
                     asset_type=str(asset.get("type") or ""),
                     era=era,
                     sources=brief_sources,
@@ -1888,12 +2345,31 @@ async def _run_research(
             auto_adopt_top(project_id, node_id, AUTO_ADOPT_PER_NODE)
         except Exception as exc:  # noqa: BLE001
             errors["终选"] = str(exc)[:160]
+        # 采纳回流：采纳的图收进主体图集，下一个项目遇到同一主体直接复用。
+        # 图与事实各自独立——手填检索词的调研不跑文路、没有事实条目，图照样入库
+        try:
+            _archive_adopted_refs(project_id, node_id, asset_name, era)
+        except Exception as exc:  # noqa: BLE001 归档失败不拦调研结果
+            print(f"[图集] 归档失败 {project_id}/{node_id}：{exc}", flush=True)
+            errors["图集归档"] = str(exc)[:120]
         job["candidates"] = list_candidates(project_id, node_id)
         job["errors"] = errors
         job["status"] = "done"
     except Exception as exc:  # noqa: BLE001 任务级失败明报
         job["status"] = "error"
         job["error"] = str(exc)[:300]
+
+
+def _archive_adopted_refs(
+    project_id: str, node_id: str, asset_name: str, era: str
+) -> int:
+    """把某资产已采纳的候选图收进它的主体图集（url 去重），返回新增条数。"""
+    if not _norm_name(asset_name):
+        return 0
+    adopted = [c for c in list_candidates(project_id, node_id) if c.get("adopted")]
+    return add_subject_refs(
+        era, asset_subject(era, project_id, asset_name), adopted
+    )
 
 
 def _rounds_summary(items: list[dict[str, Any]], sample: int = 20) -> str:

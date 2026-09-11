@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import sqlite3
@@ -287,10 +288,28 @@ key_entries = imgresearch.list_entries("p-key")
 expect(len(key_entries) == 1, f"同名（标点空格差异）应覆盖不新增：{key_entries}")
 expect(key_entries[0]["body"] == "v2", "重跑语义：后写覆盖前写")
 
-# J. 同名不同节点各成一条（两个项目里同名资产不该互相覆盖）
+# J. 主体全库唯一：同 era 同名归并成一条（后写覆盖），不同 era 各自成主体
 imgresearch.upsert_entry("p-key", body="甲", node_id="n1", asset_name="官服", era="明代")
 imgresearch.upsert_entry("p-key", body="乙", node_id="n2", asset_name="官服", era="明代")
-expect(len(imgresearch.list_entries("p-key")) == 3, "不同节点各成一条")
+entries = imgresearch.list_entries("p-key")
+expect(len(entries) == 1, f"同名同 era 应归并成一个主体：{entries}")
+expect(entries[0]["body"] == "乙", "主体唯一，后写覆盖前写")
+expect(
+    imgresearch.lookup_subject("明代", "asset", "官服")["body"] == "乙",
+    "库里只有一条权威版本",
+)
+imgresearch.upsert_entry("p-key", body="宋制", node_id="n3", asset_name="官服", era="宋代")
+expect(len(imgresearch.list_entries("p-key")) == 2, "不同 era 的同名资产是两个主体")
+# 引用表：同一主体被多个节点引用各留一条（主体去重，引用不去重）
+with imgresearch._conn() as _c:
+    targets = {
+        r[0]
+        for r in _c.execute(
+            "SELECT target_key FROM research_uses"
+            " WHERE project_id='p-key' AND target_kind='node'"
+        )
+    }
+expect(targets == {"n1", "n2", "n3"}, f"每个引用节点各留一条：{targets}")
 
 # K. 空正文拒收（不写半条脏数据）
 try:
@@ -359,7 +378,7 @@ expect("北魏早期服制" in [t[0] for t in by_node.get("n_feng", [])], f"主�
 expect(by_node.get("n_robe", []) == [], f"已移出大纲的主题不再分发：{by_node.get('n_robe')}")
 expect("冯太后" in by_name and by_name["冯太后"][0][0] == "北魏早期服制", "应按资产名也有索引")
 
-# L7b. 状态 reused 的主题在本项目没有条目 → 按 (era, 主题键) 取源项目条目（活引用）
+# L7b. 主题执行命中库：记引用 + 标 reused，且一次搜索都不发（活引用不拷贝）
 seed_project("p-src-topic", "宋辽项目")
 seed_canvas(
     "p-src-topic",
@@ -374,10 +393,35 @@ imgresearch.upsert_entry(
 seed_canvas("p-reuse-topic", [{"id": "n_b", "data": {"nodeType": "character", "title": "宋兵"}}],
             {"era": "宋辽"})
 imgresearch.replace_topics("p-reuse-topic", [{"title": "宋辽甲胄", "nodeIds": ["n_b"]}])
-imgresearch._topic_status("p-reuse-topic", "宋辽甲胄", "reused", reused_from="宋辽项目")
+
+
+async def _boom(*_a, **_k):
+    raise AssertionError("库命中不该再搜")
+
+
+_orig_text = imgresearch._run_text_research
+imgresearch._run_text_research = _boom
+try:
+    asyncio.run(
+        imgresearch._run_topic("p-reuse-topic", "宋辽甲胄", asyncio.Semaphore(1))
+    )
+finally:
+    imgresearch._run_text_research = _orig_text
+_t = [x for x in imgresearch.list_topics("p-reuse-topic") if x["topicKey"] == "宋辽甲胄"][0]
+expect(_t["status"] == "reused", f"库命中应标 reused：{_t}")
+expect(_t["reusedFrom"] == "宋辽项目", f"出处应记项目名：{_t['reusedFrom']}")
 rb_node, _ = imgresearch.topic_briefs("p-reuse-topic")
 expect("札叶连缀" in (rb_node.get("n_b") or [["", ""]])[0][1],
-       f"reused 主题应取源项目条目：{rb_node}")
+       f"复用主题应分发源项目事实：{rb_node}")
+# 源项目改进 → 引用方跟着变（活引用，不拷副本）
+imgresearch.upsert_entry(
+    "p-src-topic", body="宋辽甲胄：札叶连缀（修订：皮甲为主）。", asset_name="宋辽甲胄",
+    asset_type="topic", era="宋辽", topic_key="宋辽甲胄",
+)
+rb_node2, _ = imgresearch.topic_briefs("p-reuse-topic")
+expect("皮甲为主" in (rb_node2.get("n_b") or [["", ""]])[0][1], "源主体更新应传到引用方")
+# 库命中之后重跑不重复执行（有产物即完成）
+expect(imgresearch.run_topics("p-reuse-topic") == [], "已有主体引用的主题不进待办")
 offline, _ = imgresearch.topic_briefs("p-no-such-project")
 expect(offline == {}, "未知项目应给空索引")
 

@@ -56,7 +56,10 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "✓" : "✗"} ${name}${detail ? `  — ${detail}` : ""}`);
 };
 
-const ERA = "北魏·平城时期";
+// 主体是**全库按 era 共享**的（2026-09-11 主体化）：测试必须用当次唯一的 era，
+// 否则 fixture 会与真实项目的主体同名同域——既覆盖别人的事实，
+// 清理时还会按 project_id 把共用的那条一起删掉。
+const ERA = `e2e-era-${Date.now().toString(36)}`;
 const REF_URL = "/agent-service/assets/e2e00000api1.png";
 
 const { body: proj } = await api("/projects", {
@@ -240,6 +243,10 @@ import sqlite3, imgresearch as ir
 db = sqlite3.connect(str(ir.DB_PATH))
 for t in ("research_entries", "research_topics", "ref_candidates"):
     db.execute(f"DELETE FROM {t} WHERE project_id = ?", (${JSON.stringify(pid)},))
+# 主体/图集按 era 清（全库共享，按 project_id 删不干净也不该冒删别人的）
+db.execute("DELETE FROM research_entries WHERE era = ?", (${JSON.stringify(ERA)},))
+db.execute("DELETE FROM research_subject_refs WHERE era = ?", (${JSON.stringify(ERA)},))
+db.execute("DELETE FROM research_uses WHERE project_id = ?", (${JSON.stringify(pid)},))
 db.commit(); db.close()
 `);
 

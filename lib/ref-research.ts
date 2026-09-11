@@ -316,3 +316,51 @@ export async function runRefOutline(
   if (!r.ok) throw new Error(text || `执行失败（${r.status}）`);
   return JSON.parse(text) as { started: string[]; outline: RefOutline };
 }
+
+/** 库中一条可复用的考据主体（别的项目考据过的现成成果）。 */
+export interface RefLibraryItem {
+  id: string;
+  subjectKey: string;
+  /** 资产名（时代主题时为空） */
+  assetName: string;
+  assetType: string;
+  topicKey: string;
+  kind: "asset" | "topic";
+  body: string;
+  sources: { title?: string; url?: string; domain?: string }[];
+  /** 主体图集张数（跨项目可复用的参考图） */
+  refCount: number;
+  fromProjectId: string;
+  fromProject: string;
+  /** 本项目是否已引用 */
+  used: boolean;
+  updatedAt: string;
+}
+
+export interface RefLibrary {
+  /** 项目时代口径（空 = 库不可用：主体键都是项目私有的） */
+  era: string;
+  items: RefLibraryItem[];
+}
+
+/** 拉同题材可复用考据库（按项目 era 作用域，跨项目读）。 */
+export async function getRefLibrary(projectId: string): Promise<RefLibrary> {
+  const r = await apiFetch(`/agent-service/projects/${projectId}/refs/library`);
+  if (!r.ok) throw new Error(`考据库加载失败（${r.status}）`);
+  return (await r.json()) as RefLibrary;
+}
+
+/** 把库里的主体引用到本项目某张卡/某个主题上（活引用，不重搜）。 */
+export async function importRefSubject(
+  projectId: string,
+  entryId: string,
+  targetKind: "node" | "topic",
+  targetKey: string,
+): Promise<void> {
+  const r = await apiFetch(`/agent-service/projects/${projectId}/refs/import`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entryId, targetKind, targetKey }),
+  });
+  if (!r.ok) throw new Error((await r.text()) || `引用失败（${r.status}）`);
+}

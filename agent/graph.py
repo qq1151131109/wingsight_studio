@@ -841,6 +841,16 @@ generate_look_images.__doc__ = _LOOK_DOC
 generate_look_images = tool(generate_look_images)
 
 
+def _pid_from_config(config: Any) -> str:
+    """会话 → 项目 id（新工具统一用它；老工具的六行内联写法保持原样不动）。"""
+    thread_id = ""
+    if isinstance(config, dict):
+        thread_id = str((config.get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return ""
+    return projects.project_id_of_thread(thread_id) or ""
+
+
 @tool
 async def research_asset_references(assets_json: str, config: RunnableConfig) -> str:
     """为画布资产批量调研网络参考图（AI 出词 → 联网搜图与下载 → 模型看图终选）。
@@ -862,6 +872,11 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
     0 行，模型以为大纲跑完参考图会自动跟上，全片照着文字硬出）。先后不限
     （本工具收不到大纲的检索词——每资产的首轮搜索词由出词 flow 按资产描述生成，
     大纲的形制结论走**出图时**的提示词注入）。
+
+    **先查库再搜**：发起之前先 `list_research_library` 看一眼同题材项目已经
+    考据过什么——同一个时代的同一主体（唐代官服品级、某具体人物、某座宫殿）
+    只要别的项目做过，直接 `import_research` 引用即可，不必重搜（用户口径：
+    不用每次都调研）。库里没有的资产再走本工具。
 
     **范围默认全量**：用户说「给资产做调研」没点名具体几个/哪类时，画布上
     的资产卡（character/scene/prop/costume）**全部传入一次调用**——不要
@@ -1070,6 +1085,139 @@ async def adopt_asset_references(
 
 
 @tool
+async def list_research_library(config: RunnableConfig) -> str:
+    """查看**同题材其他项目已经考据过的现成成果**（可复用主体库）。
+
+    时机：用户要「给资产做调研」「按史实出图」「考据一下这个年代」之前**先看一下
+    库里有什么**——同一时代的主体（唐代官服品级、武则天寝宫形制、某具体人物）
+    只要别的项目做过，就能直接引用，不必重搜（用户口径：不用每次都调研）。
+
+    库里每条含：主体名、事实正文、参考图张数、来自哪个项目、本项目是否已引用。
+    要引用就用 import_research 挂到本项目的卡/主题上；库里没有的才发起
+    research_asset_references（参考图）或考证大纲（时代文字）。
+
+    作用域是项目的时代口径（画布 meta 的 era）：**没设 era 的项目库是空的**——
+    那就先按用户说的年代调 set_project_era 记下来（真实题材才有年代；架空/穿越
+    不设），之后调研产生的主体才能跨项目复用。"""
+    pid = _pid_from_config(config)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    _, era = imgresearch._project_scope(pid)
+    if not era:
+        return (
+            "本项目还没设时代口径（画布 meta.era），可复用库为空——"
+            "先用 set_project_era 记下年代（如「北魏·平城时期」「唐·武周」），"
+            "同题材项目的历史考据才能被复用；虚构/架空题材不用设。"
+        )
+    items = imgresearch.list_library(era, project_id=pid)
+    if not items:
+        return (
+            f"「{era}」下还没有可复用的考据主体（本项目和别的同题材项目都没做过）。"
+            "可以发起调研：参考图走 research_asset_references（画布资产全部一次传入），"
+            "时代共有的文字事实走考证大纲（get_research_material → propose_research_outline）。"
+        )
+    free = [i for i in items if not i["used"]]
+    lines = [
+        f"「{era}」库中共 {len(items)} 条考据主体，其中 {len(free)} 条本项目还没引用"
+        f"（下面按最近更新排）"
+    ]
+    for i in items[:40]:
+        kind = "时代主题" if i["kind"] == "topic" else (i["assetType"] or "资产")
+        src = i["fromProject"] or "（项目已删）"
+        marks = []
+        if i["refCount"]:
+            marks.append(f"参考图 {i['refCount']} 张")
+        if i["used"]:
+            marks.append("本项目已引用")
+        else:
+            marks.append("本项目未引用")
+        body = " ".join(str(i["body"]).split())
+        lines.append(
+            f"■ {i['assetName'] or i['topicKey']}（{kind} · 来自《{src}》"
+            f" · {'、'.join(marks)}）\n  id={i['id']}\n  {body[:160]}"
+        )
+    if len(items) > 40:
+        lines.append(f"（其余 {len(items) - 40} 条略）")
+    lines.append(
+        "引用：import_research（把主体挂到本项目某张卡或某个主题上，活引用、不重搜）。"
+        "库里没有的主体再发起调研。"
+    )
+    return "\n".join(lines)
+
+
+@tool
+async def import_research(
+    entry_ids_json: str, targets_json: str, config: RunnableConfig
+) -> str:
+    """把库里现成的考据主体引用到本项目（活引用：不拷副本，源更新跟着变）。
+
+    用途：list_research_library 看到某个主体正好是本项目要用的（同题材项目已经
+    考据过），直接引用而不重新调研——文字事实进提示词、图集的参考图进参考序列。
+
+    Args:
+        entry_ids_json: 主体 id 数组 JSON，取自 list_research_library 每条的
+            id 字段，如 ["a1b2c3d4e5f6"]。
+        targets_json: 挂载目标数组 JSON，与 entry_ids 一一对应（少则按序取，
+            多出的忽略），每项 {"target_kind":"node"|"topic","target_key":"..."}：
+            node 的 key 是画布节点 id（画布摘要行首取）；topic 的 key 是主题键
+            （必须是本项目大纲里已有的主题）。
+    """
+    pid = _pid_from_config(config)
+    if not pid:
+        return "无法定位当前项目：当前会话未绑定画布项目"
+    try:
+        entry_ids = json.loads(entry_ids_json)
+        targets = json.loads(targets_json)
+        if not isinstance(entry_ids, list) or not isinstance(targets, list):
+            return "entry_ids_json 与 targets_json 都必须是数组 JSON"
+    except json.JSONDecodeError as e:
+        return f"不是合法 JSON：{e}（JSON 到 ] 即止，修正后原样重发）"
+    if not entry_ids:
+        return "entry_ids_json 是空的：先用 list_research_library 看有哪些可引用主体。"
+    canvas = projects.load_canvas(pid)
+    node_ids = {str(n.get("id") or "") for n in (canvas or {}).get("nodes", [])}
+    titles = {
+        str(n.get("id") or ""): str((n.get("data") or {}).get("title") or n.get("id"))
+        for n in (canvas or {}).get("nodes", [])
+    }
+    topic_keys = {t["topicKey"] for t in imgresearch.list_topics(pid)}
+    lines: list[str] = []
+    ok = 0
+    for idx, raw_id in enumerate(entry_ids):
+        entry = imgresearch.get_entry(str(raw_id))
+        if not entry:
+            lines.append(f"- {raw_id}：库里没有这个主体 id（用 list_research_library 的 id 字段）")
+            continue
+        if idx >= len(targets):
+            lines.append(f"- {entry['assetName']}：没有对应的 target，未挂载")
+            continue
+        t = targets[idx] if isinstance(targets[idx], dict) else {}
+        kind = str(t.get("target_kind") or t.get("targetKind") or "node")
+        key = str(t.get("target_key") or t.get("targetKey") or "").strip()
+        if kind == "node":
+            if key not in node_ids:
+                lines.append(f"- {entry['assetName']}：画布上没有节点 {key}（取画布摘要行首 id）")
+                continue
+            imgresearch.record_use(pid, str(entry["id"]), "node", "", key)
+            lines.append(f"- {entry['assetName']} → {titles.get(key, key)}：已引用")
+        elif kind == "topic":
+            if key not in topic_keys:
+                lines.append(f"- {entry['assetName']}：本项目大纲里没有主题 {key}，未挂载")
+                continue
+            imgresearch.record_use(pid, str(entry["id"]), "topic", key)
+            lines.append(f"- {entry['assetName']} → 主题「{key}」：已引用")
+        else:
+            lines.append(f"- {entry['assetName']}：target_kind 只能是 node 或 topic")
+            continue
+        ok += 1
+    head = (
+        f"已引用 {ok} 条现成考据主体（活引用，不重搜）。"
+        "它们会出现在考证报告卡与出图提示词里；库里的版本更新后本项目跟着变。"
+    )
+    return "\n".join([head, *lines])
+
+
+@tool
 async def get_research_material(config: RunnableConfig) -> str:
     """读本项目的考据现状：画布资产清单 + 已有考据条目（全文与来源）+ 尚无考据的资产 + 现有考证大纲。
 
@@ -1134,6 +1282,31 @@ async def get_research_material(config: RunnableConfig) -> str:
         lines.append(
             "未被任何主题覆盖的资产：" + "、".join(a["title"] for a in outline["uncovered"])
         )
+    # 五、同题材可复用主体：别的项目已经考据过同一件事的现成成果
+    _, era = imgresearch._project_scope(pid)
+    library = imgresearch.list_library(era, project_id=pid) if era else []
+    lines.append("")
+    if not era:
+        lines.append(
+            "五、同题材可复用主体：本项目未设时代口径（set_project_era）——库不可用，"
+            "调研产出也不会进复用域。真实题材先记下年代；架空/穿越不用设。"
+        )
+    elif not library:
+        lines.append(f"五、同题材可复用主体：「{era}」下暂无（别的项目也没做过）")
+    else:
+        free = [i for i in library if not i["used"]]
+        lines.append(
+            f"五、同题材可复用主体（{len(library)} 条 · 本项目未引用 {len(free)} 条）"
+            "——已考据过的不必重搜，用 import_research 引用："
+        )
+        for i in library[:20]:
+            label = i["assetName"] or i["topicKey"]
+            n_ref = f" · 图 {i['refCount']} 张" if i["refCount"] else ""
+            lines.append(
+                f"- {label}（{'时代主题' if i['kind'] == 'topic' else i['assetType']}"
+                f" · 来自《{i['fromProject'] or '已删项目'}》{n_ref}"
+                f"{' · 本项目已引用' if i['used'] else ''}）id={i['id']}"
+            )
     return "\n".join(lines)
 
 
@@ -1211,7 +1384,8 @@ async def run_research_outline(topic_keys_json: str, config: RunnableConfig) -> 
 
     用户确认大纲后调用。同题材已考据过的主题会自动复用（不再重搜），状态可
     用 get_research_material 或画布上的考证大纲卡查看。完成后各资产出图时
-    自动带上所属主题的考据依据。
+    自动带上所属主题的考据依据。切主题之前先 `list_research_library` 看一眼
+    库里有什么——库里已有的主体直接用 import_research 引用，不必立主题重搜。
 
     **执行完只补齐了文字考据——参考图不在本工具职责内**（大纲不产图）：
     返回后确认参考图那一路也已发起（research_asset_references，一次带全部
@@ -1770,7 +1944,7 @@ async def list_free_images(config: RunnableConfig, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_look_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_look_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, list_research_library, import_research, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。

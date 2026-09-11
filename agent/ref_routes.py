@@ -112,6 +112,65 @@ def api_ref_report(pid: str, user: auth.CurrentUser):
     return imgresearch.build_report(pid)
 
 
+@router.get("/projects/{pid}/refs/library")
+def api_ref_library(pid: str, user: auth.CurrentUser):
+    """同题材可复用主体库：本项目 era 下全库的考据主体（事实 + 图集张数 + 出处）。
+
+    跨项目读，但作用域由 era 决定——不设年代的项目（era 空）没有可复用的东西，
+    返回空表并带 era 提示，让前端/agent 能说清「为什么是空的」而不是静默。"""
+    projects.assert_access(user, pid)
+    _, era = imgresearch._project_scope(pid)
+    items = imgresearch.list_library(era, project_id=pid)
+    return {"era": era, "items": items}
+
+
+@router.post("/projects/{pid}/refs/import")
+async def api_import_ref_subject(pid: str, req: dict, user: auth.CurrentUser):
+    """把库里某个主体挂到本项目的某张卡/某个主题上（活引用，不拷正文）。
+
+    targetKind=node 时 targetKey 是画布节点 id（校验存在，防幻觉 id）；
+    targetKind=topic 时是主题键（必须已在本项目大纲里）。挂上之后报告与出图
+    都会带上它——这就是「下次别的项目直接用，不用重新调研」。"""
+    projects.assert_access(user, pid)
+    entry_id = str(req.get("entryId") or "").strip()
+    target_kind = str(req.get("targetKind") or "node").strip()
+    target_key = str(req.get("targetKey") or "").strip()
+    entry = imgresearch.get_entry(entry_id)
+    if not entry:
+        return Response(status_code=404, content="主体不存在", media_type="text/plain")
+    if not target_key:
+        return Response(status_code=400, content="缺少 targetKey", media_type="text/plain")
+    if target_kind == "node":
+        node_ids = {a["nodeId"] for a in imgresearch.canvas_assets(pid)}
+        if target_key not in node_ids:
+            return Response(
+                status_code=400,
+                content=f"画布上没有节点 {target_key}",
+                media_type="text/plain",
+            )
+        node_id = target_key
+        kind_key = imgresearch._norm_name(str(entry.get("assetName") or ""))
+    elif target_kind == "topic":
+        if target_key not in {t["topicKey"] for t in imgresearch.list_topics(pid)}:
+            return Response(
+                status_code=400,
+                content=f"本项目大纲里没有主题 {target_key}",
+                media_type="text/plain",
+            )
+        node_id = ""
+        kind_key = target_key
+    else:
+        return Response(
+            status_code=400,
+            content="targetKind 只能是 node 或 topic",
+            media_type="text/plain",
+        )
+    imgresearch.record_use(pid, entry_id, target_kind, kind_key, node_id)
+    return {"ok": True, "entryId": entry_id, "library": imgresearch.list_library(
+        str(entry.get("era") or ""), project_id=pid
+    )}
+
+
 @router.get("/projects/{pid}/refs/outline")
 def api_get_ref_outline(pid: str, user: auth.CurrentUser):
     """考证大纲：主题（检索词 + 服务哪些卡 + 状态 + 已有事实）。"""

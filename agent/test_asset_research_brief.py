@@ -262,7 +262,7 @@ imgresearch.upsert_entry(
 out = skills._inject_research_briefs([{"rid": "n_e", "visual_notes": ""}], "p-entry")
 expect("条目里的考据" in out[0]["visual_notes"], f"条目应能直接注入：{out}")
 
-# S3. 复用查询：同 era + 同资产名才命中
+# S3. 库检索：同 era + 同名（归一）才命中，其余一律落空
 seed_canvas("p-src", [], {"era": "明代"})
 imgresearch.upsert_entry(
     "p-src",
@@ -272,23 +272,27 @@ imgresearch.upsert_entry(
     asset_type="costume",
     era="明代",
 )
-brief, from_name = skills._reusable_brief("p-entry", "官服", "costume")
-expect("文官用禽鸟" in brief, f"同 era 同名应命中复用：{brief!r}")
-expect(from_name != "", "复用应能报出处（项目名缺失时退「同题材项目」）")
-brief_same, _ = skills._reusable_brief("p-src", "官服", "costume")
-expect(brief_same == "", "同项目条目不走跨项目复用（本项目注入已覆盖）")
-brief_era, _ = skills._reusable_brief("p-entry", "官服", "shot")  # 版式类型不参与比
-expect(brief_era != "", "载荷类型是版式（shot）时不拦——分镜行引用也吃得上条目")
-brief_kind, _ = skills._reusable_brief("p-entry", "官服", "scene")  # 真类型不符
-expect(brief_kind == "", "同名但都是资产四类且类型不同（scene vs costume）不复用")
+hit = skills._library_subject("p-entry", "官服", "costume")
+expect("文官用禽鸟" in str(hit.get("body") or ""), f"同 era 同名应命中库主体：{hit}")
+expect(str(hit.get("_source") or "") != "", "命中应带出处（项目名缺失时退「同题材项目」）")
+expect(
+    skills._library_subject("p-src", "官服", "costume") == {},
+    "本项目产出的主体不走库检索（_inject_research_briefs 已覆盖）",
+)
+hit_shot = skills._library_subject("p-entry", "官服", "shot")  # 版式类型不参与比
+expect(str(hit_shot.get("body") or "") != "", "载荷类型是版式（shot）时不拦——分镜行引用也吃得上")
+expect(
+    skills._library_subject("p-entry", "官服", "scene") == {},
+    "同名但都是资产四类且类型不同（scene vs costume）不复用",
+)
 seed_canvas("p-tang", [], {"era": "唐代"})
-brief_tang, _ = skills._reusable_brief("p-tang", "官服", "costume")
-expect(brief_tang == "", "era 不同绝不复用（宁可重搜，不可错用年代）")
-brief_other, _ = skills._reusable_brief("p-tang", "官服甲", "costume")
-expect(brief_other == "", "资产名不同不复用")
+expect(
+    skills._library_subject("p-tang", "官服", "costume") == {},
+    "era 不同绝不复用（宁可重搜，不可错用年代）",
+)
+expect(skills._library_subject("p-tang", "官服甲", "costume") == {}, "资产名不同不复用")
 seed_canvas("p-noera", [], {})
-brief_noera, _ = skills._reusable_brief("p-noera", "官服", "costume")
-expect(brief_noera == "", "无 era 口径不复用")
+expect(skills._library_subject("p-noera", "官服", "costume") == {}, "无 era 口径不进库检索")
 
 # S4. 端到端：跨项目复用走进出图载荷，且不再触发搜索
 skills._BRIEF_CACHE.clear()

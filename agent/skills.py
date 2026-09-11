@@ -1158,33 +1158,86 @@ def _project_era(project_id: str) -> str:
     return str(_canvas_meta(project_id).get("era") or "").strip()
 
 
-def _entry_briefs(project_id: str) -> tuple[Dict[str, str], Dict[str, str]]:
-    """项目考据条目索引：(按节点 id, 按资产名)——出图注入的权威来源。
-
-    条目在简报产出时即由调研侧落库（imgresearch.upsert_entry），不依赖画布卡
-    是否被写过；画布卡的 researchBrief 是它的呈现（历史项目里可能存在只有卡
-    没有条目的存量，故 _inject_research_briefs 两张表都收、条目优先）。"""
+def _project_name_of(project_id: str) -> str:
+    """项目名（复用出处的标注用：「复用《X》」）。读不到给空串。"""
     if not project_id:
-        return {}, {}
+        return ""
+    try:
+        import sqlite3
+
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            row = db.execute(
+                "select name from projects where id = ?", (project_id,)
+            ).fetchone()
+        finally:
+            db.close()
+        return str(row[0] or "") if row else ""
+    except Exception:
+        return ""
+
+
+def _entry_index(
+    project_id: str,
+) -> tuple[Dict[str, dict], Dict[str, dict], Dict[str, dict]]:
+    """本项目引用的主体索引：(按节点 id, 按资产名, 按主体键) → 主体记录（带图集）。
+
+    主体在库中全库唯一、经引用表挂到本项目（imgresearch.list_entries 读的就是
+    引用表），正文与图集都从主体读——**活引用**：主体被任何项目改进（更准的
+    年代形制、更多实物参考），这里下次出图就跟着变，不存副本。
+
+    图集按主体键一并带出，因为图不只服务它当初调研的那张卡：同一主体在任何
+    项目、任何卡上都该能用上——这正是「同框形制不一致」要治的病（旧模型里
+    参考图挂在项目节点上，跨项目、跨卡都够不着）。"""
+    empty: tuple[Dict[str, dict], Dict[str, dict], Dict[str, dict]] = ({}, {}, {})
+    if not project_id:
+        return empty
     try:
         import imgresearch
 
         rows = imgresearch.list_entries(project_id)
+        by_era: Dict[str, List[str]] = {}
+        for e in rows:
+            by_era.setdefault(str(e.get("era") or ""), []).append(
+                str(e.get("subjectKey") or "")
+            )
+        album: Dict[str, List[dict]] = {}
+        for e_era, keys in by_era.items():
+            album.update(imgresearch.subject_refs(keys, e_era))
     except Exception:
-        return {}, {}
-    by_id: Dict[str, str] = {}
-    by_name: Dict[str, str] = {}
+        return empty
+    by_id: Dict[str, dict] = {}
+    by_name: Dict[str, dict] = {}
+    by_subject: Dict[str, dict] = {}
+    names: Dict[str, str] = {}
     for e in rows:
-        brief = str(e.get("body") or "").strip()
-        if not brief:
-            continue
+        skey = str(e.get("subjectKey") or "")
+        src_pid = str(e.get("projectId") or "")
+        if src_pid and src_pid != project_id:
+            if src_pid not in names:
+                names[src_pid] = _project_name_of(src_pid) or "同题材项目"
+            source = names[src_pid]
+        else:
+            source = ""
+        rec = {**e, "album": album.get(skey, []), "source": source}
         nid = str(e.get("nodeId") or "").strip()
         if nid:
-            by_id[nid] = brief
+            by_id[nid] = rec
         name = str(e.get("assetName") or "").strip()
         if name:
-            by_name[name] = brief
-    return by_id, by_name
+            by_name[name] = rec
+        if skey:
+            by_subject[skey] = rec
+    return by_id, by_name, by_subject
+
+
+def _own_briefs(index: Dict[str, dict]) -> Dict[str, str]:
+    """索引里的非空事实正文（无事实只挂图集的主体不参与考据注入）。"""
+    return {
+        k: str(v.get("body") or "").strip()
+        for k, v in index.items()
+        if str(v.get("body") or "").strip()
+    }
 
 
 def _canvas_research_briefs(
@@ -1259,6 +1312,13 @@ def _canvas_raw(project_id: str) -> tuple[List[Dict[str, Any]], List[Dict[str, A
     )
 
 
+# 出图参考序列的席位上限：各出图模型的参考上限最小 4，前端 fillAssetImages 与
+# 服务端两条注入路径共用这一个数（口径漂移会让「所显即所发」不成立）
+_MAX_REF_IMAGES = 4
+# 画布资产卡型（参考卡连线取向上游、主体类型护栏共用）
+_ASSET_TYPES = ("character", "scene", "prop", "costume")
+
+
 def _canvas_ref_cards(
     project_id: str,
 ) -> tuple[Dict[str, List[tuple]], Dict[str, str]]:
@@ -1268,7 +1328,7 @@ def _canvas_ref_cards(
     connect），所以取 e.target == 资产卡 的上游 source。标签口径与前端
     fillAssetImages 逐字同源：refSource == "research" → type "reference"，
     否则用 source 卡自己的 nodeType（同地点多状态变体把连线指向母场景卡，
-    走的正是这条）。上限 4 与前端一致。
+    走的正是这条）。上限与前端一致（_MAX_REF_IMAGES）。
 
     这是「基于调研结果出图」在 agent 路径上的机械连接：服务端此前**完全不读
     edges**（唯一实现是前端 fillAssetImages），调研采纳的参考图到不了聊天
@@ -1276,7 +1336,7 @@ def _canvas_ref_cards(
     nodes, edges = _canvas_raw(project_id)
     if not nodes:
         return {}, {}
-    ASSET_TYPES = ("character", "scene", "prop", "costume")
+    ASSET_TYPES = _ASSET_TYPES
     url_by_id: Dict[str, str] = {}  # 任何带图卡（含参考图卡，都是候选 source）
     asset_ids: set = set()
     id_by_title: Dict[str, str] = {}
@@ -1305,7 +1365,7 @@ def _canvas_ref_cards(
             continue
         seen.add((tgt, url))
         bucket = refs_by_node.setdefault(tgt, [])
-        if len(bucket) >= 4:  # 与前端 fillAssetImages 的 slice(0,4) 同口径
+        if len(bucket) >= _MAX_REF_IMAGES:  # 与前端 fillAssetImages 的 slice(0,4) 同口径
             continue
         data = (node_by_id.get(src) or {}).get("data") or {}
         label_type = (
@@ -1336,13 +1396,18 @@ def _attach_refs(shot: Dict[str, Any], refs: List[tuple]) -> Dict[str, Any]:
 def _inject_canvas_refs(
     shots: List[Dict[str, Any]], project_id: str
 ) -> List[Dict[str, Any]]:
-    """把画布上已采纳的参考卡（调研参考图 / 母场景图）并进出图载荷的参考序列。
+    """把参考图并进出图载荷的参考序列：本项目的参考卡 + 主体图集。
 
     只在载荷**没有**自带参考时补：调用方显式给的参考优先，叠加会越过模型参考
-    上限（各模型最小 4）。命中顺序 rid → 资产名（聊天载荷没有 rid），与
-    _inject_research_briefs 同口径。空项目/无连线原样放行。"""
+    上限（各模型最小 4）。命中顺序 rid → rid 去「#序号」→ 资产名（聊天载荷
+    没有 rid），与 _inject_research_briefs 同口径。空项目原样放行。
+
+    两个来源有优先级：**本项目自己采纳的参考卡在前**（那是为本项目这套设定挑的
+    图），**主体图集补剩余席位**（同一主体的历史考据图，可能来自别的项目）——
+    图集标签写明「复用《X》」，让模型和用户都看得出这张图是从哪来的判断。"""
     refs_by_node, id_by_title = _canvas_ref_cards(project_id)
-    if not refs_by_node:
+    e_by_id, e_by_name, _ = _entry_index(project_id)
+    if not refs_by_node and not e_by_id and not e_by_name:
         return shots
     out: List[Dict[str, Any]] = []
     for s in shots:
@@ -1354,12 +1419,36 @@ def _inject_canvas_refs(
                 break
         else:
             rid = str(s.get("rid") or "")
-            node_id = (
-                rid
-                if rid in refs_by_node
-                else id_by_title.get(str(s.get("name") or "").strip(), "")
-            )
-            bucket = refs_by_node.get(node_id) or []
+            base = rid.split("#")[0]
+            name = str(s.get("name") or "").strip()
+            node_id = ""
+            for cand in (rid, base):
+                if cand and (cand in refs_by_node or cand in e_by_id):
+                    node_id = cand
+                    break
+            if not node_id:
+                node_id = id_by_title.get(name, "")
+            rec = e_by_id.get(node_id) or e_by_name.get(name) or {}
+            album = rec.get("album") or []
+            bucket = list(refs_by_node.get(node_id) or [])
+            if bucket or album:
+                seen_urls = {u for u, _t, _n in bucket}
+                label_name = str(rec.get("assetName") or name or "参考")
+                src = str(rec.get("source") or "")
+                for r in album:
+                    if len(bucket) >= _MAX_REF_IMAGES:
+                        break
+                    url = str(r.get("url") or "")
+                    if not url or url in seen_urls:
+                        continue
+                    seen_urls.add(url)
+                    bucket.append(
+                        (
+                            url,
+                            "reference",
+                            f"{label_name}（{'复用《' + src + '》' if src else '主体图集'}）",
+                        )
+                    )
             if bucket:
                 out.append(_attach_refs(s, bucket))
                 continue
@@ -1394,14 +1483,15 @@ def _inject_research_briefs(
     （聊天侧载荷没有 rid）。服务端以 DB 为准解析（同画风解析范式：前端只传
     标识，约束不可被模型改写）。都取不到（分镜行 id / 无简报）时原样放行。
 
-    三个来源合并：**考据条目**（简报产出时即落库，权威）> 画布卡的 researchBrief
-    （前者的呈现，历史项目有只有卡没条目的存量）> **主题考据**（考证大纲里服务
-    该卡的时代共有事实，一个主题喂多张卡——同一时代的所有资产因此拿到同一套
-    形制约束，而不是各搜各的得出互相矛盾的两套说法）。"""
+    三个来源合并：**主体事实**（本项目引用的主体，库里的权威版本——含从同题材
+    项目复用来的，命中即活引用）> 画布卡的 researchBrief（前者的呈现，历史项目
+    有「只有卡没主体」的存量）> **主题考据**（考证大纲里服务该卡的时代共有事实，
+    一个主题喂多张卡——同一时代的所有资产因此拿到同一套形制约束，而不是各搜各的
+    得出互相矛盾的两套说法）。"""
     c_by_id, c_by_title = _canvas_research_briefs(project_id)
-    e_by_id, e_by_name = _entry_briefs(project_id)
-    by_id = {**c_by_id, **e_by_id}
-    by_title = {**c_by_title, **e_by_name}
+    e_by_id, e_by_name, _subjects = _entry_index(project_id)
+    by_id = {**c_by_id, **_own_briefs(e_by_id)}
+    by_title = {**c_by_title, **_own_briefs(e_by_name)}
     t_by_id, t_by_name = _topic_briefs(project_id)
     if not by_id and not by_title and not t_by_id and not t_by_name:
         return shots
@@ -1476,28 +1566,50 @@ async def _research_brief_for(
     return await imgresearch._run_text_research(asset, queries, {})
 
 
-def _reusable_brief(
-    project_id: str, name: str, asset_type: str
-) -> tuple[str, str]:
-    """跨项目复用查询：同 era + 同资产名的历史考据条目 → (简报, 出处项目名)。
+def _attach_album_refs(
+    shot: Dict[str, Any], refs: List[dict], label: str
+) -> Dict[str, Any]:
+    """载荷没有自带参考时，把主体图集补进参考序列（席位上限内）。
 
-    作用域键是项目的时代口径（画布 meta.era）；era 为空一律不复用——名字像
-    而时代不同的资产（「朝服」在唐宋与在北魏是两回事）宁可重搜，不可错用。"""
+    与 _inject_canvas_refs 同一优先级：调用方显式给的参考优先，图集只补空位。"""
+    for k in ("referenceImages", "reference_images"):
+        if isinstance(shot.get(k), list) and shot.get(k):
+            return shot
+    picks = [str(r.get("url") or "") for r in refs[:_MAX_REF_IMAGES]]
+    picks = [u for u in picks if u]
+    if not picks:
+        return shot
+    return _attach_refs(shot, [(u, "reference", label) for u in picks])
+
+
+def _library_subject(project_id: str, name: str, asset_type: str = "") -> Dict[str, Any]:
+    """库检索：同 era 同名主体（带事实、图集与出处项目名）；没有给空 dict。
+
+    era 空直接落空——名字像而时代不同的主体（「朝服」在唐宋与在北魏是两回事）
+    宁可重搜，不可错用。本项目自己产出的主体不走这里（它已在
+    _inject_research_briefs 里命中注入，那条路更准）。
+
+    类型护栏沿用旧口径：两侧都在资产四类里且不同才算同名不同物；分镜出图载荷
+    的类型是版式（shot/none），拿它比会把该命中的全漏掉。"""
     import imgresearch
 
     era = _project_era(project_id)
-    if not era:
-        return "", ""
-    for e in imgresearch.lookup_entries(era, name, asset_type):
-        body = str(e.get("body") or "").strip()
-        if not body:
-            continue
-        src_pid = str(e.get("projectId") or "")
-        if src_pid == project_id:
-            continue  # 本项目已在 _inject_research_briefs 命中过，这里只找别的项目
-        _, src_name = imgresearch._project_scope(src_pid)
-        return body, src_name or "同题材项目"
-    return "", ""
+    key = imgresearch._norm_name(name)
+    if not era or not key:
+        return {}
+    hit = imgresearch.lookup_subject(era, "asset", key)
+    if not hit:
+        return {}
+    src_pid = str(hit.get("projectId") or "")
+    if src_pid == project_id:
+        return {}
+    got = str(hit.get("assetType") or "")
+    if asset_type in _ASSET_TYPES and got in _ASSET_TYPES and got != asset_type:
+        return {}
+    hit["_source"] = _project_name_of(src_pid) or "同题材项目"
+    skey = str(hit.get("subjectKey") or "")
+    hit["album"] = imgresearch.subject_refs([skey], str(hit.get("era") or "")).get(skey, [])
+    return hit
 
 
 async def _ensure_research_brief(
@@ -1506,11 +1618,12 @@ async def _ensure_research_brief(
     factuality: str,
     sem: asyncio.Semaphore,
 ) -> Dict[str, Any]:
-    """真实题材出图前补考据：先查条目（含跨项目复用），都没有才现搜一次。
+    """真实题材出图前补考据：先查本项目主体，再查库（同题材复用），都没有才现搜。
 
-    查表顺序：本项目条目（在 _inject_research_briefs 已注入，走到这里说明没有）
-    → 同 era 同资产名的跨项目条目（复用即零成本、且与别处结论一致）→ 现搜，
-    搜完落条目库（下次任何项目遇到同一时代同一资产直接命中）。
+    查表顺序：本项目引用的主体（在 _inject_research_briefs 已注入，走到这里说明
+    没有）→ 库里同 era 同名主体（复用即零成本、且与别处结论一致，命中即**记引用**
+    并顺带把主体图集补进参考序列）→ 现搜，搜完落主体（下次任何项目遇到同一时代
+    同一资产直接命中）。
 
     虚构题材（动画等）/ 已带考据依据的载荷直接放行；失败原样放行并落日志
     ——考据是增强项，绝不拦出图（与调研文路「软失败」同语义）。"""
@@ -1523,15 +1636,34 @@ async def _ensure_research_brief(
     if not name:
         return shot
     asset_type = str(shot.get("assetType") or "character")
+    node_id = str(shot.get("rid") or "").split("#")[0]
     key = f"{project_id}:{name}"
     brief = _BRIEF_CACHE.get(key)
     if not brief:
-        brief, reused_from = _reusable_brief(project_id, name, asset_type)
-        if brief:
-            print(f"[考据] 复用条目 {key} ← {reused_from}", flush=True)
-            brief = f"{brief}（复用《{reused_from}》同题材考据条目）"
-            _BRIEF_CACHE[key] = brief
-            return _attach_brief(shot, brief)
+        hit = _library_subject(project_id, name, asset_type)
+        hit_body = str(hit.get("body") or "").strip()
+        album = hit.get("album") or []
+        if hit:
+            src = str(hit.get("_source") or "同题材项目")
+            if album:
+                shot = _attach_album_refs(shot, album, f"{name}（复用《{src}》考据图）")
+            # 记引用：本项目从此「有」这条考据——报告卡看得见、下次不必再查库
+            try:
+                import imgresearch
+
+                imgresearch.record_use(
+                    project_id, str(hit["id"]), "asset", imgresearch._norm_name(name), node_id
+                )
+            except Exception as exc:  # noqa: BLE001 记引用失败不拦出图
+                print(f"[考据] 复用记引用失败 {key}：{str(exc)[:120]}", flush=True)
+            if hit_body:
+                print(f"[考据] 复用主体 {key} ← {src}", flush=True)
+                brief = f"{hit_body}（复用《{src}》同题材考据）"
+                _BRIEF_CACHE[key] = brief
+                return _attach_brief(shot, brief)
+            if album:
+                # 有图无文：图已补进参考序列，不必再为这点文字去搜一轮
+                return shot
     if not brief:
         asset = {
             "name": name,
@@ -1544,13 +1676,13 @@ async def _ensure_research_brief(
                 brief = _BRIEF_CACHE.get(key)
                 if not brief:
                     brief, sources = await _research_brief_for(asset)
-                    # 落条目库：与调研链同一条服务端落点（重启不丢、跨项目可查）
+                    # 落主体库：与调研链同一条服务端落点（重启不丢、跨项目可查）
                     import imgresearch
 
                     imgresearch.upsert_entry(
                         project_id,
                         body=brief,
-                        node_id=str(shot.get("rid") or "").split("#")[0],
+                        node_id=node_id,
                         asset_name=name,
                         asset_type=asset_type,
                         era=_project_era(project_id),
@@ -1758,10 +1890,15 @@ async def generate_asset_images(
             "assetType": str(asset.get("type") or asset.get("assetType") or "scene"),
         }
         if style:
-            shot["visual_notes"] = "；".join(
+            # 画风并进**载荷实际使用的那个键**：_attach_brief 会沿用调用方的键名
+            # （camelCase visualNotes 也是合法输入），硬写 visual_notes 会新建一个
+            # 键，而 _generate_single_image 优先读 visual_notes → 考据依据被画风
+            # 整段顶掉（隐性丢失，卡上也看不出来）
+            notes_key = "visualNotes" if "visualNotes" in shot else "visual_notes"
+            shot[notes_key] = "；".join(
                 filter(
                     None,
-                    [str(shot.get("visual_notes") or ""), f"全局视觉风格：{style}"],
+                    [str(shot.get(notes_key) or ""), f"全局视觉风格：{style}"],
                 )
             )
         # 真实题材且卡上无考据 → 出图前现补一次（软失败不拦出图）
@@ -1797,7 +1934,9 @@ async def generate_asset_images(
                         asset.get("shotlist_id") or asset.get("shotlistId") or ""
                     ),
                     "description": str(asset.get("description") or ""),
-                    "visualNotes": str(shot.get("visual_notes") or ""),
+                    "visualNotes": str(
+                        shot.get("visual_notes") or shot.get("visualNotes") or ""
+                    ),
                     "referenceImages": [
                         str(u)
                         for u in (
@@ -2385,6 +2524,11 @@ async def start_storyboard_image_job(
     # 落库，出图前按 rid 并入提示词——此前只在「AI 扩写」路径生效，补资产图
     # 与资产卡直出都拿不到（2026-09-10 用户反馈「资产图不够尊重史实」）
     shots = _inject_research_briefs(shots, project_id)
+    # 参考序列注入：载荷没自带参考时补——本项目已采纳的参考卡在前、主体图集补
+    # 剩余席位。画布侧「补资产图」自己带参考（前端连线上游），资产卡直出与
+    # 分镜行此前**一条参考都拿不到**（服务端不读 edges、前端 genLook 也不传），
+    # 已采纳的考据参考图连到卡上也只能看着
+    shots = _inject_canvas_refs(shots, project_id)
     # 真实题材：画布上还没有考据的资产，出图前现补一次（虚构题材跳过）。
     # 逐资产独立预热、与出图流水线重叠——每张只等自己那份简报，互不拖累
     factuality = _project_factuality(project_id)
