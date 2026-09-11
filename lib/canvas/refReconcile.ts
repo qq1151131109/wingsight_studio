@@ -16,7 +16,7 @@
  * 天然幂等——简报按内容比、参考卡按图 URL 去重、报告卡按 reportKind 单例。
  */
 
-import { adoptRefRows } from "@/lib/canvas/refAdopt";
+import { adoptRefRows, materializeTopicRefs } from "@/lib/canvas/refAdopt";
 import { absolutePosition, nodeSize, useCanvasStore } from "@/lib/canvas/store";
 import { addCardAt } from "@/lib/canvas/ingest";
 import {
@@ -38,8 +38,10 @@ export type CardState = "created" | "updated" | "unchanged" | "skipped";
 export interface ReconcileResult {
   /** 写进资产卡的简报条数 */
   briefsWritten: number;
-  /** 新建的参考图卡张数 */
+  /** 新建的参考图卡张数（资产采纳的） */
   refsCreated: number;
+  /** 新建的时代参考卡张数（主题图集物化） */
+  topicRefsCreated: number;
   report: CardState;
   outline: CardState;
   /** 报告里待补考据的资产数（供调用方提示用户） */
@@ -143,6 +145,7 @@ export async function reconcileRefResearch(
       return {
         briefsWritten: 0,
         refsCreated: 0,
+        topicRefsCreated: 0,
         report: "skipped",
         outline: "skipped",
         missing: report.missing.length,
@@ -200,6 +203,35 @@ export async function reconcileRefResearch(
       );
     }
 
+    // ②c 时代参考池物化：主题图集 → 参考卡（连到该主题的每个成员卡——
+    //     「同一批时代参考发给全部成员」在画布上的呈现，同框形制同源可见）。
+    //     跳过用户删过的（meta.dismissedTopicRefs 按 subject-ref id 记忆）与
+    //     已物化过的（任一成员已有同 URL 参考卡）；成员卡全没了的主题不建。
+    let topicRefsCreated = 0;
+    {
+      const dismissed = new Set(useCanvasStore.getState().dismissedTopicRefs);
+      const rows = (report.topicRefs ?? [])
+        .map((tr) => {
+          const targets = tr.servedNodeIds.filter((nid) =>
+            useCanvasStore.getState().nodes.some((n) => n.id === nid),
+          );
+          const have = new Set<string>();
+          for (const nid of targets) {
+            for (const u of materializedUrls(nid)) have.add(u);
+          }
+          return {
+            topicKey: tr.topicKey,
+            title: tr.title,
+            images: (tr.images ?? []).filter(
+              (img) => img.url && !dismissed.has(img.id) && !have.has(img.url),
+            ),
+            servedNodeIds: targets,
+          };
+        })
+        .filter((tr) => tr.images.length > 0 && tr.servedNodeIds.length > 0);
+      topicRefsCreated = materializeTopicRefs(rows, { history: "skip" }).length;
+    }
+
     // ③ 报告卡与大纲卡（各自单例）：有条目/主题才建——空卡是噪音。
     //    报告卡附带 reportPending（真待办清单）——「补调研 N」按钮的数据源
     const reportState: CardState =
@@ -220,10 +252,12 @@ export async function reconcileRefResearch(
           )
         : "skipped";
 
-    if (refsCreated) void useRefStatusStore.getState().refresh(projectId, { force: true });
+    if (refsCreated || topicRefsCreated)
+      void useRefStatusStore.getState().refresh(projectId, { force: true });
     return {
       briefsWritten,
       refsCreated,
+      topicRefsCreated,
       report: reportState,
       outline: outlineState,
       missing: report.missing.length,

@@ -63,6 +63,7 @@ export async function loadCanvas(
     factuality?: "real" | "fiction";
     era?: string;
     dismissedReports?: string[];
+    dismissedTopicRefs?: string[];
   };
   /** 服务端乐观锁版本（成功保存 +1；保存时原样带回做 CAS） */
   revision?: number;
@@ -88,6 +89,7 @@ export async function saveCanvas(
       factuality?: "real" | "fiction";
       era?: string;
       dismissedReports?: string[];
+      dismissedTopicRefs?: string[];
     };
   },
   revision?: number,

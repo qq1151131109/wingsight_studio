@@ -689,4 +689,36 @@ finally:
 expect(_batch.get("m_a") == ["唐 三品 官服"], f"带 queries 的资产应原样透传：{_batch.get('m_a')}")
 expect(_batch.get("m_c") == [], f"没给 queries 的资产应传空（AI 出词）：{_batch.get('m_c')}")
 
+# M7. 时代参考池物化清单：报告带 topicRefs（前端对账落参考卡的数据源）
+_rep = imgresearch.build_report(MP)
+_trs = _rep.get("topicRefs") or []
+expect(len(_trs) == 1, f"只有带图集且有服务范围的主题进物化清单：{[t['topicKey'] for t in _trs]}")
+_tr = _trs[0]
+expect(_tr["topicKey"] == "唐制官服品级" and _tr["title"] == "唐制官服品级", f"主题标识齐备：{_tr}")
+expect(
+    sorted(_tr["servedNodeIds"]) == ["m_a", "m_b"],
+    f"servedNodeIds = 大纲声明的成员卡：{_tr['servedNodeIds']}",
+)
+expect(
+    len(_tr["images"]) == 1
+    and _tr["images"][0]["id"]
+    and _tr["images"][0]["url"].endswith("品级2.jpg"),
+    f"图带删除凭据 id（meta 记忆用）：{_tr['images']}",
+)
+expect(
+    "唐制官服品级" not in [t["topicKey"] for t in _rep.get("topicRefs") or [] if t["topicKey"] == "不重搜的主题"],
+    "无图集的主题不进清单",
+)
+# 复用来的主题同样分发（活引用含图集）
+seed_project("p-tr-reuse", "复用方")
+seed_canvas("p-tr-reuse", [{"id": "r_a", "data": {"nodeType": "costume", "title": "三品官服"}}], {"era": "唐·武周"})
+imgresearch.replace_topics(
+    "p-tr-reuse", [{"title": "唐制官服品级", "queries": ["q"], "nodeIds": ["r_a"]}]
+)
+asyncio.run(imgresearch._run_topic("p-tr-reuse", "唐制官服品级", asyncio.Semaphore(1)))
+_rep2 = imgresearch.build_report("p-tr-reuse")
+_tr2 = (_rep2.get("topicRefs") or [{}])[0]
+expect(_tr2.get("servedNodeIds") == ["r_a"] and len(_tr2.get("images") or []) == 1,
+       f"复用主题的图集同样进物化清单：{_tr2}")
+
 print(f"✅ 考证报告 {PASS[0]} 项断言全部通过")

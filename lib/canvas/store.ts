@@ -36,6 +36,18 @@ export const saneDismissedReports = (v: unknown): string[] =>
         .slice(0, 8)
     : [];
 
+/** 装载边界整形：只收非空字符串（删过的时代参考卡 subject-ref id），去重、
+ *  上限 200——按图记忆不是按 kind，量大但仍须有界（超限丢最旧的，重长回来
+ *  也只是恢复默认行为） */
+export const saneDismissedTopicRefs = (v: unknown): string[] =>
+  Array.isArray(v)
+    ? [
+        ...new Set(
+          v.filter((x): x is string => typeof x === "string" && !!x.trim()),
+        ),
+      ].slice(-200)
+    : [];
+
 /** 项目时代/题材口径（存画布 meta.era，如「北魏·平城时期」）：考据条目的
  *  作用域键——同一时代同一资产的形制事实可跨项目复用；为空一律不复用
  *  （名字像而年代不同的资产，「朝服」在唐宋与在北魏是两回事）。 */
@@ -208,6 +220,10 @@ export interface WingNodeData {
    *  两个用途：①删除这张卡=取消采纳，下次打开项目不再被对账重建
    *  ②对账反向修复——画布上有卡而服务端未采纳（撤销恢复的卡）补采纳 */
   refCandidateId?: string;
+  /** image 卡：时代参考池凭据（research_subject_refs 行 id）。考证大纲的
+   *  主题图集物化卡带它、**不带** refCandidateId（它不在候选表里，误入
+   *  采纳/取消通道会打错表）——删除这张卡记 meta.dismissedTopicRefs */
+  topicRefId?: string;
   /** 资产卡来源（character/scene/prop/costume）：拆解锚点卡 id（剧本卡/分镜表卡）。
    *  「补资产图」按它圈定本卡资产；聊天/agent 直建的资产卡无此字段不纳入 */
   assetSource?: string;
@@ -331,6 +347,10 @@ interface CanvasState {
    *  对账据此不再重建——「删了就不再来」，与参考卡删除语义一致（2026-09-10
    *  用户拍板）；报告卡没有服务端采纳凭据，故记在项目 meta 里随画布持久化 */
   dismissedReports: string[];
+  /** 项目级：用户删过的时代参考卡 subject-ref id（存 meta.dismissedTopicRefs）。
+   *  时代参考卡不在候选表里（没有采纳凭据可撤），删除语义同样「删了就不再来」
+   *  ——按图记忆，对账跳过这些 id（其余图照常物化） */
+  dismissedTopicRefs: string[];
   /** 项目级出图默认（模型 + 分辨率，存 meta.imagegen）：所有出图入口
    *  的生效配置；服务端按 agent/models.py 目录校验，非法组合 400 */
   imagegen: ImagegenParams;
@@ -719,6 +739,7 @@ export const useCanvasStore = create<CanvasState>()(
       projectFactuality: FACTUALITY_DEFAULT,
       projectEra: "",
       dismissedReports: [],
+      dismissedTopicRefs: [],
       imagegen: IMAGEGEN_DEFAULT,
       projectName: "",
       canvasRevision: null,
@@ -750,6 +771,7 @@ export const useCanvasStore = create<CanvasState>()(
           projectFactuality: FACTUALITY_DEFAULT,
           projectEra: "",
           dismissedReports: [],
+          dismissedTopicRefs: [],
           imagegen: IMAGEGEN_DEFAULT,
           // 切项目清锁版本：新项目的 revision 由装载路径写入，防止旧值
           // 被首次保存携带造成假冲突
@@ -968,6 +990,16 @@ export const useCanvasStore = create<CanvasState>()(
               .map((n) => String(n.data.reportKind)),
           ),
         ];
+        // 删掉时代参考卡（主题图集物化卡，凭据 topicRefId、不在候选表里）=
+        // 不要这个时代的这张参考：按图记 meta.dismissedTopicRefs，对账跳过它
+        // （同主题其余图照常物化）；不带 refCandidateId 所以不会进 unadopt 广播
+        const dismissedTopicIds = [
+          ...new Set(
+            get()
+              .nodes.filter((n) => idSet.has(n.id) && n.data.topicRefId)
+              .map((n) => String(n.data.topicRefId)),
+          ),
+        ];
         get().commitHistory();
         set((state) => {
           // 删除分组框时提升存活子节点到画布层（坐标转绝对），避免孤儿 parentId
@@ -995,6 +1027,16 @@ export const useCanvasStore = create<CanvasState>()(
               ? {
                   dismissedReports: [
                     ...new Set([...state.dismissedReports, ...dismissedKinds]),
+                  ],
+                }
+              : {}),
+            ...(dismissedTopicIds.length
+              ? {
+                  dismissedTopicRefs: [
+                    ...new Set([
+                      ...state.dismissedTopicRefs,
+                      ...dismissedTopicIds,
+                    ]),
                   ],
                 }
               : {}),

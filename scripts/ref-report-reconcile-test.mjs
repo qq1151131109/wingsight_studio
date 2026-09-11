@@ -69,6 +69,8 @@ const ERA = `e2e-era-${Date.now().toString(36)}`;
 const BRIEF_FENG = "北魏早期服饰为窄袖交领，鲜卑辫发；常见误用：套用唐宋圆领袍。";
 const BRIEF_HALL = "平城宫殿为夯土台基木构，少见后世彩画琉璃。";
 const REF_URL = "/agent-service/assets/e2e00000ref1.png";
+const TOPIC_URL1 = "/agent-service/assets/e2e00000topic1.png";
+const TOPIC_URL2 = "/agent-service/assets/e2e00000topic2.png";
 
 // ---------- 建项目 + 画布（3 资产，其中 1 个无考据） ----------
 const { body: proj } = await api("/projects", {
@@ -113,6 +115,12 @@ ir.replace_topics(${JSON.stringify(pid)}, [
 ir.upsert_entry(${JSON.stringify(pid)}, body="北魏早期服制：窄袖交领左衽，鲜卑辫发。",
                 asset_name="北魏早期服制", asset_type="topic",
                 era=${JSON.stringify(ERA)}, topic_key="北魏早期服制")
+# 时代参考池：主题图集两张（对账应物化成参考卡、连到 N_FENG 与 N_HALL）
+_tk = ir.topic_subject(${JSON.stringify(ERA)}, ${JSON.stringify(pid)}, "北魏早期服制")
+ir.add_subject_refs(${JSON.stringify(ERA)}, _tk, [
+  {"assetUrl": ${JSON.stringify(TOPIC_URL1)}, "title": "e2e 时代参考图壹", "sourceUrl": "https://t.example/1", "sourceDomain": "t.example"},
+  {"assetUrl": ${JSON.stringify(TOPIC_URL2)}, "title": "e2e 时代参考图贰", "sourceUrl": "https://t.example/2", "sourceDomain": "t.example"},
+])
 import sqlite3, uuid
 db = sqlite3.connect(str(ir.DB_PATH))
 db.execute("""INSERT INTO ref_candidates (id,project_id,node_id,query,provider,title,
@@ -209,10 +217,10 @@ check("B5b 报告卡带真待办清单（补调研按钮的数据源）",
 
 const outlineCards = (canvas?.nodes ?? []).filter((n) => n.data?.reportKind === "ref-outline");
 check("B9 大纲卡建了一张", outlineCards.length === 1, `count=${outlineCards.length}`);
-check("B10 大纲卡正文是计划与进度（含服务范围，不含事实正文）",
-  String(outlineCards[0]?.data?.body ?? "").includes("■ 北魏早期服制（服务 2 张卡 · 已完成）") &&
+check("B10 大纲卡正文是计划与进度（含服务范围与图集张数，不含事实正文）",
+  String(outlineCards[0]?.data?.body ?? "").includes("■ 北魏早期服制（服务 2 张卡 · 已完成 · 图 2 张）") &&
   !String(outlineCards[0]?.data?.body ?? "").includes("窄袖交领左衽"),
-  String(outlineCards[0]?.data?.body ?? "").slice(0, 120));
+  String(outlineCards[0]?.data?.body ?? "").slice(0, 140));
 
 const refCards = (canvas?.nodes ?? []).filter(
   (n) => n.data?.refSource === "research" && n.data?.imageUrl === REF_URL,
@@ -238,6 +246,27 @@ check("B8d 参考卡全部 parent 进组且 hidden",
   refCards.every((c) => c.parentId === refGroup?.id && c.hidden === true),
   `parentId 命中 ${refCards.filter((c) => c.parentId === refGroup?.id).length}/${refCards.length}, hidden ${refCards.filter((c) => c.hidden).length}/${refCards.length}`);
 
+// G. 时代参考池物化：主题图集 → 参考卡，连到该主题的两个成员卡（N_FENG/N_HALL）
+const topicCards = (canvas?.nodes ?? []).filter((n) => n.data?.topicRefId);
+check("G1 主题图集物化成时代参考卡（带 topicRefId）", topicCards.length === 2,
+  `count=${topicCards.length}`);
+check("G2 时代参考卡不带候选 id（不进采纳/取消通道）",
+  topicCards.every((c) => !c.data?.refCandidateId),
+  JSON.stringify(topicCards.map((c) => c.data?.refCandidateId)));
+{
+  const tids = new Set(topicCards.map((c) => c.id));
+  const targets = (canvas?.edges ?? [])
+    .filter((e) => tids.has(e.source))
+    .map((e) => e.target)
+    .sort();
+  check("G3 每张时代参考卡连到全部成员卡",
+    JSON.stringify(targets) === JSON.stringify(["N_FENG", "N_FENG", "N_HALL", "N_HALL"]),
+    JSON.stringify(targets));
+}
+check("G4 时代参考卡收进考据参考组框且 hidden",
+  topicCards.every((c) => c.parentId === refGroup?.id && c.hidden === true),
+  `in=${topicCards.filter((c) => c.parentId === refGroup?.id).length}/2`);
+
 // C. 幂等：重新打开项目不重复建卡
 await page.reload({ waitUntil: "domcontentloaded" });
 await page.waitForTimeout(6000);
@@ -250,6 +279,9 @@ check("C1 报告卡不重复建", reportCards2.length === 1, `count=${reportCard
 check("C2 参考卡不重复建", refCards2.length === 1, `count=${refCards2.length}`);
 check("C3 大纲卡不重复建",
   (canvas2?.nodes ?? []).filter((n) => n.data?.reportKind === "ref-outline").length === 1);
+check("C4 时代参考卡不重复建",
+  (canvas2?.nodes ?? []).filter((n) => n.data?.topicRefId).length === 2,
+  `count=${(canvas2?.nodes ?? []).filter((n) => n.data?.topicRefId).length}`);
 
 // D. 前端保存周期不抹掉 era 口径：装载没读进来的话，前端下一次 debounce 保存
 //    会用 store 里的空值覆盖 meta——这一步专门盯那个（era 是复用的作用域键）
@@ -319,7 +351,66 @@ if (reportCard) {
     `count=${(afterReloadReport?.nodes ?? []).filter((n) => n.data?.reportKind === "ref-research").length}`);
 }
 
+// H. 删掉时代参考卡 = 这张时代参考不要了：记 meta.dismissedTopicRefs，
+//    重载只少这一张（同主题其余图照常物化）；不触发 /refs/unadopt（它不在候选表）
+{
+  const { body: cur } = await api(`/projects/${pid}/canvas`);
+  const tCards = (cur?.nodes ?? []).filter((n) => n.data?.topicRefId);
+  const victim = tCards.find((n) => n.data?.imageUrl === TOPIC_URL1);
+  check("H0 两张时代参考卡都在（前置）", tCards.length === 2 && Boolean(victim),
+    `count=${tCards.length}`);
+  if (victim) {
+    // E 组可能已把组展开（collapsed 持久化）——只在折叠态才需要展开
+    const expandBtn = page.locator('[aria-label="展开分组"]');
+    if (await expandBtn.count()) {
+      await expandBtn.first().click();
+      await page.waitForTimeout(800);
+    }
+    await page.locator(`[data-id="${victim.id}"]`).first().click();
+    await page.waitForTimeout(600);
+    await page
+      .locator('.react-flow__node-toolbar [aria-label="删除"]:visible')
+      .first()
+      .click();
+    await page.waitForTimeout(3000);
+    const { body: afterH } = await api(`/projects/${pid}/canvas`);
+    check("H1 时代参考卡已删除",
+      !(afterH?.nodes ?? []).some((n) => n.id === victim.id));
+    check("H2 meta 记住了删过的 subject-ref id",
+      (afterH?.meta?.dismissedTopicRefs ?? []).includes(victim.data.topicRefId),
+      JSON.stringify(afterH?.meta?.dismissedTopicRefs));
+    check("H2b 不在候选表里的卡没走 unadopt（另一张完好）",
+      (afterH?.nodes ?? []).filter((n) => n.data?.topicRefId).length === 1);
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await page.waitForTimeout(6000);
+    const { body: afterHReload } = await api(`/projects/${pid}/canvas`);
+    check("H3 重载后被删的不长回来、其余照常",
+      (afterHReload?.nodes ?? []).filter((n) => n.data?.topicRefId).length === 1 &&
+      !(afterHReload?.nodes ?? []).some((n) => n.data?.imageUrl === TOPIC_URL1),
+      `count=${(afterHReload?.nodes ?? []).filter((n) => n.data?.topicRefId).length}`);
+  }
+}
+
 await browser.close();
+
+// 退出兜底：主体按 era 全库共享，崩溃残留会污染真实复用域（实测：E2E 在
+// playwright 处崩掉后留下 6 批 e2e-era 主体）。exit 钩子里尽力清研究行。
+process.on("exit", () => {
+  try {
+    py(`
+import sqlite3, imgresearch as ir
+db = sqlite3.connect(str(ir.DB_PATH))
+db.execute("DELETE FROM research_entries WHERE era = ?", (${JSON.stringify(ERA)},))
+db.execute("DELETE FROM research_subject_refs WHERE era = ?", (${JSON.stringify(ERA)},))
+for pid in (${JSON.stringify(pid)},):
+    for t in ("research_entries", "research_topics", "ref_candidates", "research_uses"):
+        db.execute(f"DELETE FROM {t} WHERE project_id = ?", (pid,))
+db.commit(); db.close()
+`);
+  } catch {
+    /* 尽力而为 */
+  }
+});
 
 // ---------- 清理 ----------
 await api(`/projects/${pid}`, { method: "DELETE" });
@@ -328,6 +419,7 @@ import sqlite3, imgresearch as ir
 db = sqlite3.connect(str(ir.DB_PATH))
 for t in ("research_entries", "research_topics", "ref_candidates"):
     db.execute(f"DELETE FROM {t} WHERE project_id = ?", (${JSON.stringify(pid)},))
+db.execute("DELETE FROM research_subject_refs WHERE era = ?", (${JSON.stringify(ERA)},))
 # 主体/图集按 era 清（全库共享，按 project_id 删不干净也不该冒删别人的）
 db.execute("DELETE FROM research_entries WHERE era = ?", (${JSON.stringify(ERA)},))
 db.execute("DELETE FROM research_subject_refs WHERE era = ?", (${JSON.stringify(ERA)},))

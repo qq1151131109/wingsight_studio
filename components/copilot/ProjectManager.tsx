@@ -11,7 +11,13 @@
 
 import { useEffect, useRef } from "react";
 import { useParams } from "next/navigation";
-import { useCanvasStore, saneDismissedReports, saneEra, saneFactuality } from "@/lib/canvas/store";
+import {
+  useCanvasStore,
+  saneDismissedReports,
+  saneDismissedTopicRefs,
+  saneEra,
+  saneFactuality,
+} from "@/lib/canvas/store";
 import { sanitizeCanvas } from "@/lib/canvas/sanitize";
 import { saneImagegen } from "@/lib/imagegen";
 import { showToast } from "@/lib/toast";
@@ -92,6 +98,7 @@ export default function ProjectManager() {
   const projectFactuality = useCanvasStore((s) => s.projectFactuality);
   const projectEra = useCanvasStore((s) => s.projectEra);
   const dismissedReports = useCanvasStore((s) => s.dismissedReports);
+  const dismissedTopicRefs = useCanvasStore((s) => s.dismissedTopicRefs);
   const imagegen = useCanvasStore((s) => s.imagegen);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
@@ -109,6 +116,7 @@ export default function ProjectManager() {
           factuality: s.projectFactuality,
           era: s.projectEra,
           dismissedReports: s.dismissedReports,
+          dismissedTopicRefs: s.dismissedTopicRefs,
           imagegen: s.imagegen,
         },
       });
@@ -125,6 +133,7 @@ export default function ProjectManager() {
     projectFactuality,
     projectEra,
     dismissedReports,
+    dismissedTopicRefs,
     imagegen,
   ]);
 
@@ -143,6 +152,7 @@ export default function ProjectManager() {
             factuality: s.projectFactuality,
             era: s.projectEra,
             dismissedReports: s.dismissedReports,
+            dismissedTopicRefs: s.dismissedTopicRefs,
             imagegen: s.imagegen,
           },
         });
@@ -217,6 +227,7 @@ async function persist(
       factuality?: "real" | "fiction";
       era?: string;
       dismissedReports?: string[];
+      dismissedTopicRefs?: string[];
       imagegen?: { model: string; resolution: string };
     };
   },
@@ -352,6 +363,10 @@ async function activateProject(p: ProjectMeta) {
         dismissedReports: saneDismissedReports(
           (canvas as { meta?: { dismissedReports?: unknown } }).meta
             ?.dismissedReports,
+        ),
+        dismissedTopicRefs: saneDismissedTopicRefs(
+          (canvas as { meta?: { dismissedTopicRefs?: unknown } }).meta
+            ?.dismissedTopicRefs,
         ),
         canvasRevision: canvas.revision ?? null,
       });

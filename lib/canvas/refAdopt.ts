@@ -148,6 +148,26 @@ export async function autoAdoptTopRecommendations(
   }
 }
 
+/** 组尺寸跟进：展开态直接改 style；折叠态写进 prevSize（展开时还原到包住全部） */
+function syncRefGroupSize(gid: string): void {
+  const g = useCanvasStore.getState().nodes.find((n) => n.id === gid);
+  if (!g) return;
+  const size = refGroupSize(useCanvasStore.getState(), gid);
+  if (Boolean(g.data.collapsed)) {
+    useCanvasStore.getState().updateNodeData(
+      gid,
+      { prevSize: size },
+      { history: "skip" },
+    );
+  } else {
+    useCanvasStore.setState((s) => ({
+      nodes: s.nodes.map((n) =>
+        n.id === gid ? { ...n, style: { ...n.style, ...size } } : n,
+      ),
+    }));
+  }
+}
+
 /**
  * 批量采纳：每个资产一组候选，建图片卡连线到资产卡——卡全部落进
  * 「考据参考」折叠组框（追加网格），不再摊在资产区下方。
@@ -207,24 +227,87 @@ export function adoptRefRows(
     });
     i += candidates.length;
   }
-  // 组尺寸跟进：展开态直接改 style；折叠态写进 prevSize（展开时还原到包住全部）
-  const g = useCanvasStore.getState().nodes.find((n) => n.id === group.id);
-  if (g) {
-    const size = refGroupSize(useCanvasStore.getState(), group.id);
-    const collapsed = Boolean(g.data.collapsed);
-    if (collapsed) {
-      useCanvasStore.getState().updateNodeData(
-        group.id,
-        { prevSize: size },
-        { history: "skip" },
+  syncRefGroupSize(group.id);
+  return created;
+}
+
+/** 时代参考物化的入参（report.topicRefs 的一项） */
+export interface TopicRefRow {
+  topicKey: string;
+  title: string;
+  images: {
+    id: string;
+    url: string;
+    title?: string;
+    sourceDomain?: string;
+  }[];
+  servedNodeIds: string[];
+}
+
+/**
+ * 时代参考池物化：主题图集 → 参考卡，**一张图一张卡、连到该主题的全部成员卡**
+ * （同一批时代参考发给所有成员，画布上看得见「这几张卡的形制是同源的」）。
+ *
+ * 与 adoptRefRows 的关键差别在删除凭据：卡带 `topicRefId`（research_subject_refs
+ * 行 id）而**不带** refCandidateId——主题图不在候选表里，误入 refCandidateId
+ * 通道会打错表（unadopt/unadopt 广播/反向修复全按候选行工作）。删除这张卡由
+ * store 记 meta.dismissedTopicRefs，对账按 id 跳过（「删了就不再来」，同参考卡
+ * 语义）；同主题其余图照常物化。
+ */
+export function materializeTopicRefs(
+  refs: TopicRefRow[],
+  opts?: { history?: "commit" | "skip" },
+): string[] {
+  const st = useCanvasStore.getState();
+  const fp = NODE_FOOTPRINT.image;
+  const total = refs.reduce(
+    (n, r) => n + r.images.filter((img) => img.url).length,
+    0,
+  );
+  if (total === 0) return [];
+  const group = ensureRefGroup(st, total);
+  const members = st.nodes.filter((n) => n.parentId === group.id);
+  let originY = REF_GRID.padTop;
+  for (const m of members) {
+    originY = Math.max(originY, m.position.y + nodeSize(m).h + REF_GRID.gapY);
+  }
+  const created: string[] = [];
+  let i = 0;
+  for (const ref of refs) {
+    const targets = ref.servedNodeIds.filter((id) =>
+      st.nodes.some((n) => n.id === id),
+    );
+    if (targets.length === 0) continue;
+    for (const img of ref.images) {
+      if (!img.url) continue;
+      const slot = i++;
+      const col = slot % REF_GRID.cols;
+      const row = Math.floor(slot / REF_GRID.cols);
+      const newId = st.addNode(
+        {
+          position: {
+            x: REF_GRID.padX + col * (fp.w + REF_GRID.gapX),
+            y: originY + row * (fp.h + REF_GRID.gapY),
+          },
+          parentId: group.id,
+          hidden: group.collapsed,
+          style: { width: fp.w, height: fp.h },
+          data: {
+            nodeType: "image",
+            title: (img.title || `${ref.title}·时代参考`).slice(0, 40),
+            body: img.sourceDomain ? `来源：${img.sourceDomain}` : "",
+            imageUrl: img.url,
+            status: "ready",
+            refSource: "research",
+            topicRefId: img.id,
+          },
+        },
+        opts,
       );
-    } else {
-      useCanvasStore.setState((s) => ({
-        nodes: s.nodes.map((n) =>
-          n.id === group.id ? { ...n, style: { ...n.style, ...size } } : n,
-        ),
-      }));
+      created.push(newId);
+      for (const t of targets) st.connect({ source: newId, target: t }, opts);
     }
   }
+  syncRefGroupSize(group.id);
   return created;
 }

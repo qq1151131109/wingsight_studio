@@ -844,6 +844,8 @@ def subject_refs(subject_keys: list[str], era: str) -> dict[str, list[dict[str, 
     for r in rows:
         out.setdefault(str(r["subject_key"]), []).append(
             {
+                # id：前端物化时代参考卡的删除凭据（meta.dismissedTopicRefs 记它）
+                "id": str(r["id"]),
                 "url": str(r["url"]),
                 "title": str(r["title"]),
                 "sourceUrl": str(r["source_url"]),
@@ -1189,6 +1191,22 @@ def build_report(project_id: str) -> dict[str, Any]:
         "adopted": [{"nodeId": k, "candidates": v} for k, v in adopted.items()],
         "outline": outline["topics"],
         "cardBriefs": card_briefs,
+        # 时代参考池物化清单：有图集的主题 + 服务哪些卡（前端对账落参考卡、
+        # 连到每个成员卡——「同一批时代参考发给全部成员」在画布上的呈现）
+        "topicRefs": [
+            {
+                "topicKey": t["topicKey"],
+                "title": t["title"],
+                "subjectKey": topic_subject(era, project_id, t["topicKey"]),
+                "images": album.get(topic_subject(era, project_id, t["topicKey"]), [])[
+                    :TOPIC_REF_KEEP
+                ],
+                "servedNodeIds": [srv["nodeId"] for srv in t.get("serves") or []],
+            }
+            for t in outline["topics"]
+            if album.get(topic_subject(era, project_id, t["topicKey"]))
+            and (t.get("serves") or [])
+        ],
         # 主体图集张数（主体键 → 张数）：报告卡头部与「同题材可复用」入口的数据源
         "album": {k: len(v) for k, v in album.items()},
         "text": "\n".join(lines),

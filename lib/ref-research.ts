@@ -250,6 +250,21 @@ export interface RefReport {
   pendingAssets: { nodeId: string; name: string; type: string }[];
   /** 已采纳候选按节点分组（前端对账物化参考卡用；已物化的按图 URL 去重） */
   adopted: { nodeId: string; candidates: RefCandidate[] }[];
+  /** 时代参考池物化清单：有图集的主题 + 服务哪些卡（对账落成时代参考卡，
+   *  一张图一张卡、连到每个成员卡；图带 id 作 meta.dismissedTopicRefs 删除凭据） */
+  topicRefs: {
+    topicKey: string;
+    title: string;
+    subjectKey: string;
+    images: {
+      id: string;
+      url: string;
+      title: string;
+      sourceUrl: string;
+      sourceDomain: string;
+    }[];
+    servedNodeIds: string[];
+  }[];
   /** 考证大纲的主题（报告首节） */
   outline: RefTopic[];
   /** 卡片简报：本资产条目 + 服务它的主题条目合成（卡上显示的 = 出图发出去的） */
