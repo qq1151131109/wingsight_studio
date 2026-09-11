@@ -2116,7 +2116,7 @@ function TextCard({
   const reportTools =
     isRefReport && pendingCount > 0 ? (
       <ToolBtn
-        title={`对报告里缺参考图与考据的 ${pendingCount} 个资产重新发起批量调研（发起前会问一次考据年代；失败项服务端自动补跑一轮，完成后报告自动刷新）`}
+        title={`对报告里缺参考图的 ${pendingCount} 个资产重新发起批量调研（含「已有文字考据、只缺参考图」的；发起前会问一次考据年代，失败项服务端自动补跑一轮，完成后报告自动刷新）`}
         label={
           reportJob.running
             ? `补调研中 ${reportJob.job?.done ?? 0}/${pendingCount}`

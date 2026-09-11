@@ -576,15 +576,26 @@ def build_report(project_id: str) -> dict[str, Any]:
                 }
             )
 
-    # 待补分级（2026-09-11 口径事故：旧头部「已有考据 1 · 待补 70」把 52 个
-    # 参考图调研成功的资产也计成待补，用户读作「70 个调研全失败」）：
-    # 「缺参考图」= 真待办（调研没成或从没跑过）；「有参考图、无文字考据」=
-    # 早期调研的简报未落库（research_entries 2026-09-10 才上线），参考图
-    # 家底是实的，只是文字简报缺档——重跑整轮调研会浪费搜索，补法是执行
-    # 考证大纲（按主题补文字）或出图时自动补考据
-    missing_no_refs = [m for m in missing if not adopted.get(m["nodeId"])]
+    # 待补分级（两个方向的口径事故都吃过，2026-09-11 定死）：
+    # ①「已有考据 1 · 待补 70」把 52 个参考图调研成功的资产也计成待补（冯太后）——
+    #    那是文字简报 2026-09-10 才落库、旧调研的简报没存档；
+    # ②反向盲区（091101 武则天项目）：52 张卡文字考据全到、参考图一张没有，
+    #    旧口径（无参考图 **且** 无考据）把「有文无图」整类漏掉——头部显示
+    #    「覆盖 0 个 ｜ 缺参考图待补 0 个」，自相矛盾，恢复入口也不出现。
+    # 口径定死：**待补 = 没有已采纳参考图的资产**（这张报告的轴是参考图，文案
+    # 写着「缺参考图待补」就该这么算），文字考据只作行内标注——「覆盖 + 待补
+    # = 资产数」算术自洽。文字维度的缺口（有参考图、无文字考据）单列次级说明：
+    # 重跑整轮调研救不了它，该走考证大纲或出图时自动补考据。
+    missing_ids = {m["nodeId"] for m in missing}
+    pending_refs = [a for a in assets if not adopted.get(a["nodeId"])]
+    # 头部「覆盖 M 个」只数画布上的资产：adopted 里可能有「卡已删、候选仍
+    # 采纳着」的孤儿节点（底账段也只列画布资产）——算进去会让
+    # 「覆盖 + 待补 = 资产数」的算术对不上，又成一处口径不一致
+    covered_refs = [a for a in assets if adopted.get(a["nodeId"])]
     missing_refs_only = [m for m in missing if adopted.get(m["nodeId"])]
-    ref_total = sum(len(v) for v in adopted.values())
+    # 张数与「覆盖 M 个」同口径（只数画布资产）：底账段也是逐个画布资产列的，
+    # 把孤儿行的张数算进总数就成了「说 5 张、只列 4 张」的口径不一致
+    ref_total = sum(len(adopted.get(a["nodeId"]) or []) for a in assets)
     # 最近一次批量调研的逐项错误（jobstore 镜像）：待补行带上「上次失败」
     # 让用户分得清「无结果（该换词）」和「下载 403（重试能救）」
     last_errors: dict[str, str] = {}
@@ -604,8 +615,8 @@ def build_report(project_id: str) -> dict[str, Any]:
     covered_on_canvas = [c for c in covered if not c.get("orphan")]
     lines.append(
         f"资产 {len(assets)} 个 ｜ 参考图已采纳 {ref_total} 张、覆盖"
-        f" {len(adopted)} 个 ｜ 文字考据 {len(covered_on_canvas)} 个 ｜ 缺参考图待补"
-        f" {len(missing_no_refs)} 个"
+        f" {len(covered_refs)} 个 ｜ 文字考据 {len(covered_on_canvas)} 个 ｜ 缺参考图待补"
+        f" {len(pending_refs)} 个"
     )
     lines.append(f"生成于 {_now()[:16].replace('T', ' ')}")
 
@@ -651,7 +662,7 @@ def build_report(project_id: str) -> dict[str, Any]:
     sec += 1
     lines.append("")
     lines.append(
-        f"{_CN_NUM[sec]}、参考图底账（已采纳 {sum(len(v) for v in adopted.values())} 张）"
+        f"{_CN_NUM[sec]}、参考图底账（已采纳 {ref_total} 张）"
     )
     if not adopted:
         lines.append("（暂无已采纳的参考图）")
@@ -674,15 +685,19 @@ def build_report(project_id: str) -> dict[str, Any]:
 
     sec += 1
     lines.append("")
-    lines.append(
-        f"{_CN_NUM[sec]}、待补清单（缺参考图与考据 {len(missing_no_refs)} 个资产）"
-    )
-    if not missing_no_refs:
-        lines.append("（画布资产的参考图与考据已齐）")
-    for m in missing_no_refs:
+    lines.append(f"{_CN_NUM[sec]}、待补清单（缺参考图 {len(pending_refs)} 个资产）")
+    if not pending_refs:
+        lines.append("（画布资产的参考图已齐）")
+    for m in pending_refs:
         label = _TYPE_LABELS.get(m["nodeType"], m["nodeType"])
+        marks: list[str] = []
+        # 有文字考据只缺图：行内标注，别让人以为连考据都没做（091101 的形态）
+        if m["nodeId"] not in missing_ids:
+            marks.append("已有文字考据，只缺参考图")
         err = last_errors.get(m["nodeId"], "")
-        suffix = f"——上次失败：{err[:60]}" if err else ""
+        if err:
+            marks.append(f"上次失败：{err[:60]}")
+        suffix = f"——{'；'.join(marks)}" if marks else ""
         lines.append(f"· {m['title']}（{label}）{suffix}")
     if missing_refs_only:
         names = "、".join(m["title"] for m in missing_refs_only[:20])
@@ -718,11 +733,13 @@ def build_report(project_id: str) -> dict[str, Any]:
         "era": era,
         "entries": entries,
         "missing": missing,
-        # 真待办（无参考图也无考据，报告卡「补调研 N」按钮的工作清单）；
-        # missing 里剩下的（有参考图、无文字考据）不进这里——重跑它们是浪费
+        # 真待办（缺参考图的资产，报告卡「补调研 N」按钮的工作清单）——
+        # 含「已有文字考据、只缺参考图」的一类（091101 盲区：图路没跑过，
+        # 补调研正是缺的那一步）；missing 里剩下的（有参考图、无文字考据）
+        # 不进这里——重跑调研不产文字，走考证大纲或出图时自动补考据
         "pendingAssets": [
             {"nodeId": m["nodeId"], "name": m["title"], "type": m["nodeType"]}
-            for m in missing_no_refs
+            for m in pending_refs
         ],
         "adopted": [{"nodeId": k, "candidates": v} for k, v in adopted.items()],
         "outline": outline["topics"],

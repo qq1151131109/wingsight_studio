@@ -131,10 +131,16 @@ check("A2 条目两条（资产 + 主题）",
 check("A3 待补点名叫环首刀",
   rep.body?.missing?.length === 1 && rep.body.missing[0].title === "环首刀",
   JSON.stringify(rep.body?.missing));
-check("A3b 真待办清单只含无参考图的（pendingAssets）",
+check("A3b 真待办清单 = 缺已采纳参考图的资产（含「有文无图」那类）",
   JSON.stringify(rep.body?.pendingAssets ?? []) ===
-    JSON.stringify([{ nodeId: "N_SWORD", name: "环首刀", type: "prop" }]),
+    JSON.stringify([
+      { nodeId: "N_HALL", name: "平城朝堂", type: "scene" },
+      { nodeId: "N_SWORD", name: "环首刀", type: "prop" },
+    ]),
   JSON.stringify(rep.body?.pendingAssets));
+check("A3c 有文无图的资产在报告里标注「只缺参考图」",
+  String(rep.body?.text ?? "").includes("· 平城朝堂（场景）——已有文字考据，只缺参考图"),
+  JSON.stringify(String(rep.body?.text ?? "").split("\n").filter((l) => l.includes("平城朝堂")).slice(-2)));
 check("A4 era 口径读出", rep.body?.era === ERA, `era=${rep.body?.era}`);
 check("A5 报告正文含条目与来源",
   String(rep.body?.text ?? "").includes("鲜卑辫发") && String(rep.body?.text ?? "").includes("a.example"));
@@ -192,7 +198,10 @@ check("B5 报告卡正文是服务端报告",
   `len=${String(reportCards[0]?.data?.body ?? "").length}`);
 check("B5b 报告卡带真待办清单（补调研按钮的数据源）",
   JSON.stringify(reportCards[0]?.data?.reportPending ?? []) ===
-    JSON.stringify([{ nodeId: "N_SWORD", name: "环首刀", type: "prop" }]),
+    JSON.stringify([
+      { nodeId: "N_HALL", name: "平城朝堂", type: "scene" },
+      { nodeId: "N_SWORD", name: "环首刀", type: "prop" },
+    ]),
   JSON.stringify(reportCards[0]?.data?.reportPending));
 
 const outlineCards = (canvas?.nodes ?? []).filter((n) => n.data?.reportKind === "ref-outline");

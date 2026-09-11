@@ -10,6 +10,9 @@
  *    confirm_research_plan、按新指令 canvas_ops 建卡（改道不是确认）。
  * S5 「给资产做参考图考据调研」不点名范围 → research_asset_references
  *    一次带画布全部资产卡，不自挑「重点」子集（090602 事故：55 只调研 16）。
+ * S6 「把资产考据这一站做掉」不点名走哪条 → 文字（考证大纲）与参考图
+ *    （research_asset_references）**两条都发起**（091101 事故：只跑大纲，
+ *    52 张卡文字考据全到、参考图 0 张，全片没有实物参考）。
  * 运行：node scripts/intent-routing-test.mjs（需 agent 在跑；真跑 LLM+拆解/分镜 flow 约 6-8 分钟）
  */
 import { HttpAgent, EventType } from "@ag-ui/client";
@@ -312,6 +315,38 @@ for (const c of r5Research) {
 const wantIds = s5Assets.map((n) => n.id);
 const allCovered = wantIds.length >= 3 && wantIds.every((id) => r5Ids.has(id));
 check("S5 未点名范围 → 一次带全部资产", allCovered, `覆盖 ${wantIds.filter((id) => r5Ids.has(id)).length}/${wantIds.length}（${[...r5Ids].join(",")}；args 长度 ${r5Research.map((c) => c.args.length).join(",") || "无调用"}）——不许自挑「重点」子集`);
+
+// —— S6：考据这一站两条都要走（091101 武则天项目事故防回归）——
+// 事故形态：52 张卡的**文字**考据全到（考证大纲跑完），**参考图**候选 0 行——
+// 手册当时把「考证大纲」与「参考图调研」写成二选一，agent 选了大纲后以为参考图
+// 会自动跟上。现在两条是正交维度、都要发起；用户不点名走哪条时（「把资产考据
+// 做掉」）两条都得动。S6 画布 = 一组资产卡（真实历史题材语境）。
+mockNodes.length = 0;
+mockNodes.push(
+  { id: "n_script_wz", nodeType: "script", title: "《凤临天下—武则天》" },
+  { id: "n_wz_char1", nodeType: "character", title: "武则天" },
+  { id: "n_wz_char2", nodeType: "character", title: "王皇后" },
+  { id: "n_wz_scene1", nodeType: "scene", title: "感业寺 大殿" },
+  { id: "n_wz_prop1", nodeType: "prop", title: "茶盏" },
+  { id: "n_wz_cost1", nodeType: "costume", title: "昭仪宫装" },
+);
+agent.canvasSummary = mockNodes.map((n) => `- ${n.id} [${n.nodeType}] ${n.title}`).join("\n");
+const r6 = await run("画布上的资产卡都建好了，接着把资产考据这一站做掉", "S6 考据两条都走");
+const r6Names = r6.calls.map((c) => c.name);
+const r6Ref = r6Names.includes("research_asset_references");
+const r6Text = r6Names.some((n) =>
+  ["get_research_material", "propose_research_outline", "run_research_outline"].includes(n),
+);
+check(
+  "S6 参考图那一路发起（research_asset_references）",
+  r6Ref,
+  `调用：${r6Names.join(",") || "无"}——只跑文字考据会让全片没有一张实物参考`,
+);
+check(
+  "S6 文字那一路也发起（考证大纲）",
+  r6Text,
+  `调用：${r6Names.join(",") || "无"}——只跑参考图会漏掉年代形制的文字约束`,
+);
 
 const pass = results.every((r) => r.ok);
 console.log(`\n${pass ? "✓✓ 意图路由实测通过" : "✗ 意图路由有环节未过"}（${results.filter((r) => r.ok).length}/${results.length}）`);

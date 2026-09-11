@@ -156,8 +156,9 @@ export interface WingNodeData {
   reportKind?: string;
   /** 组框：考据参考组的认领标记（="research" 单例）——调研参考卡的折叠容器 */
   refGroup?: string;
-  /** 报告卡：真待办资产清单（无参考图也无考据），服务端 report.pendingAssets
-   *  同步落卡——「补调研 N」按钮直接读它，不用再发请求 */
+  /** 报告卡：真待办资产清单（缺已采纳参考图的资产），服务端 report.pendingAssets
+   *  同步落卡——「补调研 N」按钮直接读它，不用再发请求。含「已有文字考据、
+   *  只缺参考图」的一类（报告正文行内会标注） */
   reportPending?: { nodeId: string; name: string; type: string }[];
   /** 资料卡标记（聊天上传文档时由 ingest.addDocCard 落）：正文即文档全文。画布摘要据此显示「[资料卡]…正文已落卡 N 字」——agent 一看就知道稿子已在画布上、read_node 可取全文（八仙饭店：看着卡说「画布是空的」） */
   docCard?: boolean;
