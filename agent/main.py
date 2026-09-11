@@ -43,6 +43,7 @@ import auth_routes  # noqa: E402
 import camera  # noqa: E402
 import compose  # noqa: E402
 import dmx_routes  # noqa: E402
+import doc_extract  # noqa: E402
 import eventbus  # noqa: E402
 import events  # noqa: E402
 import free_images  # noqa: E402
@@ -231,106 +232,17 @@ def serve_preview(filename: str) -> FileResponse:
 
 @app.post("/extract-text")
 async def extract_text(request: Request, user: auth.CurrentUser, name: str = "") -> dict:
-    """文档文本提取（聊天附件 doc/docx/rtf/pdf 用）：body 为二进制、?name= 带原始
-    文件名，返回 {text}。失败明报中文错误（不静默降级）：
-
-    - .docx：zipfile 直读 word/document.xml（w:t 串段，零外部依赖，最快）
-    - .doc/.rtf：soffice --headless 转 txt（每请求独立 profile 防并发锁）
-    - .pdf：pdftotext
-    """
-    import re as _re
-    import tempfile as _tempfile
-    import zipfile as _zipfile
-
+    """文档文本提取（聊天附件 doc/docx/rtf/pdf/xlsx/xls 用）：body 为二进制、
+    ?name= 带原始文件名，返回 {text}。实现体在 `doc_extract`——表类（xlsx/xls）
+    转 Markdown 表格，失败原样明报中文原因，不静默降级。"""
     _ = user
     body = await request.body()
-    if not body:
-        return Response(status_code=400, content="空文件", media_type="text/plain")
-    if len(body) > 20 * 1024 * 1024:
-        return Response(status_code=413, content="文档超过 20MB 上限", media_type="text/plain")
     fname = (name or request.query_params.get("name") or "").strip()
-    ext = fname[fname.rfind(".") :].lower() if "." in fname else ""
-    if ext not in (".doc", ".docx", ".rtf", ".pdf"):
-        return Response(
-            status_code=415,
-            content=f"不支持的文档类型 {ext or '（未知）'}——文本提取只收 .doc/.docx/.rtf/.pdf",
-            media_type="text/plain",
-        )
-
-    async def _run(cmd: list[str], timeout: float = 40.0) -> bytes:
-        import asyncio as _aio
-
-        proc = await _aio.create_subprocess_exec(
-            *cmd, stdout=_aio.subprocess.PIPE, stderr=_aio.subprocess.PIPE
-        )
-        try:
-            out, err = await _aio.wait_for(proc.communicate(), timeout=timeout)
-        except TimeoutError:
-            proc.kill()
-            raise RuntimeError(f"转换超时（>{timeout:.0f}s）")
-        if proc.returncode != 0:
-            raise RuntimeError(f"转换失败：{err.decode(errors='replace')[:120]}")
-        return out
-
     try:
-        if ext == ".docx":
-            with _zipfile.ZipFile(__import__("io").BytesIO(body)) as z:
-                xml = z.read("word/document.xml").decode("utf-8", errors="replace")
-            # 段落 w:p 分段；w:t 取文本、w:br/w:tab 补空白——表格单元格天然被覆盖
-            paras = []
-            for p in _re.findall(r"<w:p[ >].*?</w:p>", xml, _re.DOTALL):
-                t = "".join(_re.findall(r"<w:t[^>]*>(.*?)</w:t>", p, _re.DOTALL))
-                t = _re.sub(r"<[^>]+>", "", t)
-                paras.append(t)
-            text = "\n".join(paras)
-        elif ext == ".pdf":
-            with _tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-                f.write(body)
-                pdf_path = f.name
-            try:
-                out = await _run(["pdftotext", "-enc", "UTF-8", pdf_path, "-"])
-            finally:
-                os.unlink(pdf_path)
-            text = out.decode("utf-8", errors="replace")
-        else:  # .doc / .rtf → soffice
-            with _tempfile.TemporaryDirectory() as td:
-                src = os.path.join(td, f"src{ext}")
-                with open(src, "wb") as f:
-                    f.write(body)
-                profile = os.path.join(td, "lo-profile")
-                await _run(
-                    [
-                        "soffice", "--headless", "--norestore",
-                        f"-env:UserInstallation=file://{profile}",
-                        "--convert-to", "txt:Text", "--outdir", td, src,
-                    ]
-                )
-                out_path = os.path.join(td, "src.txt")
-                if not os.path.exists(out_path):
-                    raise RuntimeError("soffice 未产出文本（文件可能损坏或加密）")
-                text = open(out_path, encoding="utf-8", errors="replace").read()
-    except _zipfile.BadZipFile:
-        return Response(
-            status_code=422,
-            content="docx 解包失败：文件不是合法的 .docx（老 .doc 请直接用 .doc 后缀上传）",
-            media_type="text/plain",
-        )
-    except RuntimeError as exc:
-        return Response(status_code=422, content=str(exc), media_type="text/plain")
-    except FileNotFoundError as exc:
-        return Response(
-            status_code=500,
-            content=f"本机缺少转换器（{exc.filename}）——.doc/.rtf 依赖 soffice、.pdf 依赖 pdftotext",
-            media_type="text/plain",
-        )
-    stripped = text.replace("\ufeff", "").strip()
-    if not stripped:
-        return Response(
-            status_code=422,
-            content="未提取到文本（可能是扫描件/纯图片 PDF，无文字层）",
-            media_type="text/plain",
-        )
-    return {"text": stripped}
+        text = await doc_extract.extract_text(fname, body)
+    except doc_extract.DocExtractError as exc:
+        return Response(status_code=exc.status, content=exc.message, media_type="text/plain")
+    return {"text": text}
 
 
 @app.post("/assets")

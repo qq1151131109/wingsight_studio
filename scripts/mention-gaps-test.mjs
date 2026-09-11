@@ -255,6 +255,95 @@ try {
     !(canvasEmpty.nodes ?? []).some((n) => (n.data?.title ?? "") === "空文件"),
   );
 
+  // ---------- G9: .xlsx 走服务端提取（Markdown 表格）→ 落资料卡，正文不得是乱码 ----------
+  // 2026-09-11 大宋异事录事故：xlsx 不在提取白名单里，掉进「文本直读」兜底把 zip
+  // 包按 UTF-8 硬解，17000 字正文里 6967 个替换字符直接进了 prompt。
+  const XLSX_CELL = "南宋粗木破门板";
+  const sheetXml = (rows) =>
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>' +
+    rows
+      .map(
+        (r, i) =>
+          `<row r="${i + 1}">` +
+          r.map((v, c) => `<c r="${String.fromCharCode(65 + c)}${i + 1}" t="inlineStr"><is><t>${v}</t></is></c>`).join("") +
+          "</row>",
+      )
+      .join("") +
+    "</sheetData></worksheet>";
+  const xlsx = Buffer.from(
+    zipSync({
+      "[Content_Types].xml": strToU8(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>',
+      ),
+      "_rels/.rels": strToU8(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>',
+      ),
+      "xl/workbook.xml": strToU8(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="资产表" sheetId="1" r:id="rId1"/></sheets></workbook>',
+      ),
+      "xl/_rels/workbook.xml.rels": strToU8(
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>',
+      ),
+      "xl/worksheets/sheet1.xml": strToU8(
+        sheetXml([
+          ["编号", "名称"],
+          ["A01", XLSX_CELL],
+        ]),
+      ),
+    }),
+  );
+  await page.locator("aside input[type=file]").first().setInputFiles([
+    {
+      name: "资产提示词表.xlsx",
+      mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      buffer: xlsx,
+    },
+  ]);
+  await page.waitForTimeout(5000);
+  const { body: canvasXlsx } = await api(`/projects/${pid}/canvas`);
+  const xlsxCard = (canvasXlsx.nodes ?? []).find((n) => (n.data?.title ?? "") === "资产提示词表");
+  const xlsxBody = xlsxCard?.data?.body ?? "";
+  check(
+    "G9 xlsx 走服务端提取并落资料卡（Markdown 表格）",
+    Boolean(xlsxCard) && xlsxBody.includes(XLSX_CELL) && xlsxBody.includes("| --- |"),
+    xlsxCard ? `正文 ${xlsxBody.length} 字` : "未建卡",
+  );
+  check(
+    "G9b 资料卡正文不是乱码（无替换字符/zip 头）",
+    Boolean(xlsxCard) && !xlsxBody.includes("\uFFFD") && !xlsxBody.includes("PK\u0003\u0004"),
+  );
+  const chips9 = await page.locator(".copilotKitInputContainer span").allInnerTexts().catch(() => []);
+  const xlsxChip = chips9.find((t) => t.includes("资产提示词表.xlsx"));
+  check(
+    "G9c xlsx chip 显示「（内联）」而非失败",
+    Boolean(xlsxChip) && /内联/.test(xlsxChip),
+    xlsxChip ? xlsxChip.replaceAll("\n", " ").slice(0, 60) : "未找到 chip",
+  );
+
+  // ---------- G10: 二进制容器（.pptx）→ 明报失败态、不落卡（曾经整包字节当正文发出去） ----------
+  const pptx = Buffer.from(zipSync({ "ppt/presentation.xml": strToU8("<p:presentation/>") }));
+  await page.locator("aside input[type=file]").first().setInputFiles([
+    {
+      name: "演示稿.pptx",
+      mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      buffer: pptx,
+    },
+  ]);
+  await page.waitForTimeout(3000);
+  const chips10 = await page.locator(".copilotKitInputContainer span").allInnerTexts().catch(() => []);
+  const pptxChip = chips10.find((t) => t.includes("演示稿.pptx"));
+  check(
+    "G10 不支持的二进制附件明报失败（不再静默变乱码正文）",
+    Boolean(pptxChip) && /失败/.test(pptxChip),
+    pptxChip ? pptxChip.replaceAll("\n", " ").slice(0, 60) : "未找到 chip",
+  );
+  const { body: canvasPptx } = await api(`/projects/${pid}/canvas`);
+  check(
+    "G10b 二进制附件不落卡",
+    !(canvasPptx.nodes ?? []).some((n) => (n.data?.title ?? "") === "演示稿"),
+  );
+
 } finally {
   await browser.close();
   await api(`/projects/${pid}`, { method: "DELETE" });

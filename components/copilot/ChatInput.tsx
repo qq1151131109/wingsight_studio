@@ -109,9 +109,11 @@ interface Attachment {
 }
 
 const TEXT_LIKE_EXT = [".txt", ".md", ".json", ".csv", ".srt", ".xml", ".log"];
-/** 二进制文档 → 服务端 /extract-text 提取后内联（docx zip 直解、doc/rtf 走
- *  soffice、pdf 走 pdftotext——浏览器里读不了这些格式，只有服务端能转） */
-const EXTRACT_TEXT_EXT = [".doc", ".docx", ".rtf", ".pdf"];
+/** 二进制文档 → 服务端 /extract-text 提取后内联（docx/xlsx zip 直解、doc/rtf/xls
+ *  走 soffice、pdf 走 pdftotext——浏览器里读不了这些格式，只有服务端能转）。
+ *  表类（xlsx/xlsm/xls）转 Markdown 表格；**漏登记会把整包字节当正文发出去**
+ *  （2026-09-11 大宋异事录事故：.xlsx 掉进下面的「文本直读」兜底） */
+const EXTRACT_TEXT_EXT = [".doc", ".docx", ".rtf", ".pdf", ".xlsx", ".xlsm", ".xls"];
 /** 文本类文件直读上限：超过就落到上传分支（拿不到正文、agent 也读不了）。
  *  2MB 覆盖典型剧本/大纲（中文 5 万字 ≈ 150KB）；曾用 64KB，把 100KB+ 的
  *  剧本 .txt 静默踢出「落卡 + 内联」两条路（2026-09-08 review 发现） */
@@ -121,7 +123,19 @@ const TEXT_READ_MAX = 2 * 1024 * 1024;
 const INLINE_TEXT_CHARS = 50000;
 
 const ACCEPT_ATTR =
-  "image/*,video/*,audio/*,.pdf,.txt,.md,.json,.csv,.srt,.docx,.doc,.rtf,.xml,.log";
+  "image/*,video/*,audio/*,.pdf,.txt,.md,.json,.csv,.srt,.docx,.doc,.rtf,.xlsx,.xlsm,.xls,.xml,.log";
+
+/** 二进制嗅探：zip/OLE/可执行这类容器按 UTF-8 硬解会满屏替换字符（U+FFFD），
+ *  这种文件绝不能当正文发出去——只给「不在白名单、又要直读」的兜底档把关
+ *  （2026-09-11 大宋异事录：.xlsx 落到直读档，17000 字正文里 6967 个替换字符
+ *  + 446 个 NUL，`PK\x03\x04` 一路进到 prompt） */
+function looksBinary(t: string): boolean {
+  const sample = t.slice(0, 20000);
+  if (sample.includes("\x00")) return true;
+  let bad = 0;
+  for (let i = 0; i < sample.length; i += 1) if (sample.charCodeAt(i) === 0xfffd) bad += 1;
+  return bad / Math.max(1, sample.length) > 0.01;
+}
 
 function kindOf(mime: string, name: string): AttachmentKind {
   if (mime.startsWith("image/")) return "image";
@@ -342,6 +356,21 @@ export default function ChatInput({
               attachmentsRef.current.map((x) =>
                 x.key === a.key
                   ? { ...x, status: "error", errorMessage: "文件为空或不是文本格式" }
+                  : x,
+              ),
+            );
+            return;
+          }
+          // 二进制容器（zip/OLE…）漏登记时的最后一道闸：曾把整包字节当正文发出
+          if (looksBinary(t)) {
+            writeAttachments(
+              attachmentsRef.current.map((x) =>
+                x.key === a.key
+                  ? {
+                      ...x,
+                      status: "error",
+                      errorMessage: `无法解析 ${ext || "该文件"}：不是可读文本（二进制或非 UTF-8 编码）。文档附件支持 .doc/.docx/.rtf/.pdf/.xlsx/.xls/.xlsm，其余请转成 .md/.txt/.csv 后重传`,
+                    }
                   : x,
               ),
             );
