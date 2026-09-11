@@ -245,7 +245,7 @@ visual_notes 里手写考据，提示词里出现「考据依据」段是正常�
 卡上「节点信息」也记「未考证」——遇到它不要当正常结果交付，向用户说明
 这几张形制没有依据，要补就引导先做资产考据（资产卡「找参考图」）再重出。
 返回每个资产的成败与 image_url。
-用户点名要换出图模型/清晰度时才传 model / resolution；可用的模型
+用户点名要换出图模型/清晰度/质量档时才传 model / resolution / quality；可用的模型
 与各模型支持档位：
 {_IMAGE_MODEL_LINE}
 seedream-5-0-pro 是多图融合模型：多张参考图合成一张（如「图1 的人物
@@ -253,8 +253,11 @@ seedream-5-0-pro 是多图融合模型：多张参考图合成一张（如「图
 
 Args:
     assets_json: 资产数组 JSON 文本。
-    model: 出图模型 id（上表之一），留空用默认 gpt-image-2-03。
-    resolution: 清晰度档位（1K/2K/4K，须在该模型支持列表内），留空用模型默认。"""
+    model: 出图模型 id（上表之一），留空用目录默认 {models.DEFAULT_MODEL_ID}。
+    resolution: 清晰度档位（1K/2K/4K，须在该模型支持列表内），留空用模型默认。
+    quality: 质量档（low/medium/high/xhigh/max），仅 gpt-image-2.5-sunburst
+        支持；用户说「最高质量/拉满画质」传 max、「快速出草稿」传 low，
+        留空用默认 high。"""
 
 
 def _build_shot_card_ops(
@@ -381,7 +384,11 @@ def _build_shot_card_ops(
 
 
 async def generate_asset_images(
-    assets_json: str, config: RunnableConfig, model: str = "", resolution: str = ""
+    assets_json: str,
+    config: RunnableConfig,
+    model: str = "",
+    resolution: str = "",
+    quality: str = "",
 ) -> str:
     """为资产批量生成设定图。"""
     try:
@@ -391,10 +398,10 @@ async def generate_asset_images(
     except json.JSONDecodeError as e:
         return f"assets_json 不是合法 JSON：{e}"
     params = None
-    if model.strip() or resolution.strip():
+    if model.strip() or resolution.strip() or quality.strip():
         try:
             params = models.resolve_imagegen_params(
-                {"model": model, "resolution": resolution}
+                {"model": model, "resolution": resolution, "quality": quality}
             )
         except ValueError as e:
             return str(e)
@@ -1254,6 +1261,8 @@ Args:
         缺省 ["gpt-image-2-03"]；未知 id 会整批报错并列出可用清单。
     aspect: 画幅 w:h（"16:9"/"9:16"/"1:1"/"4:3"/"3:4"/"21:9"），缺省 "16:9"。
     resolution: 清晰度档位（"1K"/"2K"/"4K"），缺省跟随模型默认。
+    quality: 质量档（"low"/"medium"/"high"/"xhigh"/"max"），仅
+        gpt-image-2.5-sunburst 支持；用户要「最高质量」传 max，缺省 high。
     reference_images_json: 参考图 URL 数组 JSON（画布图卡的 imageUrl 或
         /agent-service/assets/ 链接），按顺序为 图1/图2…；提示词里可用
         「@图N 注解」指定某张参考的用法（如 @图1 锁定脸部）。
@@ -1266,6 +1275,7 @@ async def generate_free_image(
     models_json: str = '["gpt-image-2-03"]',
     aspect: str = "16:9",
     resolution: str = "",
+    quality: str = "",
     reference_images_json: str = "[]",
 ) -> str:
     thread_id = ""
@@ -1282,7 +1292,7 @@ async def generate_free_image(
         if not isinstance(ref_urls, list) or not all(isinstance(u, str) for u in ref_urls):
             return "reference_images_json 必须是字符串数组 JSON"
         batch = await free_images.create_batch(
-            pid, prompt, aspect, resolution, model_ids, ref_urls
+            pid, prompt, aspect, resolution, quality, model_ids, ref_urls
         )
     except ValueError as exc:
         return f"提交失败：{exc}"

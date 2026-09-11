@@ -13,6 +13,7 @@ import {
   type WingNode,
 } from "./store";
 import { resolveRowRefIds } from "./shotRefs";
+import { migrateImageModelId } from "@/lib/imagegen";
 
 export interface SanitizeResult {
   nodes: WingNode[];
@@ -38,6 +39,8 @@ export interface SanitizeResult {
   resizedNotes: number;
   /** 脏 links（非数组/缺字段/危险 scheme）清掉的卡数 */
   fixedLinks: number;
+  /** 卡片级 data.gen 里下线模型 id 迁移到继任 id 的卡数（cdx → sunburst） */
+  migratedGenModels: number;
 }
 
 /** 旧版建卡/agent 兜底把 NODE_META.hint 占位文案存成真标题（罪案实录 9 张卡
@@ -474,6 +477,22 @@ export function sanitizeCanvas(
     }
   }
 
+  // 存量卡片级出图覆盖（data.gen）里的下线模型 id 归一（2026-09-11 cdx →
+  // 无 cdx sunburst）：agent 直读画布 JSON（造型图链等），不迁移会 400
+  // 「未知出图模型」。迁移后不命中，装载幂等；meta.imagegen 走 saneImagegen
+  // 同款迁移（lib/imagegen.ts migrateImageModelId 单一来源）
+  let migratedGenModels = 0;
+  for (const n of cleanNodes) {
+    const gen = n.data.gen;
+    if (gen && typeof gen === "object" && typeof gen.model === "string") {
+      const migrated = migrateImageModelId(gen.model);
+      if (migrated !== gen.model) {
+        n.data.gen = { ...gen, model: migrated };
+        migratedGenModels += 1;
+      }
+    }
+  }
+
   return {
     nodes: [...cleanNodes, ...extraNodes],
     edges: [...cleanEdges, ...extraEdges],
@@ -489,5 +508,6 @@ export function sanitizeCanvas(
     resizedAssets,
     resizedNotes,
     fixedLinks,
+    migratedGenModels,
   };
 }

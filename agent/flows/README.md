@@ -12,7 +12,7 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `asset-decompose-scene.json` | 场景拆解 | 剧本 → 场景 JSON（含大纲推断主要发生地） | `LANGFLOW_DECOMPOSE_SCENE_FLOW_ID` | 同上 |
 | `asset-decompose-prop.json` | 道具拆解 | 剧本 → 道具 JSON | `LANGFLOW_DECOMPOSE_PROP_FLOW_ID` | 同上 |
 | `asset-decompose-costume.json` | 服饰拆解 | 剧本 → 服饰 JSON（核心服装/造型套装，支撑造型一致性） | `LANGFLOW_DECOMPOSE_COSTUME_FLOW_ID` | 同上 |
-| `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 出图；`reference_images` 一致性锚点图会下载作参考。布局契约五态：`character` 四格定妆 / `scene` 无人空镜勘景 / `prop` 单件结构图 / `costume` 服装三视图 / `shot` 剧情剧照（分镜行出图，有人物有剧情）；`none` = 无版式直传（2026-09-07 空镜事故新增：用户描述置顶原样发，不注入任何版式命令段，自由出图/改图默认——关键词推断已从生效路径摘除）。模型分流在组件内按模型名前缀：`doubao-seedream-5*` → `/v1/responses` 多图融合（`generate_image_responses`，2~10 参考图合成一张）；`gemini*` → v1beta `generateContent`（`generate_image_gemini`，Nano Banana 2：imageConfig 精确幅面/分辨率 1K/2K/4K、参考图 inlineData、认证 x-goog-api-key——Bearer 会挂起；**DMX 网关 aspectRatio 按「高:宽」解析，原语内已做翻转补偿，DMX 修正后需移除**）；其余走 OpenAI images 接口 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload / model_name / resolution） |
+| `asset-imagegen.json` | 单资产出图 | 资产 JSON（tweaks 注入）→ 出图；`reference_images` 一致性锚点图会下载作参考。布局契约五态：`character` 四格定妆 / `scene` 无人空镜勘景 / `prop` 单件结构图 / `costume` 服装三视图 / `shot` 剧情剧照（分镜行出图，有人物有剧情）；`none` = 无版式直传（2026-09-07 空镜事故新增：用户描述置顶原样发，不注入任何版式命令段，自由出图/改图默认——关键词推断已从生效路径摘除）。模型分流在组件内按模型名前缀：`doubao-seedream-5*` → `/v1/responses` 多图融合（`generate_image_responses`，2~10 参考图合成一张）；`gemini*` → v1beta `generateContent`（`generate_image_gemini`，Nano Banana 2：imageConfig 精确幅面/分辨率 1K/2K/4K、参考图 inlineData、认证 x-goog-api-key——Bearer 会挂起；DMX 曾按「高:宽」倒置解析 aspectRatio，2026-09-07 DMX 修正后翻转补偿已移除（再补偿会把 16:9 翻成竖图））；其余走 OpenAI images 接口 | `LANGFLOW_IMAGEGEN_FLOW_ID` | `BatchAssetSheet-img02`（assets_payload / model_name / resolution / quality——quality 仅 OpenAI images 通道吃，gpt-image 2.5 系 low/medium/high/xhigh/max） |
 | `prompt-optimize-text.json` | 提示词优化-扩写 | 出图提示词 AI 辅助（✦ 优化扩写态）：当前提示词 → 扩写成完整出图提示词。纯原生链（ChatInput→LLM→ChatOutput），prompt 在 system_message，参数走 input_value 文本头 | `LANGFLOW_PROMPT_OPTIMIZE_TEXT_FLOW_ID` | `LanguageModelComponent`（model_name 覆盖文本模型） |
 | `prompt-optimize-image.json` | 提示词优化-看图反推 | 出图提示词 AI 辅助（✦ 看图反推态）：参考图 → 反推出图提示词。单用途自定义组件 `PromptImageReverseComponent`（gemini-2.5-flash 视觉经 DMX；deepseek 带大图会丢图勿用） | `LANGFLOW_PROMPT_OPTIMIZE_IMAGE_FLOW_ID` | `PromptOptimize-main`（payload JSON + api_key） |
 | `style-reverse.json` | 画风反推 | 我的画风：参考图 → 画风描述（只提炼可复用画风，不带主体/构图）。单用途自定义组件 `StyleReverseComponent`（gemini 视觉经 DMX），与看图反推同范式不同提示词 | `LANGFLOW_STYLE_REVERSE_FLOW_ID` | `StyleReverse-main`（payload JSON + api_key） |
@@ -62,10 +62,10 @@ langflow 的 SQLite 是运行时存储；本目录是本项目全部业务 flow 
 | `POST /projects/{pid}/research` + `GET .../research/{jobId}`（另有 `.../confirm`、`.../cancel`、`.../gap`、`.../sources`） | 调研四 flow 全链 | 深度调研：发起即开题（观看问题+方向）→ 聊天里确认 → 多轮（Serper Google 网页搜索→原文抓取→提纯→完整性评估→补搜）→ 五段卷宗（叙事脊/事实边界/争议/风险/材料簇，S 编号引用）。**异步任务**：job 落 SQLite，重启标 interrupted、证据保留可 gap 补研续跑。聊天工具 `start_deep_research`/`confirm_research_plan`/`get_research_result`（graph.py）；前端调研卡（nodeType:"research"，凭 researchId 轮询）+ ResearchReader 阅读器。编排 `agent/research.py`，路由 `agent/research_routes.py`；单测 `agent/test_research.py` |
 | `POST /projects/{pid}/script-review` + `GET .../script-review/{jobId}`（另有 `?nodeId=` 最新摘要、`.../findings/{fid}/dismiss`、`.../cancel`） | 剧本审查四 flow | 剧本三维度审查：合规（敏感词表 `agent/lexicons/sensitive-lexicon.txt` 作参考底料+语境判定，不做代码层规则匹配）/ 一致性（内部矛盾双引文）/ 事实核查（抽断言 ≤12 → Serper 取证 → 逐条判定，属实不报）。**异步任务**：job 落 SQLite（review_jobs/review_findings），findings 带正文锚点（quote+字符区间），job 记 body_sha1 供前端比对标过期；单维度软失败明报，取消 1s 粒度打断在途 flow。前端剧本卡 footer「审查」+ reviewJobId 锚续链 + ScriptReviewDialog（master-detail 高亮定位/忽略/应用建议）。编排 `agent/script_review.py`，路由 `agent/script_review_routes.py`；回归 `scripts/script-review-test.mjs` |
 
-出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?}`
+出图类端点（storyboard/images、assets/decompose）均可带 `params: {model?, resolution?, quality?}`
 （项目级出图设置，目录与校验见 `agent/models.py`，`GET /models/image` 下发），
 非法组合 400 明报；合法则经 tweaks 注入 `BatchAssetSheet-img02` 的
-`model_name` / `resolution`，缺省走 flow 默认（gpt-image-2-03 · 2K）。
+`model_name` / `resolution` / `quality`，缺省走 flow 默认（gpt-image-2.5-sunburst · 1K · high）。
 
 ## 导出（langflow → 本目录）
 

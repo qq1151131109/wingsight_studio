@@ -906,7 +906,12 @@ function BottomDock({
     : !imageModels
       ? "加载模型目录…"
       : imageModelEntry
-        ? `${imageModelEntry.label} · ${imagegen.resolution}`
+        ? // 质量档偏离默认（如 xhigh/max）时才上 chip——默认 high 不占位
+          `${imageModelEntry.label} · ${imagegen.resolution}${
+            imagegen.quality && imagegen.quality !== (imageModelEntry.default_quality ?? "high")
+              ? ` · ${imagegen.quality}`
+              : ""
+          }`
         : "出图模型已下架";
   const imagegenTip = imageModelsError
     ? // error 本身已是人话整句（fetchImageModels：「模型目录加载失败（500）」），
@@ -915,7 +920,9 @@ function BottomDock({
     : !imageModels
       ? "出图设置：模型目录加载中…"
       : imageModelEntry
-        ? `出图设置：${imageModelEntry.label} · ${imagegen.resolution}（全局默认，点击修改）`
+        ? `出图设置：${imageModelEntry.label} · ${imagegen.resolution}${
+            imagegen.quality ? ` · 质量 ${imagegen.quality}` : ""
+          }（全局默认，点击修改）`
         : `出图模型 ${imagegen.model} 不在目录中，点击重选`;
   const [stylePanel, setStylePanel] = useState(false);
   // 画风同理直显生效值：内部存的是整段提示词（预设 prompt / 自定义描述），
@@ -1231,7 +1238,20 @@ function ImagegenSettings() {
     const resolution = m.resolutions.includes(imagegen.resolution)
       ? imagegen.resolution
       : m.default_resolution;
-    useCanvasStore.getState().setImagegen({ model: m.id, resolution });
+    // 质量档联动（与档位同语义）：新模型支持就带过去/贴默认，不支持就
+    // 显式清掉——残留会让 agent 预检 400「不支持质量档选择」
+    const patch: { model: string; resolution: string; quality?: string } = {
+      model: m.id,
+      resolution,
+    };
+    if (m.qualities?.length) {
+      patch.quality = m.qualities.includes(imagegen.quality ?? "")
+        ? imagegen.quality!
+        : (m.default_quality ?? "high");
+    } else {
+      patch.quality = undefined; // 显式清掉，防止残留键让 agent 预检 400
+    }
+    useCanvasStore.getState().setImagegen(patch);
   };
 
   if (error)
@@ -1313,6 +1333,38 @@ function ImagegenSettings() {
           </p>
         ) : null}
       </div>
+      {current?.qualities?.length ? (
+        <div>
+          <p className="text-[11px] font-medium text-text-4">质量</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {current.qualities.map((q) => {
+              const active = (imagegen.quality ?? current.default_quality ?? "high") === q;
+              return (
+                <button
+                  key={q}
+                  type="button"
+                  data-tip={
+                    q === "low"
+                      ? "草稿快速迭代（成本最低）"
+                      : q === "xhigh" || q === "max"
+                        ? "2.5 代新增画质档，耗时与成本随档位上浮"
+                        : undefined
+                  }
+                  aria-label={q === "low" ? "草稿快速迭代（成本最低）" : undefined}
+                  className={`rounded border px-2.5 py-1 text-xs transition-colors ${
+                    active
+                      ? "border-accent bg-accent-dim text-text"
+                      : "border-hairline text-text-2 hover:text-text"
+                  }`}
+                  onClick={() => useCanvasStore.getState().setImagegen({ quality: q })}
+                >
+                  {q}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

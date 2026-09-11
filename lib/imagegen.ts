@@ -9,16 +9,30 @@ export type ImagegenParams = {
   model: string;
   resolution: string;
   /** 画幅 w:h；缺省 = 自动（有参考图跟随首位参考图比例，无参考图按
-   *  资产类型默认幅面）。落 data.gen / meta.imagegen，agent 预检校验 */
+   * 资产类型默认幅面）。落 data.gen / meta.imagegen，agent 预检校验 */
   aspect?: string;
+  /** 质量档（low/medium/high/xhigh/max）：仅目录声明 qualities 的模型
+   *  可选（gpt-image 2.5 系）；缺省 = 服务端 flow 默认 high */
+  quality?: string;
 };
 
-/** 项目级出图默认：gpt-image-2.5-sunburst-cdx · 1K（与 agent DEFAULT_MODEL_ID
- *  一致；该模型受控域 宽≤2048/高≤1536，2K/4K/9:16/21:9 需选 GPT Image 2） */
+/** 项目级出图默认：gpt-image-2.5-sunburst · 1K（与 agent DEFAULT_MODEL_ID
+ *  一致；全档全画幅尺寸受控，2K/4K/竖版/超宽按需选，质量档可选） */
 export const IMAGEGEN_DEFAULT: ImagegenParams = {
-  model: "gpt-image-2.5-sunburst-cdx",
+  model: "gpt-image-2.5-sunburst",
   resolution: "1K",
 };
+
+/** 下线出图模型的一次性迁移表（旧 id → 继任 id）。装载边界归一，下次保存
+ *  即落新值——不留双格式兼容读取（铁律），存量 meta.imagegen / data.gen
+ *  里已持久化的旧 id 不迁移会让全线亮「已下架」并 400 */
+const RETIRED_IMAGE_MODELS: Record<string, string> = {
+  "gpt-image-2.5-sunburst-cdx": "gpt-image-2.5-sunburst", // 2026-09-11 cdx 渠道下线
+};
+
+export function migrateImageModelId(id: string): string {
+  return RETIRED_IMAGE_MODELS[id] ?? id;
+}
 
 export type ImageModelOption = {
   id: string;
@@ -28,6 +42,10 @@ export type ImageModelOption = {
   /** 该模型支持的画幅枚举（agent/models.py：seedream-5-pro 无 21:9） */
   aspects?: string[];
   default_resolution: string;
+  /** 质量档枚举（agent/models.py：仅 gpt-image 2.5 系声明；无此字段 =
+   *  不出质量选择器，恒走 flow 缺省 high） */
+  qualities?: string[];
+  default_quality?: string;
   recommended?: boolean;
   /** 参考图上限（agent/models.py 声明：seedream-5-pro 10 张实测，其余保守 4） */
   max_references?: number;
@@ -54,17 +72,32 @@ export function saneImagegen(
     v.resolution.trim()
   ) {
     const aspect = typeof v.aspect === "string" ? v.aspect.trim() : "";
-    return { model: v.model, resolution: v.resolution, ...(aspect ? { aspect } : {}) };
+    const quality = typeof v.quality === "string" ? v.quality.trim() : "";
+    return {
+      model: migrateImageModelId(v.model),
+      resolution: v.resolution,
+      ...(aspect ? { aspect } : {}),
+      ...(quality ? { quality } : {}),
+    };
   }
   return IMAGEGEN_DEFAULT;
 }
 
-/** 卡片级覆盖（WingNodeData.gen）存值校验：形状不对 = 未覆盖（null） */
+/** 卡片级覆盖（WingNodeData.gen）存值校验：形状不对 = 未覆盖（null）。
+ *  直接按字段形状判定（不与 saneImagegen 输出判等——下线模型 id 会被
+ *  saneImagegen 迁移改写，判等会把合法的卡级覆盖误判成「未覆盖」丢弃） */
 export function saneGen(raw: unknown): ImagegenParams | null {
   if (!raw || typeof raw !== "object") return null;
-  const v = saneImagegen(raw);
-  const src = raw as Partial<ImagegenParams>;
-  return v.model === src.model && v.resolution === src.resolution ? v : null;
+  const v = raw as Partial<ImagegenParams>;
+  if (
+    typeof v.model !== "string" ||
+    !v.model.trim() ||
+    typeof v.resolution !== "string" ||
+    !v.resolution.trim()
+  ) {
+    return null;
+  }
+  return saneImagegen(raw);
 }
 
 // ---------- 视频模型目录（agent /models/video，RunningHub MiniMax H3 参考生视频） ----------

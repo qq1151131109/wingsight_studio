@@ -34,8 +34,9 @@ _RATIO_SPLIT_RE = re.compile(r"^\s*(\d{1,2})\s*[:：]\s*(\d{1,2})\s*$")
 # agent 的 run_flow_blocking 只等 300s——首尝试必须在此窗口内返回才有意义）
 _TIMEOUT_SECONDS = 300.0
 
-# 质量档位一律 high（gpt-image 系 images 接口质量参数，DMX 实测
-# generate/edit 通道均接受；high=最细渲染档，output_tokens 随之最高）
+# 质量档位（gpt-image 系 images 接口 quality 参数，DMX 实测 generate/edit
+# 通道均接受）：low/medium/high/xhigh/max（2.5 起新增后两档）。缺省 high；
+# 调用方（agent 目录/前端选择器）按模型能力传入，本层不做校验
 _IMAGE_QUALITY = "high"
 
 # OpenAI 异步客户端类占位：默认 None，首次出图时经 _load_async_openai 懒加载
@@ -77,6 +78,7 @@ async def generate_image(
     api_key: str,
     aspect_ratio: str = "16:9",
     resolution: str = "1K",
+    quality: str = _IMAGE_QUALITY,
     reference_images: list[str] | None = None,
     dest_dir: Path | None = None,
     background: str = "",
@@ -109,7 +111,7 @@ async def generate_image(
             ref_files.append(await asyncio.to_thread(path.read_bytes))
             ref_suffixes.append(path.suffix or ".png")
 
-    common = {"model": model, "prompt": prompt, "size": size, "n": 1, "quality": _IMAGE_QUALITY}
+    common = {"model": model, "prompt": prompt, "size": size, "n": 1, "quality": quality}
     # 透明背景（gpt-image 系 images 通道参数，generate/edit 均可带；2026-09-04
     #  DMX 实测仅 gpt-image-2-ssvip 真生效、2-03 静默忽略——目录 transparent 标记
     #  只给实测通过的模型，闸在 models.resolve_imagegen_params）
@@ -123,12 +125,11 @@ async def generate_image(
                 (f"ref_{i}{sfx}", io.BytesIO(data), "application/octet-stream")
                 for i, (data, sfx) in enumerate(zip(ref_files, ref_suffixes, strict=True))
             ]
-            # input_fidelity=high：保留输入图细节（脸/纹理/文字）只改要改的；
-            # 缺省 low = 整图重渲染，改图观感「脏污」（细节近似但不保真、
-            # 颗粒被重新演绎）。edit 通道专属参数（generate 不认）
-            response = await client.images.edit(
-                image=files, input_fidelity="high", **common
-            )
+            # 不传 input_fidelity（2026-09-11 cdx 渠道下线后收回）：DMX 2.5 官方
+            # 参数表无此参数，无 cdx 渠道传了直接 400 image_generation_user_error；
+            # 唯一实测受支持的 cdx（Codex 渠道）已按用户拍板弃用。若将来渠道
+            # 重新支持保真改图，按模型白名单分支再引入，不无条件硬传
+            response = await client.images.edit(image=files, **common)
         else:
             response = await client.images.generate(**common)
     except Exception as exc:
@@ -190,8 +191,14 @@ class ImageGenerationComponent(Component):
         DropdownInput(
             name="model_name",
             display_name="模型",
-            options=["gpt-image-2-03", "gpt-image-2", "doubao-seedream-5-0-pro-260628", "gemini-3.1-flash-image"],
-            value="gpt-image-2-03",
+            options=[
+                "gpt-image-2.5-sunburst",
+                "gpt-image-2-03",
+                "gpt-image-2",
+                "doubao-seedream-5-0-pro-260628",
+                "gemini-3.1-flash-image",
+            ],
+            value="gpt-image-2.5-sunburst",
             combobox=True,
             info="任意 OpenAI 兼容 images 模型名",
         ),

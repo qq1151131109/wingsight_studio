@@ -42,27 +42,32 @@ resolution / reference_count 到 imagegen flow 的 BatchAssetSheet-img02 组件�
 import re
 from typing import Any, Dict, List, Optional
 
-DEFAULT_MODEL_ID = "gpt-image-2.5-sunburst-cdx"
+DEFAULT_MODEL_ID = "gpt-image-2.5-sunburst"
 
 # 通用画幅枚举（分镜卡 ShotGenSettings 同款 6 档）；例外条目单独覆写
 DEFAULT_ASPECTS = ["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
 
-# gpt-image-2.5-sunburst-cdx 实测能力边界（2026-09-10 探针，9 发验证）：
-# images/generations 受控域 = 宽≤2048 且 高≤1536——2048x1152/1024x1024/
-# 1408x1056/1056x1408/1024x1536 受控；超域尺寸（2560x1440/3840x2160/
-# 2048x2048/1152x2048/2368x1024）不报错但静默等比降级（1536x864 等）。
-# 故目录只开 1K 档（16:9 下即 2048x1152）与四个画幅，2K/4K/9:16/21:9
-# 需求走 gpt-image-2-03。edits 参考图通道可用但 size 同样自适应
-# （请求 2048x1152 实出 1536x864，比例正确）。responses 通道（input
-# 直传）也通但尺寸完全不可控（恒 1254x1254），不用。
+# gpt-image-2.5-sunburst 实测能力（2026-09-10 探针 + DMX 2.5 官方文档）：
+# 尺寸全档全画幅受控——9:16 / 2K(2560x1440) / 4K(3840x2160) 精确输出；
+# token 计价（DMX 6.8 折）实测 1K ¥0.21 / 2K ¥0.28 / 4K ¥0.50，edits
+# 每多 1 张参考约 +¥0.06。**不支持 input_fidelity**（传了 400，lfx 已撤）。
+# 质量 quality 可选 low/medium/high/xhigh/max（2.5 新增后两档）。注意
+# 21:9 4K（5040x2160）超官方约束「最大边 ≤3840」，该组合由上游报错点名。
+# 历史渠道 gpt-image-2.5-sunburst-cdx（固定 ¥0.25、宽≤2048/高≤1536、
+# 超域静默降级、支持 input_fidelity）已于 2026-09-11 用户拍板下线。
 IMAGE_MODELS: List[Dict[str, Any]] = [
     {
-        "id": "gpt-image-2.5-sunburst-cdx",
+        "id": "gpt-image-2.5-sunburst",
         "label": "GPT Image 2.5 Sunburst",
-        "tag": "2.5 代默认 · 高质量渲染 · 仅 1K 档与 4 画幅（竖版/超宽选 GPT Image 2）",
-        "resolutions": ["1K"],
-        "aspects": ["16:9", "1:1", "4:3", "3:4"],
+        "tag": "2.5 代默认 · 全档全画幅 · 质量档可选（xhigh/max 拉满画质）",
+        "resolutions": ["1K", "2K", "4K"],
+        "aspects": DEFAULT_ASPECTS,
         "default_resolution": "1K",
+        # 2.5 系 quality 枚举（low 草稿迭代 → max 最高画质，耗时与成本随之
+        # 上浮）；仅 OpenAI images 通道的 gpt-image 家族可选，其余模型不设
+        # 该字段（目录/前端据此隐藏选择器，恒走 flow 缺省 high）
+        "qualities": ["low", "medium", "high", "xhigh", "max"],
+        "default_quality": "high",
         "recommended": True,
         "max_references": 4,
     },
@@ -310,20 +315,22 @@ def find_model(model_id: str) -> Optional[Dict[str, Any]]:
 
 
 def resolve_imagegen_params(raw: Any) -> Optional[Dict[str, str]]:
-    """校验调用方传来的出图参数（{model?, resolution?}）。
+    """校验调用方传来的出图参数（{model?, resolution?, quality?}）。
 
-    合法 → {"model_name": id, "resolution": 档位}（tweaks 直接可用）；
-    缺省/空对象 → None（全默认，不注参数）；不合法 → ValueError，
+    合法 → {"model_name": id, "resolution": 档位[, "quality": 档]}（tweaks
+    直接可用）；缺省/空对象 → None（全默认，不注参数）；不合法 → ValueError，
     端点转 400 中文报错，绝不静默回退默认（用户选了不支持的组合
-    必须让他知道，而不是悄悄换模型出图）。
+    必须让他知道，而不是悄悄换模型出图）。quality 仅目录声明了 qualities
+    的模型可传（无该字段的模型恒走 flow 缺省 high）。
     """
     if raw is None:
         return None
     if not isinstance(raw, dict):
-        raise ValueError("params 必须是对象（{model?, resolution?}）")
+        raise ValueError("params 必须是对象（{model?, resolution?, quality?}）")
     model = str(raw.get("model") or "").strip()
     resolution = str(raw.get("resolution") or "").strip()
-    if not model and not resolution:
+    quality = str(raw.get("quality") or "").strip()
+    if not model and not resolution and not quality:
         return None
     if model:
         entry = find_model(model)
@@ -338,7 +345,17 @@ def resolve_imagegen_params(raw: Any) -> Optional[Dict[str, str]]:
         raise ValueError(
             f"{entry['label']} 不支持 {res} 档（支持：{'/'.join(entry['resolutions'])}）"
         )
-    return {"model_name": entry["id"], "resolution": res}
+    out: Dict[str, str] = {"model_name": entry["id"], "resolution": res}
+    if quality:
+        supported = entry.get("qualities") or []
+        if not supported:
+            raise ValueError(f"{entry['label']} 不支持质量档选择")
+        if quality not in supported:
+            raise ValueError(
+                f"{entry['label']} 不支持质量 {quality}（支持：{'/'.join(supported)}）"
+            )
+        out["quality"] = quality
+    return out
 
 
 def resolve_aspect(raw: Any, model_id: str) -> Optional[str]:

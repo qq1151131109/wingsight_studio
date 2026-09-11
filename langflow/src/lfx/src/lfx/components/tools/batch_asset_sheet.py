@@ -407,6 +407,14 @@ class BatchAssetSheetComponent(Component):
         IntInput(name="max_assets", display_name="资产数上限", value=10, advanced=True),
         IntInput(name="reference_count", display_name="参考图数", value=3, advanced=True),
         DropdownInput(name="resolution", display_name="清晰度", options=["1K", "2K", "4K"], value="1K", advanced=True),
+        DropdownInput(
+            name="quality",
+            display_name="质量",
+            options=["low", "medium", "high", "xhigh", "max"],
+            value="high",
+            advanced=True,
+            info="gpt-image 系 quality 参数（2.5 起 xhigh/max）；仅 OpenAI images 通道生效",
+        ),
         MultilineInput(
             name="prompt_template",
             display_name="自定义模板",
@@ -492,7 +500,8 @@ class BatchAssetSheetComponent(Component):
                     elif str(self.model_name or "").startswith(_GEMINI_MODEL_PREFIXES):
                         image = await generate_image_gemini(prompt, **common)
                     else:
-                        image = await generate_image(prompt, **common)
+                        # 质量档只 OpenAI images 通道认（gemini/responses 原语无此参数）
+                        image = await generate_image(prompt, quality=str(self.quality or "high"), **common)
                     record["image_path"] = image["path"]
                     await self.send_message(Message(text=f"{_TYPE_LABELS[asset_type]} · {name}", files=[image["path"]]))
                     record["status"] = "ok"  # 推送成功才置 ok，避免推送失败时 ok+error 矛盾

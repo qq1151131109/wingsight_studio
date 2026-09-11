@@ -4,7 +4,7 @@
 import { apiFetch } from "@/lib/auth";
 import { useCanvasStore } from "@/lib/canvas/store";
 import type { ShotRow } from "@/lib/canvas/store";
-import type { ImagegenParams, VideogenParams } from "@/lib/imagegen";
+import { findModelOption, loadImageModels, type ImagegenParams, type VideogenParams } from "@/lib/imagegen";
 
 export async function generateShotlist(
   script: string,
@@ -273,12 +273,27 @@ export async function startShotImageJob(
   shots: ShotImageRequest[],
   params?: ImagegenParams,
 ): Promise<string> {
+  let effective = params ?? useCanvasStore.getState().imagegen;
+  // 卡片级 gen 整对象替换项目级，但卡片弹窗没有质量档选择器——缺 quality
+  // 时继承项目级（前提：卡模型支持该档，否则硬带会被 agent 400）
+  if (params && !params.quality) {
+    const project = useCanvasStore.getState().imagegen;
+    if (project.quality) {
+      const entry = findModelOption(
+        params.model,
+        await loadImageModels().catch(() => null),
+      );
+      if (entry?.qualities?.includes(project.quality)) {
+        effective = { ...params, quality: project.quality };
+      }
+    }
+  }
   const r = await apiFetch("/agent-service/storyboard/images", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       shots,
-      params: params ?? useCanvasStore.getState().imagegen,
+      params: effective,
       // 终态事件流按项目路由（TaskEvents 通知过滤）
       project_id: useCanvasStore.getState().projectId,
     }),

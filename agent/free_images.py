@@ -233,6 +233,7 @@ async def create_batch(
     prompt: str,
     aspect: str,
     resolution: str,
+    quality: str,
     model_ids: List[str],
     reference_images: List[str],
     viewer: Any = None,
@@ -241,7 +242,8 @@ async def create_batch(
 
     viewer（HTTP 端点的 CurrentUser）非空时校验项目访问权；None = 聊天工具
     上下文（与其他后端工具同一信任级，项目由会话线程解析）。
-    校验铁律与全站一致：模型/画幅/档位组合不合法点名报错，绝不静默换默认。
+    校验铁律与全站一致：模型/画幅/档位/质量档组合不合法点名报错，绝不静默
+    换默认。quality 仅目录声明 qualities 的模型可传（gpt-image 2.5 系）。
     """
     if viewer is not None:
         projects.assert_access(viewer, project_id)
@@ -283,7 +285,11 @@ async def create_batch(
             raise ValueError(f"未知出图模型：{mid}（可用：{known}）")
         try:
             params = models.resolve_imagegen_params(
-                {"model": mid, **({"resolution": resolution} if resolution else {})}
+                {
+                    "model": mid,
+                    **({"resolution": resolution} if resolution else {}),
+                    **({"quality": quality} if quality else {}),
+                }
             )
             resolved_aspect = models.resolve_aspect(aspect, mid)
         except ValueError as exc:

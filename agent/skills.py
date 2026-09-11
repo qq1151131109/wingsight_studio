@@ -577,7 +577,7 @@ async def start_decompose_job(
     auto_looks=True 时拆解完成后自动续跑角色出图链（juben 全自动范式：
     每角色先出定妆照，再以其为身份参考图逐个出 Look 造型图），
     结果写回 asset 条目（image_url / looks[i].image_url）。
-    params：出图模型/分辨率覆盖（models.resolve_imagegen_params 产物）。
+    params：出图模型/分辨率/质量档覆盖（models.resolve_imagegen_params 产物）。
     text_model：拆解文本模型覆盖（models.resolve_text_model 产物，出图链不受影响）。
     project_id 仅供终态事件流路由（前端按项目过滤通知），空也能跑。
     """
@@ -1485,7 +1485,7 @@ async def generate_asset_images(
 ) -> str:
     """逐资产并发出图（并发 30），每张完成即向聊天流推送进度（若有 config）。
 
-    params：模型/分辨率覆盖（models.resolve_imagegen_params 产物）。
+    params：模型/分辨率/质量档覆盖（models.resolve_imagegen_params 产物）。
     成功的图片复制到 agent/static/assets/ 并以 /agent-service/assets/<file>
     相对路径回传（前端同源代理可直接 <img> 渲染）。
     """
@@ -1761,7 +1761,7 @@ async def _generate_single_image(
 ) -> Dict[str, Any]:
     """单张出图原语（直连 imagegen flow，不经聊天）：入参字段同批量出图
     请求（name/description/visualNotes?/assetType?/referenceImages?），
-    params 为模型/分辨率覆盖（models.resolve_imagegen_params 产物），
+    params 为模型/分辨率/质量档覆盖（models.resolve_imagegen_params 产物），
     返回 {ok, imageUrl?|error}。拆解自动出图链与批量出图任务共用。"""
     # flow 载荷只认 {type,name,description,visual_notes,reference_images?}：
     # rid 不能进 payload（会被渲染进出图提示词）。
@@ -1907,7 +1907,7 @@ async def start_storyboard_image_job(
     """启动分镜行批量出图任务（直连 imagegen flow，并发 30，不经聊天）。
 
     shots: [{rid, name, description, visual_notes?, aspect?,
-             params?: {model?, resolution?, aspect?}}]，字段与出图 flow 的资产载荷
+             params?: {model?, resolution?, quality?, aspect?}}]，字段与出图 flow 的资产载荷
     一致（type 固定 scene，镜头画面不是角色设定图）。params：请求级出图
     模型/分辨率/画幅；镜头级 aspect 与 params 覆盖请求级（卡片级覆盖），
     逐镜头合并后预校验——任一组合不合法整批 ValueError（端点转 400 明报）。
@@ -1922,8 +1922,8 @@ async def start_storyboard_image_job(
     invalid: List[str] = []
     for s in shots:
         rid = str(s.get("rid", ""))
-        # 请求级 params 是端点已解析的 {model_name, resolution}，镜头级
-        # params 是前端原始 {model, resolution}——统一成 model 键再校验，
+        # 请求级 params 是端点已解析的 {model_name, resolution[, quality]}，
+        # 镜头级 params 是前端原始 {model, resolution[, quality]}——统一成 model 键再校验，
         # 否则请求级模型被当缺省、画幅/档位拿错模型对表
         merged = {**(params or {}), **(s.get("params") or {})}
         if "model_name" in merged:

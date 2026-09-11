@@ -1001,9 +1001,9 @@ async def api_free_image_generate(req: dict, user: auth.CurrentUser):
     """自由生图批次（juben ImageStudio 移植）：不受画风/资产约束，一次点击
     多模型并行，每模型一行任务。立即返回 {batchId, items}；前端轮询 GET。
 
-    req: {project_id, prompt, aspect?, resolution?, models: [目录 id],
+    req: {project_id, prompt, aspect?, resolution?, quality?, models: [目录 id],
           reference_images?: [/agent-service/assets/... url]}
-    校验失败 400 中文点名（模型/画幅/档位/参考上限），绝不静默换默认。
+    校验失败 400 中文点名（模型/画幅/档位/质量档/参考上限），绝不静默换默认。
     """
     try:
         return await free_images.create_batch(
@@ -1011,6 +1011,7 @@ async def api_free_image_generate(req: dict, user: auth.CurrentUser):
             str(req.get("prompt") or ""),
             str(req.get("aspect") or ""),
             str(req.get("resolution") or ""),
+            str(req.get("quality") or ""),
             [str(m) for m in (req.get("models") or []) if str(m).strip()],
             [str(u) for u in (req.get("reference_images") or []) if str(u).strip()],
             user,
@@ -1043,8 +1044,8 @@ async def api_storyboard_images(req: dict, user: auth.CurrentUser):
     长请求，无法阻塞等完）。前端轮询 GET /storyboard/images/{jobId}。
 
     req: {shots: [{rid, name, description, visual_notes?, aspect?,
-                   params?: {model?, resolution?, aspect?}}],
-          params?: {model?, resolution?, aspect?}}
+                   params?: {model?, resolution?, quality?, aspect?}}],
+          params?: {model?, resolution?, quality?, aspect?}}
     镜头级 params/aspect 覆盖请求级（卡片级覆盖），逐镜头合并预校验。
     """
     shots = req.get("shots") or []
