@@ -6,6 +6,7 @@
 
 import {
   findFreePosition,
+  genNodeId,
   NODE_FOOTPRINT,
   noteFootprintFor,
   type ShotRow,
@@ -41,6 +42,8 @@ export interface SanitizeResult {
   fixedLinks: number;
   /** 卡片级 data.gen 里下线模型 id 迁移到继任 id 的卡数（cdx → sunburst） */
   migratedGenModels: number;
+  /** 存量散落参考卡收进「考据参考」折叠组的张数（参考卡风暴善后迁移） */
+  regroupedRefs: number;
 }
 
 /** 旧版建卡/agent 兜底把 NODE_META.hint 占位文案存成真标题（罪案实录 9 张卡
@@ -493,6 +496,66 @@ export function sanitizeCanvas(
     }
   }
 
+  // 存量散落参考卡收进「考据参考」折叠组（2026-09-11 参考卡风暴善后）：
+  // 09-10 起对账把已采纳参考图物化成画布卡，旧落位是「资产列下方各占一条
+  // 横带」——冯太后项目 52 资产 × 3 张一次性铺成 2350×4100px 的 sprawl。
+  // 新代码（refAdopt.adoptRefRows）一律落进折叠组框；这里把存量散卡按原
+  // 相对排布整体收进组（保位迁移，展开时资产邻接关系不乱）、默认折叠。
+  // 守卫：组已存在时只收 ≥6 张的批量散卡——用户从组里拖出来的个别卡是
+  // 刻意的画布安排，装载不该塞回去（组不存在时收任意张：首次迁移）。
+  let regroupedRefs = 0;
+  const strays = cleanNodes.filter(
+    (n) => n.data.refSource === "research" && !n.parentId,
+  );
+  const hasRefGroup = cleanNodes.some(
+    (n) => n.data.nodeType === "group" && n.data.refGroup === "research",
+  );
+  if (strays.length > 0 && (!hasRefGroup || strays.length >= 6)) {
+    let minX = Number.POSITIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    for (const s of strays) {
+      const w = Number(s.style?.width ?? 0) || 256;
+      const h = Number(s.style?.height ?? 0) || 200;
+      minX = Math.min(minX, s.position.x);
+      minY = Math.min(minY, s.position.y);
+      maxX = Math.max(maxX, s.position.x + w);
+      maxY = Math.max(maxY, s.position.y + h);
+    }
+    const padX = 16;
+    const padTop = 44;
+    const padBottom = 16;
+    const gid = genNodeId();
+    const refGroupNode: WingNode = {
+      id: gid,
+      type: "group",
+      position: { x: minX - padX, y: minY - padTop },
+      style: { width: 172, height: 40 },
+      data: {
+        nodeType: "group",
+        title: "考据参考",
+        refGroup: "research",
+        collapsed: true,
+        prevSize: {
+          w: maxX - minX + padX * 2,
+          h: maxY - minY + padTop + padBottom,
+        },
+        body: "",
+      },
+    };
+    for (const s of strays) {
+      s.parentId = gid;
+      s.hidden = true;
+      s.position = {
+        x: s.position.x - (minX - padX),
+        y: s.position.y - (minY - padTop),
+      };
+      regroupedRefs += 1;
+    }
+    cleanNodes.unshift(refGroupNode);
+  }
+
   return {
     nodes: [...cleanNodes, ...extraNodes],
     edges: [...cleanEdges, ...extraEdges],
@@ -509,5 +572,6 @@ export function sanitizeCanvas(
     resizedNotes,
     fixedLinks,
     migratedGenModels,
+    regroupedRefs,
   };
 }

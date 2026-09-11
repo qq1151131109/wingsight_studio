@@ -154,6 +154,8 @@ export interface WingNodeData {
    *  报告由服务端条目拼装（GET /refs/report），前端对账时创建/更新——
    *  同一项目恒定一张，按此标记去重不重复建卡 */
   reportKind?: string;
+  /** 组框：考据参考组的认领标记（="research" 单例）——调研参考卡的折叠容器 */
+  refGroup?: string;
   /** 报告卡：真待办资产清单（无参考图也无考据），服务端 report.pendingAssets
    *  同步落卡——「补调研 N」按钮直接读它，不用再发请求 */
   reportPending?: { nodeId: string; name: string; type: string }[];

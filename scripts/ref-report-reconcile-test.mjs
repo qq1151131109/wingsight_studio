@@ -215,6 +215,16 @@ check("B8 参考卡带来源域名",
 check("B8b 参考卡带候选 id（删除=取消采纳的凭据）",
   Boolean(refCards[0]?.data?.refCandidateId),
   `refCandidateId=${refCards[0]?.data?.refCandidateId}`);
+// B8c 组框收纳：参考卡不摊在画布上，全收进「考据参考」折叠组（hidden 不渲染，
+// 但连线数据在——出图参考链路不断，见 2026-09-11 参考卡风暴善后）
+const refGroup = (canvas?.nodes ?? []).find(
+  (n) => n.data?.nodeType === "group" && n.data?.refGroup === "research",
+);
+check("B8c 考据参考组框存在且默认折叠", Boolean(refGroup) && refGroup.data?.collapsed === true,
+  `collapsed=${refGroup?.data?.collapsed}`);
+check("B8d 参考卡全部 parent 进组且 hidden",
+  refCards.every((c) => c.parentId === refGroup?.id && c.hidden === true),
+  `parentId 命中 ${refCards.filter((c) => c.parentId === refGroup?.id).length}/${refCards.length}, hidden ${refCards.filter((c) => c.hidden).length}/${refCards.length}`);
 
 // C. 幂等：重新打开项目不重复建卡
 await page.reload({ waitUntil: "domcontentloaded" });
@@ -237,8 +247,11 @@ const { body: c4 } = await api(`/projects/${pid}/canvas`);
 check("D1 前端保存周期保住了 era 口径", c4?.meta?.era === ERA, `era=${c4?.meta?.era}`);
 
 // E. 删掉参考卡 = 这张参考不要了：服务端取消采纳，重载不再长回来
-//    （真实交互：选中卡片 → 工具条「删除」；画布卡有 data-id，工具条按钮有 aria-label）
+//    （真实交互：先展开「考据参考」折叠组 → 选中卡片 → 工具条「删除」；
+//     画布卡有 data-id，组框折叠钮/工具条按钮有 aria-label）
 const refId = refCards[0].id;
+await page.locator('[aria-label="展开分组"]').first().click();
+await page.waitForTimeout(800);
 await page.locator(`[data-id="${refId}"]`).first().click();
 await page.waitForTimeout(600);
 await page

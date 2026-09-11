@@ -2,9 +2,15 @@
 
 /** 参考图采纳落画布：候选 → 建图片卡（refSource=research）→ 连线到资产卡。
  *  单资产面板、批量审阅面板、调研完成自动采纳三方共用。
- *  落位 = 资产所在「列」底部的带状区：拆解网格行距只有 24px，直接放资产
- *  正下方会压到下一行资产卡；同列多个资产按行序各占一条横带，该资产已有
- *  参考卡时再顺延到最低参考卡之下。 */
+ *
+ *  落位（2026-09-11 参考卡风暴后重做）：全部收进项目级「考据参考」组框
+ *  （data.refGroup="research" 单例）——组框**默认折叠**成胶囊（172×40），
+ *  子卡 hidden 不渲染不挡视线，但连线数据仍在：出图参考链路零影响
+ *  （前端 buildRefSequence 与服务端 _canvas_ref_cards 都按 edges/nodes 收
+ *  参考、不过滤 hidden，实测核实过）。点胶囊展开可看全部参考的网格。
+ *  此前「资产所在列下方各占一条横带」的落位是给单资产小批量设计的，
+ *  冯太后项目 52 资产 × 3 张一次性对账物化，抻成 2350×4100px 的画布 sprawl
+ *  （用户反馈「乱七八糟」）。 */
 
 import {
   NODE_FOOTPRINT,
@@ -16,7 +22,81 @@ import { adoptRefCandidates, listRefCandidates } from "@/lib/ref-research";
 import type { RefCandidate } from "@/lib/ref-research";
 import { useRefStatusStore } from "@/lib/refStatus";
 
-const ASSET_TYPES = ["character", "scene", "prop", "costume"];
+/** 考据参考组框的认领标记（单例：一个项目恒定一个） */
+export const REF_GROUP_FLAG = "refGroup";
+
+/** 追加网格：4 列（image 卡 256 宽 × 4 + 间距 + 内边距 ≈ 1140，展开时一屏可读） */
+const REF_GRID = { cols: 4, gapX: 24, gapY: 24, padX: 16, padTop: 44, padBottom: 16 };
+
+/** 找到（或当场建）考据参考组框。系统物化路径建组即折叠——研究参考是
+ *  出图的原料不是画布主角，默认收起；想核对形制点胶囊展开。 */
+function ensureRefGroup(
+  st: ReturnType<typeof useCanvasStore.getState>,
+  firstCards: number,
+): { id: string; collapsed: boolean } {
+  const existing = st.nodes.find(
+    (n) => n.data.nodeType === "group" && n.data.refGroup === "research",
+  );
+  if (existing) {
+    return { id: existing.id, collapsed: Boolean(existing.data.collapsed) };
+  }
+  const fp = NODE_FOOTPRINT.image;
+  const rows = Math.ceil(Math.max(1, firstCards) / REF_GRID.cols);
+  const w =
+    REF_GRID.padX * 2 + REF_GRID.cols * fp.w + (REF_GRID.cols - 1) * REF_GRID.gapX;
+  const h =
+    REF_GRID.padTop +
+    rows * fp.h +
+    (rows - 1) * REF_GRID.gapY +
+    REF_GRID.padBottom;
+  // 落位：可见内容 bbox 左下角再往下留白（不压任何卡，也不抢视口）
+  let minX = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const n of st.nodes) {
+    if (n.hidden) continue;
+    const abs = absolutePosition(st.nodes, n);
+    const s = nodeSize(n);
+    minX = Math.min(minX, abs.x);
+    maxY = Math.max(maxY, abs.y + s.h);
+  }
+  const pos =
+    Number.isFinite(minX) && Number.isFinite(maxY)
+      ? { x: minX, y: maxY + 120 }
+      : { x: 0, y: 0 };
+  const id = st.addNode(
+    {
+      position: pos,
+      style: { width: 172, height: 40 },
+      data: {
+        nodeType: "group",
+        title: "考据参考",
+        refGroup: "research",
+        collapsed: true,
+        prevSize: { w, h },
+        body: "",
+      },
+    },
+    { history: "skip" },
+  );
+  return { id, collapsed: true };
+}
+
+/** 组框内容的包围盒（子卡相对坐标系）+ 外边距 → 组该有的尺寸 */
+function refGroupSize(st: ReturnType<typeof useCanvasStore.getState>, gid: string) {
+  const members = st.nodes.filter((n) => n.parentId === gid);
+  if (members.length === 0) return { w: 220, h: 120 };
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+  for (const m of members) {
+    const s = nodeSize(m);
+    maxX = Math.max(maxX, m.position.x + s.w);
+    maxY = Math.max(maxY, m.position.y + s.h);
+  }
+  return {
+    w: Math.max(220, maxX + REF_GRID.padX + REF_GRID.gapX),
+    h: Math.max(120, maxY + REF_GRID.padBottom),
+  };
+}
 
 /** 每资产自动采纳目标张数：调研完成把推荐候选补齐到这个数，
  *  其余候选留在找参考图弹窗里手动增补 */
@@ -69,7 +149,8 @@ export async function autoAdoptTopRecommendations(
 }
 
 /**
- * 批量采纳：每个资产一组候选，建卡连线到该资产所在列的参考带。
+ * 批量采纳：每个资产一组候选，建图片卡连线到资产卡——卡全部落进
+ * 「考据参考」折叠组框（追加网格），不再摊在资产区下方。
  * 返回新建卡 id 列表（供 flash 定位）。
  * opts.history="skip" 给系统对账用（打开项目自愈落卡不该进撤销栈）。
  */
@@ -79,48 +160,33 @@ export function adoptRefRows(
 ): string[] {
   const st = useCanvasStore.getState();
   const fp = NODE_FOOTPRINT.image;
+  const total = rows.reduce((n, r) => n + r.candidates.length, 0);
+  if (total === 0) return [];
+  const group = ensureRefGroup(st, total);
+  // 追加起点：现有成员 bbox 之下开新 4 列网格（存量迁移进来的卡保持原相对
+  // 排布，新卡不叠上去）
+  const members = st.nodes.filter((n) => n.parentId === group.id);
+  let originY = REF_GRID.padTop;
+  for (const m of members) {
+    originY = Math.max(originY, m.position.y + nodeSize(m).h + REF_GRID.gapY);
+  }
   const created: string[] = [];
+  let i = 0;
   for (const { nodeId, candidates } of rows) {
     const asset = st.nodes.find((n) => n.id === nodeId);
     if (!asset || candidates.length === 0) continue;
-    const origin = absolutePosition(st.nodes, asset);
-    // 同列资产（|绝对 x 差|≤80）：取整列最低卡底作参考带起点，本资产的
-    // 行序决定带偏移——网格里每一行资产的参考卡各占一条横带互不叠压
-    const col = st.nodes
-      .filter(
-        (n) =>
-          ASSET_TYPES.includes(String(n.data.nodeType)) &&
-          Math.abs(absolutePosition(st.nodes, n).x - origin.x) <= 80,
-      )
-      .map((n) => ({ p: absolutePosition(st.nodes, n), s: nodeSize(n), id: n.id }))
-      .sort((a, b) => a.p.y - b.p.y);
-    const colBottom = Math.max(...col.map((c) => c.p.y + c.s.h));
-    const bandIdx = Math.max(
-      0,
-      col.findIndex((c) => c.id === asset.id),
-    );
-    let y0 = colBottom + 24 + bandIdx * (fp.h + 16);
-    // 该资产已有参考卡：新带顺延到最低参考卡之下（手动追加不叠自动采纳）
-    const existingRefs = st.nodes.filter(
-      (n) =>
-        n.data.refSource === "research" &&
-        st.edges.some((e) => e.target === nodeId && e.source === n.id),
-    );
-    if (existingRefs.length > 0) {
-      const exBottom = Math.max(
-        ...existingRefs.map(
-          (n) => absolutePosition(st.nodes, n).y + nodeSize(n).h,
-        ),
-      );
-      y0 = Math.max(y0, exBottom + 16);
-    }
-    candidates.forEach((c, i) => {
+    candidates.forEach((c, j) => {
+      const slot = i + j;
+      const col = slot % REF_GRID.cols;
+      const row = Math.floor(slot / REF_GRID.cols);
       const newId = st.addNode(
         {
           position: {
-            x: origin.x + i * (fp.w + 24),
-            y: y0,
+            x: REF_GRID.padX + col * (fp.w + REF_GRID.gapX),
+            y: originY + row * (fp.h + REF_GRID.gapY),
           },
+          parentId: group.id,
+          hidden: group.collapsed,
           style: { width: fp.w, height: fp.h },
           data: {
             nodeType: "image",
@@ -139,6 +205,26 @@ export function adoptRefRows(
       created.push(newId);
       st.connect({ source: newId, target: nodeId }, opts);
     });
+    i += candidates.length;
+  }
+  // 组尺寸跟进：展开态直接改 style；折叠态写进 prevSize（展开时还原到包住全部）
+  const g = useCanvasStore.getState().nodes.find((n) => n.id === group.id);
+  if (g) {
+    const size = refGroupSize(useCanvasStore.getState(), group.id);
+    const collapsed = Boolean(g.data.collapsed);
+    if (collapsed) {
+      useCanvasStore.getState().updateNodeData(
+        group.id,
+        { prevSize: size },
+        { history: "skip" },
+      );
+    } else {
+      useCanvasStore.setState((s) => ({
+        nodes: s.nodes.map((n) =>
+          n.id === group.id ? { ...n, style: { ...n.style, ...size } } : n,
+        ),
+      }));
+    }
   }
   return created;
 }
