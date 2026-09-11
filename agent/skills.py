@@ -3186,6 +3186,32 @@ async def run_ref_brief_flow(asset: Dict[str, Any], pages: List[Dict[str, Any]])
     return text[:1200]
 
 
+def _str_list(value: Any, limit: int) -> List[str]:
+    """模型返回的字符串数组 → 清洗后的列表（去空/截断/限量）。
+    covered/missing 是缺口台账，异常形状一律当空——台账缺失不该拦终选。"""
+    if not isinstance(value, list):
+        return []
+    out: List[str] = []
+    for v in value:
+        s = " ".join(str(v or "").split())
+        if s:
+            out.append(s[:60])
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    """保序去重（多批合并时同一维度可能被两批都报）。"""
+    seen: set[str] = set()
+    out: List[str] = []
+    for i in items:
+        if i not in seen:
+            seen.add(i)
+            out.append(i)
+    return out
+
+
 async def run_ref_select_flow(
     asset: Dict[str, Any], candidates: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -3216,10 +3242,14 @@ async def run_ref_select_flow(
     if not candidates:
         raise RuntimeError("终选需要至少一张候选图")
 
-    async def _call(batch: List[Dict[str, Any]], label: str) -> tuple[List[int], str]:
+    async def _call(
+        batch: List[Dict[str, Any]], label: str
+    ) -> tuple[List[int], str, List[str], List[str]]:
         """单次终选调用（粗排每批一次、精排复用同一路径），3 次重试带间隔：
         批量 10 路并发下终选偶发失败（重试即恢复），失败会导致该资产无推荐
-        预选，审阅体验明显劣化。"""
+        预选，审阅体验明显劣化。返回 (推荐, note, covered, missing)——后两者
+        是缺口台账，供调用方驱动下一轮定向补搜（业界 deep research 的
+        「看缺口再搜」范式，见 doc/deep-research-search-loop-research-2026-09.md）。"""
         # 字段拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，组件里
         # json.loads 报 Invalid control character（imagegen/画风反推同款防坑；
         # 批量资产的 description 是多行正文，不拍平终选必炸）；所有字符串字段
@@ -3249,7 +3279,12 @@ async def run_ref_select_flow(
                     for i in (out.get("recommended") or [])
                     if isinstance(i, (int, float, str)) and str(i).strip().lstrip("-").isdigit()
                 ]
-                return rec, str(out.get("note") or "").strip()
+                return (
+                    rec,
+                    str(out.get("note") or "").strip(),
+                    _str_list(out.get("covered"), 8),
+                    _str_list(out.get("missing"), 8),
+                )
             except Exception as exc:  # noqa: BLE001 先重试再抛给调用方记批错
                 last_exc = exc
                 if attempt < 2:
@@ -3259,11 +3294,15 @@ async def run_ref_select_flow(
     batches = [candidates[i : i + 50] for i in range(0, len(candidates), 50)]
     recommended: List[int] = []
     notes: List[str] = []
+    covered: List[str] = []
+    missing: List[str] = []
     batch_errors: List[str] = []
     for bi, batch in enumerate(batches, 1):
         try:
-            rec, note = await _call(batch, f"第{bi}批")
+            rec, note, cov, miss = await _call(batch, f"第{bi}批")
             recommended.extend(rec)
+            covered.extend(cov)
+            missing.extend(miss)
             if note:
                 notes.append(f"第{bi}批：{note}")
         except Exception as exc:  # noqa: BLE001 单批失败记错不拖垮其余批
@@ -3287,7 +3326,7 @@ async def run_ref_select_flow(
         rerank_rows = [by_index[i] for i in ordered if i in by_index]
         if len(rerank_rows) > 1:
             try:
-                rec, note = await _call(rerank_rows, "精排")
+                rec, note, _cov, _miss = await _call(rerank_rows, "精排")
                 head = [i for i in rec if i in seen]
                 head_set = set(head)
                 ordered = head + [i for i in ordered if i not in head_set]
@@ -3298,7 +3337,13 @@ async def run_ref_select_flow(
     note = "；".join(notes)[:300]
     if batch_errors:
         note = (note + ("；" if note else "") + "；".join(batch_errors))[:300]
-    return {"recommended": ordered, "note": note}
+    return {
+        "recommended": ordered,
+        "note": note,
+        # 缺口台账（多批按出现顺序保序去重）：covered=已覆盖维度、missing=仍缺维度
+        "covered": _dedupe_keep_order(covered),
+        "missing": _dedupe_keep_order(missing),
+    }
 
 
 # ── 文本撰写/改写（画布文本卡/剧本卡底部输入条的直连管线）──────────────────────

@@ -2529,6 +2529,8 @@ async def _run_research(
     all_rows: list[dict[str, Any]] = []  # 全部已下载候选（位次即全局 index）
     rec_order: list[int] = []  # 终选推荐（轮序在前、轮内模型序）
     select_notes: list[str] = []
+    gap_covered: list[str] = []  # 终选判定的「已覆盖视觉维度」（跨轮累积）
+    gap_missing: list[str] = []  # 终选判定的「仍缺失视觉维度」（喂下一轮 planner）
     brief = ""
     brief_sources: list[dict[str, Any]] = []
     brief_joined = False
@@ -2708,12 +2710,21 @@ async def _run_research(
                 rec_order.extend(valid)
                 if str(selection.get("note") or "").strip():
                     select_notes.append(str(selection["note"]).strip())
+                # 缺口台账（A 档，业界 deep research 的「看缺口再搜」范式）：终选
+                # 模型看图后判定的「已覆盖 / 仍缺」维度回传给下一轮 planner，让补搜
+                # 是**定向补缺**而不是换个泛角度重来。此前只回传「推荐 N/M」这个
+                # 数量信号，模型知道「这轮不行」却不知道为什么不行——而原因就在
+                # 它自己写的 note 里（实测：「候选均缺乏片场美术、置景设计语境」）。
+                gap_covered.extend(selection.get("covered") or [])
+                gap_missing.extend(selection.get("missing") or [])
                 rounds.append(
                     {
                         "queries": round_queries,
-                        # 摘要带终选推荐率：补搜判据从「标题数量想象」变成证据
+                        # 摘要带终选推荐率 + 缺口台账：补搜判据从「标题数量想象」
+                        # 变成「看图后的缺口证据」
                         "found": _rounds_summary(downloaded)
-                        + f"；终选推荐 {len(valid)}/{len(downloaded)}",
+                        + f"；终选推荐 {len(valid)}/{len(downloaded)}"
+                        + _gap_clause(gap_covered, gap_missing),
                     }
                 )
                 if len(rec_order) >= _SELECT_ENOUGH_RECS:
@@ -2794,6 +2805,16 @@ def _rounds_summary(items: list[dict[str, Any]], sample: int = 20) -> str:
         f"{m.get('provider')}|{str(m.get('title') or '')[:40]}|{m.get('width')}x{m.get('height')}"
         for m in items[:sample]
     )
+
+
+def _gap_clause(covered: list[str], missing: list[str]) -> str:
+    """缺口台账串（喂下一轮 planner）。空则不占位——planner 输入要短。"""
+    parts = []
+    if covered:
+        parts.append("已覆盖维度：" + "、".join(covered[:6]))
+    if missing:
+        parts.append("仍缺维度：" + "、".join(missing[:6]))
+    return "；" + "；".join(parts) if parts else ""
 
 
 def _select_payload(rows: list[dict[str, Any]], start: int = 0) -> list[dict[str, Any]]:

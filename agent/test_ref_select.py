@@ -63,6 +63,8 @@ async def _fake_run_flow(flow_id: str, input_value: str = "", tweaks: dict | Non
     resp = _responses[len(_calls) - 1]
     if isinstance(resp, Exception):
         raise resp
+    if isinstance(resp, dict):  # 完整形状（缺口台账）
+        return json.dumps(resp, ensure_ascii=False)
     rec, note = resp  # type: ignore[misc]
     return json.dumps({"recommended": rec, "note": note}, ensure_ascii=False)
 
@@ -126,6 +128,30 @@ async def _group_a() -> None:
     out = await _select(60)
     expect(out["recommended"] == [3], f"失败批的推荐不应混入：{out['recommended']}")
     expect("第2批" in out["note"], f"note 应记失败批：{out['note']}")
+
+    # A6. 缺口台账透传（A 档）：covered/missing 原样返回、多批按出现顺序保序去重
+    _calls.clear(); _responses.clear()
+    _responses.extend([
+        {"recommended": [2], "note": "b1", "covered": ["村落全景"], "missing": ["巷道近景", "室内陈设"]},
+        {"recommended": [55], "note": "b2", "covered": ["村落全景", "门楼细节"], "missing": ["室内陈设"]},
+    ])
+    out = await _select(60)
+    expect(out["covered"] == ["村落全景", "门楼细节"], f"A6 covered 保序去重：{out['covered']}")
+    expect(out["missing"] == ["巷道近景", "室内陈设"], f"A6 missing 保序去重：{out['missing']}")
+
+    # A7. 模型不给缺口字段 / 给错形状 → 空列表，不炸终选（台账缺失不拦推荐）
+    _calls.clear(); _responses.clear()
+    _responses.append({"recommended": [1], "note": "no gap", "missing": "应该是数组但给了字符串"})
+    out = await _select(8)
+    expect(out["recommended"] == [1] and out["missing"] == [], f"A7 缺口字段异常当空：{out}")
+
+    # A8. 缺口条目清洗：去空白、截断 60 字、上限 8 条
+    _calls.clear(); _responses.clear()
+    _responses.append({"recommended": [], "note": "",
+                       "missing": ["  巷道 近景  "] + [f"维度{i}" for i in range(12)]})
+    out = await _select(8)
+    expect(out["missing"][0] == "巷道 近景", f"A8 条目压空白：{out['missing'][:2]}")
+    expect(len(out["missing"]) == 8, f"A8 上限 8 条：{len(out['missing'])}")
 
 
 asyncio.run(_group_a())
@@ -225,6 +251,8 @@ async def _fake_select(asset: dict, candidates: list[dict]) -> dict:
     resp = select_responses[len(select_log) - 1]
     if isinstance(resp, Exception):
         raise resp
+    if isinstance(resp, dict):  # 完整形状（带缺口台账）
+        return resp
     return {"recommended": list(resp), "note": "mock"}
 
 
@@ -312,6 +340,23 @@ job = _mk_job("j5b"); _reset_sem()
 asyncio.run(imgresearch._run_research("j5b", PID, "n7", [], {"name": "先无后有", "type": "scene"}))
 expect(job["status"] == "done", f"C5b 任务应完成：{job.get('error')}")
 expect(len(search_log) == 9, f"C5b 中途有进展不判停、跑到推荐达标：{len(search_log)}")
+
+# C7. 缺口回流（A 档）：终选报的 missing 必须出现在下一轮 planner 的输入里——
+#     这是「看缺口再搜」的命脉：没有它，补搜只是换角度重来
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([
+    {"recommended": [1], "note": "本批全是新闻配图",
+     "covered": ["村落全景航拍"], "missing": ["巷道近景与铺地", "室内陈设"]},
+    {"recommended": [6, 7, 8, 9], "note": "补齐", "covered": ["巷道近景"], "missing": []},
+])
+job = _mk_job("j6"); _reset_sem()
+asyncio.run(imgresearch._run_research("j6", PID, "n8", [], {"name": "缺口回流", "type": "scene"}))
+expect(job["status"] == "done", f"C7 任务应完成：{job.get('error')}")
+expect(len(plan_calls) == 2, f"C7 应补搜一轮：{len(plan_calls)}")
+_found = plan_calls[1][0]["found"]
+expect("仍缺维度：巷道近景与铺地、室内陈设" in _found, f"C7 缺口必须进 planner 输入：{_found}")
+expect("已覆盖维度：村落全景航拍" in _found, f"C7 已覆盖维度也要告知（防重复搜）：{_found}")
+expect("终选推荐 1/6" in _found, f"C7 数量信号保留：{_found}")
 
 # C6. 手填词：不跑 planner 不跑文路，全量手工词进首轮
 search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
