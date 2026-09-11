@@ -5,16 +5,24 @@
  * 覆盖：
  *  1) 轨道点数 = 用户轮数（「（任务通知）」系统代发不计）
  *  2) 轨道贴消息可视区右缘、纵向在区内
- *  3) 悬停展开标签面板（18 字摘要 + 轮次号），行数与点数一致
+ *  3) 悬停展开标签面板（18 字摘要 + 轮次号），行数与点数一致 + 面板入场动效类
  *  4) 点早期轮 → 滚动容器 scrollTop 大幅变化 + 目标气泡闪圈类 + 落进可视区
- *  5) 末点（accent 加宽）跳回对话底部
+ *  5) 末点（accent 加宽）跳回对话底部 + 点击脉冲类
+ *  6) 动效（2026-09-11）：悬停展宽真生效（! 工具类压过 inline width——初版
+ *     裸类 group-hover/dot:w-5 被 inline 永远压住是从未生效的死代码）、末点
+ *     入场动效类在位、悬停变 accent
+ *  7) 位置口径（2026-09-11 用户反馈「挡字 + 有点靠下」）：圆点落在右侧专用槽
+ *     （不压正文右缘、不压 20px 滚动条带）、纵向居中于可读带（输入浮层之上）
+ *
+ * 注：位置口径断言依赖「右侧 42px 内缩」+「输入条 .copilotKitInputContainer」，
+ * 改动 globals.css 的内缩或换掉 v2 输入条类名时这两条会红——它们就是护栏。
  *
  * 前置：agent(8123) + 前端(8008) 在跑。
  */
 import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
 
-const BASE = "http://127.0.0.1:8008";
+const BASE = process.env.WS_BASE || "http://127.0.0.1:8008";
 const API = `${BASE}/agent-service`;
 
 function envLocal(key) {
@@ -142,14 +150,42 @@ try {
     );
     const rect = rail.getBoundingClientRect();
     const stamps = document.querySelectorAll(".copilotKitMessages [data-turn-id]").length;
+    // 位置口径核对（2026-09-11「挡字 + 靠下」）：正文实际右缘 / 可读带 / 圆点外沿
+    const list = document.querySelector(".copilotKitMessages");
+    let textRight = 0;
+    list?.querySelectorAll("p,li,td,div").forEach((n) => {
+      if (!n.textContent?.trim() || getComputedStyle(n).display === "none") return;
+      const r = n.getBoundingClientRect();
+      if (r.width > 0 && r.right > textRight && r.right <= window.innerWidth) textRight = r.right;
+    });
+    let vp = list;
+    for (let i = 0; i < 12 && vp && vp !== document.body; i++) {
+      if (i > 0 && vp.scrollHeight > vp.clientHeight + 2 && vp.clientHeight <= window.innerHeight * 1.2) break;
+      vp = vp.parentElement;
+    }
+    const vpRect = vp?.getBoundingClientRect();
+    // 可读带底 = 输入浮层顶（输入条 absolute bottom-0 压在滚动视口下沿之上）
+    const composerTop = document.querySelector(".copilotKitInputContainer")?.getBoundingClientRect().top;
+    const bandTop = vpRect?.top ?? null;
+    const bandBottom = vpRect ? Math.min(vpRect.bottom, composerTop ?? vpRect.bottom) : null;
+    const dotRects = [...rail.querySelectorAll(".ws-turn-dot")].map((d) => d.getBoundingClientRect());
     return {
       dotCount: dots.length,
       stamps,
       rect: { x: Math.round(rect.x), y: Math.round(rect.y), h: Math.round(rect.height) },
       // 圆点视觉在按钮内的 span 上（按钮本体是 24px 宽的命中列，2026-09-09）
       lastDotStyle: dots.at(-1)?.firstElementChild?.getAttribute("style") ?? "",
+      lastDotClass: dots.at(-1)?.firstElementChild?.className ?? "",
       lastDotHitW: Math.round(dots.at(-1)?.getBoundingClientRect().width ?? 0),
       firstLabel: dots[0]?.getAttribute("aria-label") ?? "",
+      textRight: Math.round(textRight),
+      dotLeft: Math.round(Math.min(...dotRects.map((d) => d.left))),
+      dotRight: Math.round(Math.max(...dotRects.map((d) => d.right))),
+      dotCenter: dotRects.length
+        ? Math.round((Math.min(...dotRects.map((d) => d.top)) + Math.max(...dotRects.map((d) => d.bottom))) / 2)
+        : null,
+      bandCenter: bandTop !== null && bandBottom !== null ? Math.round((bandTop + bandBottom) / 2) : null,
+      winW: window.innerWidth,
     };
   });
   check(
@@ -161,6 +197,52 @@ try {
   check("末点 accent 加宽", /var\(--color-accent\)/.test(railInfo.lastDotStyle) && /width:\s*18/.test(railInfo.lastDotStyle));
   check("圆点命中区 ≥24px（10px 点本体点不中）", railInfo.lastDotHitW >= 24, `${railInfo.lastDotHitW}px`);
   check("首点 aria-label 带轮次摘要", railInfo.firstLabel.startsWith("跳到第 1 轮："), railInfo.firstLabel.slice(0, 30));
+  check("末点入场动效类在位", /ws-turn-dot-in/.test(railInfo.lastDotClass ?? ""), railInfo.lastDotClass?.slice(0, 60) ?? "");
+  // 位置口径（2026-09-11 用户反馈「挡字 + 有点靠下」）：圆点必须落在右侧专用槽里
+  // ——不压正文最后一列字（旧版稳定重叠 14px），也不压右缘 20px 滚动条带
+  check(
+    "圆点不压正文（专用槽，净空 ≥1px）",
+    railInfo.dotLeft > railInfo.textRight,
+    `正文右缘=${railInfo.textRight} 圆点左缘=${railInfo.dotLeft}（净空 ${railInfo.dotLeft - railInfo.textRight}px）`,
+  );
+  check(
+    "圆点不压滚动条带（右缘 ≤ 窗口-20）",
+    railInfo.dotRight <= railInfo.winW - 20,
+    `圆点右缘=${railInfo.dotRight} 阈值=${railInfo.winW - 20}`,
+  );
+  // 纵向以「可读带」居中而非滚动视口整高：输入条是浮层，用视口居中会整体偏低
+  check(
+    "纵向居中于可读带（输入浮层之上）",
+    railInfo.bandCenter !== null && Math.abs(railInfo.dotCenter - railInfo.bandCenter) <= 12,
+    `圆点中心=${railInfo.dotCenter} 可读带中心=${railInfo.bandCenter} 偏差=${railInfo.dotCenter - railInfo.bandCenter}`,
+  );
+
+  // 1.5) 动效：悬停展宽 + 变 accent（回归死代码——裸类被 inline width 压住）
+  const dotBtn = page.locator('[data-testid="chat-turn-rail"] button[aria-label^="跳到"]').nth(1);
+  await dotBtn.hover();
+  await page.waitForTimeout(320); // 过渡 200ms 走完
+  const hoverInfo = await page.evaluate(() => {
+    const dots = [...document.querySelectorAll('[data-testid="chat-turn-rail"] button[aria-label^="跳到"]')];
+    const span = dots[1]?.querySelector(".ws-turn-dot");
+    // 末点 inline 就是 var(--color-accent)，作悬停变色的参照
+    const lastBg = getComputedStyle(dots.at(-1)?.querySelector(".ws-turn-dot")).backgroundColor;
+    return { w: span ? Math.round(span.getBoundingClientRect().width) : 0, bg: getComputedStyle(span).backgroundColor, lastBg };
+  });
+  await page.mouse.move(50, 500); // 撤离悬停
+  await page.waitForTimeout(320);
+  const rest = await page.evaluate(() => {
+    const btn = [...document.querySelectorAll('[data-testid="chat-turn-rail"] button[aria-label^="跳到"]')][1];
+    const span = btn?.querySelector(".ws-turn-dot");
+    return {
+      w: Math.round(span?.getBoundingClientRect().width ?? 0),
+      // 回弹曲线（任意值类 ease-[…] 编译失败会静默退回默认 ease）
+      ease: span ? getComputedStyle(span).transitionTimingFunction : "",
+    };
+  });
+  check("悬停展宽 10→20px（! 压过 inline）", hoverInfo.w === 20, `${hoverInfo.w}px`);
+  check("悬停变 accent 色", hoverInfo.bg !== "" && hoverInfo.bg === hoverInfo.lastBg, `${hoverInfo.bg} vs ${hoverInfo.lastBg}`);
+  check("撤离回缩 10px", rest.w === 10, `${rest.w}px`);
+  check("圆点过渡为回弹曲线", rest.ease.includes("cubic-bezier(0.34, 1.4, 0.64, 1)"), rest.ease.slice(0, 48));
 
   // 2) 悬停展开面板
   await page.hover('[data-testid="chat-turn-rail"] .group');
@@ -171,11 +253,16 @@ try {
     const rows = [...panel.querySelectorAll("button[data-track='chat.turnJump']")];
     return {
       display: getComputedStyle(panel).display,
+      cls: panel.className,
       rows: rows.length,
       firstRow: rows[0]?.textContent?.trim() ?? "",
     };
   });
-  check("悬停展开标签面板", panel.display === "flex" && panel.rows === TURNS.length, `display=${panel.display} rows=${panel.rows}`);
+  check(
+    "悬停展开标签面板（含右滑入场类）",
+    panel.display === "flex" && panel.rows === TURNS.length && /ws-turn-panel-in/.test(panel.cls),
+    `display=${panel.display} rows=${panel.rows}`,
+  );
   check("面板行带 18 字摘要+轮次号", /第一轮：帮我拆解这个剧本的核心冲突\s*1$/.test(panel.firstRow.replace("…", "")), panel.firstRow.slice(0, 30));
 
   // 3) 跳转第 2 轮
@@ -207,14 +294,17 @@ try {
   });
   check("目标气泡闪圈 + 落进可视区", flash.flashed && flash.visible);
 
-  // 4) 末点跳回底部
-  await page.evaluate(() => {
+  // 4) 末点跳回底部（点击同时断言即时脉冲类——React 合成事件里同步落 DOM）
+  const pulsed = await page.evaluate(() => {
     const rail = document.querySelector('[data-testid="chat-turn-rail"]');
     const dots = [...rail.querySelectorAll("button")].filter((b) =>
       b.getAttribute("aria-label")?.startsWith("跳到"),
     );
-    dots.at(-1).click();
+    const last = dots.at(-1);
+    last.click();
+    return last.firstElementChild?.classList.contains("ws-turn-dot-pulse") ?? false;
   });
+  check("末点点击即时脉冲类", pulsed);
   await page.waitForTimeout(1200);
   const atEnd = await page.evaluate(() => {
     let el = document.querySelector(".copilotKitMessages");

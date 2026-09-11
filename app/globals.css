@@ -772,23 +772,91 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 
 /* 横向内缩：v2 在 sidebar 上下文给 px-8（32px/侧），叠滚动槽
    scrollbar-gutter: stable both-edges 的 11px/侧，420px 侧栏里正文只剩 335px
-   （一行约 20 汉字）——收到 20px/侧（正文 358px）。!important 防 v2 样式表后加载同分盖回 */
+   （一行约 20 汉字）——左侧收到 20px（正文 ~358px）。
+   右侧 42px 是**给轮次轨预留的专用槽**（2026-09-11 用户反馈「轨道挡字」）：
+   此前左右都是 20px，而轨道按「让开滚动条」落在 r-34…r-24，正文右缘在 r-20
+   ——轨道圆点稳定叠在正文上 14px（468/1600 两种宽度实测都是 14，是常量错位
+   而非窄窗口特有）。预留后正文右缘退到 r-42，轨道（圆点 r-34…r-24、末点
+   accent 至 r-42）与正文、与 20px 滚动条都留 2px 净空，三者在各自槽位里不再
+   打架。代价是每行少 ~1 个汉字（420 侧栏正文 358→356，chat-spacing ⑥ 仍 ≥350） */
 .copilotKitSidebar :has(> [data-testid="copilot-scroll-content"]) {
-    padding-inline: 20px !important;
+    padding-left: 20px !important;
+    padding-right: 42px !important;
 }
 
 /* 对话轮次索引（juben TurnLocator 范式，components/copilot/TurnLocator.tsx）：
-   跳转目标留出顶部呼吸位 + accent 描边闪一圈确认落点 */
+   跳转目标留出顶部呼吸位 + 落点确认动画。初版是 outline 闪圈，2026-09-11
+   动效轮换成「左缘 accent 竖条 + 轻底色冲刷」——纸面上贴边的竖条比浮空
+   描边更贴设计系统，底色冲刷让落点在整个消息行上一眼可辨 */
 .copilotKitMessages [data-turn-id] {
     scroll-margin-top: 10px;
 }
 @keyframes ws-turn-flash {
-    from { outline: 2px solid var(--color-accent); outline-offset: 3px; }
-    to { outline: 2px solid transparent; outline-offset: 3px; }
+    0% {
+        background-color: color-mix(in oklab, var(--color-accent) 10%, transparent);
+        box-shadow: inset 3px 0 0 0 var(--color-accent);
+    }
+    55% {
+        background-color: color-mix(in oklab, var(--color-accent) 5%, transparent);
+        box-shadow: inset 3px 0 0 0 var(--color-accent);
+    }
+    100% {
+        background-color: transparent;
+        box-shadow: inset 3px 0 0 0 transparent;
+    }
 }
 .copilotKitMessages [data-turn-id].ws-turn-flash {
-    animation: ws-turn-flash 1.2s ease-out;
+    animation: ws-turn-flash 1.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
+
+/* 轮次轨动效（2026-09-11）：面板右滑淡入 / 新轮圆点入场 / 点击即时脉冲 /
+   轨道整体淡入。回弹曲线（back-out）给 10px 级小元素一点生命感；origin 钉
+   右缘——轨贴右对齐，元素从轨里「长出来」而不是凭空冒出 */
+@keyframes ws-turn-panel-in {
+    from { opacity: 0; transform: translateX(10px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+.ws-turn-panel-in {
+    animation: ws-turn-panel-in 170ms cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+@keyframes ws-turn-dot-in {
+    0% { opacity: 0; transform: scaleX(0.3); }
+    60% { opacity: 1; transform: scaleX(1.25); }
+    100% { opacity: 1; transform: scaleX(1); }
+}
+.ws-turn-dot-in {
+    transform-origin: right center;
+    animation: ws-turn-dot-in 260ms cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+/* 点击脉冲：smooth 滚动 300-500ms 后落点闪圈才出现，点上的即时反馈补这个
+   空窗（点了有没有生效，手感上差这一下） */
+@keyframes ws-turn-dot-pulse {
+    0% { transform: scaleX(1); }
+    35% { transform: scaleX(1.8); }
+    100% { transform: scaleX(1); }
+}
+.ws-turn-dot-pulse {
+    transform-origin: right center;
+    animation: ws-turn-dot-pulse 420ms cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+@keyframes ws-turn-rail-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+[data-testid="chat-turn-rail"] {
+    animation: ws-turn-rail-in 240ms ease-out;
+}
+/* 轨道被悬停时整列微亮（醒过来的语义）；悬停的单点由组件里的 ! 工具类
+   再抬到全亮 accent。!important 压过 span 的 inline opacity */
+[data-testid="chat-turn-rail"] .group:hover .ws-turn-dot {
+    opacity: 0.85 !important;
+}
+[data-testid="chat-turn-rail"] .group button:hover .ws-turn-dot {
+    opacity: 1 !important;
+}
+/* prefers-reduced-motion 不用单独处理——本文件 540 行的全局钳制
+   （* { animation/transition-duration: 0.01ms !important }）已覆盖全部
+   入场/脉冲/过渡；闪圈随之变成一瞬即逝，定位反馈靠滚动落位本身 */
 
 /* 助手消息：文档流排版（无气泡底，deer-flow/ChatGPT 共识）——只给 user 气泡，
    助手长文贴纸面更透气；间距口径见下面「消息间距单一事实源」 */

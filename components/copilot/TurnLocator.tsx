@@ -18,8 +18,20 @@
  *
  * 命中区（2026-09-09 review）：圆点此前就是按钮本体（10×4~6px），基本点不中；
  * 现每个按钮撑成 24px 宽 ×（点高+间距）的连续列，圆点退化为列内居中的 span
- * ——整条轨都是命中区。轨整体让开右缘 24px：v2 滚动容器自带 20px 滚动条，
- * 此前轨压在其上（pointer-events-auto 会截获拖动）。
+ * ——整条轨都是命中区。
+ *
+ * 两个「位置口径」（2026-09-11 用户反馈「挡字 + 有点靠下」）：
+ *  - **横向**：右侧 42px 专用槽（globals.css 的内缩规则）——圆点右缘落在
+ *    r-22，正文右缘 r-42、滚动条 r-20…r，三者各留 2px，不再叠字。旧版是
+ *    20px 内缩配 +24 偏移，圆点稳定压住正文最后一列 14px。
+ *  - **纵向**：以**可读带**居中而非滚动视口——输入条是 absolute bottom-0 浮层，
+ *    压在视口下沿之上，用视口整高居中会整体偏低（实测 60px）。
+ *
+ * 动效（2026-09-11，keyframes 在 globals.css「轮次轨动效」节）：标签面板右滑
+ * 淡入（ws-turn-panel-in）、新轮圆点从右缘弹入（ws-turn-dot-in，只挂末点——
+ * 锚点按 id keyed，新轮只在尾部挂载）、点击即时脉冲（ws-turn-dot-pulse，补
+ * smooth 滚动到落点闪圈之间的反馈空窗）、轨道整体淡入、落点闪圈升级为 accent
+ * 竖条+底色冲刷；prefers-reduced-motion 由 globals.css 的全局钳制兜住。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -62,12 +74,22 @@ function buildAnchors(messages: ChatMsg[]): Anchor[] {
   return out;
 }
 
-/** 跳转闪圈：accent 描边 1.2s 淡出（keyframes 在 globals.css） */
+/** 跳转闪圈：accent 竖条 + 底色冲刷 1.2s 淡出（keyframes 在 globals.css） */
 function flash(el: Element) {
   el.classList.remove("ws-turn-flash");
   // 重新触发同一次连续跳两轮的动画
   void (el as HTMLElement).offsetWidth;
   el.classList.add("ws-turn-flash");
+}
+
+/** 点击即时反馈：命中列里的圆点 scaleX 脉冲一下。smooth 滚动要 300-500ms
+ *  才到位、落点闪圈在那之后才出现，脉冲补「点了有没有生效」的空窗 */
+function pulse(btn: HTMLElement) {
+  const dot = btn.firstElementChild;
+  if (!dot) return;
+  dot.classList.remove("ws-turn-dot-pulse");
+  void (dot as HTMLElement).offsetWidth;
+  dot.classList.add("ws-turn-dot-pulse");
 }
 
 type Region = { top: number; height: number; right: number };
@@ -107,10 +129,19 @@ export default function TurnLocator() {
         setRegion(null);
         return;
       }
+      // 纵向以**可读带**为准，不是滚动视口：输入条是 absolute bottom-0 的浮层
+      // （.copilotKitInputContainer 挂在 .cpk:absolute.cpk:bottom-0 里），压在
+      // 滚动视口下沿之上——视口 rect 一直伸到窗口底，直接用它居中会把轨道压到
+      // 浮层上（实测圆点中心 541 vs 可读带中心 481，偏低 60px，「有点靠下」）。
+      // 拿不到输入条时（理论上不会）退回首版口径 = 视口整高。
+      const composer = document.querySelector(".copilotKitInputContainer");
+      const bandBottom = composer
+        ? Math.min(rect.bottom, composer.getBoundingClientRect().top)
+        : rect.bottom;
       setRegion((prev) => {
         const next = {
           top: Math.round(rect.top),
-          height: Math.round(rect.height),
+          height: Math.round(Math.max(bandBottom - rect.top, 0)),
           right: Math.round(rect.right),
         };
         return prev &&
@@ -152,7 +183,11 @@ export default function TurnLocator() {
     if (vp) attach(vp);
     const list = document.querySelector(".copilotKitMessages");
     const aside = document.querySelector("aside.copilotKitSidebar");
+    // 输入条高度变化（多行输入/排队 chips/附件行）会挪动可读带下界——视口本身
+    // 高度不变，只有它自己的 RO 探得到（2s 轮询能兜住但会「先歪一拍」）
+    const composer = document.querySelector(".copilotKitInputContainer");
     if (list) attach(list);
+    if (composer) attach(composer);
     if (aside) attach(aside);
     attach(document.body);
     window.addEventListener("resize", measure);
@@ -215,13 +250,16 @@ export default function TurnLocator() {
         position: "fixed",
         top: `${region.top + 14}px`,
         height: `${Math.max(region.height - 28, 0)}px`,
-        /* +24：让开滚动容器右缘的 20px 滚动条（轨压在滚动条上会截获拖动） */
-        right: `${Math.max(window.innerWidth - region.right + 24, 0)}px`,
+        /* +22：右侧 42px 专用槽里居中——圆点（10/末点 18px）右缘落在 r-22，
+           与正文右缘（r-42）和 20px 滚动条（r-20…r）各留 2px 净空。
+           此前是 +24 配 20px 内缩，轨道整个压在正文最后一列字上（用户反馈「挡字」） */
+        right: `${Math.max(window.innerWidth - region.right + 22, 0)}px`,
       }}
     >
       <div className="group pointer-events-auto flex items-center justify-end">
-        {/* 标签面板：悬停/聚焦轨道时展开（juben 同款右贴边左展开） */}
-        <div className="mr-1.5 hidden max-h-[300px] w-52 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-1/95 py-2 shadow-lg backdrop-blur group-focus-within:flex group-hover:flex">
+        {/* 标签面板：悬停/聚焦轨道时展开（juben 同款右贴边左展开）；
+            ws-turn-panel-in = 右滑淡入入场（display 翻转时重放） */}
+        <div className="ws-turn-panel-in mr-1.5 hidden max-h-[300px] w-52 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-1/95 py-2 shadow-lg backdrop-blur group-focus-within:flex group-hover:flex">
           <p className="px-3 pb-1.5 text-[10px] font-medium tracking-wide text-text-4">
             对话轮次 · {anchors.length}
           </p>
@@ -246,9 +284,12 @@ export default function TurnLocator() {
             ))}
           </div>
         </div>
-        {/* 圆点轨：末轮加宽 accent（最新一轮的视觉锚），悬停展宽。
+        {/* 圆点轨：末轮加宽 accent（最新一轮的视觉锚），悬停展宽+变 accent。
             按钮 = 24px 宽 ×（点高+间距）的命中列，圆点是列内居中的 span
-            ——此前按钮本体只有 10×4~6px，实际点不中（2026-09-09 review） */}
+            ——此前按钮本体只有 10×4~6px，实际点不中（2026-09-09 review）。
+            宽度/透明度写在 inline style（E2E 按此断言末点形态），悬停态必须
+            用 `!` 后缀的工具类压过 inline——初版裸类 group-hover/dot:w-5 被
+            inline width 永远压住，是从来没有生效过的死代码（2026-09-11） */}
         <div className="flex flex-col items-end justify-center py-1.5">
           {anchors.map((a, i) => {
             const last = i === anchors.length - 1;
@@ -260,6 +301,7 @@ export default function TurnLocator() {
                 data-track="chat.turnJump"
                 onClick={(e) => {
                   jump(a.id);
+                  pulse(e.currentTarget);
                   e.currentTarget.blur();
                 }}
                 className="group/dot flex w-6 items-center justify-end"
@@ -268,7 +310,16 @@ export default function TurnLocator() {
                 }}
               >
                 <span
-                  className="rounded-full transition-all duration-200 group-hover/dot:w-5 group-focus-visible/dot:w-5"
+                  className={[
+                    "ws-turn-dot rounded-full transition-all duration-200",
+                    // 回弹曲线：10px 小点直线过渡没有手感，back-out 微过冲
+                    "ease-[cubic-bezier(0.34,1.4,0.64,1)]",
+                    "group-hover/dot:bg-accent! group-hover/dot:opacity-100!",
+                    // 悬停展宽按末点分档（两颗 ! 宽度类并存会靠样式表排序碰运气）
+                    last
+                      ? "ws-turn-dot-in group-hover/dot:w-6! group-focus-visible/dot:w-6!"
+                      : "group-hover/dot:w-5! group-focus-visible/dot:w-5!",
+                  ].join(" ")}
                   style={{
                     height: `${dotCls.h}px`,
                     width: last ? 18 : 10,

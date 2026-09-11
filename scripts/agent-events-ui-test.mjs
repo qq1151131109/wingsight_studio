@@ -133,6 +133,32 @@ try {
     .then(() => true, () => false);
   check("agent 应答自动续跑（真跑 LLM）", replied, replied ? "" : "120s 内无新消息");
 
+  // 等这一轮的「步骤尾巴」全部落完再进入第 3 段（2026-09-11 假红修复）：
+  // 本仓消息模型是「一轮 = 多条消息」（每个模型步一条独立消息），上面只等到了
+  // **第一条**新消息；若就此进入第 3 段，该轮剩余的步会继续落进出图事件的 6s
+  // 观测窗，被误判成「出图事件触发了续跑」（实测 4 → 10）。判据改为计数连续
+  // quiet 次采样不变（≈4s 静默）才算本轮结束
+  const settle = async (stepMs = 1300, quiet = 3, budgetMs = 90_000) => {
+    const at = () =>
+      page.evaluate(() => document.querySelectorAll(".copilotKitMessages > *").length);
+    const t0 = Date.now();
+    let last = await at();
+    let still = 0;
+    while (Date.now() - t0 < budgetMs) {
+      await page.waitForTimeout(stepMs);
+      const now = await at();
+      if (now === last) {
+        still += 1;
+        if (still >= quiet) return now;
+      } else {
+        still = 0;
+        last = now;
+      }
+    }
+    return last;
+  };
+  await settle();
+
   // 3) 分镜出图完成事件 → 仅浮条，不自动续跑
   await page.evaluate(
     () =>

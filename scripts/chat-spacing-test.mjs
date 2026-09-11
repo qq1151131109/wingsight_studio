@@ -21,19 +21,25 @@ const GAP = 20; // 与 app/globals.css「消息间距单一事实源」同源
 const AUTH_PASSWORD = fs
   .readFileSync(".env.local", "utf8")
   .match(/^AUTH_PASSWORD=(.*)$/m)?.[1]?.trim();
-if (!AUTH_PASSWORD) throw new Error("缺 AUTH_PASSWORD（.env.local）");
-
-const login = await fetch(`${AGENT}/api/v1/auth/token`, {
-  method: "POST",
-  body: new URLSearchParams({ username: "admin", password: AUTH_PASSWORD }),
-});
-if (!login.ok) throw new Error(`登录失败 ${login.status}`);
-const TOKEN = (await login.json()).access_token;
+// auth 关闭时（本机常态）按匿名跑：不带头，端点也放行——与 chat-longcontent /
+// 其他回归同款降级，否则本地根本跑不了这条线
+let TOKEN = "";
+if (AUTH_PASSWORD) {
+  const login = await fetch(`${AGENT}/api/v1/auth/token`, {
+    method: "POST",
+    body: new URLSearchParams({ username: "admin", password: AUTH_PASSWORD }),
+  });
+  if (!login.ok) throw new Error(`登录失败 ${login.status}`);
+  TOKEN = (await login.json()).access_token;
+  console.log("已登录（AUTH_ENABLED=true）");
+} else {
+  console.log("未取到 token（auth 关闭，按匿名跑）");
+}
 
 const api = async (path, init) => {
   const r = await fetch(`${AGENT}${path}`, {
     ...init,
-    headers: { Authorization: `Bearer ${TOKEN}`, ...(init?.headers ?? {}) },
+    headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), ...(init?.headers ?? {}) },
   });
   const text = await r.text();
   let body = null;
@@ -199,7 +205,11 @@ check(
       ? pureCardRows.map((x) => (x.ink.t - x.shell.t).toFixed(1)).join(",")
       : "无工具卡消息",
 );
-check("⑥ 横向内缩收到 20px/侧（正文 ≥350px）", (m.contentW ?? 0) >= 350, `正文宽=${m.contentW}`);
+check(
+  "⑥ 横向内缩：左 20px / 右 42px（右侧给轮次轨留专用槽），正文 ≥350px",
+  (m.contentW ?? 0) >= 350,
+  `正文宽=${m.contentW}`,
+);
 check(
   "⑦ 用户气泡 88% 口径且右缘贴正文右缘",
   m.bubble && m.bubble.w <= (m.contentW ?? 0) * 0.88 + 1 && m.bubble.rightGap >= 0 && m.bubble.rightGap <= 8,
