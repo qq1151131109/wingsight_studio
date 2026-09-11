@@ -1977,9 +1977,10 @@ FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "canvas_query", "canvas_validate_ops", 
 
 # 视觉模型名探测（AGENT_VISION_ENABLED=1/0 可强制覆盖）。
 # 纯文本模型收到 image_url 块会 400，必须在净化阶段剥离。
+# deepseek-flash 官方 2026-09-10 起多模态吃图（名字不带 vision，须显式收录）。
 _VISION_MODEL_HINTS = (
     "vl", "vision", "4v", "gpt-4o", "gpt-4.1", "o3", "o4",
-    "gemini", "claude", "pixtral", "internvl",
+    "gemini", "claude", "pixtral", "internvl", "deepseek-flash",
 )
 
 def _vision_enabled() -> bool:
