@@ -147,7 +147,16 @@ check("owner 添加协作者 bob", r.status_code == 200 and "bob" in r.json()["c
 r = client.post(
     f"/projects/{pid}/collaborators", json={"username": "bob"}, headers=bearer(bob_token)
 )
-check("协作者（非 owner）管理名册 → 403", r.status_code == 403)
+check(
+    "协作者（非 owner）可继续分享（有访问权即可分享，owner/协作者同等）",
+    r.status_code == 200 and "bob" in r.json()["collaborators"],
+)
+r = client.post(
+    f"/projects/{pid}/collaborators",
+    json={"username": "no-such-user-xyz"},
+    headers=bearer(bob_token),
+)
+check("协作者加不存在的用户 → 404", r.status_code == 404)
 r = client.get("/projects", headers=bearer(bob_token))
 check("协作者 bob 现在可见项目", any(p["id"] == pid for p in r.json()))
 r = client.put(
