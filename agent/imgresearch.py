@@ -2119,6 +2119,38 @@ async def download_image(url: str, referer: str = "") -> str:
     raise last_error  # type: ignore[misc]
 
 
+# 终选佐证：来源页语境直抓（轻通道，不与考据文路抢 Jina/TikHub 重基建——
+# 佐证只要「这页在聊什么」的语境，导航与开头文字就够，直抓失败就空串放行）
+_PAGE_CONTEXT_TIMEOUT = httpx.Timeout(10.0)
+_PAGE_CONTEXT_CHARS = 200
+_PAGE_CONTEXT_CONCURRENCY = 8
+_PAGE_CONTEXT_DEADLINE = 40.0
+
+
+async def _fetch_page_context(url: str) -> str:
+    """终选佐证：直抓来源页 HTML，剥出正文开头压成一行（≤200 字）。
+
+    给终选模型判断「图片在原文里的语境」——文章题图/宣传物料 vs 美术特辑
+    配图，看图看不出来、看页面聊什么一目了然（091102 SC_5 采纳三张报道
+    题图的根因之一就是终选只有标题可看）。全失败返回空串（不带佐证照常
+    终选，语境为空不等于图不好）。"""
+    if not url:
+        return ""
+    import research
+
+    try:
+        async with httpx.AsyncClient(timeout=_PAGE_CONTEXT_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(url, headers={"User-Agent": _UA})
+            resp.raise_for_status()
+            ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+            if "html" not in ctype:
+                return ""
+            raw = research._strip_html(resp.text)[:_PAGE_CONTEXT_CHARS]
+            return " ".join(raw.split())
+    except Exception:  # noqa: BLE001 佐证是锦上添花，拿不到就空串
+        return ""
+
+
 # ---------- 调研任务（异步 job + 轮询） ----------
 
 REF_JOBS: dict[str, dict[str, Any]] = {}
@@ -2570,6 +2602,21 @@ async def _run_research(
                     except Exception as exc:  # noqa: BLE001 落库失败不拦出图链路
                         print(f"[考据] 条目落库失败 {project_id}/{node_id}：{exc}", flush=True)
                         errors["条目落库"] = str(exc)[:120]
+            # 终选佐证：并发抓来源页语境（软失败——拿不到的候选不带 context
+            # 照常参选，语境为空不等于图不好；整体死线防个别慢站拖住终选）
+            ctx_sem = asyncio.Semaphore(_PAGE_CONTEXT_CONCURRENCY)
+
+            async def _ctx(item: dict[str, Any]) -> None:
+                async with ctx_sem:
+                    item["pageContext"] = await _fetch_page_context(item.get("pageUrl") or "")
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*[_ctx(m) for m in downloaded]),
+                    timeout=_PAGE_CONTEXT_DEADLINE,
+                )
+            except (asyncio.TimeoutError, TimeoutError):
+                pass  # 已完成的 item 已带上 pageContext，未完成的不带
             # LLM 终选（就本轮新增；失败只记 errors，不影响候选展示与人工采纳）；
             # 带考据挑图——文字考据纠正选图（错年代/错形制的候选降权）。
             # **时代主题事实也在这时上场**：同一资产既属于自己（具名个体），
@@ -2672,7 +2719,8 @@ def _rounds_summary(items: list[dict[str, Any]], sample: int = 20) -> str:
 
 
 def _select_payload(rows: list[dict[str, Any]], start: int = 0) -> list[dict[str, Any]]:
-    """终选载荷：缩略图 URL（512px webp，够判断且省 token）+ 元数据。
+    """终选载荷：缩略图 URL（512px webp，够判断且省 token）+ 元数据 + 来源页
+    语境（pageContext，来源页正文开头——文章题图 vs 美术特辑配图靠它分辨）。
     index = start 起的全局位次（多轮终选共用一个 index 空间，推荐按它回填
     到 all_rows）。skills.run_ref_select_flow 侧按上游 50 张图上限自动分批、
     多批时推荐集再做一次全局精排（2026-09-12）。"""
@@ -2686,6 +2734,7 @@ def _select_payload(rows: list[dict[str, Any]], start: int = 0) -> list[dict[str
                 "width": m.get("width") or 0,
                 "height": m.get("height") or 0,
                 "provider": m.get("provider") or "",
+                "context": " ".join(str(m.get("pageContext") or "").split())[:_PAGE_CONTEXT_CHARS],
                 "url": f"{ASSET_BASE_URL}/thumbs/{stem}.webp",
             }
         )

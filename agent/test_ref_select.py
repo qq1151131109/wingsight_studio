@@ -305,6 +305,114 @@ expect(search_log == ["手词A", "手词B", "手词C", "手词D"], f"C4 手填�
 expect(plan_calls == [], f"C4 手动模式不跑 planner：{plan_calls}")
 expect(job.get("researchBrief") == "", "C4 手动模式不跑文路")
 
+# ───────────────── D. 来源页语境抓取（终选佐证，P4） ─────────────────
+
+_d0 = PASS[0]
+
+
+class _CtxResp:
+    def __init__(self, text: str = "", ctype: str = "text/html; charset=utf-8", status: int = 200):
+        self.text = text
+        self.status_code = status
+        self.headers = {"content-type": ctype}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+class _CtxClient:
+    """按 URL 派发预制响应的假 httpx 客户端（_fetch_page_context 专用）。"""
+
+    replies: dict[str, object] = {}
+
+    def __init__(self, *a, **k):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url: str, headers=None):
+        reply = self.replies.get(url, KeyError("no reply"))
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+_real_async_client = imgresearch.httpx.AsyncClient
+imgresearch.httpx.AsyncClient = _CtxClient
+
+_long_html = "<html><body>" + "美术设计置景特辑 " * 60 + "</body></html>"
+_CtxClient.replies = {
+    "http://ex.com/ok": _CtxResp(_long_html),
+    "http://ex.com/pdf": _CtxResp("binary", ctype="application/pdf"),
+    "http://ex.com/dead": _CtxResp(status=404),
+}
+
+_ctx = asyncio.run(imgresearch._fetch_page_context("http://ex.com/ok"))
+expect(len(_ctx) == 200 and "美术设计" in _ctx and "\n" not in _ctx, f"D1 html 剥正文截 200 压一行：len={len(_ctx)}")
+expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/pdf")) == "", "D2 非 html 返回空串")
+expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/dead")) == "", "D4 HTTP 错误软失败空串")
+expect(asyncio.run(imgresearch._fetch_page_context("")) == "", "D3 空 url 空串")
+expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/none")) == "", "D5 网络异常软失败空串")
+
+imgresearch.httpx.AsyncClient = _real_async_client
+print(f"D 组（来源页语境抓取）通过：{PASS[0] - _d0}")
+
+# ───────────── E. 终选载荷带 context（payload 契约） ─────────────
+
+_e0 = PASS[0]
+_rows = [
+    {"assetUrl": "/agent-service/assets/aa11.jpg", "title": "t0", "pageContext": " " + "美术特辑" * 40 + " ",
+     "width": 800, "height": 600, "provider": "google"},
+    {"assetUrl": "/agent-service/assets/bb22.jpg", "title": "t1",
+     "width": 800, "height": 600, "provider": "google"},
+]
+_payload = imgresearch._select_payload(_rows, start=6)
+expect(_payload[0]["index"] == 6 and _payload[1]["index"] == 7, "E1 start 偏移全局位次")
+expect(_payload[0]["context"] == "美术特辑" * 40 and len(_payload[0]["context"]) == 160, f"E2 pageContext 压空白入载荷：{len(_payload[0]['context'])}")
+expect(_payload[1]["context"] == "", "E3 无语境的候选 context 为空串（不是缺字段）")
+print(f"E 组（载荷契约）通过：{PASS[0] - _e0}")
+
+# ───────────── F. 主流程：终选前抓语境进载荷（集成） ─────────────
+
+_f0 = PASS[0]
+ctx_calls: list[str] = []
+_real_fpc = imgresearch._fetch_page_context
+
+
+async def _fake_ctx(url: str) -> str:
+    ctx_calls.append(url)
+    return f"页面语境：{url}"
+
+
+imgresearch._fetch_page_context = _fake_ctx
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+_seen_ctx: list[list[str]] = []
+
+
+async def _spy_select(asset: dict, candidates: list[dict]) -> dict:
+    _seen_ctx.append([str(c.get("context")) for c in candidates])
+    select_log.append([int(c["index"]) for c in candidates])
+    return {"recommended": [0, 1, 2, 3], "note": "mock"}
+
+
+skills.run_ref_select_flow = _spy_select
+job = _mk_job("j5"); _reset_sem()
+asyncio.run(imgresearch._run_research("j5", PID, "n5", [], {"name": "语境资产", "type": "scene"}))
+expect(job["status"] == "done", f"F1 任务应完成：{job.get('error')}")
+expect(len(ctx_calls) == 6, f"F2 每张候选都抓一次来源页语境：{len(ctx_calls)}")
+expect(
+    _seen_ctx and set(_seen_ctx[0]) == {"页面语境：http://ex.com/p"}, f"F3 语境全部进终选载荷：{_seen_ctx[:1]}"
+)
+skills.run_ref_select_flow = _fake_select
+imgresearch._fetch_page_context = _real_fpc
+
+print(f"F 组（主流程集成）通过：{PASS[0] - _f0}")
+
 imgresearch.search_serper_images = _orig_search
 imgresearch.download_image = _orig_dl
 skills.run_ref_plan_flow = _orig_plan
