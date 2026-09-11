@@ -121,6 +121,29 @@ expect(BRIEF_A in out[0]["visualNotes"], "考据应并入原键")
 out = skills._inject_research_briefs([{"rid": "n_a", "visual_notes": ""}], PID)
 expect(out[0]["visual_notes"].startswith("考据依据"), f"空 notes 不应有前导分号：{out[0]}")
 
+# I2. 措辞按有无参考图分级（2026-09-12 路径 2）：无参考图时考据升级为
+#     「唯一形制依据」——出图模型必须知道「这次没有图可比对」才会把文字吃透
+#     （091101 武则天事故：52 张资产考据全到、参考图 0 张，一路出图没觉得不对）。
+#     哨兵词「考据依据」两种措辞都保留（_ensure_research_brief 靠它去重）。
+out_no_ref = skills._inject_research_briefs([{"rid": "n_a", "visual_notes": ""}], PID)
+expect(
+    "无可用参考图" in out_no_ref[0]["visual_notes"]
+    and "唯一依据" in out_no_ref[0]["visual_notes"],
+    f"无参考图时考据应升级为唯一依据：{out_no_ref[0]['visual_notes'][:90]}",
+)
+expect("考据依据" in out_no_ref[0]["visual_notes"], "分级措辞仍须保留哨兵词")
+out_ref = skills._inject_research_briefs(
+    [{"rid": "n_a", "visual_notes": "", "reference_images": ["/x.jpg"]}], PID
+)
+expect(
+    "优先遵循" in out_ref[0]["visual_notes"] and "无可用参考图" not in out_ref[0]["visual_notes"],
+    f"有参考图时仍是「优先遵循」：{out_ref[0]['visual_notes'][:90]}",
+)
+out_ref_camel = skills._inject_research_briefs(
+    [{"rid": "n_a", "visualNotes": "", "referenceImages": ["/x.jpg"]}], PID
+)
+expect("优先遵循" in out_ref_camel[0]["visualNotes"], "camelCase 参考字段同样识别")
+
 # J. project_id 为空 / 项目无简报：原样返回（不读库）
 shots = [{"rid": "n_a", "visual_notes": "全局视觉风格：水墨"}]
 expect(skills._inject_research_briefs(shots, "") == shots, "空 project_id 应原样返回")

@@ -1590,16 +1590,29 @@ def _attach_brief(shot: Dict[str, Any], brief: str) -> Dict[str, Any]:
     """把考据简报并进载荷的 visual_notes。
 
     载荷两种键名都收（前端 camelCase / 工具 snake_case），沿用调用方原键；
-    「考据依据」标记兼作去重哨兵（已带的不再补，见 _ensure_research_brief）。"""
+    「考据依据」标记兼作去重哨兵（已带的不再补，见 _ensure_research_brief）。
+
+    **措辞按有无参考图分级**（2026-09-12）：无参考图时考据是**唯一形制依据**——
+    出图模型必须知道「这次没有图可比对」才会把文字吃透；此前一律「优先遵循」，
+    无图时语气过软（091101 武则天事故：52 张资产考据全到、参考图 0 张，
+    agent 一路出图都没觉得不对）。分级要求 refs 注入跑在本函数之前（调用点已
+    调整为 refs → briefs），哨兵词「考据依据」两种措辞都保留。"""
     key = "visualNotes" if "visualNotes" in shot else "visual_notes"
     notes = str(shot.get(key) or "").strip()
+    has_refs = bool(shot.get("referenceImages") or shot.get("reference_images"))
+    label = (
+        "考据依据（真实形制与年代，优先遵循）"
+        if has_refs
+        else "考据依据（**本资产无可用参考图，以下文字是形制与画面的唯一依据，"
+        "必须逐条落实到画面**）"
+    )
     return {
         **shot,
         key: "；".join(
             p
             for p in (
                 notes,
-                f"考据依据（真实形制与年代，优先遵循）：{brief}",
+                f"{label}：{brief}",
             )
             if p
         ),
@@ -1880,12 +1893,14 @@ async def generate_asset_images(
         ]
 
     # 考据简报注入（同 start_storyboard_image_job 的服务端统一注入）：聊天侧
-    # 资产载荷没有 rid，按资产名匹配画布卡片上的 researchBrief
+    # 资产载荷没有 rid，按资产名匹配画布卡片上的 researchBrief。
+    # **顺序：参考图先注入、考据后注入**——_attach_brief 按「本次有没有参考图」
+    # 分级措辞（无图时考据升级为唯一形制依据），必须先知道参考是否落地
     chat_project_id = _project_id_from_config(config)
-    assets = _inject_research_briefs(assets, chat_project_id)
     # 已采纳的调研参考卡注入（「参考卡 → 资产卡」上游连线）：不带这一步，
     # 「调研 → 基于调研结果出图」在聊天路径上不成立（参考图进不来）
     assets = _inject_canvas_refs(assets, chat_project_id)
+    assets = _inject_research_briefs(assets, chat_project_id)
     # 真实题材：画布上还没有考据的资产，出图前现补一次（虚构题材跳过）
     chat_factuality = _project_factuality(chat_project_id)
     brief_sem = asyncio.Semaphore(_BRIEF_CONCURRENCY)
@@ -2589,23 +2604,40 @@ async def start_storyboard_image_job(
 
     # 考据简报注入：调研产出的文字考据（年代/形制/常见误用）随画布资产卡
     # 落库，出图前按 rid 并入提示词——此前只在「AI 扩写」路径生效，补资产图
-    # 与资产卡直出都拿不到（2026-09-10 用户反馈「资产图不够尊重史实」）
-    shots = _inject_research_briefs(shots, project_id)
+    # 与资产卡直出都拿不到（2026-09-10 用户反馈「资产图不够尊重史实」）。
+    # **顺序：参考序列先注入、考据后注入**——_attach_brief 按「本次有没有
+    # 参考图」分级措辞（无图时考据升级为唯一形制依据）
     # 参考序列注入：载荷没自带参考时补——本项目已采纳的参考卡在前、主体图集补
     # 剩余席位。画布侧「补资产图」自己带参考（前端连线上游），资产卡直出与
     # 分镜行此前**一条参考都拿不到**（服务端不读 edges、前端 genLook 也不传），
     # 已采纳的考据参考图连到卡上也只能看着
     shots = _inject_canvas_refs(shots, project_id)
+    shots = _inject_research_briefs(shots, project_id)
     # 真实题材：画布上还没有考据的资产，出图前现补一次（虚构题材跳过）。
     # 逐资产独立预热、与出图流水线重叠——每张只等自己那份简报，互不拖累
     factuality = _project_factuality(project_id)
     brief_sem = asyncio.Semaphore(_BRIEF_CONCURRENCY)
 
     job_id = uuid.uuid4().hex[:12]
+    # 参考图核查（画布侧，口径同聊天侧 generate_asset_images 的 ref_gap）：本批
+    # 载荷实际带的 reference_images 为空时在 job 上留痕，前端据此提示「这批没有
+    # 实物参考，只有文字考据约束形制」。画布上直接点生成**不经过 agent**，用户
+    # 拿不到聊天侧那句提醒（091101 武则天事故：52 张资产考据全到、参考图 0 张，
+    # agent 一路出图都没觉得不对）。只提示不拦——用户要出就得能出。
+    ref_gap = (
+        [
+            str(s.get("name") or s.get("rid") or "?")
+            for s in shots
+            if not (s.get("reference_images") or s.get("referenceImages"))
+        ]
+        if factuality == "real"
+        else []
+    )
     STORYBOARD_IMAGE_JOBS[job_id] = {
         "status": "running",
         "cancelled": False,
         "images": {str(s.get("rid", "")): {"rid": str(s.get("rid", "")), "ok": False} for s in shots},
+        "refGap": ref_gap,
     }
     # 任务落库（imagejobs）：agent 重启后轮询仍可命中、已完成的结果可找回
     imagejobs.create_job(

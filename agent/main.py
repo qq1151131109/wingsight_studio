@@ -1200,7 +1200,15 @@ async def api_storyboard_images_status(job_id: str, user: auth.CurrentUser):
     job = skills.get_storyboard_image_job(job_id)
     if job is None:
         return Response(status_code=404, content="任务不存在", media_type="text/plain")
-    return {"status": job["status"], "images": list(job["images"].values())}
+    return {
+        "status": job["status"],
+        "images": list(job["images"].values()),
+        # ref_gap：本批**实际带参考图**为空的项（真实题材才有）——画布侧提示
+        # 「这批没有实物参考，只有文字考据约束形制」；画布直出不经过 agent，
+        # 用户拿不到聊天侧那句提醒（agent 重启后从持久层恢复的 job 无该字段，
+        # 给空数组不影响轮询）
+        "ref_gap": job.get("refGap") or [],
+    }
 
 
 @app.delete("/storyboard/images/{job_id}")

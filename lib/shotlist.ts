@@ -5,6 +5,7 @@ import { apiFetch } from "@/lib/auth";
 import { useCanvasStore } from "@/lib/canvas/store";
 import type { ShotRow } from "@/lib/canvas/store";
 import { findModelOption, loadImageModels, type ImagegenParams, type VideogenParams } from "@/lib/imagegen";
+import { showToast } from "@/lib/toast";
 
 export async function generateShotlist(
   script: string,
@@ -241,6 +242,7 @@ export async function pollShotImageJob(
 ): Promise<"done" | "timeout" | "gone" | "cancelled"> {
   let stallDeadline = Date.now() + stallMs;
   const applied = new Set<string>();
+  let refGapNotified = false;
   for (;;) {
     await new Promise((r) => setTimeout(r, 2500));
     let job;
@@ -250,6 +252,19 @@ export async function pollShotImageJob(
       if (exc instanceof ShotJobGoneError) return "gone";
       if (Date.now() > stallDeadline) return "timeout";
       continue;
+    }
+    // 参考图核查提示（画布侧，与聊天侧 ref_gap 同口径，只弹一次）：画布上直接
+    // 点生成不经过 agent，用户拿不到那句提醒——这批只有文字考据约束形制、
+    // 没有实物比对依据（091101 武则天事故：52 张资产考据全到、参考图 0 张）。
+    // 只提示不拦：图照出，用户知道「形制靠文字、长相没比对」即可。
+    if (!refGapNotified && job.refGap.length > 0) {
+      refGapNotified = true;
+      const shown = job.refGap.slice(0, 4).join("、");
+      const more = job.refGap.length > 4 ? ` 等 ${job.refGap.length} 个` : "";
+      showToast(
+        `${job.refGap.length} 项没有参考图（只有文字考据约束形制）：${shown}${more}。` +
+          `建议先做参考图调研（画布「调研」入口 / 考证报告卡「补调研」），补完再重出这一批`,
+      );
     }
     let fresh = 0;
     for (const item of job.images) {
@@ -319,14 +334,19 @@ export async function cancelShotImageJob(jobId: string): Promise<boolean> {
 export async function getShotImageJob(jobId: string): Promise<{
   status: "running" | "done" | "cancelled";
   images: ShotImageResult[];
+  /** 本批**实际没带参考图**的项（真实题材才有，口径同聊天侧 ref_gap）：
+   *  这批只有文字考据约束形制、没有实物比对依据。只提示不拦——用户要出就得能出 */
+  refGap: string[];
 }> {
   const r = await apiFetch(`/agent-service/storyboard/images/${jobId}`);
   if (r.status === 404) throw new ShotJobGoneError("出图任务不存在（agent 可能已重启）");
   if (!r.ok) throw new Error(`出图任务查询失败（${r.status}）`);
-  return (await r.json()) as {
+  const data = (await r.json()) as {
     status: "running" | "done" | "cancelled";
     images: ShotImageResult[];
+    ref_gap?: string[];
   };
+  return { status: data.status, images: data.images, refGap: data.ref_gap ?? [] };
 }
 
 /** 资产设定图生成：复用批量出图任务通道，按资产类型定幅面与布局；
