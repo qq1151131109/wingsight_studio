@@ -1715,6 +1715,19 @@ def _current_turn_start(messages: List[Any]) -> int:
     return start
 
 
+def _reasoning_roundtrip_required() -> bool:
+    """该 provider 是否**要求**历史 AIMessage 的 reasoning_content 回传。
+
+    DeepSeek 官方思考档：**必须**回传——2026-09-11 实测，历史里「带 tool_calls 的
+    助手消息 + 工具结果」（续写工具轨迹）若缺 reasoning_content，整轮 400
+    `The reasoning_content in the thinking mode must be passed back to the API`
+    （最小复现：带/[user, assistant(tool_calls 无 reasoning), tool] 必挂，
+    带 reasoning 即通过；纯文本历史不带也行）。此前无差别剥除，是照着旧网关
+    「拒未知字段」的结论写的——网关系（GLM/DMX）沿用剥除，DeepSeek 官方保留。
+    """
+    return "deepseek" in (os.environ.get("AGENT_BASE_URL") or "").lower()
+
+
 def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
     """清洗历史，保证模型侧永不 400：
 
@@ -1727,8 +1740,9 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
       都不认、逐轮复读「未检测到制作指令」（2026-09-07 霸王龙事故）；
       URL 清单对模型完全够用（干活本来就靠清单里的 URL），当轮新到的
       图才是视觉理解的刚需
-    - AIMessage 的 reasoning_content 剥除：思考属本轮瞬态，回传给模型
-      既浪费 token 也不被 API 接受
+    - AIMessage 的 reasoning_content：**按 provider 分流**——DeepSeek 官方思考档
+      要求回传（缺失即 400「must be passed back」，见 _reasoning_roundtrip_required）；
+      GLM/DMX 网关系沿用剥除（旧的「不被 API 接受」结论只对网关成立）
     """
     flatten_media = not _vision_enabled()
     turn_start = _current_turn_start(messages)
@@ -1736,7 +1750,12 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
     pending: Dict[str, str] = {}
     for i, m in enumerate(messages):
         ak = getattr(m, "additional_kwargs", None)
-        if isinstance(m, AIMessage) and isinstance(ak, dict) and "reasoning_content" in ak:
+        if (
+            not _reasoning_roundtrip_required()
+            and isinstance(m, AIMessage)
+            and isinstance(ak, dict)
+            and "reasoning_content" in ak
+        ):
             m = m.model_copy(
                 update={
                     "additional_kwargs": {
@@ -1785,6 +1804,14 @@ def _sanitize_messages_for_model(messages: List[Any]) -> List[Any]:
                 content=f"（工具 {name} 本轮未执行，已跳过）", tool_call_id=tc_id
             )
         )
+    # 收尾守卫：入参**以助手消息结尾**时丢掉尾部的助手消息（2026-09-11 实测）。
+    # 思考档 + 绑 tools 时，历史里没有 reasoning_content 的助手消息即 400
+    # （`The reasoning_content in the thinking mode must be passed back`）；
+    # 正常流程永远不会以助手消息结尾（用户/工具结果最后说话），只有客户端重投
+    # 与 checkpoint 合并后才会出现这种形状——它本就是「续写自己上一条」的协议
+    # 产物，删掉即回到合法边界（新一轮由谁提问由调用方决定）。
+    while result and isinstance(result[-1], AIMessage) and not getattr(result[-1], "tool_calls", None):
+        result.pop()
     return result
 
 
@@ -1824,6 +1851,25 @@ def _has_model_output(m: Any) -> bool:
     """模型响应是否有可用产出：非空正文（文本块）或工具调用。"""
     text = _msg_text(m)
     return bool(text.strip() or getattr(m, "tool_calls", None))
+
+
+def _shape_dump(messages: List[Any]) -> str:
+    """入参形状摘要（诊断用，**不含正文**）：每条消息的类型/长度/有无工具调用/
+    有无 reasoning_content——provider 契约类 400 定位靠它（哪个位置缺了什么）。"""
+    parts: List[str] = []
+    for i, m in enumerate(messages):
+        ak = getattr(m, "additional_kwargs", None) or {}
+        tcs = getattr(m, "tool_calls", None) or []
+        t = getattr(m, "type", "?")
+        tags = [f"{i}:{t}", f"{len(_msg_text(m))}字"]
+        if tcs:
+            tags.append(f"tc={len(tcs)}")
+        if isinstance(ak, dict) and "reasoning_content" in ak:
+            tags.append("reasoning✓")
+        if t == "tool":
+            tags.append("tool_res")
+        parts.append("|".join(tags))
+    return " ".join(parts)
 
 
 def _is_repeat_tool_call(messages: List[Any], response: Any) -> bool:
@@ -1941,8 +1987,19 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
                 )
             )
         merged = None
-        async for chunk in model_with_tools.astream(attempt_msgs, config):
-            merged = chunk if merged is None else merged + chunk
+        # WS_DEBUG_SHAPE=1：每次调用前转储入参形状（诊断 provider 契约类 400 用，
+        # 只打类型/长度/有无 tool_calls 与 reasoning，不含正文；默认关、零开销）
+        if os.environ.get("WS_DEBUG_SHAPE"):
+            print(f"[模型入参] 第{attempt + 1}跳 | {_shape_dump(attempt_msgs)}", flush=True)
+        try:
+            async for chunk in model_with_tools.astream(attempt_msgs, config):
+                merged = chunk if merged is None else merged + chunk
+        except Exception as exc:  # noqa: BLE001
+            # 模型侧报错时留下一份入参形状摘要：provider 契约类 400（如 DeepSeek
+            # 思考档要求 reasoning_content 回传）不看入参形状几乎无法定位——
+            # 栈里只有「哪一行调了模型」，看不出哪条消息缺了什么。
+            print(f"[模型入参] {type(exc).__name__} | {_shape_dump(attempt_msgs)}", flush=True)
+            raise
         if merged is not None and _has_model_output(merged):
             break
         nudge_retries += 1

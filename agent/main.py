@@ -26,6 +26,16 @@ _HERE = Path(__file__).resolve().parent
 load_dotenv(_HERE / ".env")
 load_dotenv(_HERE.parent / ".env.local")
 
+# WS_DEBUG_HTTP=1：打开模型 HTTP 出站日志（诊断 provider 契约类 400 用——
+# 「我们究竟发了什么」只有出站请求体能回答；默认关）
+if os.environ.get("WS_DEBUG_HTTP"):
+    import logging
+
+    logging.basicConfig(level=logging.DEBUG)
+    for _n in ("httpx", "httpcore", "openai", "langchain_openai"):
+        logging.getLogger(_n).setLevel(logging.DEBUG)
+
+
 from starlette.concurrency import run_in_threadpool
 
 import auth  # noqa: E402  (在 dotenv 之后导入，读取最终环境变量)
