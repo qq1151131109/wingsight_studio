@@ -105,12 +105,18 @@ await page.waitForTimeout(9000);
 const threads = await (await api(`/projects/${pid}/threads`)).json();
 const tid = threads[0]?.id;
 const msgs = await (await api(`/projects/${pid}/threads/${tid}/messages`)).json();
-const userMsgs = msgs.filter((m) => m.role === "user");
+if (!Array.isArray(msgs)) console.log("msgs 原始响应:", JSON.stringify(msgs).slice(0, 200));
+const userMsgs = (Array.isArray(msgs) ? msgs : []).filter((m) => m.role === "user");
 const last = userMsgs.at(-1);
 const ok = last && typeof last.content === "string" && last.content.includes("WS_PARTS::") && last.content.includes("race-tuzi.png");
 check("落库消息带 WS_PARTS 多模态 envelope", !!ok, String(last?.content ?? "").slice(0, 90));
 // 用户气泡里媒体缩略图可见（前端渲染链路）
-const thumb = await page.locator("aside img[alt='附件']").first().isVisible().catch(() => false);
+// chip 的 alt 现在是文件名（更可读），断言走稳定的 chip testid
+const thumb = await page
+  .locator('aside [data-testid="chat-chip"][data-kind="image"] img')
+  .first()
+  .isVisible()
+  .catch(() => false);
 check("气泡图片缩略图可见", thumb);
 await browser.close();
 await api(`/projects/${pid}`, { method: "DELETE" });

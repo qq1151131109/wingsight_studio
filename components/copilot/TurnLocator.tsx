@@ -45,21 +45,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { langgraphAgent } from "@/app/agent-provider";
 import { escapeStickToBottom, findViewport } from "@/lib/chat/scroll";
+import { contextSummary, splitMessageContext } from "@/lib/chat/messageContext";
 
 type ChatMsg = { id?: string; role?: string; content?: unknown };
-
-/** AG-UI content → 纯文本（与 UserBubble 的 parts 解析同口径） */
-function plainText(content: unknown): string {
-  const parts: string[] = [];
-  if (typeof content === "string") parts.push(content);
-  else if (Array.isArray(content))
-    for (const b of content) {
-      if (!b || typeof b !== "object") continue;
-      const p = b as Record<string, unknown>;
-      if (p.type === "text" && typeof p.text === "string") parts.push(p.text);
-    }
-  return parts.join("\n").replace(/\s+/g, " ").trim();
-}
 
 /** 轮次标签：juben compactUserPrompt 同款 18 字截断 */
 function turnLabel(text: string): string {
@@ -74,9 +62,16 @@ function buildAnchors(messages: ChatMsg[]): Anchor[] {
   for (const m of messages) {
     if (m.role !== "user") continue;
     if (typeof m.id !== "string" || m.id.startsWith("progress_")) continue;
-    const text = plainText(m.content);
-    if (!text || text.startsWith("（任务通知）")) continue;
-    out.push({ id: m.id, label: turnLabel(text) || "（媒体消息）" });
+    // 只认用户自己那句话（附件正文/引用行不算轮次标签——一条带文档的消息
+    // 曾把 2 万字摘要成「（见附件与引用的画布卡片）附件：- 文…」）
+    const { text, ctx } = splitMessageContext(m.content);
+    if (!text && !ctx) continue;
+    if (text.startsWith("（任务通知）")) continue;
+    const summary = text.replace(/\s+/g, " ").trim();
+    out.push({
+      id: m.id,
+      label: turnLabel(summary) || turnLabel(contextSummary(ctx)) || "（媒体消息）",
+    });
   }
   return out;
 }

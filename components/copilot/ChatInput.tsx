@@ -52,6 +52,13 @@ import {
   type ChatJob,
 } from "@/lib/projects";
 import { apiFetch } from "@/lib/auth";
+import {
+  buildContextText,
+  contextSummary,
+  splitMessageContext,
+  type AttachmentKind,
+  type MessageContext,
+} from "@/lib/chat/messageContext";
 import { CHAT_EDIT_MESSAGE_EVENT, CHAT_INSERT_TEXT_EVENT, OPEN_CAPABILITIES_EVENT } from "@/lib/canvas/events";
 import {
   addDocCard,
@@ -80,18 +87,7 @@ interface SkillMeta {
   params: { name: string; desc: string }[];
 }
 
-const NODE_TYPE_LABEL: Record<string, string> = {
-  note: "文本",
-  script: "剧本",
-  character: "角色",
-  image: "图片",
-  video: "视频",
-  storyboard: "分镜",
-};
-
 // ---------- 附件 ----------
-
-type AttachmentKind = "image" | "video" | "audio" | "document";
 
 interface Attachment {
   key: string;
@@ -107,6 +103,10 @@ interface Attachment {
   previewUrl?: string;
   /** 文本类文件内联内容（发送时进正文，纯文本模型可直接读） */
   inlineText?: string;
+  /** 文档落成的画布资料卡 id（写进消息上下文段，chip 点击定位到卡） */
+  nodeId?: string;
+  /** 文档正文字数（chip 上显示「2.0 万字」） */
+  chars?: number;
 }
 
 const TEXT_LIKE_EXT = [
@@ -155,13 +155,6 @@ function kindOf(mime: string, name: string): AttachmentKind {
   return "document";
 }
 
-const KIND_LABEL: Record<AttachmentKind, string> = {
-  image: "图片",
-  video: "视频",
-  audio: "音频",
-  document: "文档",
-};
-
 /** AG-UI 多模态 content part（@ag-ui/core 0.0.57 UserMessage 支持） */
 type ContentPart =
   | { type: "text"; text: string }
@@ -178,7 +171,12 @@ type ContentPart =
  *  null→真 id 的首存会被误判成切会话把队清掉） */
 interface QueuedMessage {
   id: string;
+  /** 发送载荷：buildContextText 产物（人话段 + manifest，模型读全量） */
   text: string;
+  /** 排队条显示文本：只放用户可见内容。曾直接显示 text——带引用/附件时
+   *  「<<<WS-CTX>>>」机器段、@节点 id、甚至数万字文档正文全泄进输入框
+   *  chip（2026-09-11 实锤） */
+  display: string;
   mediaParts: ContentPart[];
   threadKey: string | undefined;
 }
@@ -295,20 +293,65 @@ export default function ChatInput({
     return () => window.removeEventListener(CHAT_INSERT_TEXT_EVENT, onInsert);
   }, []);
 
-  // 编辑重发（UserBubble 铅笔）：原文回填输入条 + 编辑态横幅；提交时先截断
-  // 被编辑消息之后的历史（langgraphAgent.setMessages）再照常发送——本轮
-  // run 从编辑点重新展开，旧回答作废
+  // 编辑重发（UserBubble 铅笔）：**恢复用户自己那句话 + @ 引用 + 附件**，而不是把
+  // 附件正文倒进输入框（2026-09-11：此前铅笔回填的是气泡全文本，一条 1.2 万字
+  // 剧本会整篇灌进输入条）。引用卡片回填成 @ chip（MentionInput 按 id 找卡），
+  // 文档从画布资料卡取回正文重建 inline 附件——编辑重发不会丢掉「模型能看到全文」
+  // 的语义；媒体按原 URL 重建 ready 附件；失败的附件不回填（重发不该继承失败）。
   const [editingMsg, setEditingMsg] = useState<{ id: string } | null>(null);
   useEffect(() => {
     const onEdit = (e: Event) => {
-      const { id, text } = (e as CustomEvent<{ id: string; text: string }>).detail;
+      const { id, content } = (e as CustomEvent<{ id: string; content?: unknown }>).detail;
+      const { text: rawText, ctx } = splitMessageContext(content);
       setEditingMsg({ id });
-      edRef.current?.setValue(text);
+      // 引用卡在显示文本里是字面量 `@标题前12字`（MentionInput 的 display 把 chip
+      // 序列化成文字）——回填前先摘掉，否则 appendMention 会把同一张卡上两次
+      // （一句字面量 + 一颗 chip），重发后引用行也跟着重复
+      let text = rawText;
+      for (const r of ctx?.refs ?? []) {
+        const token = `@${(r.title || "无题").slice(0, 12)}`;
+        const at = text.indexOf(token);
+        if (at >= 0)
+          text = `${text.slice(0, at)}${text.slice(at + token.length)}`.replace(/[ \t]{2,}/g, " ");
+      }
+      edRef.current?.setValue(text.trim());
+      const nodes = useCanvasStore.getState().nodes;
+      for (const r of ctx?.refs ?? []) {
+        if (nodes.some((n) => n.id === r.id)) edRef.current?.appendMention(r.id);
+      }
+      const restored: Attachment[] = [];
+      for (const a of ctx?.attachments ?? []) {
+        if (a.error) continue;
+        if (a.kind === "document" && a.nodeId) {
+          const body = nodes.find((n) => n.id === a.nodeId)?.data.body;
+          if (!body) continue;
+          restored.push({
+            key: `edit_${a.nodeId}`,
+            name: a.name,
+            mime: "text/plain",
+            kind: "document",
+            status: "inline",
+            inlineText: body.slice(0, INLINE_TEXT_CHARS),
+            nodeId: a.nodeId,
+            chars: body.length,
+          });
+        } else if (a.url) {
+          restored.push({
+            key: `edit_${a.kind}_${restored.length}`,
+            name: a.name,
+            mime: "",
+            kind: a.kind,
+            status: "ready",
+            url: a.url,
+          });
+        }
+      }
+      writeAttachments(restored);
       edRef.current?.focus();
     };
     window.addEventListener(CHAT_EDIT_MESSAGE_EVENT, onEdit);
     return () => window.removeEventListener(CHAT_EDIT_MESSAGE_EVENT, onEdit);
-  }, []);
+  }, [writeAttachments]);
 
   // ---------- 附件：添加 / 上传 / 内联读取 ----------
 
@@ -384,7 +427,13 @@ export default function ChatInput({
           writeAttachments(
             attachmentsRef.current.map((x) =>
               x.key === a.key
-                ? { ...x, status: "inline", inlineText: text.slice(0, INLINE_TEXT_CHARS) }
+                ? {
+                    ...x,
+                    status: "inline",
+                    inlineText: text.slice(0, INLINE_TEXT_CHARS),
+                    nodeId: id ?? undefined,
+                    chars: text.length,
+                  }
                 : x,
             ),
           );
@@ -542,40 +591,37 @@ export default function ChatInput({
     await Promise.allSettled([...uploadsRef.current.values()]);
 
     const current = attachmentsRef.current;
-    const refLines = mentioned
-      .map((r2) => {
-        const label = NODE_TYPE_LABEL[r2.data.nodeType] ?? r2.data.nodeType;
-        return `- @${r2.id} ${label}「${r2.data.title ?? ""}」：${(r2.data.body ?? "").slice(0, 200)}`;
-      })
-      .join("\n");
-    const attLines: string[] = [];
-    const mediaParts: ContentPart[] = [];
-    for (const a of current) {
-      if (a.status === "inline" && a.inlineText) {
-        attLines.push(`- 文档「${a.name}」内容：\n<<<\n${a.inlineText}\n>>>`);
-      } else if (a.status === "ready" && a.url) {
-        attLines.push(
-          `- ${KIND_LABEL[a.kind]}「${a.name}」：${a.url}${a.kind === "image" ? "（可作生成参考图）" : ""}`,
-        );
-        if (a.kind !== "document") {
-          mediaParts.push({
-            type: a.kind,
-            source: { type: "url", value: a.url, mimeType: a.mime },
-          });
-        }
-      } else if (a.status === "error") {
-        attLines.push(
-          `- ${KIND_LABEL[a.kind]}「${a.name}」上传失败，未附带${a.errorMessage ? `（原因：${a.errorMessage}）` : ""}`,
-        );
-      }
-    }
-    const textPart = [
-      prompt || "（见附件与引用的画布卡片）",
-      refLines ? `引用的画布卡片（可按 id 用 canvas_ops 操作）：\n${refLines}` : "",
-      attLines.length > 0 ? `附件：\n${attLines.join("\n")}` : "",
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    // 消息正文 = 显示文本 + 上下文段（契约见 lib/chat/messageContext.ts）：
+    // 模型照旧拿到引用卡片与附件全文，界面只渲染用户自己那句话 + chip。
+    // 引用行正文**不截断**（2026-09-04「全站都不要字数截断」口径，此前这里
+    // 偷偷 slice(0,200)，是那轮决定漏改的一处）
+    const ctx: MessageContext = {
+      refs: mentioned.map((r2) => ({
+        id: r2.id,
+        type: r2.data.nodeType,
+        title: r2.data.title ?? "",
+        snippet: r2.data.body ?? "",
+      })),
+      attachments: current.map((a) => {
+        if (a.status === "inline" && a.inlineText)
+          return {
+            kind: "document" as const,
+            name: a.name,
+            nodeId: a.nodeId,
+            chars: a.chars,
+            body: a.inlineText,
+          };
+        if (a.status === "ready" && a.url) return { kind: a.kind, name: a.name, url: a.url };
+        return { kind: a.kind, name: a.name, error: a.errorMessage || "上传未完成" };
+      }),
+    };
+    const mediaParts: ContentPart[] = current
+      .filter((a) => a.status === "ready" && a.url && a.kind !== "document")
+      .map((a) => ({
+        type: a.kind as "image" | "video" | "audio",
+        source: { type: "url" as const, value: a.url as string, mimeType: a.mime },
+      }));
+    const textPart = buildContextText(prompt, ctx);
 
     if (inProgress) {
       // 运行中提交 = 排队引导（Claude Code 范式）：不掐断本轮也不要求用户
@@ -585,6 +631,9 @@ export default function ChatInput({
         {
           id: `q_${Date.now()}_${queueRef.current.length}`,
           text: textPart,
+          // 显示口径：用户那句话（display 形态，@ 引用为标题）；只丢附件/
+          // 引用没打字时用上下文摘要兜展示（submit 入队前已保证两者不会同时为空）
+          display: prompt || contextSummary(ctx),
           mediaParts,
           threadKey: useChatSession.getState().agentThreadId,
         },
@@ -775,7 +824,7 @@ export default function ChatInput({
                   className="min-w-0 flex-1 truncate"
                   data-tip="已排队：本轮结束后自动发送"
                 >
-                  {q.text}
+                  {q.display}
                 </span>
                 <button
                   type="button"
@@ -927,7 +976,7 @@ export default function ChatInput({
                 }
               >
                 <span className="flex items-center gap-1 truncate font-medium">
-                  <Zap className="h-3 w-3 shrink-0" aria-hidden />
+                  <Zap className="h-3 w-3 shrink-0" strokeWidth={2} aria-hidden />
                   {s.name}
                 </span>
                 {s.description ? (

@@ -388,7 +388,7 @@ function NodeSearch() {
 
   return (
     // flex-1 + max-w-52：宽裕时仍是原来那条 208px；画布被挤窄（侧栏拖宽
-    // /小窗口）时可收缩，不把右侧「画布设置」齿轮顶到侧栏底下
+    // /小窗口）时可收缩，不把右侧视图开关组（CanvasSettings）顶到侧栏底下
     //（与底坞固定宽度同族病：固定宽控件在叠层里必须受画布宽约束）
     <div className="relative min-w-0 max-w-52 flex-1">
       <div
@@ -2402,8 +2402,8 @@ export default function CanvasView() {
         {minimapVisible && nodes.length > 0 ? (
           // 有卡才渲染：空画布上小地图是一块无内容的米色空块（1px hairline
           // 描边几乎看不见），悬在右下角像渲染故障。用户意图照旧尊重：
-          // 「显示小地图」开关在画布左上「画布设置」弹层（useCanvasPref
-          // ("minimap")），只在它开着但没东西可导航时收起
+          // 「显示小地图」开关是画布左上工具条的图标按钮（CanvasSettings，
+          // useCanvasPref("minimap")），只在它开着但没东西可导航时收起
           //（底坞「导航」不是它的开关——那是 OutlinePanel 列卡面板，别混）
           <MiniMap
             position="bottom-right"

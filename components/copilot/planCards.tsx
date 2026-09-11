@@ -118,7 +118,7 @@ function PlanCard({
       className="rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs"
     >
       <p className="flex items-center gap-1.5 font-medium text-text">
-        <ClipboardList className="h-3.5 w-3.5 text-accent" />
+        <ClipboardList className="h-3.5 w-3.5 text-accent" strokeWidth={2} />
         {label}：
         <span className="min-w-0 truncate">{title}</span>
       </p>

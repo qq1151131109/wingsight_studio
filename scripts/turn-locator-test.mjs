@@ -279,8 +279,10 @@ try {
     };
   });
   check(
-    "悬停展开标签面板（含右滑入场类）",
-    panel.display === "flex" && panel.rows === TURNS.length && /ws-turn-panel-in/.test(panel.cls),
+    // 面板**即时出现**：入场动效已按「高频交互不该播」删除（d9b2432，
+    // group-hover 的 display 翻转会每次悬停重放一遍）——断言反向锁住这个决定
+    "悬停展开标签面板（即时出现，无入场动效类）",
+    panel.display === "flex" && panel.rows === TURNS.length && !/ws-turn-panel-in/.test(panel.cls),
     `display=${panel.display} rows=${panel.rows}`,
   );
   check("面板行带 18 字摘要+轮次号", /第一轮：帮我拆解这个剧本的核心冲突\s*1$/.test(panel.firstRow.replace("…", "")), panel.firstRow.slice(0, 30));

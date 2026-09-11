@@ -251,7 +251,7 @@ export default function TaskEvents() {
       className="ws-toast-in fixed bottom-16 left-4 z-[1250] flex max-w-[340px] items-center gap-2 rounded-xl bg-surface-1 px-3 py-2.5 ws-elev-popover"
       data-testid="task-events-notice"
     >
-      <Icon className={`h-4 w-4 shrink-0 ${notice.ok ? "text-good" : "text-warn"}`} />
+      <Icon className={`h-4 w-4 shrink-0 ${notice.ok ? "text-good" : "text-warn"}`} strokeWidth={2} />
       <div className="min-w-0 flex-1">
         <div className="truncate text-xs font-medium text-text">
           {notice.ok ? "" : "失败 · "}
@@ -263,7 +263,7 @@ export default function TaskEvents() {
         type="button"
         aria-label="关闭通知"
         data-tip="关闭"
-        className="shrink-0 rounded-md p-0.5 text-text-4 transition-colors hover:bg-surface-2 hover:text-text-2"
+        className="shrink-0 rounded-md p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text-2 active:not-disabled:scale-[0.96]"
         onClick={() => setNotice(null)}
       >
         <X className="h-3.5 w-3.5" />

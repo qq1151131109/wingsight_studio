@@ -17,22 +17,26 @@ import { chromium } from "playwright";
 const WEB = "http://127.0.0.1:8008";
 const AGENT = "http://127.0.0.1:8123";
 
+// 认证：.env.local 有 AUTH_PASSWORD 就登录，空则不带头（本机认证关闭时的常态，
+// 与 chat-longcontent / node-toolbar-select 同约定；服务端 auth_enabled=false 时
+// 不带头照常放行）。此前这里硬抛错，本机跑不起来整条回归。
 const AUTH_PASSWORD = fs
   .readFileSync(".env.local", "utf8")
   .match(/^AUTH_PASSWORD=(.*)$/m)?.[1]?.trim();
-if (!AUTH_PASSWORD) throw new Error("缺 AUTH_PASSWORD（.env.local）");
-
-const login = await fetch(`${AGENT}/api/v1/auth/token`, {
-  method: "POST",
-  body: new URLSearchParams({ username: "admin", password: AUTH_PASSWORD }),
-});
-if (!login.ok) throw new Error(`登录失败 ${login.status}`);
-const TOKEN = (await login.json()).access_token;
+let TOKEN = "";
+if (AUTH_PASSWORD) {
+  const login = await fetch(`${AGENT}/api/v1/auth/token`, {
+    method: "POST",
+    body: new URLSearchParams({ username: "admin", password: AUTH_PASSWORD }),
+  });
+  if (!login.ok) throw new Error(`登录失败 ${login.status}`);
+  TOKEN = (await login.json()).access_token;
+}
 
 const api = async (path, init) => {
   const r = await fetch(`${AGENT}${path}`, {
     ...init,
-    headers: { Authorization: `Bearer ${TOKEN}`, ...(init?.headers ?? {}) },
+    headers: { ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}), ...(init?.headers ?? {}) },
   });
   const text = await r.text();
   let body = null;

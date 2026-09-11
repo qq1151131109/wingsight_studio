@@ -24,7 +24,7 @@ import {
   type CopilotChatSuggestionView,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
-import { Check, Copy, Megaphone, Music, Pencil, Sparkles, Video, type LucideIcon } from "lucide-react";
+import { Check, Copy, FileText, Layers, Megaphone, Pencil, Sparkles, type LucideIcon } from "lucide-react";
 import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import ChatInput from "./ChatInput";
 import AssistantMessage from "./AssistantMessage";
@@ -32,7 +32,14 @@ import CapabilitiesDialog from "./CapabilitiesDialog";
 import TurnLocator from "./TurnLocator";
 import { useChatSession } from "@/lib/chat/session";
 import ChatSidebarHeader from "./ThreadsBar";
-import { CHAT_EDIT_MESSAGE_EVENT } from "@/lib/canvas/events";
+import { CHAT_EDIT_MESSAGE_EVENT, FOCUS_NODES_EVENT } from "@/lib/canvas/events";
+import {
+  charsLabel,
+  contextSummary,
+  KIND_LABEL,
+  nodeTypeLabel,
+  splitMessageContext,
+} from "@/lib/chat/messageContext";
 import { assetThumbUrl } from "@/lib/asset-thumb";
 
 /** slot 槽位支持整组件替换（运行时 renderSlot 认任意函数组件），但 d.ts 要求
@@ -41,43 +48,116 @@ function asSlot<C>(component: unknown): C {
   return component as C;
 }
 
+/** 气泡上方的一颗 chip：附件（文档/图片/视频/音频）或引用的画布卡 */
+type Chip = {
+  key: string;
+  kind: "image" | "video" | "audio" | "document" | "ref";
+  label: string;
+  tip: string;
+  url?: string;
+  /** 画布卡 id（附件=资料卡 / ref=被引用的卡）：点击运镜定位 */
+  nodeId?: string;
+  /** ref chip 的画布卡类型（取类型图标） */
+  nodeType?: string;
+  chars?: number;
+  error?: string;
+};
+
+const KIND_ICON: Record<Chip["kind"], LucideIcon> = {
+  document: FileText,
+  image: TYPE_ICONS.image,
+  video: TYPE_ICONS.video,
+  audio: TYPE_ICONS.audio,
+  ref: Layers,
+};
+
+function chipIcon(ch: Chip): LucideIcon {
+  const byType = ch.nodeType
+    ? (TYPE_ICONS as Record<string, LucideIcon | undefined>)[ch.nodeType]
+    : undefined;
+  return byType ?? KIND_ICON[ch.kind];
+}
+
 /** 空渲染（用于从工具栏里摘掉某个内置按钮） */
 /** 自定义用户气泡：hover 出铅笔 = 编辑重发（v2 有 onEditMessage 槽但框架
- *  不接线，自接：把原文回填输入条，提交时截断该消息之后的历史再重发）。
- *  content 形态按我们 ChatInput 实际发送的 AG-UI parts 解析（text part +
- *  image/video/audio 的 source:{type:"url",value}）——v2 原厂的附件渲染随
- *  本槽位一起被替换，媒体缩略图/芯片这里自己出 */
+ *  不接线，自接：把消息**还原成输入条状态**回填，提交时截断该消息之后的历史
+ *  再重发）。
+ *  附件与 @ 引用渲染成 chip 而不是正文（2026-09-11，行业共识：对话记录显示
+ *  实体、内容走带外通道——codex/gemini-cli/opencode 无一例外）。此前把附件
+ *  正文直接印在气泡里，本地实测一条 1.2 万字剧本让气泡高 21,469px、占整个
+ *  会话滚动区的 94%；引用行还会漏出 `@<节点id>` 原始 id。
+ *  口径：可见文本 / chip 都从 lib/chat/messageContext 的上下文段契约读，
+ *  与 ChatSearch、TurnLocator 同源。老消息（无界标）退回原样渲染。 */
 function UserBubble({ message }: { message?: { id?: string; content?: unknown } }) {
   const [copied, setCopied] = useState(false);
-  const textParts: string[] = [];
-  const media: { kind: "image" | "video" | "audio"; url: string }[] = [];
   const c = message?.content;
-  if (typeof c === "string") textParts.push(c);
-  else if (Array.isArray(c))
-    for (const b of c) {
+  const { text: display, ctx } = splitMessageContext(c);
+  // 无上下文段的老消息：媒体 part 仍按缩略图渲染（旧行为）
+  const legacyMedia: { kind: "image" | "video" | "audio"; url: string }[] = [];
+  if (!ctx) {
+    const parts = typeof c === "string" ? [] : Array.isArray(c) ? c : [];
+    for (const b of parts) {
       if (!b || typeof b !== "object") continue;
       const p = b as Record<string, unknown>;
-      if (p.type === "text" && typeof p.text === "string") textParts.push(p.text);
-      else if (
+      if (
         (p.type === "image" || p.type === "video" || p.type === "audio") &&
         typeof p.source === "object" &&
         p.source !== null
       ) {
         const src = p.source as { type?: unknown; value?: unknown };
         if (src.type === "url" && typeof src.value === "string")
-          media.push({ kind: p.type, url: src.value });
+          legacyMedia.push({ kind: p.type, url: src.value });
       }
     }
-  const text = textParts.join("\n");
+  }
+  const text = display;
+  // chip 清单：有上下文段就据它出（附件 + 引用的画布卡），老消息退回媒体 part
+  const chips: Chip[] = ctx
+    ? [
+        ...ctx.refs.map((r, i) => ({
+          key: `r${i}`,
+          kind: "ref" as const,
+          label: `${nodeTypeLabel(r.type)}·${r.title || "未命名"}`,
+          tip: `引用画布卡片「${r.title || "未命名"}」· 点击定位`,
+          nodeId: r.id,
+          nodeType: r.type,
+        })),
+        ...ctx.attachments.map((a, i) => ({
+          key: `a${i}`,
+          kind: a.kind,
+          label: a.name,
+          tip: a.error
+            ? `${KIND_LABEL[a.kind]}「${a.name}」未附带：${a.error}`
+            : a.kind === "document"
+              ? `文档「${a.name}」${a.chars ? `· ${charsLabel(a.chars)}` : ""} · 已存为画布资料卡，点击定位`
+              : `${KIND_LABEL[a.kind]}「${a.name}」· 点击打开`,
+          url: a.url,
+          nodeId: a.nodeId,
+          chars: a.chars,
+          error: a.error,
+        })),
+      ]
+    : legacyMedia.map((m, i) => ({
+        key: `m${i}:${m.url}`,
+        kind: m.kind,
+        label: KIND_LABEL[m.kind],
+        tip: `查看${KIND_LABEL[m.kind]}`,
+        url: m.url,
+      }));
   // 系统代发的消息走中性样式：任务通知（TaskEvents 自动续跑）与中断标记
   // （ChatInput 停止按钮落的「（用户中断了这一轮生成）」，Claude Code
   // "[Request interrupted]" 范式）都是系统的嘴不是用户的口吻——改了重发
   // 没有意义，也不该盖轮次跳转锚
   const isSystemNotice =
     text.startsWith("（任务通知）") || text.startsWith("（用户中断");
+  const chipSummary = contextSummary(ctx);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      // 复制的是用户自己那句话（+ 附件/引用清单一行）——附件正文不属于「用户
+      // 说的话」，要正文请去画布资料卡（它是唯一事实源）
+      await navigator.clipboard.writeText(
+        [text, chipSummary ? `[附件与引用] ${chipSummary}` : ""].filter(Boolean).join("\n"),
+      );
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -104,29 +184,61 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
       }
     >
       <div className="relative max-w-[88%]">
-        {media.length > 0 ? (
-          <div className="mb-1 flex flex-wrap justify-end gap-1">
-            {media.map((m, i) =>
-              m.kind === "image" ? (
-                <a key={`${i}:${m.url}`} href={m.url} target="_blank" rel="noreferrer" aria-label="查看原图">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={assetThumbUrl(m.url)} alt="附件" className="h-14 w-14 rounded-lg object-cover" />
-                </a>
-              ) : (
-                <a
-                  key={`${i}:${m.url}`}
-                  href={m.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  data-tip={m.kind === "video" ? "查看视频" : "播放音频"}
-                  aria-label={m.kind === "video" ? "查看视频" : "播放音频"}
-                  className="flex h-14 items-center gap-1.5 rounded-lg border border-hairline bg-surface-1 px-2.5 text-xs text-text-2 transition-colors hover:text-text"
+        {chips.length > 0 ? (
+          <div className="mb-1 flex flex-wrap items-end justify-end gap-1">
+            {chips.map((ch) => {
+              if (ch.kind === "image" && ch.url)
+                return (
+                  <a
+                    key={ch.key}
+                    href={ch.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    data-tip={ch.label}
+                    aria-label={`查看图片 ${ch.label}`}
+                    data-testid="chat-chip"
+                    data-kind="image"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={assetThumbUrl(ch.url)}
+                      alt={ch.label}
+                      className="h-14 w-14 rounded-lg object-cover"
+                    />
+                  </a>
+                );
+              const Icon = chipIcon(ch);
+              return (
+                <button
+                  key={ch.key}
+                  type="button"
+                  data-tip={ch.tip}
+                  aria-label={ch.tip}
+                  data-testid="chat-chip"
+                  data-kind={ch.kind}
+                  disabled={!ch.nodeId && !ch.url}
+                  onClick={() => {
+                    // 画布卡（含资料卡）→ 运镜定位到卡；媒体 → 打开原文件
+                    if (ch.nodeId)
+                      window.dispatchEvent(
+                        new CustomEvent(FOCUS_NODES_EVENT, { detail: { ids: [ch.nodeId] } }),
+                      );
+                    else if (ch.url) window.open(ch.url, "_blank", "noreferrer");
+                  }}
+                  className={`flex h-8 max-w-[220px] items-center gap-1.5 rounded-lg border px-2.5 text-xs transition-[scale,background-color,border-color,color] duration-150 ease-out active:not-disabled:scale-[0.96] disabled:cursor-default ${
+                    ch.error
+                      ? "border-danger/40 bg-danger/5 text-danger"
+                      : "border-hairline bg-surface-1 text-text-2 hover:text-text"
+                  } ${ch.nodeId || ch.url ? "cursor-pointer" : ""}`}
                 >
-                  {m.kind === "video" ? <Video className="h-4 w-4" /> : <Music className="h-4 w-4" />}
-                  {m.kind === "video" ? "视频" : "音频"}
-                </a>
-              ),
-            )}
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  <span className="truncate">{ch.label}</span>
+                  {ch.chars ? (
+                    <span className="shrink-0 text-text-4">{charsLabel(ch.chars)}</span>
+                  ) : null}
+                </button>
+              );
+            })}
           </div>
         ) : null}
         {text ? (
@@ -141,12 +253,15 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
           )
         ) : null}
         {message?.id ? (
-          <div className="absolute -left-8 top-1 flex flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100">
+          // 只挂 group-hover 时，键盘 Tab 进来的焦点态**完全不可见**——opacity 作用
+          // 于整棵子树，连 UA 焦点环一起透明（实测：focus() 后 wrapOpacity 仍为 0）。
+          // 补 group-focus-within；两个钮 p-1→p-1.5 把命中区从 22px 提到 24px 最小线
+          <div className="absolute -left-8 top-1 flex flex-col gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
             <button
               type="button"
               data-tip={copied ? "已复制" : "复制"} aria-label={copied ? "已复制" : "复制"}
               onClick={() => void copy()}
-              className="rounded-md p-1 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+              className="rounded-md p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out active:not-disabled:scale-[0.96] hover:bg-surface-2 hover:text-text"
             >
               {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
             </button>
@@ -158,11 +273,13 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
                 onClick={() =>
                   window.dispatchEvent(
                     new CustomEvent(CHAT_EDIT_MESSAGE_EVENT, {
-                      detail: { id: message.id!, text },
+                      // 传原始 content：输入条据此还原「用户那句话 + @ 引用 + 附件」，
+                      // 而不是把附件正文灌进输入框（2026-09-11）
+                      detail: { id: message.id!, content: c },
                     }),
                   )
                 }
-                className="rounded-md p-1 text-text-4 transition-colors hover:bg-surface-2 hover:text-text"
+                className="rounded-md p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out active:not-disabled:scale-[0.96] hover:bg-surface-2 hover:text-text"
               >
                 <Pencil className="h-3.5 w-3.5" />
               </button>
@@ -319,9 +436,9 @@ function AssistantFab() {
       type="button"
       onClick={() => config?.setModalOpen(true)}
       data-tip="打开画布助手" aria-label="打开画布助手"
-      className="fixed right-4 top-14 z-40 flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-white shadow-md transition-opacity hover:opacity-90"
+      className="fixed right-4 top-14 z-40 flex items-center gap-1.5 rounded-full bg-accent px-3.5 py-2 text-xs font-medium text-white shadow-md transition-[scale,opacity] duration-150 ease-out hover:opacity-90 active:not-disabled:scale-[0.96]"
     >
-      <Sparkles className="h-3.5 w-3.5" />
+      <Sparkles className="h-3.5 w-3.5" strokeWidth={2} />
       助手
     </button>
   );

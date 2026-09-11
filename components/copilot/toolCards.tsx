@@ -68,7 +68,7 @@ export function ApprovalCard() {
   return (
     <div className="rounded-lg border border-accent-soft bg-surface-1 px-3 py-2 text-xs">
       <p className="flex items-center gap-1.5 font-medium text-text">
-        <ShieldAlert className="h-3.5 w-3.5 text-accent" />
+        <ShieldAlert className="h-3.5 w-3.5 text-accent" strokeWidth={2} />
         允许助手修改画布？
       </p>
       <p className="mt-1 leading-relaxed text-text-2">{pending.summary}</p>
@@ -76,14 +76,14 @@ export function ApprovalCard() {
         <button
           type="button"
           onClick={() => pending.resolve(true)}
-          className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+          className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-medium text-white transition-[scale,opacity] duration-150 ease-out hover:opacity-90 active:not-disabled:scale-[0.96]"
         >
           允许执行
         </button>
         <button
           type="button"
           onClick={() => pending.resolve(false)}
-          className="rounded-md border border-hairline bg-surface-2 px-2.5 py-1 text-[11px] text-text-2 transition-colors hover:text-text"
+          className="rounded-md border border-hairline bg-surface-2 px-2.5 py-1 text-[11px] text-text-2 transition-[scale,background-color,border-color,color] duration-150 ease-out active:not-disabled:scale-[0.96] hover:text-text"
         >
           拒绝
         </button>
@@ -122,12 +122,16 @@ export function ToolCard({
           ok === false ? "text-warn" : ok ? "text-good" : "text-text-2"
         }`}
       >
+        {/* 三个分支必须同尺寸：中性分支此前是裸 <span>{icon}</span>，调用方又都传
+            <X /> 不带 className，于是走 lucide 出厂 24px —— 实测渲染 24×24 而卡片
+            标题只有 12px，卡高被撑到 61px，同列卡图标忽大忽小。另外该行是
+            font-medium（500），按 better-ui 的表要 2 档笔画 */}
         {ok === false ? (
-          <CircleAlert className="h-3.5 w-3.5" />
+          <CircleAlert className="h-3.5 w-3.5" strokeWidth={2} />
         ) : ok ? (
-          <CheckCircle2 className="h-3.5 w-3.5" />
+          <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} />
         ) : (
-          <span className="text-text-3">{icon}</span>
+          <span className="text-text-3 [&>svg]:h-3.5 [&>svg]:w-3.5 [&>svg]:stroke-2">{icon}</span>
         )}
         <span className="min-w-0">{title}</span>
       </div>

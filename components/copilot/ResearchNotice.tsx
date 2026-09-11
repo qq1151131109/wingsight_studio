@@ -77,6 +77,7 @@ export default function ResearchNotice() {
     <div className="ws-toast-in fixed bottom-4 left-4 z-[1250] flex max-w-[340px] items-center gap-2 rounded-xl bg-surface-1 px-3 py-2.5 ws-elev-popover">
       <Icon
         className={`h-4 w-4 shrink-0 ${done ? "text-good" : "text-warn"}`}
+        strokeWidth={2}
       />
       <div className="min-w-0 flex-1">
         <div className="truncate text-xs font-medium text-text">
@@ -94,7 +95,7 @@ export default function ResearchNotice() {
       <button
         type="button"
         data-track={done ? "research.notice.open" : "research.notice.locate"}
-        className="flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2 py-1 text-[11px] font-medium text-white transition-opacity hover:opacity-90"
+        className="flex shrink-0 items-center gap-1 rounded-lg bg-accent px-2 py-1 text-[11px] font-medium text-white transition-[scale,opacity] duration-150 ease-out hover:opacity-90 active:not-disabled:scale-[0.96]"
         onClick={() => {
           window.dispatchEvent(
             new CustomEvent(FOCUS_NODES_EVENT, {
@@ -114,14 +115,14 @@ export default function ResearchNotice() {
           setNotice(null);
         }}
       >
-        <BookOpen className="h-3 w-3" />
+        <BookOpen className="h-3 w-3" strokeWidth={2} />
         {done ? "查看卷宗" : "查看卡片"}
       </button>
       <button
         type="button"
         aria-label="关闭通知"
         data-tip="关闭"
-        className="shrink-0 rounded-md p-0.5 text-text-4 transition-colors hover:bg-surface-2 hover:text-text-2"
+        className="shrink-0 rounded-md p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text-2 active:not-disabled:scale-[0.96]"
         onClick={() => setNotice(null)}
       >
         <X className="h-3.5 w-3.5" />

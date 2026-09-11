@@ -34,6 +34,23 @@ function isTyping(e: KeyboardEvent): boolean {
   );
 }
 
+/** 焦点是否落在一个「真控件」上（按钮/链接/摘要/自定义 tabindex 元素）。
+ *
+ *  `isTyping` 只认文本输入，聚焦在**按钮**上是 false —— 于是 Tab 分支会
+ *  preventDefault，把整站的 Tab 吞掉：键盘用户 Tab 到聊天侧栏/弹窗/工具条上
+ * 任意一颗按钮后就再也走不动，是焦点陷阱（实测：从搜索框 Tab 一次到「上一处」
+ *  之后，再按 Tab 焦点纹丝不动）。
+ *
+ *  Tab 新建节点这个画布快捷键只在「焦点不在控件上」时才拦——焦点在 body 或
+ *  画布卡片上时照旧（卡片是 xyflow 的 tabindex=0 节点，不是这里的控件）。 */
+function isFocusOnControl(e: KeyboardEvent): boolean {
+  const el = e.target as HTMLElement | null;
+  if (!el) return false;
+  if (el.closest("button, a[href], summary, input, select, textarea")) return true;
+  const ti = el.getAttribute("tabindex");
+  return ti !== null && ti !== "-1";
+}
+
 export default function CanvasShortcuts() {
   const { screenToFlowPosition, zoomIn, zoomOut, zoomTo, fitView } =
     useReactFlow();
@@ -136,8 +153,10 @@ export default function CanvasShortcuts() {
             }),
           );
         }
-      } else if (e.key === "Tab") {
-        // 新建节点：视口中央弹「添加节点」选择器（与双击空白同菜单）
+      } else if (e.key === "Tab" && !isFocusOnControl(e)) {
+        // 新建节点：视口中央弹「添加节点」选择器（与双击空白同菜单）。
+        // 焦点在真控件上时不拦——否则会把别处（聊天侧栏/弹窗/工具条）的 Tab
+        // 一起吞掉，键盘用户被困在当前元素上（见 isFocusOnControl 注释）
         e.preventDefault();
         window.dispatchEvent(new CustomEvent(OPEN_ADD_MENU_EVENT));
       } else if (mod && e.shiftKey && e.code === "Digit0") {

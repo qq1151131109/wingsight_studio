@@ -1628,9 +1628,9 @@ export default function CanvasAgentBridge() {
             }`}
           >
             {ok ? (
-              <CheckCircle2 className="h-3.5 w-3.5" />
+              <CheckCircle2 className="h-3.5 w-3.5" strokeWidth={2} />
             ) : (
-              <CircleAlert className="h-3.5 w-3.5" />
+              <CircleAlert className="h-3.5 w-3.5" strokeWidth={2} />
             )}
             画布操作：执行 {r.applied} 项
             {r.createdIds.length > 0

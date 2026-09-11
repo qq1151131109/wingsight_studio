@@ -399,6 +399,29 @@ html.dark img:not([class*="border"]) {
     cursor: not-allowed;
 }
 
+/* ── 聊天面键盘焦点（better-ui 状态覆盖 / 「Motion is never the only feedback
+   channel」）──────────────────────────────────────────────────────────────
+   侧栏里此前**一处自定义焦点样式都没有**：所有自绘按钮只能吃浏览器 UA 默认环
+   （与纸感配色不搭、且被个别 `outline-none` 直接吃掉），键盘用户 Tab 过去看不
+   出焦点在哪。统一给一层 accent 环。
+
+   用 `:focus-visible` 而不是 `:focus`：只有键盘/辅助技术导航才画环，鼠标点击
+   不画——指针用户不会被多余的环打扰。`outline` 不占布局，浏览器会沿元素自身
+   圆角描边，因此不改任何盒尺寸（不会碰布局断言）。 */
+.copilotKitSidebar :is(button, a, summary, input, textarea, [role="button"]):focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+}
+/* 文本输入类（含搜索框）`:focus-visible` 在浏览器里等价于 `:focus`——输入框只要
+   获得焦点就算 keyboard-visible，所以它们拿到的是"总是有环"，正是打字时需要；
+   环贴内缘（offset -1px）免得在窄容器里被裁掉。
+   用实色 accent 而非 accent-soft：后者 22% 透明度，实测在米黄纸面上太虚，
+   焦点指示器的第一要求是"看得见" */
+.copilotKitSidebar :is(input, textarea, [contenteditable="true"]):focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -1px;
+}
+
 /* 生成中：媒体区的斜向扫描光带（对标 S-Copilot，配合进度文案） */
 .ws-loading-scan { position: relative; overflow: hidden; }
 .ws-loading-scan::after {

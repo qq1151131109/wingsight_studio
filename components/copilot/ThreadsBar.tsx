@@ -3,7 +3,7 @@
 /**
  * 自绘聊天侧栏 Header（v2 CopilotSidebar 的 header 槽位替换 CopilotModalHeader；
  * 槽位组件不收绑定 props——关闭走 useCopilotChatConfiguration）：
- *   错误横幅 + 身份（「画布助手」+运行状态）+ [搜索][历史] │ [关闭]
+ *   错误横幅 + 品牌标（W）+ 身份（「画布助手」+运行状态）+ [搜索][历史] │ [关闭]
  * 历史面板：列表（自动标题 + 时间 + 条数）/ 点击切换 / 重命名 / 删除；
  * 删除当前会话时自动落到最新一条。会话状态在 lib/chat/session.ts。
  *
@@ -24,6 +24,7 @@ import { useChatSession } from "@/lib/chat/session";
 import { useChatSearch } from "@/lib/chat/search";
 import ChatSearch from "./ChatSearch";
 import { contentToMarkdown, decodeContent } from "@/lib/chat/content";
+import { migrateLegacyUserContent } from "@/lib/chat/messageContext";
 import {
   cancelChatRun,
   deleteChatThread,
@@ -46,7 +47,7 @@ function RunErrorBanner() {
       <button
         type="button"
         data-tip="关闭" aria-label="关闭错误提示"
-        className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-text"
+        className="shrink-0 rounded p-1.5 text-text-4 transition-colors hover:text-text"
         onClick={() => setRunError(null)}
       >
         <X className="h-3.5 w-3.5" />
@@ -111,7 +112,11 @@ export default function ChatSidebarHeader() {
       if (!msgs || msgs.length === 0) return;
       const lines = [`# ${meta}`, ""];
       for (const m of msgs) {
-        const text = contentToMarkdown(decodeContent(m.content));
+        // 与气泡同口径：旧格式先迁移（导出不该把附件正文再抄一份），导出内容 =
+        // 用户可见部分 + 附件与引用清单 + 媒体 URL
+        const text = contentToMarkdown(
+          migrateLegacyUserContent(decodeContent(m.content)) as never,
+        );
         lines.push(`**${m.role === "user" ? "🧑 用户" : "🎬 助手"}**`, "", text, "", "---", "");
       }
       const blob = new Blob([lines.join("\n")], {
@@ -218,6 +223,13 @@ export default function ChatSidebarHeader() {
           是重复）；「技能」已移到输入条（产品能力入口与当前会话无关）。
           运行点从标题左侧 40px 外的孤立位置收进标题尾巴 */}
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
+        {/* 品牌标：Wingsight 首字母 W（editorial 衬线，对话面板常驻品牌位） */}
+        <span
+          className="font-editorial flex h-5 w-5 shrink-0 select-none items-center justify-center rounded-md bg-accent text-[11px] font-semibold text-white"
+          title="Wingsight Studio"
+        >
+          W
+        </span>
         <span className="truncate text-[13.5px] font-semibold tracking-[0.01em]">
           画布助手
         </span>
@@ -328,7 +340,7 @@ export default function ChatSidebarHeader() {
                 data-tip="关闭会话" aria-label={`关闭会话 ${t.title || ""}`}
                 data-track="chat.tabClose"
                 onClick={() => setDeleting(t)}
-                className="rounded p-0.5 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                className="rounded p-1.5 -m-0.5 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 <X className="h-3 w-3" />
               </button>
@@ -359,7 +371,7 @@ export default function ChatSidebarHeader() {
             <button
               type="button"
               data-tip="导出当前会话为 Markdown" aria-label="导出当前会话为 Markdown"
-              className="ml-auto rounded-sm p-0.5 text-text-4 transition-colors hover:text-text"
+              className="ml-auto rounded-sm p-1.5 text-text-4 transition-colors hover:text-text"
               onClick={() => void exportCurrent()}
             >
               <Download className="h-3 w-3" />
@@ -422,7 +434,7 @@ export default function ChatSidebarHeader() {
                   <button
                     type="button"
                     data-tip="重命名" aria-label="重命名"
-                    className="shrink-0 rounded p-1 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100"
+                    className="shrink-0 rounded p-1.5 text-text-4 opacity-0 transition-opacity hover:text-text group-hover:opacity-100 group-focus-within:opacity-100"
                     onClick={() => void rename(t)}
                   >
                     <Pencil className="h-3 w-3" />
@@ -430,7 +442,7 @@ export default function ChatSidebarHeader() {
                   <button
                     type="button"
                     data-tip="删除" aria-label="删除"
-                    className="shrink-0 rounded p-1 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100"
+                    className="shrink-0 rounded p-1.5 text-text-4 opacity-0 transition-opacity hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100"
                     onClick={() => setDeleting(t)}
                   >
                     <Trash2 className="h-3 w-3" />

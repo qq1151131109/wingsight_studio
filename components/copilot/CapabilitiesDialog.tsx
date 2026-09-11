@@ -155,14 +155,14 @@ export default function CapabilitiesDialog() {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-hairline px-4 py-3">
-          <Sparkles className="h-4 w-4 text-accent" />
+          <Sparkles className="h-4 w-4 text-accent" strokeWidth={2} />
           <h2 className="text-sm font-medium">技能</h2>
           <span className="text-xs text-text-4">{list.length} 项</span>
           {canEdit ? (
             <button
               type="button"
               data-track="chat.skills.create"
-              className="ml-auto inline-flex items-center gap-1 rounded-md border border-hairline px-2 py-1 text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-hairline px-2 py-1 text-[11px] text-text-2 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:border-accent-soft hover:text-text active:not-disabled:scale-[0.96]"
               onClick={() => {
                 setCreating((c) => !c);
                 setSaveError("");
@@ -175,7 +175,7 @@ export default function CapabilitiesDialog() {
           <button
             type="button"
             aria-label="关闭" data-tip="关闭"
-            className={`rounded-md p-1.5 text-text-3 transition-colors hover:bg-surface-2 hover:text-text ${canEdit ? "" : "ml-auto"}`}
+            className={`rounded-md p-1.5 text-text-3 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96] ${canEdit ? "" : "ml-auto"}`}
             onClick={() => setOpen(false)}
           >
             <X className="h-4 w-4" />
@@ -219,7 +219,7 @@ export default function CapabilitiesDialog() {
                 type="button"
                 disabled={busy || !newName.trim() || !newDesc.trim()}
                 data-track="chat.skills.createSubmit"
-                className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-white transition-opacity disabled:opacity-40"
+                className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-white transition-[scale,opacity] duration-150 ease-out disabled:opacity-40 active:not-disabled:scale-[0.96]"
                 onClick={() => void createSkill()}
               >
                 创建
@@ -257,7 +257,7 @@ export default function CapabilitiesDialog() {
                       className="flex w-full items-center gap-2.5 px-2.5 py-2 text-left"
                       onClick={() => setExpanded(isOpen ? null : s.name)}
                     >
-                      <BookOpen className="h-4 w-4 shrink-0 text-text-4" />
+                      <BookOpen className="h-4 w-4 shrink-0 text-text-4" strokeWidth={2} />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-xs font-medium text-text">
                           {s.name}
@@ -288,7 +288,7 @@ export default function CapabilitiesDialog() {
                                 type="button"
                                 disabled={busy}
                                 data-track="chat.skills.editSave"
-                                className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-white transition-opacity disabled:opacity-40"
+                                className="rounded-md bg-accent px-3 py-1.5 text-[11px] font-medium text-white transition-[scale,opacity] duration-150 ease-out disabled:opacity-40 active:not-disabled:scale-[0.96]"
                                 onClick={() => void saveEdit(s.name)}
                               >
                                 保存
@@ -314,7 +314,7 @@ export default function CapabilitiesDialog() {
                               <button
                                 type="button"
                                 data-track="chat.skills.invoke"
-                                className="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 px-2.5 py-1.5 text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+                                className="inline-flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 px-2.5 py-1.5 text-[11px] text-text-2 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:border-accent-soft hover:text-text active:not-disabled:scale-[0.96]"
                                 onClick={() => {
                                   window.dispatchEvent(
                                     new CustomEvent(CHAT_INSERT_TEXT_EVENT, {
@@ -333,7 +333,7 @@ export default function CapabilitiesDialog() {
                                 <button
                                   type="button"
                                   data-track="chat.skills.editStart"
-                                  className="rounded-md border border-hairline bg-surface-1 px-2.5 py-1 text-[11px] text-text-2 transition-colors hover:border-accent-soft hover:text-text"
+                                  className="rounded-md border border-hairline bg-surface-1 px-2.5 py-1 text-[11px] text-text-2 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:border-accent-soft hover:text-text active:not-disabled:scale-[0.96]"
                                   onClick={() => {
                                     setEditing(s.name);
                                     setDraft(s.body);

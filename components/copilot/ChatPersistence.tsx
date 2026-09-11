@@ -17,6 +17,7 @@ import { useCanvasStore } from "@/lib/canvas/store";
 import { langgraphAgent } from "@/app/agent-provider";
 import { pendingAgentThreadId, useChatSession } from "@/lib/chat/session";
 import { decodeContent, encodeContent } from "@/lib/chat/content";
+import { migrateLegacyUserContent } from "@/lib/chat/messageContext";
 import {
   cancelChatRun,
   createChatThread,
@@ -190,7 +191,9 @@ export default function ChatPersistence() {
           history.map((h) => ({
             id: h.id,
             role: h.role,
-            content: decodeContent(h.content),
+            // 旧格式（附件正文拼在正文里、无界标）在**水合边界**一次性迁移成
+            // 「显示文本 + 上下文段」，老会话也出 chip 而不是一堵字墙
+            content: migrateLegacyUserContent(decodeContent(h.content)),
           })) as never,
         );
         hydratedKeyRef.current = key;

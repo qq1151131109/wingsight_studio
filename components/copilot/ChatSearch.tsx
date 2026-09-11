@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
 import { langgraphAgent } from "@/app/agent-provider";
 import { escapeStickToBottom, findViewport } from "@/lib/chat/scroll";
+import { visibleUserText } from "@/lib/chat/messageContext";
 import { useChatSearch } from "@/lib/chat/search";
 
 const HL_ALL = "ws-search";
@@ -29,17 +30,11 @@ const HL_CUR = "ws-search-current";
 
 type ChatMsg = { id?: string; role?: string; content?: unknown };
 
-/** AG-UI content → 纯文本（与 TurnLocator 同口径：text part 拼接 + 空白折叠） */
+/** AG-UI content → 用户可见文本：**只算用户自己说的话**，附件正文/引用行（消息
+ *  里的上下文段，见 lib/chat/messageContext.ts）不参与搜索——界面上根本没渲染
+ *  它，搜出来的命中会无处高亮。与轮次轨摘要、气泡渲染共用一份口径 */
 function plainText(content: unknown): string {
-  const parts: string[] = [];
-  if (typeof content === "string") parts.push(content);
-  else if (Array.isArray(content))
-    for (const b of content) {
-      if (!b || typeof b !== "object") continue;
-      const p = b as Record<string, unknown>;
-      if (p.type === "text" && typeof p.text === "string") parts.push(p.text);
-    }
-  return parts.join("\n").replace(/\s+/g, " ").trim();
+  return visibleUserText(content).replace(/\s+/g, " ").trim();
 }
 
 /** 一条命中：消息 id + 该消息内的第几处（1-based） */
@@ -379,7 +374,7 @@ export default function ChatSearch() {
       <button
         type="button"
         data-tip="上一处（Shift+Enter）" aria-label="上一处"
-        className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-text"
+        className="shrink-0 rounded p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:text-text active:not-disabled:scale-[0.96]"
         onClick={() => goTo(curRef.current - 1)}
       >
         <ChevronUp className="h-3.5 w-3.5" />
@@ -387,7 +382,7 @@ export default function ChatSearch() {
       <button
         type="button"
         data-tip="下一处（Enter）" aria-label="下一处"
-        className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-text"
+        className="shrink-0 rounded p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:text-text active:not-disabled:scale-[0.96]"
         onClick={() => goTo(curRef.current + 1)}
       >
         <ChevronDown className="h-3.5 w-3.5" />
@@ -396,7 +391,7 @@ export default function ChatSearch() {
         type="button"
         data-tip="关闭搜索（Esc）" aria-label="关闭搜索"
         data-track="chat.searchClose"
-        className="shrink-0 rounded p-0.5 text-text-4 transition-colors hover:text-text"
+        className="shrink-0 rounded p-1.5 text-text-4 transition-[scale,background-color,border-color,color] duration-150 ease-out hover:text-text active:not-disabled:scale-[0.96]"
         onClick={close}
       >
         <X className="h-3.5 w-3.5" />
