@@ -210,9 +210,9 @@ async def _fake_search(q: str, limit: int = 10) -> list[dict]:
 
 async def _fake_plan(asset: dict, rounds: list[dict]) -> dict:
     plan_calls.append([dict(r) for r in rounds])
-    # 二轮起换词：同词会被跨轮去重清空（found=无候选），测不出补搜
-    qs = ["q1", "q2", "q3"] if len(plan_calls) == 1 else ["q4", "q5", "q6"]
-    return {"queries": qs, "text_queries": [], "enough": False}
+    # 每轮换新词：同词会被跨轮去重清空（fresh 为空就不终选），测不出补搜与判停
+    n = len(plan_calls)
+    return {"queries": [f"q{n}a", f"q{n}b", f"q{n}c"], "text_queries": [], "enough": False}
 
 
 async def _fake_dl(url: str, referer: str = "") -> str:
@@ -291,7 +291,28 @@ with _db() as _c:
     ).fetchone()[0]
 expect(n == 6, f"C3 首轮候选保留可手动采纳：{n}")
 
-# C4. 手填词：不跑 planner 不跑文路，全量手工词进首轮
+# C5. 无进展判停：连续两轮零新推荐 → 停（搜索源给不出，不烧到 5 轮上限）
+#     2026-09-12 端到端实测雪湾村：模型每轮都报「缺乏片场美术语境」，推荐恒 3 张
+#     够不到判停线 4，旧逻辑白跑 5 轮 23 词
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([[], []])
+job = _mk_job("j5"); _reset_sem()
+asyncio.run(imgresearch._run_research("j5", PID, "n6", [], {"name": "无进展资产", "type": "scene"}))
+expect(job["status"] == "done", f"C5 任务应完成：{job.get('error')}")
+expect(len(search_log) == 6, f"C5 两轮零推荐即停（不是跑满 5 轮 15 词）：{len(search_log)}")
+expect(len(plan_calls) == 2, f"C5 planner 只叫两次：{len(plan_calls)}")
+expect("零新推荐" in job.get("note", ""), f"C5 note 明说无进展判停：{job.get('note')}")
+
+# C5b. 有进展就不触发：首轮 0 张、二轮 1 张 → 继续到三轮达标才停
+# （二轮候选 index 是 6-11、三轮是 12-17——终选 index 是全局位次）
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([[], [6], [12, 13, 14, 15]])
+job = _mk_job("j5b"); _reset_sem()
+asyncio.run(imgresearch._run_research("j5b", PID, "n7", [], {"name": "先无后有", "type": "scene"}))
+expect(job["status"] == "done", f"C5b 任务应完成：{job.get('error')}")
+expect(len(search_log) == 9, f"C5b 中途有进展不判停、跑到推荐达标：{len(search_log)}")
+
+# C6. 手填词：不跑 planner 不跑文路，全量手工词进首轮
 search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
 select_responses.append([0, 3, 6, 5])
 job = _mk_job("j4"); _reset_sem()
@@ -300,10 +321,10 @@ asyncio.run(
         "j4", PID, "n4", ["手词A", "手词B", "手词C", "手词D"], {"name": "手动", "type": "costume"}
     )
 )
-expect(job["status"] == "done", f"C4 任务应完成：{job.get('error')}")
-expect(search_log == ["手词A", "手词B", "手词C", "手词D"], f"C4 手填词原样进首轮：{search_log}")
-expect(plan_calls == [], f"C4 手动模式不跑 planner：{plan_calls}")
-expect(job.get("researchBrief") == "", "C4 手动模式不跑文路")
+expect(job["status"] == "done", f"C6 任务应完成：{job.get('error')}")
+expect(search_log == ["手词A", "手词B", "手词C", "手词D"], f"C6 手填词原样进首轮：{search_log}")
+expect(plan_calls == [], f"C6 手动模式不跑 planner：{plan_calls}")
+expect(job.get("researchBrief") == "", "C6 手动模式不跑文路")
 
 # ───────────────── D. 来源页语境抓取（终选佐证，P4） ─────────────────
 
@@ -311,8 +332,17 @@ _d0 = PASS[0]
 
 
 class _CtxResp:
-    def __init__(self, text: str = "", ctype: str = "text/html; charset=utf-8", status: int = 200):
+    def __init__(
+        self,
+        text: str = "",
+        ctype: str = "text/html; charset=utf-8",
+        status: int = 200,
+        raw: bytes | None = None,
+        charset: str = "",
+    ):
         self.text = text
+        self.content = raw if raw is not None else text.encode("utf-8")
+        self.charset_encoding = charset
         self.status_code = status
         self.headers = {"content-type": ctype}
 
@@ -345,19 +375,48 @@ class _CtxClient:
 _real_async_client = imgresearch.httpx.AsyncClient
 imgresearch.httpx.AsyncClient = _CtxClient
 
-_long_html = "<html><body>" + "美术设计置景特辑 " * 60 + "</body></html>"
+# 摘要优先（meta description）
+_meta_html = (
+    '<html><head><meta name="description" content="1980年代浙南沿海村落的美术置景手记，'
+    '含砖木老屋与窄巷的空间关系解析。"></head>'
+    '<body><nav>首页 新闻 体育 财经</nav><p>' + "正文段落内容。" * 30 + "</p></body></html>"
+)
+# 无摘要 → 退正文段落，且要跳过长导航短行
+_para_html = "<html><body><nav>首页 导航 登录 注册</nav><p>短</p><p>" + "美术设计置景特辑纪实。" * 12 + "</p></body></html>"
+# GBK 页面（不声明 charset）：内容按 GBK 编码，期望不出现乱码
+_gbk_text = '<html><head><meta name="description" content="温州一家人美术特辑：沿海村落置景与旧巷老屋。"></head></html>'
+_gbk_html = _gbk_text.encode("gb18030")
+
 _CtxClient.replies = {
-    "http://ex.com/ok": _CtxResp(_long_html),
+    "http://ex.com/meta": _CtxResp(_meta_html),
+    "http://ex.com/para": _CtxResp(_para_html),
+    "http://ex.com/gbk": _CtxResp(raw=_gbk_html, charset=""),
+    "http://ex.com/utf8decl": _CtxResp(raw=_gbk_text.encode("utf-8"), charset="utf-8"),
     "http://ex.com/pdf": _CtxResp("binary", ctype="application/pdf"),
     "http://ex.com/dead": _CtxResp(status=404),
 }
 
-_ctx = asyncio.run(imgresearch._fetch_page_context("http://ex.com/ok"))
-expect(len(_ctx) == 200 and "美术设计" in _ctx and "\n" not in _ctx, f"D1 html 剥正文截 200 压一行：len={len(_ctx)}")
-expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/pdf")) == "", "D2 非 html 返回空串")
-expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/dead")) == "", "D4 HTTP 错误软失败空串")
-expect(asyncio.run(imgresearch._fetch_page_context("")) == "", "D3 空 url 空串")
-expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/none")) == "", "D5 网络异常软失败空串")
+_ctx = asyncio.run(imgresearch._fetch_page_context("http://ex.com/meta"))
+expect(
+    _ctx.startswith("1980年代浙南沿海村落的美术置景手记") and "首页 新闻" not in _ctx,
+    f"D1 摘要优先、导航不进语境：{_ctx[:60]}",
+)
+_ctx2 = asyncio.run(imgresearch._fetch_page_context("http://ex.com/para"))
+expect("美术设计置景特辑纪实" in _ctx2 and "导航" not in _ctx2, f"D2 无摘要退正文段落且跳过导航短行：{_ctx2[:50]}")
+_ctx3 = asyncio.run(imgresearch._fetch_page_context("http://ex.com/gbk"))
+expect(
+    "温州一家人美术特辑" in _ctx3 and "\ufffd" not in _ctx3,
+    f"D3 GBK 页面不乱码（resp.text 默认 UTF-8 曾整页乱码）：{_ctx3[:50]}",
+)
+expect(
+    "温州一家人美术特辑" in asyncio.run(imgresearch._fetch_page_context("http://ex.com/utf8decl")),
+    "D4 声明 utf-8 的正常解",
+)
+expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/pdf")) == "", "D5 非 html 返回空串")
+expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/dead")) == "", "D6 HTTP 错误软失败空串")
+expect(asyncio.run(imgresearch._fetch_page_context("")) == "", "D7 空 url 空串")
+expect(asyncio.run(imgresearch._fetch_page_context("http://ex.com/none")) == "", "D8 网络异常软失败空串")
+expect(len(asyncio.run(imgresearch._fetch_page_context("http://ex.com/meta"))) <= 200, "D9 语境长度仍受 200 字上限")
 
 imgresearch.httpx.AsyncClient = _real_async_client
 print(f"D 组（来源页语境抓取）通过：{PASS[0] - _d0}")

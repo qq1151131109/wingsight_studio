@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import os
 import random
@@ -41,6 +42,11 @@ MAX_RESEARCH_ROUNDS = 5
 # 终选推荐判停线：累计推荐到这个数就不再补搜（auto_adopt 取 3，留 1 席
 # 余量；终选提示词每批推荐上限 6，首轮达标即停是常态路径）
 _SELECT_ENOUGH_RECS = 4
+# 无进展判停：连续这么多轮终选颗粒无收（零新推荐）就停——「推荐不足」有两种
+# 含义，一是还没搜够、二是搜索源根本给不出（中文影视美术参考大量属于后者）。
+# 只按前者判会一路补满 5 轮烧额度：2026-09-12 端到端实测雪湾村，模型每轮都
+# 报「候选均缺乏片场美术、置景设计语境」，推荐恒 3 张够不到 4，白跑 23 词
+_NO_PROGRESS_ROUNDS = 2
 # 单次调研任务最多入库候选数（防失控安全网；预筛 + 证据制判停后常态远低）
 MAX_CANDIDATES_PER_JOB = 250
 # 采纳上限：对齐出图模型参考图上限的宽顶（seedream-5-pro 融合通道 10 张；
@@ -2120,15 +2126,74 @@ async def download_image(url: str, referer: str = "") -> str:
 
 
 # 终选佐证：来源页语境直抓（轻通道，不与考据文路抢 Jina/TikHub 重基建——
-# 佐证只要「这页在聊什么」的语境，导航与开头文字就够，直抓失败就空串放行）
+# 佐证只要「这页在聊什么」，摘要/正文段就够，直抓失败就空串放行）
 _PAGE_CONTEXT_TIMEOUT = httpx.Timeout(10.0)
 _PAGE_CONTEXT_CHARS = 200
 _PAGE_CONTEXT_CONCURRENCY = 8
 _PAGE_CONTEXT_DEADLINE = 40.0
+# 摘要优先（meta description / og:description 是页面作者写的「这页在聊什么」，
+# 短且准）；没有摘要才退到正文段落。属性顺序两种都要收（name 在 content 前/后）
+_META_DESC_RES = (
+    re.compile(
+        r'<meta[^>]+(?:name|property)=["\'](?:description|og:description)["\'][^>]*?'
+        r'content=["\']([^"\']{10,})',
+        re.I,
+    ),
+    re.compile(
+        r'<meta[^>]+content=["\']([^"\']{10,})["\'][^>]*?'
+        r'(?:name|property)=["\'](?:description|og:description)["\']',
+        re.I,
+    ),
+)
+_P_RE = re.compile(r"<p[^>]*>(.*?)</p>", re.I | re.S)
+
+
+def _decode_html(resp: Any) -> str:
+    """按 content-type 声明的 charset 解码；没声明就 utf-8 严格试，失败退
+    gb18030——中文老站（新浪/网易 2000s 页面）多为 GBK 且不声明编码，
+    httpx 的 resp.text 默认 UTF-8 会把整页解成乱码（2026-09-12 实测 132
+    个来源页：34 个乱码、59 个只剩标题重复，佐证信号 84% 作废）。"""
+    raw = resp.content
+    enc = ""
+    try:
+        enc = (getattr(resp, "charset_encoding", "") or "").strip()
+    except Exception:  # noqa: BLE001 第三方响应对象可能没有该属性
+        enc = ""
+    if enc:
+        try:
+            return raw.decode(enc, errors="replace")
+        except LookupError:
+            pass
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("gb18030", errors="replace")
+
+
+def _page_context_from_html(markup: str) -> str:
+    """从页面 HTML 提「这页在聊什么」：摘要优先 → 正文段落（跳过导航短行）。
+    取页面开头 200 字拿到的是导航与标题——对判断配图性质没有价值。"""
+    import research
+
+    parts: list[str] = []
+    for rx in _META_DESC_RES:
+        m = rx.search(markup)
+        if m:
+            # meta content 里也常有 <br> 等标签字面量，统一过一遍剥标签
+            parts.append(research._strip_html(m.group(1)))
+            break
+    if not parts:
+        for raw_p in _P_RE.findall(markup)[:10]:
+            text = html.unescape(research._strip_html(raw_p))
+            if len(text) > 20:  # 导航/按钮类短行不要
+                parts.append(text)
+            if sum(len(p) for p in parts) >= _PAGE_CONTEXT_CHARS:
+                break
+    return " ".join(" ".join(p.split()) for p in parts)[:_PAGE_CONTEXT_CHARS]
 
 
 async def _fetch_page_context(url: str) -> str:
-    """终选佐证：直抓来源页 HTML，剥出正文开头压成一行（≤200 字）。
+    """终选佐证：直抓来源页 HTML，提摘要/正文压成一行（≤200 字）。
 
     给终选模型判断「图片在原文里的语境」——文章题图/宣传物料 vs 美术特辑
     配图，看图看不出来、看页面聊什么一目了然（091102 SC_5 采纳三张报道
@@ -2136,8 +2201,6 @@ async def _fetch_page_context(url: str) -> str:
     终选，语境为空不等于图不好）。"""
     if not url:
         return ""
-    import research
-
     try:
         async with httpx.AsyncClient(timeout=_PAGE_CONTEXT_TIMEOUT, follow_redirects=True) as client:
             resp = await client.get(url, headers={"User-Agent": _UA})
@@ -2145,8 +2208,7 @@ async def _fetch_page_context(url: str) -> str:
             ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
             if "html" not in ctype:
                 return ""
-            raw = research._strip_html(resp.text)[:_PAGE_CONTEXT_CHARS]
-            return " ".join(raw.split())
+            return _page_context_from_html(_decode_html(resp))
     except Exception:  # noqa: BLE001 佐证是锦上添花，拿不到就空串
         return ""
 
@@ -2486,6 +2548,7 @@ async def _run_research(
     _, era = _project_scope(project_id)
     asset_name = str(asset.get("name") or "")
     rounds: list[dict[str, Any]] = []
+    stall = 0  # 连续零新推荐的轮数（无进展判停用）
     manual = bool(queries)
     try:
         for round_num in range(1, MAX_RESEARCH_ROUNDS + 1):
@@ -2655,6 +2718,17 @@ async def _run_research(
                 )
                 if len(rec_order) >= _SELECT_ENOUGH_RECS:
                     break  # 推荐够了：先搜后判再补的判停线
+                # 无进展判停：连续几轮零新推荐说明搜索源给不出，别继续烧额度
+                # （补搜是给「还没搜够」用的，救不了「搜了也没有」）
+                if not valid:
+                    stall += 1
+                    if stall >= _NO_PROGRESS_ROUNDS:
+                        select_notes.append(
+                            f"连续 {stall} 轮零新推荐，判定搜索源无更多可用参考，停止补搜"
+                        )
+                        break
+                else:
+                    stall = 0
             except Exception as exc:  # noqa: BLE001
                 errors["终选"] = str(exc)[:160]
                 # 终选链路故障时盲搜补轮没有意义（旧结构的数量想象）——保住
@@ -2668,12 +2742,16 @@ async def _run_research(
             job["status"] = "done"
             job["error"] = "没有搜到候选图，请换个关键词"
             return
+        # note 任何情况都落（含无进展判停的说明）——推荐为空时用户也得知道
+        # 「为什么停了」，不然只看到候选一堆却没有任何推荐理由
+        select_note = "；".join(select_notes)[:300]
+        if select_note:
+            job["note"] = select_note
         if rec_order:
             try:
                 _apply_recommendation(
-                    project_id, node_id, all_rows, {"recommended": rec_order, "note": "；".join(select_notes)[:300]}
+                    project_id, node_id, all_rows, {"recommended": rec_order, "note": select_note}
                 )
-                job["note"] = "；".join(select_notes)[:300]
                 # 终选完自动采纳 top-K 推荐（rec_rank 升序）——LLM 已挑过一轮，
                 # 再等用户逐张手勾是把模型判断抄写一遍；采纳只是标记不花额度，
                 # 用户可在「找参考图」面板随时改选（2026-09-06 用户「为啥没自动选」）
