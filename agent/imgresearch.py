@@ -47,6 +47,10 @@ _SELECT_ENOUGH_RECS = 4
 # 只按前者判会一路补满 5 轮烧额度：2026-09-12 端到端实测雪湾村，模型每轮都
 # 报「候选均缺乏片场美术、置景设计语境」，推荐恒 3 张够不到 4，白跑 23 词
 _NO_PROGRESS_ROUNDS = 2
+# 缺口追补轮数（B 档）：推荐数够了但终选仍报缺口时，额外追几轮定向补缺。
+# 缺口 = 「资产要求但一张能当画面参考的都没有」的维度——出图时这些维度就没有
+# 参考，所以值得多花 1-2 轮；上限兜住成本，且要求缺口在缩小（补不动就止损）。
+_GAP_CHASE_ROUNDS = 2
 # 单次调研任务最多入库候选数（防失控安全网；预筛 + 证据制判停后常态远低）
 MAX_CANDIDATES_PER_JOB = 250
 # 采纳上限：对齐出图模型参考图上限的宽顶（seedream-5-pro 融合通道 10 张；
@@ -2551,6 +2555,8 @@ async def _run_research(
     asset_name = str(asset.get("name") or "")
     rounds: list[dict[str, Any]] = []
     stall = 0  # 连续零新推荐的轮数（无进展判停用）
+    gap_chase = 0  # 已为「追缺口」额外跑的轮数（B 档，上限 _GAP_CHASE_ROUNDS）
+    prev_missing: set[str] = set()  # 上一轮的缺失维度（判缺口是否在收敛）
     manual = bool(queries)
     try:
         for round_num in range(1, MAX_RESEARCH_ROUNDS + 1):
@@ -2727,8 +2733,25 @@ async def _run_research(
                         + _gap_clause(gap_covered, gap_missing),
                     }
                 )
+                # 判停（B 档起缺口收敛参与决策）：
+                # - 推荐数 = 「有没有能用的图」；missing = 「有没有对路的图」。
+                #   只看推荐数会停在一堆凑数图上（实测：推荐 4 张即停，采纳集合
+                #   仍缺俯瞰全景/门楼院落——出图时这些维度就没有参考）。
+                missing_now = {d for d in (selection.get("missing") or []) if d}
                 if len(rec_order) >= _SELECT_ENOUGH_RECS:
-                    break  # 推荐够了：先搜后判再补的判停线
+                    if not missing_now:
+                        break  # 推荐够 + 缺口清空 = 理想终点
+                    # 还有缺口 → 定向追补，但最多 _GAP_CHASE_ROUNDS 轮，且要求缺口
+                    # 在缩小（补不动就止损——无收益的轮次不烧额度）
+                    shrinking = missing_now < prev_missing if prev_missing else True
+                    if gap_chase >= _GAP_CHASE_ROUNDS or not shrinking:
+                        select_notes.append(
+                            f"推荐已够但仍有缺口（{'、'.join(list(missing_now)[:3])}）"
+                            f"{'，追补轮数用尽' if gap_chase >= _GAP_CHASE_ROUNDS else '，追补未收敛'}，停止补搜"
+                        )
+                        break
+                    gap_chase += 1
+                prev_missing = missing_now
                 # 无进展判停：连续几轮零新推荐说明搜索源给不出，别继续烧额度
                 # （补搜是给「还没搜够」用的，救不了「搜了也没有」）
                 if not valid:

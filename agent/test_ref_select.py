@@ -358,6 +358,42 @@ expect("仍缺维度：巷道近景与铺地、室内陈设" in _found, f"C7 缺
 expect("已覆盖维度：村落全景航拍" in _found, f"C7 已覆盖维度也要告知（防重复搜）：{_found}")
 expect("终选推荐 1/6" in _found, f"C7 数量信号保留：{_found}")
 
+# C8. 缺口追补（B 档）：推荐数够了但仍有缺口 → 不立即停，追一轮定向补缺；
+#     追补后缺口清空即停（推荐数只回答「有没有能用的图」，缺口回答「有没有对路的图」）
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([
+    {"recommended": [0, 1, 2, 3], "note": "够数但缺巷道", "covered": ["村落全景"], "missing": ["巷道近景与铺地"]},
+    {"recommended": [], "note": "补上了", "covered": ["巷道近景"], "missing": []},
+])
+job = _mk_job("j7"); _reset_sem()
+asyncio.run(imgresearch._run_research("j7", PID, "n9", [], {"name": "缺口追补", "type": "scene"}))
+expect(job["status"] == "done", f"C8 任务应完成：{job.get('error')}")
+expect(len(search_log) == 6, f"C8 推荐够但有缺口应多追一轮：{search_log}")
+expect(len(plan_calls) == 2, f"C8 planner 应被叫两次：{len(plan_calls)}")
+
+# C9. 缺口不收敛 → 追一轮后止损（补不动就不再烧额度）
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([
+    {"recommended": [0, 1, 2, 3], "note": "", "missing": ["A维度", "B维度"]},
+    {"recommended": [], "note": "", "missing": ["A维度", "B维度"]},
+])
+job = _mk_job("j8"); _reset_sem()
+asyncio.run(imgresearch._run_research("j8", PID, "n10", [], {"name": "缺口停滞", "type": "scene"}))
+expect(len(search_log) == 6, f"C9 缺口未收敛应止损在 2 轮：{len(search_log)}")
+expect("追补未收敛" in job.get("note", ""), f"C9 note 应说明止损原因：{job.get('note')}")
+
+# C10. 缺口持续收敛 → 追满上限即停（_GAP_CHASE_ROUNDS=2）
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([
+    {"recommended": [0, 1, 2, 3], "note": "", "missing": ["A", "B", "C"]},
+    {"recommended": [], "note": "", "missing": ["A", "B"]},
+    {"recommended": [], "note": "", "missing": ["A"]},
+])
+job = _mk_job("j9"); _reset_sem()
+asyncio.run(imgresearch._run_research("j9", PID, "n11", [], {"name": "缺口收敛", "type": "scene"}))
+expect(len(search_log) == 9, f"C10 缺口在收敛但追补上限 2 轮：{len(search_log)}")
+expect("追补轮数用尽" in job.get("note", ""), f"C10 note 应说明上限：{job.get('note')}")
+
 # C6. 手填词：不跑 planner 不跑文路，全量手工词进首轮
 search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
 select_responses.append([0, 3, 6, 5])
