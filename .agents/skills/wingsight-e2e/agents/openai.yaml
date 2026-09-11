@@ -1,0 +1,3 @@
+interface:
+  display_name: "Wingsight 回归验证"
+  short_description: "改动域 → 该跑哪个回归、mock 还是真跑、收尾清理"

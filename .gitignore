@@ -50,7 +50,7 @@ __pycache__/
 .zcode/
 
 # 参考项目（不进仓库）
-references/
+/references/
 
 # 出图产物（运行时生成）
 agent/static/assets/
