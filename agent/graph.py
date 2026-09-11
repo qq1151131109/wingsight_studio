@@ -1467,7 +1467,7 @@ async def _fold_into_summary(prev_summary: str, messages: List[Any]) -> str:
     """把一批旧消息并入滚动摘要（≤1500 字）：保留关键事实、已定决策、
     实体设定与用户偏好，丢寒暄与过程性工具往返。"""
     model = ChatOpenAI(
-        model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
+        model=os.environ.get("AGENT_MODEL", "deepseek-flash"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("AGENT_API_KEY", ""),
         temperature=0.2,
@@ -1542,7 +1542,7 @@ async def generate_thread_title(user_text: str, assistant_text: str) -> str:
     # thinking_kwargs 与主循环同款：GLM 系开思考；其余 reasoning_effort=none
     # （实测 luna 会把小 max_tokens 全烧在 reasoning 上，finish=length 标题为空）
     model = ChatOpenAI(
-        model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
+        model=os.environ.get("AGENT_MODEL", "deepseek-flash"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("AGENT_API_KEY", ""),
         temperature=0.2,  # 命名要稳定不要创意（gemini 工具型子代理低温度范式）
@@ -1761,7 +1761,7 @@ FRONTEND_TOOL_ALLOWLIST = {"canvas_ops", "canvas_query", "canvas_validate_ops", 
 # ---------- 多模态附件（图片/视频随消息上传） ----------
 
 # 视觉模型名探测（AGENT_VISION_ENABLED=1/0 可强制覆盖）。
-# deepseek-chat 等纯文本模型收到 image_url 块会 400，必须在净化阶段剥离。
+# 纯文本模型收到 image_url 块会 400，必须在净化阶段剥离。
 _VISION_MODEL_HINTS = (
     "vl", "vision", "4v", "gpt-4o", "gpt-4.1", "o3", "o4",
     "gemini", "claude", "pixtral", "internvl",
@@ -1771,7 +1771,7 @@ def _vision_enabled() -> bool:
     explicit = (os.environ.get("AGENT_VISION_ENABLED") or "").strip().lower()
     if explicit:
         return explicit in ("1", "true", "yes", "on")
-    model = (os.environ.get("AGENT_MODEL") or "deepseek-chat").lower()
+    model = (os.environ.get("AGENT_MODEL") or "deepseek-flash").lower()
     return any(h in model for h in _VISION_MODEL_HINTS)
 
 
@@ -2320,7 +2320,7 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # DeepSeek 官方 medium（用户拍板「打开中等思考」）
     thinking_kwargs = _chat_reasoning_kwargs()
     model = _OneShotToolArgsCompatChatOpenAI(
-        model=os.environ.get("AGENT_MODEL", "deepseek-chat"),
+        model=os.environ.get("AGENT_MODEL", "deepseek-flash"),
         base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         api_key=os.environ.get("AGENT_API_KEY", ""),
         temperature=0.3,

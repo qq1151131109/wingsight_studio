@@ -186,7 +186,7 @@ add_langgraph_fastapi_endpoint(app, agent, path="/")
 def healthz() -> dict:
     return {
         "ok": True,
-        "model": os.environ.get("AGENT_MODEL", "deepseek-chat"),
+        "model": os.environ.get("AGENT_MODEL", "deepseek-flash"),
         "base_url": os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
         "skills": len(graph.skills.load_skill_registry()),
         "imagegen": bool(os.environ.get("LANGFLOW_IMAGEGEN_FLOW_ID")),

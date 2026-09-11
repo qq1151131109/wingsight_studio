@@ -25,9 +25,7 @@ _PLATFORM_MODELS: dict[str, list[dict[str, object]]] = {
         {"name": "claude-sonnet-5", "tool_calling": True},
     ],
     "DeepSeek": [
-        {"name": "deepseek-v4-flash", "tool_calling": True},
-        {"name": "deepseek-v4-pro", "tool_calling": True, "reasoning": True},
-        {"name": "deepseek-v4-flash-vision-exp", "tool_calling": True},
+        {"name": "deepseek-flash", "tool_calling": True},
     ],
 }
 

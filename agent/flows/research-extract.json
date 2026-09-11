@@ -1271,5 +1271,6 @@
   "access_type": "PRIVATE",
   "flow_type": "workflow",
   "a2a_enabled": false,
-  "a2a_card_overrides": null
+  "a2a_card_overrides": null,
+  "id": "6263593f-d93e-43b5-ae36-cc1a59244941"
 }

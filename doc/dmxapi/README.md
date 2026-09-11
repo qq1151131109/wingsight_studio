@@ -14,7 +14,7 @@
 | 出图默认（资产/分镜/拆解链/聊天） | gpt-image-2-03 / -ssvip | `/v1/images/generations` + `/v1/images/edits`（参考图），quality 固定 high | [gpt-image-2-text-to-image](gpt-image-2-text-to-image.md) |
 | 出图（gemini 系） | gemini-3.1-flash-image | `/v1beta generateContent`（x-goog-api-key 认证） | [香蕉绘图](gemini-3.1-flash-image-preview.md) |
 | 出图（seedream 系） | doubao-seedream-5-0-pro | `/v1/responses` 多图融合（2~10 参考图） | [豆包即梦](doubao-seedream-5.0-lite-t2i.md) |
-| 文本（剧本/分镜表/拆解/提示词） | deepseek-v4-flash 等 | OpenAI chat 兼容 | [文本对话](openai-chat.md) / [openai请求格式](fanwei.md) |
+| 文本（剧本/分镜表/拆解/提示词） | gpt-5.6-luna / gemini-3.7-flash（DMX 路；glm 系走 BigModel 官方、deepseek-flash 走 DeepSeek 官方） | OpenAI chat 兼容 | [文本对话](openai-chat.md) / [openai请求格式](fanwei.md) |
 
 ## 目录
 
