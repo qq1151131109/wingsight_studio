@@ -3192,10 +3192,21 @@ async def run_ref_select_flow(
     """LLM 终选：看候选图 → {recommended: [index...], note: str}。
 
     索引对应 candidates 顺序（0 基，payload 里已带全局 index），调用方
-    负责回填 recommended 字段。看图模型 gpt-5.6-luna（DMX gpt 通道）
+    负责回填 recommended 字段。看图模型经 DMX（flow 内默认 gemini），
     上游单请求限 50 张图（100 张实测报 "Too many images in request: 51,
-    maximum allowed: 50"），批大小定 50，>50 自动分批合并推荐；单批失败
-    只记该批，不拖垮其余批。"""
+    maximum allowed: 50"），批大小定 50；单批失败只记该批，不拖垮其余批。
+
+    **recommended 保持模型给的适配度顺序**（2026-09-12 修复）：终选提示词
+    要求「第 1 个就是你会最先拿去当参考的那张」，调用方按列表顺序排
+    rec_rank、自动采纳按它取 top-K——此前返回 sorted(set(...)) 把模型
+    排序销毁成了搜索位次序，auto_adopt_top 实际抓的是「推荐集里位次最
+    靠前的 3 张」，模型挑的好坏与采纳脱钩（091102 项目实锤：采纳了
+    「千万工程」现代照、漏掉模型想要的 80 年代图）。
+
+    多批（候选 >50）时两段式：各批粗排 → 把全部推荐合成一批做一次**全局
+    精排**（业界 reranker 范式；批间顺序只是搜索位次的回声，不精排的话
+    top 名次永远出自前 50 张）。精排只定顺序不砍推荐，失败软降级为批序
+    合并并在 note 明说。"""
     if not REF_SELECT_FLOW_ID:
         raise RuntimeError(
             "未配置 LANGFLOW_REF_SELECT_FLOW_ID（flow 见 agent/flows/ref-research-select.json）"
@@ -3205,16 +3216,14 @@ async def run_ref_select_flow(
     if not candidates:
         raise RuntimeError("终选需要至少一张候选图")
 
-    batches = [candidates[i : i + 50] for i in range(0, len(candidates), 50)]
-    recommended: List[int] = []
-    notes: List[str] = []
-    batch_errors: List[str] = []
-    for bi, batch in enumerate(batches, 1):
+    async def _call(batch: List[Dict[str, Any]], label: str) -> tuple[List[int], str]:
+        """单次终选调用（粗排每批一次、精排复用同一路径），3 次重试带间隔：
+        批量 10 路并发下终选偶发失败（重试即恢复），失败会导致该资产无推荐
+        预选，审阅体验明显劣化。"""
         # 字段拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，组件里
         # json.loads 报 Invalid control character（imagegen/画风反推同款防坑；
-        # 批量资产的 description 是多行正文，不拍平终选必炸）
-        # 所有字符串字段统一拍平（tweaks 传输会把 \n 反转义成裸换行，载荷里
-        # 任何多行字段都会炸组件的 json.loads——research_brief 注入时踩过）
+        # 批量资产的 description 是多行正文，不拍平终选必炸）；所有字符串字段
+        # 统一拍平（research_brief 注入时踩过）
         flat_asset = {
             k: " ".join(str(v).split()) if isinstance(v, str) else v
             for k, v in asset.items()
@@ -3230,34 +3239,66 @@ async def run_ref_select_flow(
                 "api_key": DMX_API_KEY,
             }
         }
-        # 每批 3 次重试带间隔：批量 10 路并发下终选偶发失败（重试即恢复），
-        # 失败会导致该资产无推荐预选，审阅体验明显劣化
-        batch_error: Exception | None = None
+        last_exc: Exception | None = None
         for attempt in range(3):
             try:
                 raw = await run_flow_blocking(REF_SELECT_FLOW_ID, input_value="", tweaks=tweaks)
-                out = _parse_flow_json(raw, f"参考图终选（第{bi}批）")
-                recommended.extend(
+                out = _parse_flow_json(raw, f"参考图终选（{label}）")
+                rec = [
                     int(i)
                     for i in (out.get("recommended") or [])
                     if isinstance(i, (int, float, str)) and str(i).strip().lstrip("-").isdigit()
-                )
-                if str(out.get("note") or "").strip():
-                    notes.append(f"第{bi}批：{str(out['note']).strip()}")
-                batch_error = None
-                break
-            except Exception as exc:  # noqa: BLE001 单批失败先重试再记错
-                batch_error = exc
+                ]
+                return rec, str(out.get("note") or "").strip()
+            except Exception as exc:  # noqa: BLE001 先重试再抛给调用方记批错
+                last_exc = exc
                 if attempt < 2:
                     await asyncio.sleep(1.5)
-        if batch_error is not None:
-            batch_errors.append(f"第{bi}批：{str(batch_error)[:100]}")
+        raise last_exc  # type: ignore[misc]
+
+    batches = [candidates[i : i + 50] for i in range(0, len(candidates), 50)]
+    recommended: List[int] = []
+    notes: List[str] = []
+    batch_errors: List[str] = []
+    for bi, batch in enumerate(batches, 1):
+        try:
+            rec, note = await _call(batch, f"第{bi}批")
+            recommended.extend(rec)
+            if note:
+                notes.append(f"第{bi}批：{note}")
+        except Exception as exc:  # noqa: BLE001 单批失败记错不拖垮其余批
+            batch_errors.append(f"第{bi}批：{str(exc)[:100]}")
     if batch_errors and not recommended and not notes:
         raise RuntimeError("；".join(batch_errors))
+    # 保序去重：单批内模型偶发重复输出同一 index（批间切片不相交不会撞）
+    ordered: List[int] = []
+    seen: set[int] = set()
+    for i in recommended:
+        if i not in seen:
+            seen.add(i)
+            ordered.append(i)
+    # 多批时全局精排：粗排各批独立挑图，批间顺序只是搜索位次的回声——把
+    # 推荐集（一般 6-18 张）合成一批再排一次，top 名次才是全局的。精排
+    # 输出的顺序在前、其余推荐按粗排序垫尾（精排只定顺序不砍推荐）。
+    if len(batches) > 1 and len(ordered) > 1:
+        by_index = {
+            int(c["index"]): c for c in candidates if str(c.get("index", "")).lstrip("-").isdigit()
+        }
+        rerank_rows = [by_index[i] for i in ordered if i in by_index]
+        if len(rerank_rows) > 1:
+            try:
+                rec, note = await _call(rerank_rows, "精排")
+                head = [i for i in rec if i in seen]
+                head_set = set(head)
+                ordered = head + [i for i in ordered if i not in head_set]
+                if note:
+                    notes.append(f"精排：{note}")
+            except Exception as exc:  # noqa: BLE001 精排失败降级为批序合并，明说
+                notes.append(f"精排失败（按分批顺序合并）：{str(exc)[:80]}")
     note = "；".join(notes)[:300]
     if batch_errors:
         note = (note + ("；" if note else "") + "；".join(batch_errors))[:300]
-    return {"recommended": sorted(set(recommended)), "note": note}
+    return {"recommended": ordered, "note": note}
 
 
 # ── 文本撰写/改写（画布文本卡/剧本卡底部输入条的直连管线）──────────────────────

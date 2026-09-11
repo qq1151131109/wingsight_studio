@@ -34,11 +34,14 @@ DB_PATH = Path(__file__).resolve().parent / "data" / "wingsight.db"
 
 # Serper /images 单次最多 10 条（接口上限）
 SERPER_MAX_PER_QUERY = 10
-# 迭代轮数上限（质量优先）：每轮结束 planner 依据全部轮次历史判 enough，
-# 不够则换角度补搜；上限只是防失控安全网，通常 2-3 轮即够
+# 迭代轮数上限（质量优先）：2026-09-12 起判停主判据是**终选推荐数**
+# （先搜后判再补：每轮搜完就终选，推荐累计 ≥_SELECT_ENOUGH_RECS 即停），
+# planner 的 enough 判停退居次级；上限只是防失控安全网
 MAX_RESEARCH_ROUNDS = 5
-# 单次调研任务最多入库候选数：5 轮 × 5 查询 × 10 条（去重后 ≤250）；
-# 终选模型 gpt-5.6-luna 上游单请求限 50 张图，自动分批跑
+# 终选推荐判停线：累计推荐到这个数就不再补搜（auto_adopt 取 3，留 1 席
+# 余量；终选提示词每批推荐上限 6，首轮达标即停是常态路径）
+_SELECT_ENOUGH_RECS = 4
+# 单次调研任务最多入库候选数（防失控安全网；预筛 + 证据制判停后常态远低）
 MAX_CANDIDATES_PER_JOB = 250
 # 采纳上限：对齐出图模型参考图上限的宽顶（seedream-5-pro 融合通道 10 张；
 # 具体模型的真实上限在出图时按 models.max_references 校验明报）
@@ -1912,6 +1915,32 @@ def _bump_serper_used(key_id: str) -> None:
         )
 
 
+# 下载前预筛的硬阈值与黑名单（2026-09-12）：终选本来就拒「短边 <480 除非
+# 信息独特」，先在搜索层把明显不够格的挡在下载带宽外——091102 项目单资产
+# 136 张候选全量下载，钱和时间都花在模型口头会拒的图上。阈值放宽到 400
+# （480-400 的中间地带留给终选按「信息独特」例外裁量）。
+_MIN_IMAGE_SIDE = 400
+# 域名黑名单只收终选提示词明列要拒的旅游电商/素材站（子串匹配 sourceDomain，
+# Serper 的 source 字段常带中文前缀如「人民图片- 人民网」所以必须子串匹配）。
+# 保守起步：Pinterest 等图库常有好参考，不进黑名单。
+_BANNED_DOMAIN_PARTS = (
+    "trip.com", "ctrip", "携程", "kkday", "qunar", "去哪儿",
+    "mafengwo", "马蜂窝", "taobao", "淘宝", "tmall",
+    "3d66", "cgmodel", "sketchup", "千图", "nipic", "包图",
+)
+
+
+def _prefilter_candidate(width: int, height: int, domain: str) -> bool:
+    """候选图下载前预筛：False = 不进候选（不下载、不占坑）。
+
+    宽高元数据缺失（=0）时照收——不能因为 Serper 没给尺寸就拒图，下载后
+    终选还能看真实画面裁量。"""
+    if width and height and min(width, height) < _MIN_IMAGE_SIDE:
+        return False
+    low = domain.lower()
+    return not any(p in low for p in _BANNED_DOMAIN_PARTS)
+
+
 async def search_serper_images(query: str, limit: int = SERPER_MAX_PER_QUERY) -> list[dict[str, Any]]:
     """Google 图片搜索经 Serper 号池：结构化 imageUrl/宽高/来源域/来源页。
 
@@ -1964,15 +1993,20 @@ async def search_serper_images(query: str, limit: int = SERPER_MAX_PER_QUERY) ->
                 continue
             seen.add(key)
             page_url = str(item.get("link") or "").strip()
+            domain = str(item.get("source") or "").strip() or _domain(page_url or url)
+            width = _int_or_zero(item.get("imageWidth"))
+            height = _int_or_zero(item.get("imageHeight"))
+            if not _prefilter_candidate(width, height, domain):
+                continue
             out.append(
                 {
                     "provider": "google",
                     "title": str(item.get("title") or "").strip() or url,
                     "sourceUrl": url,
                     "pageUrl": page_url,
-                    "sourceDomain": str(item.get("source") or "").strip() or _domain(page_url or url),
-                    "width": _int_or_zero(item.get("imageWidth")),
-                    "height": _int_or_zero(item.get("imageHeight")),
+                    "sourceDomain": domain,
+                    "width": width,
+                    "height": height,
                 }
             )
             if len(out) >= limit:
@@ -2381,17 +2415,31 @@ async def _run_research(
     queries: list[str],
     asset: dict[str, Any],
 ) -> None:
-    """调研主流程：搜索（≤2 轮，planner 判定补搜）→ LLM 终选 → 落库。
+    """调研主流程（2026-09-12 重构为「搜→下→终选」逐轮推进）：每轮
+    planner 出词（AI 模式首轮 3 词广撒网）→ 搜图下载 → **就本轮新增做一次
+    终选**；推荐累计 ≥_SELECT_ENOUGH_RECS 即停，不足才带「上轮终选推荐率」
+    的证据补搜——planner 看标题判不了候选质量，旧结构按数量想象补搜
+    （091102 项目实测每资产 17.6 词、136 张候选，下载带宽全花在模型口头
+    会拒的图上），业界 deep research 的判停也是「看检索结果说话」而不是
+    数数。planner 的 enough 判停保留为次级。手填 queries 时首轮用手工词
+    （不跑文路）。下载段每轮受 150s 死线约束。
 
-    手填 queries 时首轮用手工词；否则每轮由 planner flow 生成考据向搜索词
-    （第二轮起带已完成轮次摘要，自动换角度）。下载段整体受 150s 死线约束。"""
+    终选推荐的全局 index = 该行在 all_rows 里的位次；跨轮顺序 = 轮序在前
+    （首轮是 planner 主角度）、轮内 = 模型适配度序（skills 侧保序）。"""
     import skills
 
     job = REF_JOBS.get(job_id)
     if job is None:
         return
     errors: dict[str, str] = {}
-    merged: list[dict[str, Any]] = []
+    all_rows: list[dict[str, Any]] = []  # 全部已下载候选（位次即全局 index）
+    rec_order: list[int] = []  # 终选推荐（轮序在前、轮内模型序）
+    select_notes: list[str] = []
+    brief = ""
+    brief_sources: list[dict[str, Any]] = []
+    brief_joined = False
+    text_task: asyncio.Task | None = None
+    inserted = False
     # 跨轮次去重：已采纳的候选（连着参考卡）永久占坑，重搜不得重复入库；
     # 未采纳旧行在新结果落库前统一清掉（重跑=旧考古层作废）
     with _conn() as _c:
@@ -2403,23 +2451,22 @@ async def _run_research(
                 (project_id, node_id),
             )
         }
+    _, era = _project_scope(project_id)
+    asset_name = str(asset.get("name") or "")
     rounds: list[dict[str, Any]] = []
     manual = bool(queries)
     try:
-        job["phase"] = "出搜索词"
-        text_task: asyncio.Task | None = None
         for round_num in range(1, MAX_RESEARCH_ROUNDS + 1):
+            job["phase"] = "出搜索词"
             if round_num == 1:
-                # 首轮：手填词直用；AI 模式由 planner 出词（同时出文字考据词，
-                # fork：文路后台开跑与图路搜索下载并行；手填词是用户亲自掌舵
-                # 搜图，不跑文路）
+                # 首轮：手填词直用；AI 模式由 planner 出词（首轮只取 3 词广撒网，
+                # 补不补搜由终选证据说了算）；同时出文字考据词，fork 文路与
+                # 图路搜索下载并行（手填词是用户亲自掌舵搜图，不跑文路）
                 if manual:
-                    round_queries = queries
-                    job["phase"] = "搜图与下载"
+                    round_queries = list(queries)
                 else:
                     plan = await skills.run_ref_plan_flow(asset, [])
-                    round_queries = plan["queries"]
-                    job["phase"] = "搜图与下载"
+                    round_queries = plan["queries"][:3]
                     text_queries = list(plan.get("text_queries") or [])
                     if text_queries:
                         text_task = asyncio.create_task(
@@ -2430,7 +2477,11 @@ async def _run_research(
                 if plan["enough"]:
                     break
                 round_queries = plan["queries"]
-            round_start = len(merged)
+            if len(all_rows) >= MAX_CANDIDATES_PER_JOB:
+                break  # 全局帽收口
+            # 搜索本轮词（查询间隔 0.3s：单 job 内串行，号池在并发 job 间轮转）
+            job["phase"] = f"搜图与下载（第{round_num}轮）"
+            fresh: list[dict[str, Any]] = []
             for query in round_queries:
                 items = await _guarded(search_serper_images(query), "google", errors)
                 for item in items:
@@ -2439,110 +2490,149 @@ async def _run_research(
                         continue
                     seen.add(key)
                     item["query"] = query
-                    merged.append(item)
-                await asyncio.sleep(0.3)  # 查询间隔：单 job 内串行，号池在 100 并发 job 间轮转
-            # rounds 只记本轮增量摘要（多轮下累计摘要重复且撑长 planner 输入）
-            rounds.append(
-                {"queries": round_queries, "found": _rounds_summary(merged[round_start:])}
-            )
-        if not merged:
+                    fresh.append(item)
+                await asyncio.sleep(0.3)
+            # 下载本轮新增（并发走全局信号量，10 路调研共享 32 并发防打爆源站，
+            # 单张失败不拖垮整批）；每轮 150s 死线（与文路 _BRIEF_WAIT_S 同档）：
+            # 超时取消在途下载保留已完成部分——曾为 110s，批量 20 路并发下共享
+            # 信号量排队 + 403/429 退避重试会占住槽位，队尾资产的候选被死线
+            # 整批掐掉（2026-09-11 冯太后项目 18 资产全灭的另一半根因）
+            batch = fresh[: max(0, MAX_CANDIDATES_PER_JOB - len(all_rows))]
+            dl_errors: list[str] = []
+
+            async def _fetch(item: dict[str, Any]) -> None:
+                async with _GLOBAL_DOWNLOAD_SEM:
+                    try:
+                        item["assetUrl"] = await download_image(item["sourceUrl"], item.get("pageUrl") or "")
+                    except Exception as exc:  # noqa: BLE001 单张下载失败留痕不入库
+                        dl_errors.append(f"{item.get('title') or item['sourceUrl']}：{str(exc)[:80]}")
+
+            if batch:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.gather(*[_fetch(item) for item in batch]), timeout=150.0
+                    )
+                except (asyncio.TimeoutError, TimeoutError):
+                    dl_errors.append("整体下载超时，仅保留已完成部分")
+            downloaded = [m for m in batch if m.get("assetUrl")]
+            if dl_errors:
+                errors["下载"] = "；".join(dl_errors[:3]) + ("…" if len(dl_errors) > 3 else "")
+            if not downloaded:
+                if batch:
+                    # 搜到了但全军覆没在下载段——疑似系统性防盗链/网络，换词补搜
+                    # 救不了；已有产出就保住产出收工，一无所有就如实报错
+                    if not all_rows:
+                        raise RuntimeError(
+                            "候选图全部下载失败（疑似外链防盗链）；"
+                            + "；".join(f"{k}：{v}" for k, v in errors.items())
+                        )
+                    break
+                # 本轮搜索零命中（全重复或全被预筛）：记摘要让 planner 换角度
+                rounds.append({"queries": round_queries, "found": "无候选"})
+                continue
+            if not inserted:
+                # 重跑语义：新结果落库前清掉该资产旧未采纳候选（错配/低质的旧
+                # 考古层不与新结果混存）；已采纳行保留。首轮即清，后续轮只插新行
+                with _conn() as _c:
+                    _c.execute(
+                        "DELETE FROM ref_candidates WHERE project_id=? AND node_id=? AND adopted=0",
+                        (project_id, node_id),
+                    )
+                inserted = True
+            _insert_candidates(project_id, node_id, downloaded, len(all_rows))
+            all_rows.extend(downloaded)
+            # join 文路考据简报（首次终选前收一次；超时/失败记软错误不拦终选，
+            # 后续轮复用同一份）
+            if not brief_joined:
+                brief_joined = True
+                if text_task is not None:
+                    try:
+                        res = await asyncio.wait_for(text_task, timeout=_BRIEF_WAIT_S)
+                        brief, brief_sources = res
+                    except Exception as exc:  # noqa: BLE001 文路软失败明报
+                        text_task.cancel()
+                        errors["考据"] = str(exc)[:160]
+                if brief:
+                    job["researchBrief"] = brief
+                    # 服务端权威落点：简报一产出即入主体表，与谁发起调研、画布
+                    # 开没开、agent 进程活没活都无关（此前只活在内存 job 字典里，
+                    # 重启即蒸发）
+                    try:
+                        upsert_entry(
+                            project_id,
+                            body=brief,
+                            node_id=node_id,
+                            asset_name=asset_name,
+                            asset_type=str(asset.get("type") or ""),
+                            era=era,
+                            sources=brief_sources,
+                        )
+                    except Exception as exc:  # noqa: BLE001 落库失败不拦出图链路
+                        print(f"[考据] 条目落库失败 {project_id}/{node_id}：{exc}", flush=True)
+                        errors["条目落库"] = str(exc)[:120]
+            # LLM 终选（就本轮新增；失败只记 errors，不影响候选展示与人工采纳）；
+            # 带考据挑图——文字考据纠正选图（错年代/错形制的候选降权）。
+            # **时代主题事实也在这时上场**：同一资产既属于自己（具名个体），
+            # 也属于它所在时代的若干主题，「文字定边界 → 图像做选择」要成立
+            # 就得让挑图的模型同时看见两层边界（合成口径与出图注入、报告卡
+            # cardBriefs 三处同源）
+            job["phase"] = f"考据与终选（第{round_num}轮）"
+            try:
+                brief_for_select = _select_brief(
+                    project_id, node_id, str(asset.get("name") or ""), brief
+                )
+                select_asset = (
+                    {**asset, "research_brief": brief_for_select}
+                    if brief_for_select
+                    else asset
+                )
+                start = len(all_rows) - len(downloaded)
+                selection = await skills.run_ref_select_flow(
+                    select_asset, _select_payload(downloaded, start)
+                )
+                valid = [
+                    i
+                    for i in (selection.get("recommended") or [])
+                    if start <= i < start + len(downloaded)
+                ]
+                rec_order.extend(valid)
+                if str(selection.get("note") or "").strip():
+                    select_notes.append(str(selection["note"]).strip())
+                rounds.append(
+                    {
+                        "queries": round_queries,
+                        # 摘要带终选推荐率：补搜判据从「标题数量想象」变成证据
+                        "found": _rounds_summary(downloaded)
+                        + f"；终选推荐 {len(valid)}/{len(downloaded)}",
+                    }
+                )
+                if len(rec_order) >= _SELECT_ENOUGH_RECS:
+                    break  # 推荐够了：先搜后判再补的判停线
+            except Exception as exc:  # noqa: BLE001
+                errors["终选"] = str(exc)[:160]
+                # 终选链路故障时盲搜补轮没有意义（旧结构的数量想象）——保住
+                # 已入库候选收工，用户可在面板手动采纳
+                break
+        if not all_rows:
+            if text_task is not None and not text_task.done():
+                text_task.cancel()
             if errors:
                 raise RuntimeError("；".join(f"{k}：{v}" for k, v in errors.items()))
             job["status"] = "done"
             job["error"] = "没有搜到候选图，请换个关键词"
             return
-        merged = merged[:MAX_CANDIDATES_PER_JOB]
-        # 并发下载走全局信号量（10 路调研共享 32 并发，防叠加打爆源站）；
-        # 单张失败不拖垮整批，失败者不入库。
-        # 整体 150s 死线（与文路 _BRIEF_WAIT_S 同档）：超时取消在途下载，
-        # 保留已完成部分。曾为 110s——批量 20 路并发下共享信号量排队 +
-        # 403/429 退避重试会占住槽位，队尾资产的候选被死线整批掐掉
-        # （2026-09-11 冯太后项目 18 资产全灭的另一半根因）
-        dl_errors: list[str] = []
-
-        async def _fetch(item: dict[str, Any]) -> None:
-            async with _GLOBAL_DOWNLOAD_SEM:
-                try:
-                    item["assetUrl"] = await download_image(item["sourceUrl"], item.get("pageUrl") or "")
-                except Exception as exc:  # noqa: BLE001 单张下载失败留痕不入库
-                    dl_errors.append(f"{item.get('title') or item['sourceUrl']}：{str(exc)[:80]}")
-
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*[_fetch(item) for item in merged]), timeout=150.0
-            )
-        except (asyncio.TimeoutError, TimeoutError):
-            dl_errors.append("整体下载超时，仅保留已完成部分")
-        if dl_errors:
-            errors["下载"] = "；".join(dl_errors[:3]) + ("…" if len(dl_errors) > 3 else "")
-        rows = [m for m in merged if m.get("assetUrl")]
-        if not rows:
-            raise RuntimeError(
-                "候选图全部下载失败（疑似外链防盗链）；" + "；".join(f"{k}：{v}" for k, v in errors.items())
-            )
-        # 重跑语义：新结果落库前清掉该资产旧未采纳候选（错配/低质的旧考古层
-        # 不与新结果混存）；已采纳行保留。若新任务失败，走到这里之前已失败，
-        # 旧候选不受影响
-        with _conn() as _c:
-            _c.execute(
-                "DELETE FROM ref_candidates WHERE project_id=? AND node_id=? AND adopted=0",
-                (project_id, node_id),
-            )
-        _insert_candidates(project_id, node_id, rows)
-        job["phase"] = "考据与终选"
-        _, era = _project_scope(project_id)
-        asset_name = str(asset.get("name") or "")
-        # join：收文路考据简报（超时/失败记软错误，不拦终选与采纳）
-        brief = ""
-        brief_sources: list[dict[str, Any]] = []
-        if text_task is not None:
+        if rec_order:
             try:
-                res = await asyncio.wait_for(text_task, timeout=_BRIEF_WAIT_S)
-                brief, brief_sources = res
-            except Exception as exc:  # noqa: BLE001 文路软失败明报
-                text_task.cancel()
-                errors["考据"] = str(exc)[:160]
-        if brief:
-            job["researchBrief"] = brief
-            # 服务端权威落点：简报一产出即入主体表，与谁发起调研、画布开没开、
-            # agent 进程活没活都无关（此前只活在内存 job 字典里，重启即蒸发）
-            try:
-                upsert_entry(
-                    project_id,
-                    body=brief,
-                    node_id=node_id,
-                    asset_name=asset_name,
-                    asset_type=str(asset.get("type") or ""),
-                    era=era,
-                    sources=brief_sources,
+                _apply_recommendation(
+                    project_id, node_id, all_rows, {"recommended": rec_order, "note": "；".join(select_notes)[:300]}
                 )
-            except Exception as exc:  # noqa: BLE001 落库失败不拦出图链路
-                print(f"[考据] 条目落库失败 {project_id}/{node_id}：{exc}", flush=True)
-                errors["条目落库"] = str(exc)[:120]
-        # LLM 终选（失败只记 errors，不影响候选展示与人工采纳）；带考据挑图——
-        # 文字考据纠正选图（错年代/错形制的候选降权）。**时代主题事实也在这时
-        # 上场**：同一资产既属于自己（具名个体），也属于它所在时代的若干主题，
-        # 「文字定边界 → 图像做选择」要成立就得让挑图的模型同时看见两层边界，
-        # 否则它只能按单资产简报判「像不像」，判不了「这个形制对不对时代」
-        # （合成口径与出图注入、报告卡 cardBriefs 三处同源）
-        try:
-            brief_for_select = _select_brief(
-                project_id, node_id, str(asset.get("name") or ""), brief
-            )
-            select_asset = (
-                {**asset, "research_brief": brief_for_select}
-                if brief_for_select
-                else asset
-            )
-            selection = await skills.run_ref_select_flow(select_asset, _select_payload(rows))
-            _apply_recommendation(project_id, node_id, rows, selection)
-            job["note"] = selection.get("note") or ""
-            # 终选完自动采纳 top-K 推荐（rec_rank 升序）——LLM 已挑过一轮，
-            # 再等用户逐张手勾是把模型判断抄写一遍；采纳只是标记不花额度，
-            # 用户可在「找参考图」面板随时改选（2026-09-06 用户「为啥没自动选」）
-            auto_adopt_top(project_id, node_id, AUTO_ADOPT_PER_NODE)
-        except Exception as exc:  # noqa: BLE001
-            errors["终选"] = str(exc)[:160]
+                job["note"] = "；".join(select_notes)[:300]
+                # 终选完自动采纳 top-K 推荐（rec_rank 升序）——LLM 已挑过一轮，
+                # 再等用户逐张手勾是把模型判断抄写一遍；采纳只是标记不花额度，
+                # 用户可在「找参考图」面板随时改选（2026-09-06 用户「为啥没自动选」）
+                auto_adopt_top(project_id, node_id, AUTO_ADOPT_PER_NODE)
+            except Exception as exc:  # noqa: BLE001
+                errors["终选"] = str(exc)[:160]
         # 采纳回流：采纳的图收进主体图集，下一个项目遇到同一主体直接复用。
         # 图与事实各自独立——手填检索词的调研不跑文路、没有事实条目，图照样入库
         try:
@@ -2581,17 +2671,17 @@ def _rounds_summary(items: list[dict[str, Any]], sample: int = 20) -> str:
     )
 
 
-def _select_payload(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _select_payload(rows: list[dict[str, Any]], start: int = 0) -> list[dict[str, Any]]:
     """终选载荷：缩略图 URL（512px webp，够判断且省 token）+ 元数据。
-
-    全量候选进终选：skills.run_ref_select_flow 侧按 DMX gemini 通道
-    单轮 4 张上限自动分批（每批 ≤4）再合并推荐。"""
+    index = start 起的全局位次（多轮终选共用一个 index 空间，推荐按它回填
+    到 all_rows）。skills.run_ref_select_flow 侧按上游 50 张图上限自动分批、
+    多批时推荐集再做一次全局精排（2026-09-12）。"""
     out: list[dict[str, Any]] = []
     for i, m in enumerate(rows):
         stem = Path(m["assetUrl"]).stem
         out.append(
             {
-                "index": i,
+                "index": start + i,
                 "title": m.get("title") or "",
                 "width": m.get("width") or 0,
                 "height": m.get("height") or 0,
@@ -2633,7 +2723,12 @@ def _apply_recommendation(
             )
 
 
-def _insert_candidates(project_id: str, node_id: str, rows: list[dict[str, Any]]) -> None:
+def _insert_candidates(
+    project_id: str, node_id: str, rows: list[dict[str, Any]], start: int = 0
+) -> None:
+    """候选入库；idx_total = start 起的全局位次（2026-09-12 起逐轮插入，
+    start 传该轮首行在 all_rows 里的位置——面板按 idx_total 排序展示，
+    撞号会让两轮候选交错错乱，也保不住「位次=终选 index 空间」）。"""
     base = _now()
     with _conn() as conn:
         for i, m in enumerate(rows):
@@ -2657,7 +2752,7 @@ def _insert_candidates(project_id: str, node_id: str, rows: list[dict[str, Any]]
                     int(m.get("width") or 0),
                     int(m.get("height") or 0),
                     base,
-                    i,
+                    start + i,
                 ),
             )
 
