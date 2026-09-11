@@ -351,10 +351,28 @@ def _strip_html(raw: str) -> str:
 
 
 async def fetch_page_text(url: str) -> str:
-    """抓网页正文：httpx 直抓为主（快），失败回退 Jina 双层（本地 OSS 实例
-    → 官方 API，后者需 JINA_READER_API_KEY；无头浏览器，过 TLS 指纹反爬
-    + PDF 文本提取）。全败抛异常，由调用方记为 snippet 级来源
+    """抓网页正文（2026-09-11 用户拍板 Jina 优先）：知乎专栏走 TikHub 专项
+    （登录墙内唯一稳定通道，API 调用最快）；其余 **本地 Jina 主路径**（无头
+    浏览器 + 主内容提取，正文最干净，过 TLS 反爬/PDF）→ httpx 直抓回退
+    （本地实例没起/该页拦浏览器指纹时秒级顶上——Jina 失败 ≠ 直抓失败）
+    → Jina 官方 API 收尾（更强的反爬基建，烧 token；需
+    JINA_READER_API_KEY）。全败抛异常，由调用方记为 snippet 级来源
     （逐源诚实标注，不静默降级整轮）。"""
+    # 知乎专栏：TikHub 排最前，别让 Jina 在登录墙上白跑一趟
+    # （key 失效/无额度时静默跳过，落到 Jina/直抓照常走）
+    m = re.match(r"https?://zhuanlan\.zhihu\.com/p/(\w+)", url)
+    if m and os.environ.get("TIKHUB_API_KEY", "").strip():
+        try:
+            return (await _tikhub_zhihu_article(m.group(1)))[:_MAX_PAGE_CHARS]
+        except Exception:  # noqa: BLE001
+            pass
+
+    if jina_reader.enabled():
+        try:
+            return (await jina_reader.fetch_local(url))[:_MAX_PAGE_CHARS]
+        except Exception:  # noqa: BLE001 本地判定不算终审：降直抓，先别烧官方 API
+            pass
+
     direct_error = ""
     try:
         async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT, follow_redirects=True) as client:
@@ -372,23 +390,13 @@ async def fetch_page_text(url: str) -> str:
     except Exception as exc:  # noqa: BLE001
         direct_error = f"直抓失败：{str(exc)[:80]}"
 
-    # 知乎专栏：登录墙双通道皆败的专项通道（TikHub 按 article_id 取正文；
-    # key 失效/无额度时静默跳过落到 Jina）
-    m = re.match(r"https?://zhuanlan\.zhihu\.com/p/(\w+)", url)
-    if m and os.environ.get("TIKHUB_API_KEY", "").strip():
+    if jina_reader.api_enabled():
         try:
-            return (await _tikhub_zhihu_article(m.group(1)))[:_MAX_PAGE_CHARS]
-        except Exception:  # noqa: BLE001
-            pass
-
-    if jina_reader.enabled():
-        try:
-            md = await jina_reader.fetch_markdown(url)
-            return md[:_MAX_PAGE_CHARS]
+            return (await jina_reader.fetch_api(url))[:_MAX_PAGE_CHARS]
         except jina_reader.WebSourceUnreachableError:
-            pass  # 双层皆不可达（本地实例没起 + 官方层未配/4xx）：退回直抓结论
+            pass  # 官方终审 4xx：目标源真死，重试无效应换源
         except Exception as exc:  # noqa: BLE001
-            raise ValueError(f"{direct_error}；Jina 回退失败：{str(exc)[:80]}") from exc
+            raise ValueError(f"{direct_error}；Jina 官方回退失败：{str(exc)[:80]}") from exc
     raise ValueError(direct_error)
 
 

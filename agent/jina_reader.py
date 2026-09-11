@@ -1,17 +1,18 @@
-"""Jina Reader 双层客户端：URL → markdown 正文（本地 OSS → 官方 API）。
+"""Jina Reader 两层客户端：URL → markdown 正文（本地 OSS / 官方 API 各自可调）。
 
-定位 = fetch_page_text 的**回退通道**，内部再分两层（调用方无感）：
-1. 本地 OSS docker（ghcr.io/jina-ai/reader:oss，默认 127.0.0.1:3000，
-   JINA_READER_BASE_URL 可覆盖）——免费不限量；实例未在跑时连接失败降层。
-2. 官方 API（https://r.jina.ai，**配置 JINA_READER_API_KEY 才启用**，
-   JINA_READER_API_BASE_URL 可覆盖）——免部署随处可用，按输出 token 计费
-   （2026-09-11 口径 $0.05/百万 token、新 key 送 10M ≈ 数千次正文抓取），
-   生产服务器没部署 docker 就靠这层兜住 Jina 级抓取。
-本地判定不算终审：官方有无头浏览器集群与住宅代理，本地过不去的反爬
-（Cloudflare/地理封锁级）官方常常能过；真 404 双层皆败，多烧一次调用
-可忽略。直抓（httpx）对 TLS 指纹级反爬（知乎/academia）和 PDF 无能为力，
-Jina 内置无头浏览器能过大部分——实测解锁 academia.edu 与学术 PDF（hanspub），
-知乎登录墙两层都不可（军备竞赛常态，靠 TikHub 专项通道与多源冗余消化）。
+层间编排上移到 research.fetch_page_text（知乎 TikHub → 本地 Jina 主路径 →
+直抓回退 → 官方 API 收尾）；本模块只提供两层原语：
+1. fetch_local：本地 OSS docker（ghcr.io/jina-ai/reader:oss，默认
+   127.0.0.1:3000，JINA_READER_BASE_URL 可覆盖）——免费不限量，无头浏览器
+   + 主内容提取，正文最干净；实例未在跑时连接失败，由调用方降直抓。
+2. fetch_api：官方 API（https://r.jina.ai，JINA_READER_API_BASE_URL 可
+   覆盖，**需 JINA_READER_API_KEY**）——免部署随处可用，按输出 token 计费
+   （2026-09-11 口径 $0.05/百万 token、新 key 送 10M ≈ 数千次正文抓取）。
+   无头浏览器集群+住宅代理，本地过不去的反爬（Cloudflare/地理封锁级）
+   官方常常能过；直抓（httpx）对 TLS 指纹级反爬（知乎/academia）和 PDF
+   无能为力，Jina 内置无头浏览器能过大部分——实测解锁 academia.edu 与
+   学术 PDF（hanspub），知乎登录墙 TikHub 之外都不可（军备竞赛常态，
+   靠多源冗余消化）。
 
 错误分类（juben lib/web_search/jina.py 移植精简）：
 - WebSourceUnreachableError：4xx——目标源永久不可抓，重试无效应换源
@@ -118,34 +119,35 @@ async def _request_markdown(endpoint: str, headers: dict[str, str], tier: str) -
     raise last_exc or RuntimeError("Jina Reader 请求未完成")
 
 
-async def fetch_markdown(url: str) -> str:
-    """双层抓正文：本地 OSS 实例 → 官方 API。本地判定不算终审——官方的
-    无头浏览器集群+住宅代理常能过本地过不去的反爬；官方层需
-    JINA_READER_API_KEY，未配置时本地失败即终局。失败抛
-    WebSourceUnreachableError / WebSourceContentError / httpx 异常。"""
-    target = url.strip()
-    local_error: Exception | None = None
-    try:
-        base = (os.environ.get("JINA_READER_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
-        return await _request_markdown(f"{base}/{target}", {"Accept": "text/markdown"}, "本地实例")
-    except Exception as exc:  # noqa: BLE001
-        local_error = exc
-    if not (key := _api_key()):
-        raise local_error
+async def fetch_local(url: str) -> str:
+    """本地 OSS 实例层（主路径）。失败抛 WebSourceUnreachableError /
+    WebSourceContentError / httpx 异常——是否降层由调用方编排。"""
+    base = (os.environ.get("JINA_READER_BASE_URL") or DEFAULT_BASE_URL).rstrip("/")
+    return await _request_markdown(f"{base}/{url.strip()}", {"Accept": "text/markdown"}, "本地实例")
+
+
+def api_enabled() -> bool:
+    """官方 API 层是否已配置（JINA_READER_API_KEY 非空）。"""
+    return bool(_api_key())
+
+
+async def fetch_api(url: str) -> str:
+    """官方 API 层（收尾，烧 token）。未配 key 直接抛 WebSourceUnreachableError
+    ——调用方应先 api_enabled() 判断，这里兜底防呆。"""
+    key = _api_key()
+    if not key:
+        raise WebSourceUnreachableError("Jina 官方 API 层未配置（JINA_READER_API_KEY）")
     api_base = (os.environ.get("JINA_READER_API_BASE_URL") or DEFAULT_API_BASE_URL).rstrip("/")
-    try:
-        return await _request_markdown(
-            f"{api_base}/{target}",
-            {
-                "Accept": "text/markdown",
-                # 图片 markdown 链接对正文提取无价值，丢弃省输出 token（计费按输出算）
-                "X-Retain-Images": "none",
-                "Authorization": f"Bearer {key}",
-            },
-            "官方 API",
-        )
-    except Exception as exc:  # noqa: BLE001
-        raise exc from local_error
+    return await _request_markdown(
+        f"{api_base}/{url.strip()}",
+        {
+            "Accept": "text/markdown",
+            # 图片 markdown 链接对正文提取无价值，丢弃省输出 token（计费按输出算）
+            "X-Retain-Images": "none",
+            "Authorization": f"Bearer {key}",
+        },
+        "官方 API",
+    )
 
 
 def enabled() -> bool:

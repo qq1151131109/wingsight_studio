@@ -83,10 +83,11 @@ start_tunnel() {
   grep -oE "bore.pub:[0-9]+" "$LOGS/tunnel.log" | head -1 | sed 's/^/✓ 公网地址: http:\/\//' || echo "（隧道地址稍后见 logs/tunnel.log）"
 }
 
-# 调研抓取回退层（fetch_page_text：直抓 → TikHub → 本地 jina → 官方 API）。
-# 软保障：只在 3000 没人听时动手，且任何失败只警告不阻塞——jina 是可选
-# 依赖，没有它链路自动降级（直抓 + 官方 API）。绝不隐式 pull 镜像（2GB，
-# 生产机不装它是有意为之——那边靠官方 API 层）。
+# 调研抓取主路径层（fetch_page_text：知乎 TikHub → 本地 jina 主路径 →
+# 直抓回退 → 官方 API 收尾）。软保障：只在 3000 没人听时动手，且任何
+# 失败只警告不阻塞——jina 是可选依赖，没有它链路自动降级（直抓+官方 API，
+# 慢一点但都能活）。绝不隐式 pull 镜像（2GB，生产机不装它是有意为之——
+# 那边靠官方 API 层）。
 ensure_jina() {
   curl -s -o /dev/null --max-time 2 http://127.0.0.1:3000/ && { echo "✓ jina-reader :3000 已在运行"; return; }
   command -v docker >/dev/null 2>&1 || { echo "⚠ 无 docker，本地 jina 不启用（抓取走直抓+官方 API）"; return; }

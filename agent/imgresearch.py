@@ -2139,6 +2139,7 @@ _GLOBAL_DOWNLOAD_SEM = asyncio.Semaphore(32)
 _MAX_TEXT_QUERIES = 3
 _MAX_PAGES = 4
 _PAGE_TEXT_CHARS = 5000
+_PAGE_FETCH_CONCURRENCY = 4  # 抓页并发帽（深度调研同档）：本地 Jina 每页真开一个无头浏览器，批量调研 20 路资产一波，帽大了打爆实例
 _BRIEF_WAIT_S = 150  # 文路整体死线（与图路下载 110s 死线并行，不拖后腿）
 
 
@@ -2173,13 +2174,24 @@ async def _run_text_research(
             merged.append({"title": str(r.get("title") or "")[:80], "url": url})
     if not merged:
         raise RuntimeError("网页搜索无结果")
-    pages: list[dict[str, Any]] = []
-    for item in merged[:_MAX_PAGES]:
-        try:
-            text = await research.fetch_page_text(item["url"])
-            pages.append({**item, "text": text[:_PAGE_TEXT_CHARS]})
-        except Exception as exc:  # noqa: BLE001 单页失败跳过，不入简报
-            errors.setdefault("考据抓页", f"{item['title']}：{str(exc)[:80]}")
+    # 并发抓正文（4 路信号量，深度调研同款范式）：Jina 优先后单页 2-10s，
+    # 串行 4 页 8-40s——直抓时代没人疼过的 for+await 惰性，配套并行化摊平。
+    # pages 按 merged 顺序组装（gather 不保序，简报的位置权重不受影响）。
+    fetch_sem = asyncio.Semaphore(_PAGE_FETCH_CONCURRENCY)
+    fetch_errors: list[str] = []
+
+    async def _fetch_page(item: dict[str, Any]) -> None:
+        async with fetch_sem:
+            try:
+                item["text"] = (await research.fetch_page_text(item["url"]))[:_PAGE_TEXT_CHARS]
+            except Exception as exc:  # noqa: BLE001 单页失败跳过，不入简报
+                fetch_errors.append(f"{item['title']}：{str(exc)[:80]}")
+
+    page_items = merged[:_MAX_PAGES]
+    await asyncio.gather(*[_fetch_page(i) for i in page_items])
+    pages = [i for i in page_items if i.get("text")]
+    if fetch_errors:
+        errors.setdefault("考据抓页", "；".join(fetch_errors[:3]) + ("…" if len(fetch_errors) > 3 else ""))
     if not pages:
         raise RuntimeError("网页正文全部抓取失败（疑似反爬）")
     brief = await skills.run_ref_brief_flow(asset, pages)
