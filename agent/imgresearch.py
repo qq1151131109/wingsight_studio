@@ -2723,6 +2723,16 @@ async def _run_research(
                 # 它自己写的 note 里（实测：「候选均缺乏片场美术、置景设计语境」）。
                 gap_covered.extend(selection.get("covered") or [])
                 gap_missing.extend(selection.get("missing") or [])
+                # 一致性修剪（上下文审计 2026-09-12）：终选每轮只看**本轮**候选，
+                # 第 2 轮会把第 1 轮已覆盖的维度再次报进 missing——planner 会同时
+                # 看到「已覆盖：巷道近景」和「仍缺：巷道近景」两个矛盾信号。
+                # 双向子串匹配（维度是自由文本，「巷道近景」vs「一到两米宽的巷道近景
+                # 与铺地」应视为同维），命中即从 missing 里摘掉。
+                gap_missing[:] = [
+                    m
+                    for m in gap_missing
+                    if not any(c in m or m in c for c in gap_covered)
+                ]
                 rounds.append(
                     {
                         "queries": round_queries,

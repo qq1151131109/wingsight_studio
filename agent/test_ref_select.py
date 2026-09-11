@@ -358,6 +358,29 @@ expect("仍缺维度：巷道近景与铺地、室内陈设" in _found, f"C7 缺
 expect("已覆盖维度：村落全景航拍" in _found, f"C7 已覆盖维度也要告知（防重复搜）：{_found}")
 expect("终选推荐 1/6" in _found, f"C7 数量信号保留：{_found}")
 
+# C11. 缺口一致性修剪（上下文审计）：终选每轮只看本轮候选，第 2 轮会把
+#      第 1 轮已覆盖的维度（或其变体）再报进 missing——planner 会收到矛盾信号
+#      （「已覆盖：巷道近景」+「仍缺：巷道近景」）。双向子串匹配后必须修剪掉。
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([
+    {"recommended": [0], "note": "", "covered": ["村落全景航拍"], "missing": ["巷道近景与铺地"]},
+    # 第 2 轮把第 1 轮已覆盖的维度换个说法再报进 missing（典型行为），
+    # 另带一个真正的新缺口
+    {"recommended": [], "note": "", "covered": [], "missing": ["村落全景航拍的俯视构图", "室内陈设"]},
+    {"recommended": [], "note": "", "covered": [], "missing": []},
+])
+job = _mk_job("j10"); _reset_sem()
+asyncio.run(imgresearch._run_research("j10", PID, "n12", [], {"name": "矛盾修剪", "type": "scene"}))
+expect(job["status"] == "done", f"C11 任务应完成：{job.get('error')}")
+expect(len(plan_calls) == 3, f"C11 三轮：{len(plan_calls)}")
+# 第 3 轮 planner 收到的是 rounds 列表（round1、round2 的 found）——看 round2 的
+_found3 = plan_calls[2][1]["found"]
+expect(
+    "已覆盖维度：村落全景航拍" in _found3 and "仍缺维度：巷道近景与铺地、室内陈设" in _found3,
+    f"C11 变体 missing（已覆盖维度的换说法）应被修剪，新缺口保留：{_found3}",
+)
+expect("村落全景航拍的俯视构图" not in _found3, f"C11 已覆盖维度的变体不得再出现在仍缺里：{_found3}")
+
 # C8. 缺口追补（B 档）：推荐数够了但仍有缺口 → 不立即停，追一轮定向补缺；
 #     追补后缺口清空即停（推荐数只回答「有没有能用的图」，缺口回答「有没有对路的图」）
 search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()

@@ -2895,6 +2895,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
       });
       const usedStyle = projectStyle;
       const deadline = Date.now() + 5 * 60 * 1000;
+      let refGapNotified = false;
       for (;;) {
         await new Promise((r) => setTimeout(r, 2500));
         let job;
@@ -2903,6 +2904,14 @@ function AssetCard({ data, id, selected }: NodeProps) {
         } catch {
           if (Date.now() > deadline) throw new Error("出图超时");
           continue;
+        }
+        // 参考图核查（与 pollShotImageJob 同口径，只提示一次）：单卡直出不经过
+        // agent，没有实物参考时让用户知道「形制靠文字考据、长相没有比对」
+        if (!refGapNotified && job.refGap.length > 0) {
+          refGapNotified = true;
+          showToast(
+            "本卡没有参考图（只有文字考据约束形制）。可先做参考图调研并连线到本卡，再重出",
+          );
         }
         const item = job.images[0];
         if (item?.ok && item.imageUrl) {
