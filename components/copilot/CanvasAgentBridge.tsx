@@ -1684,7 +1684,7 @@ export default function CanvasAgentBridge() {
                       className="h-20 w-full object-cover"
                     />
                   )}
-                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/45 px-1.5 py-0.5 text-[10px] text-white">
+                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
                     {m.title}
                   </span>
                 </button>

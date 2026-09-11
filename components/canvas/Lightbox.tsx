@@ -241,7 +241,7 @@ export function Lightbox({
   return (
     <OverlayModal
       ref={containerRef}
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/70 p-8"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-8 ws-scrim-in"
       onMouseMove={(e) => {
         if (!dragging) return;
         movedRef.current = true;
@@ -304,7 +304,7 @@ export function Lightbox({
               y: e.clientY - imgPosRef.current.y,
             };
           }}
-          className={`max-h-full max-w-full rounded-lg object-contain shadow-2xl will-change-transform ${
+          className={`ws-dialog-in max-h-full max-w-full rounded-lg object-contain shadow-2xl will-change-transform ${
             dragging ? "cursor-grabbing" : "cursor-grab"
           }`}
           onClick={(e) => e.stopPropagation()}

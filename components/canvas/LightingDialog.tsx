@@ -204,11 +204,11 @@ export default function LightingDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={busy ? undefined : onClose}
     >
       <div
-        className="nowheel flex max-h-[88vh] w-[min(44rem,94vw)] flex-col gap-3 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="nowheel flex max-h-[88vh] w-[min(44rem,94vw)] flex-col gap-3 overflow-y-auto ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -323,7 +323,7 @@ export default function LightingDialog({
                 }`}
               >
                 <span
-                  className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-all ${
+                  className={`absolute top-0.5 h-3.5 w-3.5 rounded-full transition-[left,background-color] duration-150 ease-out ${
                     rimLight ? "left-[18px] bg-accent" : "left-0.5 bg-text-4"
                   }`}
                 />

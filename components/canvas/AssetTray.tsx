@@ -177,7 +177,7 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div className="absolute left-2 top-14 z-20 flex max-h-[62vh] w-64 flex-col rounded-lg border border-hairline bg-surface-1 p-2 shadow-lg">
+    <div className="absolute left-2 top-14 z-20 flex max-h-[62vh] w-64 flex-col rounded-xl bg-surface-1 p-2 ws-elev-popover ws-pop-in">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-xs font-semibold text-text">素材库</h3>
         <button
@@ -205,7 +205,7 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
           </button>
         ))}
       </div>
-      <div className="mt-1.5 flex h-7 items-center gap-1 rounded-md border border-hairline bg-surface-2 px-1.5">
+      <div className="mt-1.5 flex h-7 items-center gap-1 rounded-[4px] border border-hairline bg-surface-2 px-1.5">
         <Search className="h-3 w-3 shrink-0 text-text-4" />
         <input
           value={q}

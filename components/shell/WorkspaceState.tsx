@@ -45,7 +45,7 @@ export function WorkspaceErrorState({
 }) {
   return (
     <WorkspaceState
-      icon={<CircleAlert className="mb-3 h-8 w-8 text-danger" />}
+      icon={<CircleAlert className="mb-3 h-8 w-8 text-danger" strokeWidth={2.5} />}
       title={title}
       description={description}
       action={

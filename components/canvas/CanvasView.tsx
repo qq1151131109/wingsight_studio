@@ -419,13 +419,13 @@ function NodeSearch() {
       </div>
       {open && q.trim() && results.length > 0 ? (
         // 下拉跟随输入框宽度（固定 w-56 在收缩时会比输入框宽出去）
-        <div className="absolute left-0 top-full z-30 mt-1 w-full min-w-44 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+        <div className="absolute left-0 top-full z-30 mt-1 w-full min-w-44 rounded-lg bg-surface-1 p-1 ws-elev-popover">
           {results.map((n) => (
             <button
               key={n.id}
               type="button"
               onMouseDown={(e) => e.preventDefault()}
-              className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+              className="flex w-full items-center gap-1.5 rounded-[4px] px-2 py-1 text-left text-xs text-text-2 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96]"
               onClick={() => pick(n.id)}
             >
               <span
@@ -517,11 +517,11 @@ function StyleEditDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={busy === "save" ? undefined : onClose}
     >
       <div
-        className="w-[min(34rem,92vw)] rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="w-[min(34rem,92vw)] ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -582,7 +582,7 @@ function StyleEditDialog({
               <img
                 src={coverUrl}
                 alt="封面"
-                className="h-8 w-14 rounded border border-hairline object-cover"
+                className="h-8 w-14 rounded object-cover"
               />
               <button
                 type="button"
@@ -735,7 +735,7 @@ function StylePresetList({
       </div>
       {opErr ? <p className="mt-1.5 text-[11px] text-danger">{opErr}</p> : null}
       {cat === MY_STYLE_CAT ? (
-        <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-md border border-hairline-soft bg-surface-2/40 p-2">
+        <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-lg border border-hairline-soft bg-surface-2/40 p-2">
           {myStyles === null ? (
             <p className="col-span-6 py-6 text-center text-[11px] text-text-4">加载中…</p>
           ) : (
@@ -766,7 +766,7 @@ function StylePresetList({
                 return (
                   <div
                     key={s.id}
-                    className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
+                    className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-[border-color,box-shadow] duration-150 ease-out ${
                       active
                         ? "border-accent ring-2 ring-accent"
                         : "border-hairline hover:border-accent-soft"
@@ -802,7 +802,7 @@ function StylePresetList({
                       <button
                         type="button"
                         data-tip="编辑" aria-label={`编辑画风：${s.name}`}
-                        className="grid h-5 w-5 place-items-center rounded bg-black/55 text-white transition-colors hover:bg-black/75"
+                        className="grid h-5 w-5 place-items-center rounded bg-black/60 text-white transition-colors hover:bg-black/75"
                         onClick={() => setEditing(s)}
                       >
                         <Pencil className="h-3 w-3" />
@@ -810,7 +810,7 @@ function StylePresetList({
                       <button
                         type="button"
                         data-tip="删除" aria-label={`删除画风：${s.name}`}
-                        className="grid h-5 w-5 place-items-center rounded bg-black/55 text-white transition-colors hover:bg-danger"
+                        className="grid h-5 w-5 place-items-center rounded bg-black/60 text-white transition-colors hover:bg-danger"
                         onClick={() => void remove(s)}
                       >
                         <Trash2 className="h-3 w-3" />
@@ -823,7 +823,7 @@ function StylePresetList({
           )}
         </div>
       ) : (
-        <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-md border border-hairline-soft bg-surface-2/40 p-2">
+        <div className="nowheel mt-2 grid min-h-0 flex-1 grid-cols-6 gap-2 overflow-y-auto rounded-lg border border-hairline-soft bg-surface-2/40 p-2">
           {list.length === 0 ? (
             <p className="col-span-6 py-6 text-center text-[11px] text-text-4">没有匹配的画风</p>
           ) : null}
@@ -834,7 +834,7 @@ function StylePresetList({
                 key={p.id}
                 type="button"
                 data-tip={`${p.name}｜${p.tagline || p.category}`} aria-label={`${p.name}｜${p.tagline || p.category}`}
-                className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-all ${
+                className={`group relative h-44 w-full overflow-hidden rounded-lg border transition-[border-color,box-shadow] duration-150 ease-out ${
                   active
                     ? "border-accent ring-2 ring-accent"
                     : "border-hairline hover:border-accent-soft"
@@ -983,7 +983,7 @@ function BottomDock({
       <button
         type="button"
         data-tip="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布" aria-label="素材库：生成 / 上传过的图片视频音频都自动入库，点击放回画布"
-        className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className={DOCK_ITEM_QUIET}
         onClick={onOpenAssets}
         data-track="dock.assets"
       >
@@ -993,7 +993,7 @@ function BottomDock({
       <button
         type="button"
         data-tip="提示词常用语：选中卡片后点选，自动追加进生成输入框" aria-label="提示词常用语：选中卡片后点选，自动追加进生成输入框"
-        className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className={DOCK_ITEM_QUIET}
         onClick={onOpenPrompts}
         data-track="dock.prompts"
       >
@@ -1003,7 +1003,7 @@ function BottomDock({
       <button
         type="button"
         data-tip="画布导航（按类型列出全部卡片，点击运镜定位）" aria-label="画布导航（按类型列出全部卡片，点击运镜定位）"
-        className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className={DOCK_ITEM_QUIET}
         onClick={onOpenOutline}
         data-track="dock.outline"
       >
@@ -1014,7 +1014,7 @@ function BottomDock({
         <button
           type="button"
           data-tip="分集目录：一张剧本卡 = 一集，点击聚焦本集（压暗其余）/ ↑↓ 调集序" aria-label="分集目录：一张剧本卡 = 一集，点击聚焦本集"
-          className="flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+          className={DOCK_ITEM_QUIET}
           onClick={onOpenEpisodes}
           data-track="dock.episodes"
         >
@@ -1029,7 +1029,7 @@ function BottomDock({
         <button
           type="button"
           data-tip={styleTip} aria-label={styleTip}
-          className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
+          className={`${DOCK_ITEM_BASE} ${
             projectStyle ? "text-accent" : "text-text-3 hover:text-text"
           } ${stylePanel ? "bg-surface-2 text-text" : ""}`}
           onClick={() => setStylePanel((v) => !v)}
@@ -1044,7 +1044,7 @@ function BottomDock({
       <button
         type="button"
         data-tip={imagegenTip} aria-label={imagegenTip}
-        className={`flex h-8 shrink-0 items-center gap-1 rounded-md px-2 text-xs transition-colors hover:bg-surface-2 ${
+        className={`${DOCK_ITEM_BASE} ${
           imagegenBroken ? "text-danger" : "text-text-2 hover:text-text"
         } ${imagegenPanel ? "bg-surface-2 text-text" : ""}`}
         onClick={() => setImagegenPanel((v) => !v)}
@@ -1067,7 +1067,7 @@ function BottomDock({
       <button
         type="button"
         data-tip="点击复位 100%（⇧⌘0）" aria-label="点击复位 100%（⇧⌘0）"
-        className="min-w-11 shrink-0 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+        className="min-w-11 shrink-0 rounded-md px-1 py-1 text-center text-xs tabular-nums text-text-2 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96]"
         onClick={() => void zoomTo(1, { duration: 250 })}
         data-track="dock.zoom-reset"
       >
@@ -1102,11 +1102,11 @@ function BottomDock({
       </div>
       {stylePanel ? (
         <OverlayModal
-          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/45 p-6"
+          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
           onClick={() => closeStylePanel()}
         >
           <div
-            className="flex max-h-[88vh] w-[min(76rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+            className="flex max-h-[88vh] w-[min(76rem,94vw)] flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3">
@@ -1159,11 +1159,11 @@ function BottomDock({
       ) : null}
       {imagegenPanel ? (
         <OverlayModal
-          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/45 p-6"
+          className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
           onClick={() => setImagegenPanel(false)}
         >
           <div
-            className="flex max-h-[88vh] w-[min(28rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+            className="flex max-h-[88vh] w-[min(28rem,94vw)] flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex items-start justify-between gap-3">
@@ -1199,6 +1199,26 @@ function BottomDock({
   );
 }
 
+/* 底坞交互基线（单一事实源，better-ui）：按压缩放 0.96 + 只过渡真正会变的属性。
+   此前这一排是自相矛盾的两套——素材库/提示词/导航/分集 有按压缩放，画风/出图
+   模型与图标钮只有 transition-colors，相邻同尺寸按钮按下反应不同，比整排都没
+   反馈更扎眼。
+   内边距 1.5/2 而非等边 2/2：前置图标做光学对齐，等边内边距会被读成往左挤出去
+   （better-ui「Optical over geometric alignment」：图标侧 = 文字侧 − 2px）。
+   圆角 4px 与容器同心：容器 rounded-lg(8px) + p-1(4px)，内层 = 8 − 4 = 4。 */
+const DOCK_ITEM_BASE =
+  "flex h-8 shrink-0 items-center gap-1 rounded-[4px] pl-1.5 pr-2 text-xs " +
+  "transition-[scale,background-color,color] duration-150 ease-out " +
+  "hover:bg-surface-2 active:not-disabled:scale-[0.96]";
+/** 常态：次要文字色 + 悬停转正文色 */
+const DOCK_ITEM_QUIET = `${DOCK_ITEM_BASE} text-text-2 hover:text-text`;
+/** 图标钮（撤销/重做/缩放/适应视图/快捷键）：方盒居中，无文字 */
+const DOCK_ICON_BASE =
+  "flex h-8 w-8 shrink-0 items-center justify-center rounded-[4px] " +
+  "transition-[scale,background-color,color] duration-150 ease-out " +
+  "hover:bg-surface-2 active:not-disabled:scale-[0.96] " +
+  "disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent";
+
 function DockBtn({
   title,
   disabled,
@@ -1217,7 +1237,7 @@ function DockBtn({
       {...rest}
       data-tip={title} aria-label={title}
       disabled={disabled}
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
+      className={`${DOCK_ICON_BASE} text-text-2 hover:text-text`}
       onClick={onClick}
     >
       {children}
@@ -1463,7 +1483,7 @@ function SelBtn({
     <button
       type="button"
       disabled={disabled}
-      className={`nodrag rounded-md px-2 py-1 text-xs transition-colors ${
+      className={`nodrag rounded-[4px] px-2 py-1 text-xs transition-colors ${
         danger ? "text-danger hover:bg-danger/10" : "text-text-2 hover:bg-surface-2 hover:text-text"
       } disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent`}
       onClick={onClick}
@@ -1598,7 +1618,7 @@ function SelectionToolbar() {
     <>
       <div
         ref={barRef}
-        className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+        className="absolute z-10 flex -translate-x-1/2 -translate-y-full items-center gap-0.5 rounded-lg bg-surface-1 p-1 ws-elev-popover"
       >
         <span className="px-1.5 text-[10px] text-text-4">已选 {sel.length}</span>
         <SelBtn onClick={() => useCanvasStore.getState().copySelection()}>复制</SelBtn>
@@ -1607,13 +1627,13 @@ function SelectionToolbar() {
           {alignOpen ? (
             <>
               <div className="fixed inset-0 z-0" onClick={() => setAlignOpen(false)} />
-              <div className="absolute left-0 top-full z-10 mt-1 flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+              <div className="absolute left-0 top-full z-10 mt-1 flex w-24 flex-col rounded-lg bg-surface-1 p-1 ws-elev-popover">
                 {ALIGN_MENU.map((a) => (
                   <button
                     key={a.label}
                     type="button"
                     disabled={sel.length < a.min}
-                    className="rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
+                    className="rounded-[4px] px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:text-text-4 disabled:hover:bg-transparent"
                     onClick={() => {
                       setAlignOpen(false);
                       a.run(ids);
@@ -2395,7 +2415,7 @@ export default function CanvasView() {
             style={{
               borderRadius: 10,
               border: "1px solid var(--color-hairline)",
-              boxShadow: "0 1px 3px oklch(0 0 0 / 0.06)",
+              boxShadow: "var(--ws-elev-card)",
             }}
             nodeColor={(n) => NODE_META[(n.data as { nodeType: WingNodeType }).nodeType]?.dot ?? "var(--color-warm)"}
             nodeStrokeColor="var(--color-hairline)"
@@ -2481,7 +2501,7 @@ export default function CanvasView() {
             }}
           />
           <div
-            className="fixed z-30 flex flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+            className="fixed z-30 flex flex-col rounded-lg bg-surface-1 p-1 ws-elev-popover"
             style={{
               left: Math.min(pendingLink.x + 8, window.innerWidth - 140),
               top: Math.min(pendingLink.y + 8, window.innerHeight - 220),
@@ -2492,7 +2512,7 @@ export default function CanvasView() {
               <button
                 key={t}
                 type="button"
-                className="flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-text-2 hover:bg-surface-2 hover:text-text"
+                className="flex items-center gap-2 rounded-[4px] px-2 py-1.5 text-left text-xs text-text-2 hover:bg-surface-2 hover:text-text"
                 onClick={() => createAt(t)}
               >
                 <span
@@ -2516,7 +2536,7 @@ export default function CanvasView() {
             }}
           />
           <div
-            className="fixed z-30 flex flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+            className="fixed z-30 flex flex-col rounded-lg bg-surface-1 p-1 ws-elev-popover"
             style={{
               left: Math.min(ctxMenu.x + 8, window.innerWidth - 180),
               top: Math.min(ctxMenu.y + 8, window.innerHeight - 300),

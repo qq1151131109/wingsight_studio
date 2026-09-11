@@ -22,11 +22,11 @@ export default function ConfirmDialog({
 }) {
   return (
     <div
-      className="fixed inset-0 z-[1400] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[1400] flex items-center justify-center bg-black/60 p-4 ws-scrim-in"
       onClick={onCancel}
     >
       <div
-        className="ws-card w-full max-w-sm p-5"
+        className="ws-elev-alert ws-dialog-in w-full max-w-sm rounded-xl bg-surface-1 p-5"
         onClick={(e) => e.stopPropagation()}
         role="alertdialog"
         aria-modal

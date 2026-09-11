@@ -175,7 +175,7 @@ function PanelBody({ nodeId, kind }: { nodeId: string; kind: string }) {
         }
       }}
     >
-      <div className="rounded-xl border border-hairline bg-surface-1 p-2 shadow-lg">
+      <div className="rounded-xl bg-surface-1 p-2 ws-elev-popover ws-pop-in">
         {/* key：切卡时强制重挂载，PromptBar 按新卡预填当前提示词 */}
         <PromptBar key={nodeId} nodeId={nodeId} kind={kind as "image" | "video" | "text" | "shotlist"} variant="floating" />
       </div>

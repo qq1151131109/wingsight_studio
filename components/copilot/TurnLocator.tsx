@@ -27,11 +27,12 @@
  *  - **纵向**：以**可读带**居中而非滚动视口——输入条是 absolute bottom-0 浮层，
  *    压在视口下沿之上，用视口整高居中会整体偏低（实测 60px）。
  *
- * 动效（2026-09-11，keyframes 在 globals.css「轮次轨动效」节）：标签面板右滑
- * 淡入（ws-turn-panel-in）、新轮圆点从右缘弹入（ws-turn-dot-in，只挂末点——
- * 锚点按 id keyed，新轮只在尾部挂载）、点击即时脉冲（ws-turn-dot-pulse，补
- * smooth 滚动到落点闪圈之间的反馈空窗）、轨道整体淡入、落点闪圈升级为 accent
- * 竖条+底色冲刷；prefers-reduced-motion 由 globals.css 的全局钳制兜住。
+ * 动效（2026-09-11，keyframes 在 globals.css「轮次轨动效」节）：新轮圆点从右缘
+ * 弹入（ws-turn-dot-in，只挂末点——锚点按 id keyed，新轮只在尾部挂载）、点击
+ * 即时脉冲（ws-turn-dot-pulse 180ms，补 smooth 滚动到落点闪圈之间的反馈空窗）、
+ * 轨道整体淡入、落点闪圈升级为 accent 竖条+底色冲刷；标签面板**不带入场**
+ * （group-hover 的 display 翻转，挂动画会每次悬停重放）；prefers-reduced-motion
+ * 由 globals.css 的全局钳制兜住。
  *
  * 「读到哪」= scroll-sync（2026-09-11，此前轨道只标「最新一轮」）：滚动/流式/
  * 尺寸变化都走 measure → syncActive，按可读带上部 1/3 的阅读线判定当前轮。
@@ -365,9 +366,12 @@ export default function TurnLocator() {
         // 面板外，scroll-sync 的意义就丢了一半（面板本身可滚）
         onMouseEnter={() => activeRowRef.current?.scrollIntoView({ block: "nearest" })}
       >
-        {/* 标签面板：悬停/聚焦轨道时展开（juben 同款右贴边左展开）；
-            ws-turn-panel-in = 右滑淡入入场（display 翻转时重放） */}
-        <div className="ws-turn-panel-in mr-1.5 hidden max-h-[300px] w-52 flex-col overflow-hidden rounded-xl border border-hairline bg-surface-1/95 py-2 shadow-lg backdrop-blur group-focus-within:flex group-hover:flex">
+        {/* 标签面板：悬停/聚焦轨道时展开（juben 同款右贴边左展开）。
+            这里**故意不带入场动画**：面板是 group-hover 驱动的 display 翻转，
+            挂动画类每次悬停都会重放一遍右滑（更好-ui「motion restraint」：
+            高频交互给即时反馈，别每次都播一遍入场）。入场只给「点击才出现」
+            的那类浮层。 */}
+        <div className="mr-1.5 hidden max-h-[300px] w-52 flex-col overflow-hidden rounded-xl bg-surface-1/95 py-2 ws-elev-popover backdrop-blur group-focus-within:flex group-hover:flex">
           <p className="px-3 pb-1.5 text-[10px] font-medium tracking-wide text-text-4">
             对话轮次 · {anchors.length}
           </p>
@@ -430,7 +434,10 @@ export default function TurnLocator() {
               >
                 <span
                   className={[
-                    "ws-turn-dot rounded-full transition-all duration-200",
+                    // 只过渡真正会变的三个属性（better-ui「Transition only what
+                    // changes」）：圆点在悬停时改宽/改色/改透明，别用 transition-all
+                    // 让浏览器盯着每个属性看变化
+                    "ws-turn-dot rounded-full transition-[width,background-color,opacity] duration-200",
                     // 回弹曲线：10px 小点直线过渡没有手感，back-out 微过冲
                     "ease-[cubic-bezier(0.34,1.4,0.64,1)]",
                     "group-hover/dot:bg-accent! group-hover/dot:opacity-100!",

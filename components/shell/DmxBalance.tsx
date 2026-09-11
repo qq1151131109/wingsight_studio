@@ -175,7 +175,7 @@ export default function DmxBalance() {
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-full z-50 mt-1.5 flex max-h-[70vh] w-64 flex-col overflow-auto rounded-lg border border-hairline bg-surface-1 p-2.5 shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1.5 flex max-h-[70vh] w-64 flex-col overflow-auto rounded-lg bg-surface-1 p-2.5 ws-elev-popover ws-pop-in">
           <p className="text-[11px] font-medium text-text">DMX 账户</p>
           {bal ? (
             <div className="mt-1 space-y-0.5 text-[11px] tabular-nums text-text-2">

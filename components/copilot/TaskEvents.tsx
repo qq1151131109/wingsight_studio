@@ -248,7 +248,7 @@ export default function TaskEvents() {
   const Icon = notice.ok ? CheckCircle2 : CircleAlert;
   return (
     <div
-      className="fixed bottom-16 left-4 z-40 flex max-w-[340px] items-center gap-2 rounded-xl border border-hairline bg-surface-1 px-3 py-2.5 shadow-lg"
+      className="ws-toast-in fixed bottom-16 left-4 z-[1250] flex max-w-[340px] items-center gap-2 rounded-xl bg-surface-1 px-3 py-2.5 ws-elev-popover"
       data-testid="task-events-notice"
     >
       <Icon className={`h-4 w-4 shrink-0 ${notice.ok ? "text-good" : "text-warn"}`} />

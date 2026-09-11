@@ -16,6 +16,7 @@ import {
 import AuthGate from "@/components/shell/AuthGate";
 import ConfirmDialog from "@/components/shell/ConfirmDialog";
 import AccountMenu from "@/components/shell/AccountMenu";
+import { IconWeightMedium } from "@/components/shell/IconWeight";
 import TelemetryListener from "@/components/telemetry/TelemetryListener";
 import {
   WorkspaceErrorState,
@@ -157,26 +158,29 @@ function HomeInner() {
             </h1>
             <p className="text-[11px] leading-tight text-text-3">AI 影视创作画布</p>
           </div>
-          <Link
-            href="/topic-pool"
-            className="flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 px-3 py-1.5 text-xs font-medium text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
-          >
-            <Lightbulb className="h-3.5 w-3.5" />
-            选题池
-          </Link>
-          <button
-            type="button"
-            onClick={() => void create()}
-            disabled={creating || pending}
-            className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
-          >
-            {creating || pending ? (
-              <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
-            ) : (
-              <FolderPlus className="h-3.5 w-3.5" />
-            )}
-            新建项目
-          </button>
+          {/* font-medium 标签 → 图标回 2px 绝对笔画（全局基线是 400 用的 1.5） */}
+          <IconWeightMedium>
+            <Link
+              href="/topic-pool"
+              className="flex items-center gap-1.5 rounded-md border border-hairline bg-surface-1 px-3 py-1.5 text-xs font-medium text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+            >
+              <Lightbulb className="h-3.5 w-3.5" />
+              选题池
+            </Link>
+            <button
+              type="button"
+              onClick={() => void create()}
+              disabled={creating || pending}
+              className="flex items-center gap-1.5 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {creating || pending ? (
+                <Loader2 className="h-3.5 w-3.5 motion-safe:animate-spin" />
+              ) : (
+                <FolderPlus className="h-3.5 w-3.5" />
+              )}
+              新建项目
+            </button>
+          </IconWeightMedium>
           <AccountMenu />
         </div>
       </header>
@@ -222,7 +226,7 @@ function HomeInner() {
             />
           ) : (
             <WorkspaceState
-              icon={<LayoutGrid className="mb-3 h-8 w-8 text-text-4" />}
+              icon={<LayoutGrid className="mb-3 h-8 w-8 text-text-4" strokeWidth={2.5} />}
               title={q.trim() ? "没有匹配的项目" : "从这里开始你的第一部片子"}
               description={
                 q.trim()

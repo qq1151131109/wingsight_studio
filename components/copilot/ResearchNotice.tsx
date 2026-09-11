@@ -74,7 +74,7 @@ export default function ResearchNotice() {
   const failed = notice.status === "error";
   const Icon = done ? CheckCircle2 : CircleAlert;
   return (
-    <div className="fixed bottom-4 left-4 z-40 flex max-w-[340px] items-center gap-2 rounded-xl border border-hairline bg-surface-1 px-3 py-2.5 shadow-lg">
+    <div className="ws-toast-in fixed bottom-4 left-4 z-[1250] flex max-w-[340px] items-center gap-2 rounded-xl bg-surface-1 px-3 py-2.5 ws-elev-popover">
       <Icon
         className={`h-4 w-4 shrink-0 ${done ? "text-good" : "text-warn"}`}
       />

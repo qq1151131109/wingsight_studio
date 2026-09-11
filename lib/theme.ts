@@ -85,6 +85,29 @@ function applyTheme(mode: ThemeMode, resolvedTheme: ResolvedTheme) {
   root.dataset.theme = resolvedTheme;
 }
 
+/**
+ * 主题切换期间掐掉全部过渡（better-ui「Suppress transitions on theme switch」）：
+ * 一次反色会同时改掉全站 color / background-color / border-color / box-shadow，
+ * 每个带 transition 的元素一起开跑 → 整页「抹开」而不是瞬时切换。
+ * 做法：注入 `* { transition: none !important }` → 改主题 → 读一次
+ * offsetHeight 强制样式立即结算 → 下一帧移除覆盖。
+ */
+function withThemeTransitionsSuppressed(mutate: () => void) {
+  const style = document.createElement("style");
+  style.append(
+    document.createTextNode("*,*::before,*::after{transition:none !important}"),
+  );
+  document.head.append(style);
+  try {
+    mutate();
+    // 读 offsetHeight 只为副作用：强制同步样式结算，让新主题在覆盖仍在时落定
+    const _flushReflow = document.body.offsetHeight;
+    void _flushReflow;
+  } finally {
+    requestAnimationFrame(() => requestAnimationFrame(() => style.remove()));
+  }
+}
+
 function persistThemeMode(mode: ThemeMode, now = new Date()) {
   try {
     window.localStorage.setItem(THEME_STORAGE_KEY, mode);
@@ -113,7 +136,7 @@ export const useThemeStore = create<ThemeState>()((set, get) => ({
     const mode: ThemeMode = get().resolvedTheme === "dark" ? "light" : "dark";
     const resolvedTheme = resolveTheme(mode);
     persistThemeMode(mode, new Date());
-    applyTheme(mode, resolvedTheme);
+    withThemeTransitionsSuppressed(() => applyTheme(mode, resolvedTheme));
     set({ mode, resolvedTheme });
   },
 }));
@@ -126,7 +149,8 @@ export function startThemeSync(): () => void {
     if (boundaryTimer) clearTimeout(boundaryTimer);
     const { mode } = useThemeStore.getState();
     const resolvedTheme = resolveTheme(mode);
-    applyTheme(mode, resolvedTheme);
+    // 首次同步落在首帧前（尚未 paint），掐不掐都一样；边界到点的真实反色靠它防抹
+    withThemeTransitionsSuppressed(() => applyTheme(mode, resolvedTheme));
     useThemeStore.setState({ resolvedTheme });
 
     boundaryTimer = setTimeout(() => {

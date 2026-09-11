@@ -351,7 +351,7 @@ export default function ChatSidebarHeader() {
       <ChatSearch />
 
       {panelOpen ? (
-        <div className="absolute right-2 top-[calc(100%+4px)] z-30 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+        <div className="absolute right-2 top-[calc(100%+4px)] z-30 w-72 rounded-lg bg-surface-1 p-1 ws-elev-popover ws-pop-in">
           <div className="flex items-center gap-1 px-2 pb-1 pt-1.5">
             <p className="text-[10px] uppercase tracking-wide text-text-4">
               历史会话
@@ -359,7 +359,7 @@ export default function ChatSidebarHeader() {
             <button
               type="button"
               data-tip="导出当前会话为 Markdown" aria-label="导出当前会话为 Markdown"
-              className="ml-auto rounded p-0.5 text-text-4 transition-colors hover:text-text"
+              className="ml-auto rounded-sm p-0.5 text-text-4 transition-colors hover:text-text"
               onClick={() => void exportCurrent()}
             >
               <Download className="h-3 w-3" />

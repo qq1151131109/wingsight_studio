@@ -50,7 +50,7 @@ export default function CanvasSettings() {
           data-tip="画布设置"
           aria-label="画布设置"
           aria-expanded={open}
-          className={`flex h-8 w-8 items-center justify-center rounded-md text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
+          className={`flex h-8 w-8 items-center justify-center rounded-[4px] text-text-2 transition-colors hover:bg-surface-2 hover:text-text ${
             open ? "bg-surface-2 text-text" : ""
           }`}
           onClick={() => setOpen((o) => !o)}
@@ -59,10 +59,10 @@ export default function CanvasSettings() {
         </button>
       </div>
       {open ? (
-        <div className="absolute right-0 top-full z-30 mt-1 w-60 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+        <div className="absolute right-0 top-full z-30 mt-1 w-60 rounded-lg bg-surface-1 p-1 ws-elev-popover ws-pop-in">
           <button
             type="button"
-            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-surface-2"
+            className="flex w-full items-center gap-2 rounded-[4px] px-2 py-1.5 text-left transition-colors hover:bg-surface-2"
             onClick={() => {
               useCanvasStore.getState().tidyNodes();
               setOpen(false);

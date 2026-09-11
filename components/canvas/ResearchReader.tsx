@@ -76,7 +76,7 @@ function RefChip({
         {sid.replace("S", "")}
       </button>
       {open && source ? (
-        <span className="absolute bottom-full left-1/2 z-10 mb-1 w-64 -translate-x-1/2 rounded-lg border border-hairline bg-surface-1 p-2 text-left shadow-xl">
+        <span className="absolute bottom-full left-1/2 z-10 mb-1 w-64 -translate-x-1/2 rounded-lg bg-surface-1 p-2 text-left ws-elev-popover">
           <span className="line-clamp-2 block text-[10px] font-medium text-text">
             {source.title}
           </span>
@@ -236,11 +236,11 @@ export default function ResearchReader({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="flex h-[min(88vh,1000px)] w-[min(92vw,1400px)] flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl"
+        className="flex h-[min(88vh,1000px)] w-[min(92vw,1400px)] flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头部：标题 + 状态 + 动作 */}

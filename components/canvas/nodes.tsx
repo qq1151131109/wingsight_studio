@@ -358,11 +358,11 @@ export function NodeInfoModal({
   const refs = Array.isArray(d.refIds) ? (d.refIds as string[]) : [];
   return (
     <div
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="nowheel flex max-h-[70vh] w-full max-w-md flex-col gap-2.5 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="nowheel flex max-h-[70vh] w-full max-w-md flex-col gap-2.5 overflow-y-auto ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <h3 className="text-sm font-semibold text-text">节点信息</h3>
@@ -657,13 +657,13 @@ function ToolBtn({
         onClick();
       }}
       onPointerDown={(e) => e.stopPropagation()}
-      className={`flex h-7 items-center rounded-full transition-all active:scale-[0.94] disabled:opacity-40 ${
+      className={`flex h-7 items-center rounded-md transition-[scale,background-color,color] duration-150 ease-out active:not-disabled:scale-[0.96] disabled:opacity-40 ${
         label ? "gap-1 px-2.5" : "w-7 justify-center"
       } ${
         danger
           ? "text-text-3 hover:bg-danger/10 hover:text-danger"
           : active
-            ? "bg-accent-dim text-accent shadow-[inset_0_0_0_1px_oklch(0.62_0.14_40/0.35)]"
+            ? "bg-accent-dim text-accent shadow-[inset_0_0_0_1px_var(--color-accent-soft)]"
             : "text-text-3 hover:bg-surface-2 hover:text-text"
       }`}
     >
@@ -1080,7 +1080,7 @@ function CardShell({
         }
       >
         <div
-          className="flex w-24 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+          className="flex w-24 flex-col rounded-lg bg-surface-1 p-1 ws-elev-popover"
           style={{
             scale: handleScale,
             transformOrigin: side === "right" ? "left center" : "right center",
@@ -1095,7 +1095,7 @@ function CardShell({
               <button
                 key={t}
                 type="button"
-                className="nodrag nowheel flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                className="nodrag nowheel flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-left text-xs text-text-2 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96]"
                 onClick={(e) => {
                   e.stopPropagation();
                   setPlusMenu(null);
@@ -1221,14 +1221,14 @@ function CardShell({
                 {tplMenu ? (
                   // 工具条在 NodeToolbar 屏幕空间层（不在 .ws-card 子树内），
                   // 下拉不会被卡体裁剪；相对按钮锚定，无缩放补偿需求
-                  <div className="absolute left-0 top-[calc(100%+6px)] z-50 flex w-40 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+                  <div className="absolute left-0 top-[calc(100%+6px)] z-50 flex w-40 flex-col rounded-lg bg-surface-1 p-1 ws-elev-popover">
                     {MULTI_TOOLS.map((m) => {
                       const MIcon = m.icon;
                       return (
                         <button
                           key={m.tool}
                           type="button"
-                          className="nodrag flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs text-text-2 transition-colors hover:bg-surface-2 hover:text-text"
+                          className="nodrag flex items-center gap-1.5 rounded-[4px] px-2 py-1 text-left text-xs text-text-2 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96]"
                           onClick={(e) => {
                             e.stopPropagation();
                             setTplMenu(false);
@@ -1798,7 +1798,7 @@ function ExportMenuButton({
         ? createPortal(
             <span
               ref={menuRef}
-              className="nodrag nowheel fixed z-[1250] flex w-32 flex-col rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
+              className="nodrag nowheel fixed z-[1250] flex w-32 flex-col rounded-md bg-surface-1 p-1 ws-elev-popover"
               // 菜单右下角锚在按钮右上角上方：贴按钮向上展开，顶边钳在视口内
               style={{
                 left: Math.max(140, anchor.right),
@@ -1852,7 +1852,7 @@ function DocFullscreenEditor({
   };
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onKeyDown={(e) => {
         // IME 组合中的 Esc 是取消候选，不是关闭命令（Editable 同款守卫）
         if (e.nativeEvent.isComposing || e.keyCode === 229) return;
@@ -1861,7 +1861,7 @@ function DocFullscreenEditor({
     >
       <div
         ref={wrapRef}
-        className="flex h-[min(88vh,1000px)] w-[min(92vw,1400px)] flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl"
+        className="flex h-[min(88vh,1000px)] w-[min(92vw,1400px)] flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1"
       >
         <div className="flex items-center justify-between gap-3 border-b border-hairline px-5 py-3">
           <p className="flex min-w-0 items-center gap-2 text-sm font-semibold text-text">
@@ -2197,7 +2197,7 @@ function TextCard({
         onExport={doExport}
         disabled={empty}
         track="card"
-        className="nodrag flex h-9 items-center gap-1.5 rounded-full px-3.5 text-text-3 transition-all hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+        className="nodrag flex h-9 items-center gap-1.5 rounded-[4px] px-3.5 text-text-3 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
       />
     </>
   );
@@ -2576,7 +2576,7 @@ function ScriptCard({ data, id, selected }: NodeProps) {
         onExport={doExport}
         disabled={empty}
         track="script"
-        className="nodrag flex h-9 items-center gap-1.5 rounded-full px-3.5 text-text-3 transition-all hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+        className="nodrag flex h-9 items-center gap-1.5 rounded-[4px] px-3.5 text-text-3 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
       />
     </>
   );
@@ -3026,7 +3026,7 @@ function AssetCard({ data, id, selected }: NodeProps) {
                 type="button"
                 data-tip={`版本历史（共 ${(d.versions?.length ?? 0) + 1} 版，点击查看/回滚）`} aria-label="版本历史"
                 data-track="media.versions"
-                className="nodrag absolute bottom-1.5 right-1.5 z-[5] rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80"
+                className="nodrag absolute bottom-1.5 right-1.5 z-[5] rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/90 backdrop-blur-sm transition-colors hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
                   setHistoryOpen(true);
@@ -3810,7 +3810,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
                 type="button"
                 data-tip={`版本历史（共 ${(d.versions?.length ?? 0) + 1} 版，点击查看/回滚）`} aria-label="版本历史"
                 data-track="media.versions"
-                className="nodrag absolute bottom-1.5 right-1.5 z-[5] rounded bg-black/55 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80"
+                className="nodrag absolute bottom-1.5 right-1.5 z-[5] rounded bg-black/60 px-1.5 py-0.5 text-[10px] font-medium tabular-nums text-white/90 backdrop-blur-sm transition-colors hover:bg-black/60"
                 onClick={(e) => {
                   e.stopPropagation();
                   setHistoryOpen(true);
@@ -4126,7 +4126,7 @@ function VideoLightbox({ src, onClose }: { src: string; onClose: () => void }) {
     decodeURIComponent(src.split("?")[0].split("/").pop() ?? "") || "视频";
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/80 p-8"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-8 ws-scrim-in"
       onClick={onClose}
     >
       <video
@@ -4574,7 +4574,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={f.data} className="h-10 w-auto object-cover" alt="" />
-              <span className="absolute inset-0 grid place-items-center bg-black/45 text-[9px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+              <span className="absolute inset-0 grid place-items-center bg-black/60 text-[9px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
                 +图
               </span>
             </button>
@@ -5503,7 +5503,7 @@ function ShotGenSettings({ nodeId }: { nodeId: string }) {
       </button>
       {open ? (
         <span
-          className="absolute bottom-full right-0 z-30 mb-1.5 block w-64 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
+          className="absolute bottom-full right-0 z-30 mb-1.5 block w-64 rounded-md bg-surface-1 p-2 text-left ws-elev-popover"
           onClick={(e) => e.stopPropagation()}
         >
           <span className="block text-[10px] font-medium text-text-4">画幅（分镜图）</span>
@@ -5622,7 +5622,7 @@ function VideoGenSettings({ nodeId }: { nodeId: string }) {
       </button>
       {open ? (
         <span
-          className="absolute bottom-full right-0 z-30 mb-1.5 block w-60 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
+          className="absolute bottom-full right-0 z-30 mb-1.5 block w-60 rounded-md bg-surface-1 p-2 text-left ws-elev-popover"
           onClick={(e) => e.stopPropagation()}
         >
           <span className="block text-[10px] font-medium text-text-4">视频模型</span>
@@ -7477,7 +7477,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
         onExport={doExport}
         disabled={rows.length === 0}
         track="shotlist"
-        className="nodrag flex h-9 items-center gap-1.5 rounded-full px-3.5 text-text-3 transition-all hover:bg-surface-2 hover:text-text disabled:cursor-not-allowed disabled:opacity-40"
+        className="nodrag flex h-9 items-center gap-1.5 rounded-[4px] px-3.5 text-text-3 transition-[scale,background-color,color] duration-150 ease-out hover:bg-surface-2 hover:text-text active:not-disabled:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-40"
       />
     </>
   );
@@ -7576,7 +7576,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       <img
                         src={assetThumbUrl(rowImg)}
                         alt=""
-                        className="aspect-video w-28 cursor-zoom-in rounded border border-hairline object-cover"
+                        className="aspect-video w-28 cursor-zoom-in rounded object-cover"
                       />
                     </button>
                   ) : (
@@ -7961,7 +7961,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
       {mention
         ? createPortal(
             <div
-              className="nodrag nowheel fixed z-[1250] max-h-52 w-64 overflow-auto rounded-md border border-hairline bg-surface-1 p-1 shadow-lg"
+              className="nodrag nowheel fixed z-[1250] max-h-52 w-64 overflow-auto rounded-md bg-surface-1 p-1 ws-elev-popover"
               style={{ left: mention.rect.left, top: mention.rect.bottom + 4 }}
             >
               <p className="px-1.5 py-0.5 text-[9px] text-text-4">引用资产卡</p>

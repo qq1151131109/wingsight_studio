@@ -124,11 +124,11 @@ export default function MaskEditDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/70 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[92vh] w-[min(96vw,1500px)] flex-col gap-2.5 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[92vh] w-[min(96vw,1500px)] flex-col gap-2.5 overflow-y-auto ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">

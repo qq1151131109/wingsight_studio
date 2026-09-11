@@ -66,11 +66,11 @@ export default function PasswordDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-4 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="ws-card w-full max-w-sm p-5"
+        className="ws-elev-modal ws-dialog-in w-full max-w-sm rounded-xl bg-surface-1 p-5"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal

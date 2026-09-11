@@ -616,7 +616,7 @@ function StudioPane({
 
         {groups.length === 0 ? (
           <div className="grid place-items-center rounded-lg border border-dashed border-hairline-soft bg-surface-1 px-6 py-16 text-center">
-            <ImagePlus className="mb-3 h-8 w-8 text-text-4" />
+            <ImagePlus className="mb-3 h-8 w-8 text-text-4" strokeWidth={2.5} />
             <p className="m-0 text-sm font-medium text-text-2">还没有生成记录</p>
             <p className="mb-0 mt-1 max-w-xs text-xs text-text-3">
               左侧填好提示词（可带参考图）点生成；多选模型可一次并行对比，也可以直接让右侧助手帮你出
@@ -780,7 +780,7 @@ function SortableRefThumb({
         draggable={false}
       />
       {/* 悬停工具栏：@ 插入 + 上移 + 下移 + 删除；按钮 stopPropagation 避免启动拖拽 */}
-      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/55 px-1 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <div className="absolute inset-x-0 bottom-0 flex items-center justify-between bg-black/60 px-1 py-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <button
           type="button"
           title="插入 @图N 到提示词"
@@ -966,7 +966,7 @@ function DoneCard({
                   <img
                     src={assetThumbUrl(u)}
                     alt={`参考图${i + 1}`}
-                    className="h-10 w-10 rounded border border-hairline-soft object-cover"
+                    className="h-10 w-10 rounded object-cover"
                   />
                 </span>
               ))}
@@ -1055,7 +1055,7 @@ function Lightbox({
   if (!url) return null;
   return (
     <div
-      className="fixed inset-0 z-[1300] flex flex-col items-center justify-center gap-3 bg-black/80 p-6"
+      className="fixed inset-0 z-[1300] flex flex-col items-center justify-center gap-3 bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
       role="dialog"
       aria-label="图片预览"
@@ -1094,7 +1094,7 @@ function Lightbox({
                 <img
                   src={assetThumbUrl(u)}
                   alt={`参考图${i + 1}`}
-                  className="h-10 w-10 rounded border border-hairline-soft object-cover"
+                  className="h-10 w-10 rounded object-cover"
                 />
               </span>
             ))}

@@ -147,11 +147,11 @@ export default function CapabilitiesDialog() {
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={() => setOpen(false)}
     >
       <div
-        className="flex max-h-[82vh] w-full max-w-xl flex-col rounded-xl border border-hairline bg-surface-1 shadow-2xl"
+        className="flex max-h-[82vh] w-full max-w-xl flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-hairline px-4 py-3">

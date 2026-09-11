@@ -327,11 +327,11 @@ export default function ScriptReviewDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={running ? undefined : onClose}
     >
       <div
-        className={`flex flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl ${
+        className={`flex flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4 ${
           loaded && !job
             ? "max-h-[86vh] w-[min(46rem,92vw)]"
             : "h-[min(86vh,880px)] w-[min(76rem,94vw)]"

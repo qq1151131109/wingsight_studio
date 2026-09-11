@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import GlobalErrorDialog from "@/components/shell/GlobalErrorDialog";
+import IconWeight from "@/components/shell/IconWeight";
 import TipHost from "@/components/shell/TipHost";
 import ToastHost from "@/components/shell/ToastHost";
 
@@ -52,7 +53,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="h-full overflow-hidden">
-        {children}
+        {/* 图标笔画全局基线 1.5（配 400 字重标签）；声明 medium 的按钮局部包回 2 */}
+        <IconWeight>{children}</IconWeight>
         <GlobalErrorDialog />
         <TipHost />
         <ToastHost />

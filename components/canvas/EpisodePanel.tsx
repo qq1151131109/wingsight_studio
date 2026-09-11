@@ -51,7 +51,7 @@ export default function EpisodePanel({
   };
 
   return (
-    <div className="absolute left-2 top-14 z-20 flex max-h-[62vh] w-72 flex-col rounded-lg border border-hairline bg-surface-1 p-2 shadow-lg">
+    <div className="absolute left-2 top-14 z-20 flex max-h-[62vh] w-72 flex-col rounded-xl bg-surface-1 p-2 ws-elev-popover ws-pop-in">
       <div className="flex items-center gap-1.5 px-1 pb-1.5">
         <Clapperboard className="h-3.5 w-3.5 text-text-3" />
         <span className="text-xs font-medium text-text">分集</span>

@@ -65,7 +65,7 @@ function AdminInner() {
   if (role !== "admin") {
     return (
       <div className="flex h-dvh flex-col items-center justify-center bg-bg text-center">
-        <ShieldCheck className="mb-3 h-8 w-8 text-text-4" />
+        <ShieldCheck className="mb-3 h-8 w-8 text-text-4" strokeWidth={2.5} />
         <p className="font-editorial text-lg font-medium text-text-2">需要管理员权限</p>
         <button
           type="button"
@@ -105,7 +105,7 @@ function AdminInner() {
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
-                className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors ${
+                className={`flex items-center gap-1.5 rounded-[4px] px-3 py-1.5 text-xs transition-colors ${
                   tab === id
                     ? "bg-accent-dim text-accent"
                     : "text-text-2 hover:bg-surface-2 hover:text-text"
@@ -242,7 +242,7 @@ function UsersTab() {
   return (
     <div>
       {/* 建号表单 */}
-      <div className="ws-card mb-5 p-4">
+      <div className="ws-card ws-no-enter mb-5 p-4">
         <h2 className="mb-3 text-sm font-semibold text-text">创建用户</h2>
         <div className="flex flex-wrap items-end gap-2">
           <div>
@@ -304,7 +304,7 @@ function UsersTab() {
       {users === null ? (
         <div className="flex justify-center py-16 text-sm text-text-3">加载中…</div>
       ) : (
-        <div className="ws-card divide-y divide-hairline-soft overflow-hidden p-0">
+        <div className="ws-card ws-no-enter divide-y divide-hairline-soft overflow-hidden p-0">
           {users.map((u) => (
             <div key={u.id} className="flex items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
@@ -461,7 +461,7 @@ function ApiKeysTab() {
 
   return (
     <div>
-      <div className="ws-card mb-5 p-4">
+      <div className="ws-card ws-no-enter mb-5 p-4">
         <h2 className="mb-1 text-sm font-semibold text-text">创建 API Key</h2>
         <p className="mb-3 text-[11px] leading-relaxed text-text-3">
           供脚本/自动化以 Bearer 方式调用本服务 API；完整 key 仅创建时展示一次。
@@ -519,7 +519,7 @@ function ApiKeysTab() {
           <p className="text-sm text-text-3">还没有 API Key</p>
         </div>
       ) : (
-        <div className="ws-card divide-y divide-hairline-soft overflow-hidden p-0">
+        <div className="ws-card ws-no-enter divide-y divide-hairline-soft overflow-hidden p-0">
           {keys.map((k) => (
             <div key={k.id} className="flex items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
@@ -551,8 +551,8 @@ function ApiKeysTab() {
 
       {/* 一次性展示完整 key */}
       {created ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <div className="ws-card w-full max-w-md p-5">
+        <div className="fixed inset-0 z-[1400] flex items-center justify-center bg-black/60 p-4 ws-scrim-in">
+          <div className="ws-elev-alert ws-dialog-in w-full max-w-md rounded-xl bg-surface-1 p-5">
             <h3 className="font-editorial text-base font-semibold text-text">
               API Key 已创建
             </h3>

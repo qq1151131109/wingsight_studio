@@ -6,7 +6,7 @@
  * 连线到资产卡（连线即参考，directImagegen 参考序列自动收上游连线卡）。
  */
 
-import { Loader2, Search, Trash2, X } from "lucide-react";
+import { Check, Loader2, Search, Star, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import OverlayModal from "./OverlayModal";
@@ -228,11 +228,11 @@ export default function RefResearchDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={running || adopting ? undefined : onClose}
     >
       <div
-        className="flex max-h-[86vh] w-[min(80rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[86vh] w-[min(80rem,94vw)] flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -334,9 +334,9 @@ export default function RefResearchDialog({
                 return (
                   <span
                     key={s}
-                    className={state === "now" ? "font-medium text-accent" : state === "done" ? "text-text-3" : ""}
+                    className={`inline-flex items-center gap-0.5 ${state === "now" ? "font-medium text-accent" : state === "done" ? "text-text-3" : ""}`}
                   >
-                    {state === "done" ? "✓ " : ""}
+                    {state === "done" ? <Check className="h-2.5 w-2.5" /> : null}
                     {s}
                   </span>
                 );
@@ -390,21 +390,22 @@ export default function RefResearchDialog({
                       </span>
                     ) : (
                       <span
-                        className={`absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full border text-[9px] ${
+                        className={`absolute right-1 top-1 flex h-4 w-4 items-center justify-center rounded-full border ${
                           isSelected
                             ? "border-accent bg-accent text-surface-1"
                             : "border-white/60 bg-black/30 text-transparent group-hover:border-white"
                         }`}
                       >
-                        ✓
+                        <Check className="h-2.5 w-2.5" strokeWidth={2.5} />
                       </span>
                     )}
                     {!isAdopted && c.recommended ? (
                       <span
-                        className="absolute left-1 top-1 rounded bg-accent/90 px-1 py-0.5 text-[9px] font-medium text-surface-1"
+                        className="absolute left-1 top-1 flex items-center gap-0.5 rounded bg-accent/90 px-1 py-0.5 text-[9px] font-medium text-surface-1"
                         title={c.recReason || "AI 判定适合做生图参考"}
                       >
-                        ★ 推荐
+                        <Star className="h-2.5 w-2.5 fill-current" />
+                        推荐
                       </span>
                     ) : null}
                     <button

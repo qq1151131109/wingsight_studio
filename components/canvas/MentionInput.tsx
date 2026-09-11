@@ -782,7 +782,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
       />
       {trigger && visibleGroups.length > 0 ? (
         <div
-          className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-1 w-72 rounded-lg bg-surface-1 p-1 ws-elev-popover"
           // 键盘导航挂在弹层根（捕获阶段）：焦点无论落在搜索框/页签/候选项
           // 上都能导航——此前只挂编辑器与搜索框，点过页签后方向键全部落空
           onKeyDownCapture={(e) => {
@@ -822,7 +822,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
                   type="button"
                   ref={gi === tab ? tabRef : undefined}
                   data-tip="左右方向键快速切换分组" aria-label={`分组 ${g.label}`}
-                  className={`shrink-0 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[10px] transition-colors ${
+                  className={`shrink-0 whitespace-nowrap rounded-[4px] px-1.5 py-0.5 text-[10px] transition-colors ${
                     gi === tab
                       ? "bg-accent-dim text-text"
                       : "text-text-3 hover:bg-surface-2 hover:text-text"
@@ -855,7 +855,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
                   type="button"
                   // 阻止 mousedown 抢焦点导致编辑器失焦闪烁
                   onMouseDown={(e) => e.preventDefault()}
-                  className={`flex w-full items-center gap-1.5 rounded-md px-1.5 py-1 text-left text-xs ${
+                  className={`flex w-full items-center gap-1.5 rounded-[4px] px-1.5 py-1 text-left text-xs ${
                     active ? "bg-surface-2 text-text" : "text-text-2"
                   }`}
                   onClick={() => pick(c)}
@@ -890,7 +890,7 @@ const MentionInput = forwardRef<MentionInputHandle, Props>(function MentionInput
           </div>
         </div>
       ) : trigger ? (
-        <div className="absolute bottom-full left-0 z-20 mb-1 w-64 rounded-lg border border-hairline bg-surface-1 p-2 text-[10px] leading-relaxed text-text-4 shadow-lg">
+        <div className="absolute bottom-full left-0 z-20 mb-1 w-64 rounded-lg bg-surface-1 p-2 text-[10px] leading-relaxed text-text-4 ws-elev-popover">
           {trigger.q
             ? `没有匹配「${trigger.q}」的卡——删掉关键词可看全部可引用卡`
             : "画布上还没有可引用的卡"}

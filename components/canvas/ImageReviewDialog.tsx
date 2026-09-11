@@ -7,7 +7,15 @@
  * 锚点高亮（评审对象是图，quote 是画面位置描述不是原文区间）。
  */
 import { useMemo } from "react";
-import { ClipboardCheck, Loader2, X } from "lucide-react";
+import {
+  ClipboardCheck,
+  Eye,
+  Loader2,
+  Move3d,
+  Palette,
+  Sun,
+  X,
+} from "lucide-react";
 import OverlayModal from "./OverlayModal";
 import {
   ART_DIMENSION_LABEL,
@@ -25,11 +33,14 @@ const SEV_DOT: Record<string, string> = {
 
 const SEV_RANK: Record<string, number> = { high: 0, medium: 1, low: 2 };
 
-const DIM_ICONS: Record<ArtDimension, string> = {
-  composition: "▣",
-  color: "◐",
-  lighting: "☀",
-  proportion: "△",
+/* 四维度图标走 lucide，与姊妹弹窗 ScriptReviewDialog 的 DIM_ICON 同族——
+   此前这里是 ▣◐☀△ 一组 Unicode 字形：定形定尺、无法按状态换色，且与
+   同功能的文本审查弹窗长得像两个产品（better-ui「one icon library per surface」） */
+const DIM_ICON: Record<ArtDimension, typeof Eye> = {
+  composition: Eye,
+  color: Palette,
+  lighting: Sun,
+  proportion: Move3d,
 };
 
 export default function ImageReviewDialog({
@@ -68,11 +79,11 @@ export default function ImageReviewDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={running ? undefined : onClose}
     >
       <div
-        className="flex h-[min(86vh,760px)] w-[min(92vw,1180px)] flex-col overflow-hidden rounded-xl border border-hairline bg-surface-1 shadow-2xl"
+        className="flex h-[min(86vh,760px)] w-[min(92vw,1180px)] flex-col overflow-hidden ws-dialog-in ws-elev-modal rounded-xl bg-surface-1"
         onClick={(e) => e.stopPropagation()}
       >
         {/* 头 */}
@@ -138,8 +149,12 @@ export default function ImageReviewDialog({
                     <div className="flex items-center gap-1.5">
                       <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${SEV_DOT[f.severity] ?? "bg-text-3"}`} />
                       <span className="text-xs font-medium text-text">{f.title}</span>
-                      <span className="rounded bg-surface-1 px-1 py-0.5 text-[9px] text-text-4">
-                        {DIM_ICONS[f.dimension]} {ART_DIMENSION_LABEL[f.dimension]}
+                      <span className="flex items-center gap-1 rounded bg-surface-1 px-1 py-0.5 text-[9px] text-text-4">
+                        {(() => {
+                          const DimIcon = DIM_ICON[f.dimension];
+                          return <DimIcon className="h-2.5 w-2.5" strokeWidth={1.5} />;
+                        })()}
+                        {ART_DIMENSION_LABEL[f.dimension]}
                       </span>
                       <span className="text-[9px] text-text-4">
                         {ART_REVIEW_SEVERITY_LABEL[f.severity]}危

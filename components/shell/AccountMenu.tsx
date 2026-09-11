@@ -83,7 +83,7 @@ export default function AccountMenu() {
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-full z-50 mt-1.5 flex w-44 flex-col rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+        <div className="absolute right-0 top-full z-50 mt-1.5 flex w-44 flex-col rounded-lg bg-surface-1 p-1 ws-elev-popover ws-pop-in">
           <div
             className="px-2 py-1.5"
             title={

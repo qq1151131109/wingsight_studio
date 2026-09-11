@@ -18,7 +18,7 @@ export default function Error({
 
   return (
     <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-bg px-6 text-center">
-      <CircleAlert className="h-10 w-10 text-danger" />
+      <CircleAlert className="h-10 w-10 text-danger" strokeWidth={2.5} />
       <div>
         <h1 className="font-editorial text-lg font-semibold text-text">
           页面出错了

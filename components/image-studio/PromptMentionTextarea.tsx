@@ -417,7 +417,7 @@ function RefPicker({
       role="listbox"
       id={LISTBOX_ID}
       aria-label="选择参考图"
-      className="fixed z-[1250] w-72 overflow-hidden rounded-lg border border-hairline bg-surface-1 shadow-xl"
+      className="fixed z-[1250] w-72 overflow-hidden rounded-lg bg-surface-1 ws-elev-popover"
       style={{ left: pos.left, top: pos.top, transform: "translateY(-100%)" }}
     >
       <div className="border-b border-hairline-soft bg-surface-1 px-3 py-1.5 text-[10px] font-semibold tracking-wide text-text-4">
@@ -449,7 +449,7 @@ function RefPicker({
                 <img
                   src={assetThumbUrl(item.url)}
                   alt=""
-                  className="h-9 w-9 shrink-0 rounded-md border border-hairline-soft object-cover"
+                  className="h-9 w-9 shrink-0 rounded-md object-cover"
                 />
                 <span className="min-w-0 flex-1">
                   <span

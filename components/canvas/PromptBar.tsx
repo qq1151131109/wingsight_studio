@@ -35,6 +35,7 @@ import {
 } from "@/lib/canvas/genContract";
 import { createPortal } from "react-dom";
 import { assetThumbUrl } from "@/lib/asset-thumb";
+import { IconWeightMedium } from "@/components/shell/IconWeight";
 import MentionInput, {
   type MentionInputHandle,
   type MentionRead,
@@ -608,7 +609,7 @@ export default function PromptBar({
   const composeOn = kind === "image" && self?.data.composeOpt !== false;
   return (
     <div
-      className={`ws-detail nodrag nowheel rounded-md border border-hairline bg-surface-2/60 ${
+      className={`ws-detail nodrag nowheel rounded-lg border border-hairline bg-surface-2/60 ${
         floating ? "border-0 bg-transparent p-0" : "mt-1.5 p-1.5"
       }`}
     >
@@ -1036,7 +1037,7 @@ export default function PromptBar({
                   {sheetMenu
                     ? createPortal(
                         <div
-                          className="fixed z-[1250] w-60 rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg"
+                          className="fixed z-[1250] w-60 rounded-lg bg-surface-1 p-1 ws-elev-popover"
                           style={{
                             left: Math.min(sheetMenu.x, window.innerWidth - 256),
                             top: Math.max(8, sheetMenu.y - 8),
@@ -1046,7 +1047,7 @@ export default function PromptBar({
                         >
                           <button
                             type="button"
-                            className={`flex w-full flex-col items-start rounded-md px-2 py-1 text-left transition-colors ${
+                            className={`flex w-full flex-col items-start rounded-[4px] px-2 py-1 text-left transition-colors ${
                               activeSheet === "none" ? "bg-accent-dim" : "hover:bg-surface-2"
                             }`}
                             onClick={(e) => {
@@ -1210,9 +1211,11 @@ export default function PromptBar({
           }}
           data-track="promptbar.save-preset"
         >
-          <Star className={`h-3.5 w-3.5 ${favSaved ? "fill-current" : ""}`} />
+          <Star className={`h-3.5 w-3.5 ${favSaved ? "fill-current [stroke-width:1.5]" : ""}`} />
           {favSaved ? "已收藏" : "存入提示词库"}
         </button>
+        {/* 生成钮标签是 font-medium → 图标 2px 绝对笔画（其余工具钮走 1.5 基线） */}
+        <IconWeightMedium>
         <button
           type="button"
           disabled={rwBusy}
@@ -1243,6 +1246,7 @@ export default function PromptBar({
           )}
           {kind === "text" ? (rwBusy ? "撰写中…" : "撰写") : kind === "shotlist" ? "修改" : "生成"}
         </button>
+        </IconWeightMedium>
         </div>
       </div>
       {panelError ? (
@@ -1315,7 +1319,7 @@ function TextModelChip({ nodeId }: { nodeId: string }) {
       </button>
       {open ? (
         <span
-          className="absolute bottom-full left-0 z-30 mb-1.5 block w-64 rounded-md border border-hairline bg-surface-1 p-2 text-left shadow-lg"
+          className="absolute bottom-full left-0 z-30 mb-1.5 block w-64 rounded-md bg-surface-1 p-2 text-left ws-elev-popover"
           onClick={(e) => e.stopPropagation()}
         >
           <span className="block text-[10px] font-medium text-text-4">
@@ -1439,7 +1443,7 @@ function ImagegenChips({
         <ChevronDown className="h-3 w-3 text-text-4" />
       </button>
       {open ? (
-        <div className="absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-md border border-hairline bg-surface-1 p-2 shadow-lg">
+        <div className="absolute bottom-full left-0 z-30 mb-1.5 w-64 rounded-md bg-surface-1 p-2 ws-elev-popover">
           <div className="flex items-center justify-between">
             <span className="text-[10px] font-medium text-text-4">本卡出图模型</span>
             {cardGen ? (

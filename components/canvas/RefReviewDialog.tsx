@@ -7,7 +7,7 @@
  * 确认后按选中批量建参考卡连线（生效于出图参考序列），供「补资产图」使用。
  */
 
-import { Loader2, RefreshCw, X } from "lucide-react";
+import { Check, Loader2, RefreshCw, Star, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import OverlayModal from "./OverlayModal";
@@ -183,11 +183,11 @@ export default function RefReviewDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/55 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={adopting ? undefined : onClose}
     >
       <div
-        className="flex max-h-[88vh] w-[min(60rem,94vw)] flex-col rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[88vh] w-[min(60rem,94vw)] flex-col ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
@@ -302,13 +302,16 @@ export default function RefReviewDialog({
                             loading="lazy"
                           />
                           {c.recommended ? (
-                            <span className="absolute left-0.5 top-0.5 rounded bg-accent/90 px-0.5 text-[8px] font-medium text-surface-1">
-                              ★
+                            <span
+                              className="absolute left-0.5 top-0.5 flex items-center justify-center rounded bg-accent/90 p-0.5 text-surface-1"
+                              title="AI 判定适合做生图参考"
+                            >
+                              <Star className="h-2.5 w-2.5 fill-current" />
                             </span>
                           ) : null}
                           {isSelected ? (
-                            <span className="absolute right-0.5 top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-[8px] text-surface-1">
-                              ✓
+                            <span className="absolute right-0.5 top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-accent text-surface-1">
+                              <Check className="h-2.5 w-2.5" strokeWidth={2.5} />
                             </span>
                           ) : null}
                         </div>

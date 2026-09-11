@@ -144,10 +144,10 @@ function ABCompare({ a, b }: { a: string; b: string }) {
         className="pointer-events-none absolute inset-y-0 w-px bg-white/90 shadow-[0_0_0_1px_rgba(0,0,0,.35)]"
         style={{ left: `${split}%` }}
       />
-      <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
+      <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
         A
       </span>
-      <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
+      <span className="pointer-events-none absolute right-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
         B
       </span>
     </div>
@@ -216,11 +216,11 @@ export default function VersionHistoryModal({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/70 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="flex h-[min(82vh,760px)] w-full max-w-5xl flex-col gap-3 rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex h-[min(82vh,760px)] w-full max-w-5xl flex-col gap-3 ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2">
@@ -244,7 +244,7 @@ export default function VersionHistoryModal({
               )
             ) : null}
             {detail && !compare ? (
-              <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/55 px-1.5 py-0.5 text-[10px] text-white">
+              <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/60 px-1.5 py-0.5 text-[10px] text-white">
                 {previewLabel}
               </span>
             ) : null}

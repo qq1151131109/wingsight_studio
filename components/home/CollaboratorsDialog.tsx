@@ -106,11 +106,11 @@ export default function CollaboratorsDialog({
 
   return (
     <div
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/40 p-4"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-4 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="ws-card flex max-h-[80vh] w-full max-w-md flex-col p-5"
+        className="ws-elev-modal ws-dialog-in flex max-h-[80vh] w-full max-w-md flex-col rounded-xl bg-surface-1 p-5"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal

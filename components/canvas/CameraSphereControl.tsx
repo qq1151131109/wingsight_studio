@@ -263,7 +263,7 @@ export const CameraSphereControl = memo(
           }}
         >
           <div
-            className="absolute left-1/2 top-[30px] h-3 w-8 -translate-x-1/2 rounded-full bg-black/45 blur-[4px]"
+            className="absolute left-1/2 top-[30px] h-3 w-8 -translate-x-1/2 rounded-full bg-black/60 blur-[4px]"
             style={{ opacity: shadowStrength }}
           />
           <div

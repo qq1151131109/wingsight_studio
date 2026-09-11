@@ -106,11 +106,11 @@ export default function InsightsDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-hairline bg-bg shadow-2xl"
+        className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden ws-dialog-in ws-elev-modal rounded-xl bg-bg"
         onClick={(e) => e.stopPropagation()}
       >
         <header className="flex items-center gap-3 border-b border-hairline px-5 py-3.5">
@@ -147,7 +147,7 @@ export default function InsightsDialog({ onClose }: { onClose: () => void }) {
               {items.map((it) => {
                 const isEditing = editing === it.id;
                 return (
-                  <li key={it.id} className="ws-card p-3">
+                  <li key={it.id} className="ws-card ws-no-enter p-3">
                     <div className="flex items-baseline gap-2">
                       {it.url ? (
                         <a

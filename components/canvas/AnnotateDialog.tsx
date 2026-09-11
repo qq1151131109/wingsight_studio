@@ -326,11 +326,11 @@ export default function AnnotateDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex flex-col bg-black/70 p-4"
+      className="fixed inset-0 z-[1300] flex flex-col bg-black/60 p-4 ws-scrim-in"
       onClick={busy ? undefined : onClose}
     >
       <div
-        className="flex min-h-0 flex-1 flex-col gap-2 rounded-xl border border-hairline bg-surface-1 p-3 shadow-2xl"
+        className="flex min-h-0 flex-1 flex-col gap-2 ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-3"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 flex-wrap items-center gap-2">

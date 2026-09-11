@@ -112,11 +112,11 @@ export default function ShortcutsModal() {
   if (!open) return null;
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={() => setOpen(false)}
     >
       <div
-        className="flex max-h-[80vh] w-full max-w-4xl flex-col gap-2.5 rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[80vh] w-full max-w-4xl flex-col gap-2.5 ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2">

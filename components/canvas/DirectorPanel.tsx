@@ -134,11 +134,11 @@ export default function DirectorPanel({
 
   return (
     <div
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/50 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={onClose}
     >
       <div
-        className="nowheel flex max-h-[82vh] w-full max-w-lg flex-col gap-3 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="nowheel flex max-h-[82vh] w-full max-w-lg flex-col gap-3 overflow-y-auto ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between gap-2">

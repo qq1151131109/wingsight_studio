@@ -104,6 +104,52 @@ body {
     text-rendering: optimizeLegibility;
 }
 
+/* ── 抬升档位（better-ui「Shadows for elevation, borders for structure」）──
+   浮层的「深度」一律走分层透明 box-shadow，不用硬边 border 造深度——边框
+   只留给分隔线、表格格线、表单描边和选中/聚焦态。四档与 z 序档位表同名同
+   序（见下方 z 序档位表），照档入座：raisd 卡片/内嵌面，popover 悬浮面板与
+   弹出菜单，modal 全屏模态，alert 确认框与全局错误（叠在模态之上）。
+
+   每档三层：第一层 1px 透明环充当原来的 hairline 边框（随底色自适应，不再
+   是写死的暖色描边），第二层近距轻抬，第三层远距环境影。暗色模式按 better-ui
+   简化为单层白环——分层深度在深底上根本看不见，多写只是浪费合成层。 */
+:root {
+    /* 卡片档单独一支（无环）：画布卡片自己有 hairline 边框，且那根边框还兼任
+       hover / 选中态（better-ui 允许「表达状态的边框」留下）——再加 1px 阴影环
+       就是双层描边。所以卡片只取深度那一层 */
+    --ws-elev-card: 0 1px 3px oklch(0 0 0 / 0.06);
+    --ws-elev-raised:
+        0 0 0 1px oklch(0 0 0 / 0.06),
+        0 1px 2px -1px oklch(0 0 0 / 0.06),
+        0 2px 4px 0 oklch(0 0 0 / 0.04);
+    --ws-elev-popover:
+        0 0 0 1px oklch(0 0 0 / 0.07),
+        0 6px 16px -4px oklch(0 0 0 / 0.12),
+        0 2px 6px -2px oklch(0 0 0 / 0.08);
+    --ws-elev-modal:
+        0 0 0 1px oklch(0 0 0 / 0.08),
+        0 18px 44px -10px oklch(0 0 0 / 0.22),
+        0 6px 18px -6px oklch(0 0 0 / 0.16);
+    --ws-elev-alert:
+        0 0 0 1px oklch(0 0 0 / 0.10),
+        0 24px 56px -12px oklch(0 0 0 / 0.28),
+        0 8px 22px -8px oklch(0 0 0 / 0.20);
+}
+html.dark {
+    --ws-elev-raised: 0 0 0 1px oklch(1 0 0 / 0.08);
+    --ws-elev-popover: 0 0 0 1px oklch(1 0 0 / 0.10);
+    --ws-elev-modal: 0 0 0 1px oklch(1 0 0 / 0.12);
+    --ws-elev-alert: 0 0 0 1px oklch(1 0 0 / 0.14);
+}
+/* 五档工具类：只负责 box-shadow。用它的地方要把原来的 border 删掉——环已经
+   在阴影里，两条并存就是双层描边（26 处弹窗此前正是 border + shadow-2xl 并存）。
+   卡片档例外，见上面 --ws-elev-card 的注释 */
+.ws-elev-card { box-shadow: var(--ws-elev-card); }
+.ws-elev-raised { box-shadow: var(--ws-elev-raised); }
+.ws-elev-popover { box-shadow: var(--ws-elev-popover); }
+.ws-elev-modal { box-shadow: var(--ws-elev-modal); }
+.ws-elev-alert { box-shadow: var(--ws-elev-alert); }
+
 /* 悬停提示气泡（components/shell/TipHost.tsx 经 data-tip 委托渲染到 body）：
    墨色反色小气泡，hover 0.35s 后淡入；fixed 定位不受滚动容器 overflow 裁剪，
    上下翻转与横向夹紧由 TipHost 计算 */
@@ -150,6 +196,20 @@ body {
 }
 ::-webkit-scrollbar-track { background: transparent; }
 
+/* 图片描边（better-ui「Image outlines」）：1px 纯黑/纯白低透明度描边画在
+   图内侧，给每张图一致的深度。米黄纸面上浅色图的边缘原本会"溶"进卡面，
+   深色模式反过来。只画在没自带 border 的图上——自带细边的缩略图不去叠双层。
+   outline 不占布局、-1px 偏移贴合圆角，比 border 安全。 */
+/* 选择器带 img 前缀是必须的：Tailwind preflight 用 img{outline:none} 重置
+   过一圈，`:where(img)`（0 特异性）压不过它，声明会静默失效——实测踩过。 */
+img:not([class*="border"]) {
+    outline: 1px solid oklch(0 0 0 / 0.1);
+    outline-offset: -1px;
+}
+html.dark img:not([class*="border"]) {
+    outline-color: oklch(1 0 0 / 0.1);
+}
+
 /* === 画布卡片 — 纸面质感（libtv 范式：标题在卡外上方，手柄在左右） === */
 
 /* 节点根：不含卡面样式，纵向排布 标题行 + 卡体；手柄挂在这一层 */
@@ -165,7 +225,7 @@ body {
     background: var(--color-surface-1);
     border: 1px solid var(--color-hairline);
     border-radius: 0.75rem;
-    box-shadow: 0 1px 3px oklch(0 0 0 / 0.06);
+    box-shadow: var(--ws-elev-card);
     transition: border-color 150ms, box-shadow 150ms;
     /* 内容（简报块/正文/状态行）超出卡高一律裁剪在卡框内，不许溢出到邻卡 */
     overflow: hidden;
@@ -183,6 +243,14 @@ body {
 .ws-card.selected {
     border-color: var(--color-accent);
     box-shadow: 0 0 0 3px var(--color-accent-dim);
+}
+
+/* 跳过入场：.ws-card 自带 ws-card-in（画布上新卡入场该有），但同一支动画挂在
+   「切 tab 就重挂载」的内容块上时，每次切换都重播一遍 220ms 缩放——那是导航
+   不是出现（better-ui「Never stagger routine interactions」）。需要跳过的容器挂
+   这支即可，卡片本身的入场语义不受影响 */
+.ws-card.ws-no-enter {
+    animation: none;
 }
 
 /* @引用光环：被选中生成卡引用的卡片点亮（虚线描边） */
@@ -349,10 +417,59 @@ body {
 /* 成功徽章：loading→ready 时左上角闪现后自动淡出 */
 .ws-success-badge { animation: ws-success-in 2.4s ease forwards; }
 @keyframes ws-success-in {
-    0% { opacity: 0; transform: scale(0.8); }
-    10% { opacity: 1; transform: scale(1); }
-    70% { opacity: 1; }
-    100% { opacity: 0; }
+  0% { opacity: 0; transform: scale(0.8); }
+  10% { opacity: 1; transform: scale(1); }
+  70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* 全屏模态面板入场（better-ui「Contextual icon animations / scale on press」同族
+   的浮层版）：scale 0.96 → 1 + 淡入，150ms ease-out。所有对话框共用这一支，
+   免得「有的淡入有的硬切」（30 处 shadow-2xl 弹窗此前全是硬切）。
+   scale 用 0.96 与按压缩放同值——浮层从「略小于原位」长到位。 */
+.ws-dialog-in {
+    animation: ws-dialog-in 150ms ease-out;
+}
+@keyframes ws-dialog-in {
+    from { opacity: 0; scale: 0.96; }
+}
+
+/* Toast：来了就走的一次性通知，入场 200ms 浮起、退场 150ms 下沉淡出
+   （better-ui「Exits should be softer than enters，用小的固定 translateY」）。
+   宿主在 items 上挂 ws-toast-in / ws-toast-out 两个类切换。 */
+.ws-toast-in {
+    animation: ws-toast-in 200ms ease-out;
+}
+@keyframes ws-toast-in {
+    from { opacity: 0; translate: 0 6px; }
+}
+.ws-toast-out {
+    animation: ws-toast-out 150ms ease-out forwards;
+}
+@keyframes ws-toast-out {
+    to { opacity: 0; translate: 0 4px; }
+}
+
+/* 浮层背板淡入：内容有了入场（ws-dialog-in）而背板硬切时，一次开合里是两拍
+   ——背板先瞬间出现、内容再长出来。背板只做纯 opacity（不位移、不缩放）：
+   它是环境变化不是对象，动了反而抢主体 */
+.ws-scrim-in {
+    animation: ws-scrim-in 150ms ease-out;
+}
+@keyframes ws-scrim-in {
+    from { opacity: 0; }
+}
+
+/* 浮层/面板入场：与 .ws-dialog-in 同档节奏（150ms ease-out），但不走 scale——
+   对话框是屏幕中心的模态，缩放读作「从略小长到原位」；而面板/菜单/浮卡是锚在
+   触发钮上的，用小的固定 translateY 才读得出「从触发钮那一侧长出来」的方向
+   （better-ui「Exits should be softer than enters，用小的固定 translateY」）。
+   @ 候选弹层不接这支：打字驱动、高频，即时出现才对 */
+.ws-pop-in {
+    animation: ws-pop-in 150ms ease-out;
+}
+@keyframes ws-pop-in {
+    from { opacity: 0; translate: 0 4px; }
 }
 
 /* 相邻高亮：hover/选中节点的邻居与连线点亮（对标 open-ai-canvas related） */
@@ -809,16 +926,11 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     animation: ws-turn-flash 1.2s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-/* 轮次轨动效（2026-09-11）：面板右滑淡入 / 新轮圆点入场 / 点击即时脉冲 /
-   轨道整体淡入。回弹曲线（back-out）给 10px 级小元素一点生命感；origin 钉
-   右缘——轨贴右对齐，元素从轨里「长出来」而不是凭空冒出 */
-@keyframes ws-turn-panel-in {
-    from { opacity: 0; transform: translateX(10px); }
-    to { opacity: 1; transform: translateX(0); }
-}
-.ws-turn-panel-in {
-    animation: ws-turn-panel-in 170ms cubic-bezier(0.2, 0.9, 0.3, 1);
-}
+/* 轮次轨动效（2026-09-11）：新轮圆点入场 / 点击即时脉冲 / 轨道整体淡入。
+   回弹曲线（back-out）给 10px 级小元素一点生命感；origin 钉右缘——轨贴右
+   对齐，元素从轨里「长出来」而不是凭空冒出。
+   面板右滑入场（ws-turn-panel-in）已删：面板是 group-hover 的 display 翻转，
+   挂动画类每次悬停都重放一遍，属高频交互不该播的入场——现在面板即时出现。 */
 @keyframes ws-turn-dot-in {
     0% { opacity: 0; transform: scaleX(0.3); }
     60% { opacity: 1; transform: scaleX(1.25); }
@@ -829,7 +941,8 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     animation: ws-turn-dot-in 260ms cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 /* 点击脉冲：smooth 滚动 300-500ms 后落点闪圈才出现，点上的即时反馈补这个
-   空窗（点了有没有生效，手感上差这一下） */
+   空窗（点了有没有生效，手感上差这一下）。180ms——重复点击的动作按 better-ui
+   的预算收到 200ms 以内，420ms 那版在小圆点上拖着不结束，连点还叠拍 */
 @keyframes ws-turn-dot-pulse {
     0% { transform: scaleX(1); }
     35% { transform: scaleX(1.8); }
@@ -837,7 +950,7 @@ aside.copilotKitSidebar[aria-hidden="false"] {
 }
 .ws-turn-dot-pulse {
     transform-origin: right center;
-    animation: ws-turn-dot-pulse 420ms cubic-bezier(0.34, 1.4, 0.64, 1);
+    animation: ws-turn-dot-pulse 180ms cubic-bezier(0.34, 1.4, 0.64, 1);
 }
 @keyframes ws-turn-rail-in {
     from { opacity: 0; }

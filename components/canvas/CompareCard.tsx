@@ -124,10 +124,10 @@ export default function CompareCard({
                 >
                   <span className="absolute left-1/2 top-1/2 h-6 w-6 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white bg-black/50" />
                 </div>
-                <span className="absolute bottom-1 left-1 rounded bg-black/55 px-1 py-0.5 text-[9px] text-white">
+                <span className="absolute bottom-1 left-1 rounded bg-black/60 px-1 py-0.5 text-[9px] text-white">
                   {a.title.slice(0, 10) || "A"}
                 </span>
-                <span className="absolute bottom-1 right-1 rounded bg-black/55 px-1 py-0.5 text-[9px] text-white">
+                <span className="absolute bottom-1 right-1 rounded bg-black/60 px-1 py-0.5 text-[9px] text-white">
                   {b.title.slice(0, 10) || "B"}
                 </span>
               </>

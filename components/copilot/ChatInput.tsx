@@ -34,6 +34,7 @@ import {
   Sparkles,
   Square,
   X,
+  Zap,
 } from "lucide-react";
 import { useCanvasStore, type WingNode } from "@/lib/canvas/store";
 import { useChatSession } from "@/lib/chat/session";
@@ -901,7 +902,7 @@ export default function ChatInput({
         />
 
         {slash && slashCandidates.length > 0 ? (
-          <div className="absolute bottom-full left-0 z-20 mb-1 max-h-48 w-72 overflow-auto rounded-lg border border-hairline bg-surface-1 p-1 shadow-lg">
+          <div className="absolute bottom-full left-0 z-20 mb-1 max-h-48 w-72 overflow-auto rounded-lg bg-surface-1 p-1 ws-elev-popover">
             <p className="px-2 pb-1 pt-0.5 text-[10px] text-text-4">
               Langflow 技能（回车选用）
             </p>
@@ -910,7 +911,7 @@ export default function ChatInput({
                 key={s.name}
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
-                className={`flex w-full flex-col gap-0.5 rounded-md px-2 py-1.5 text-left text-xs ${
+                className={`flex w-full flex-col gap-0.5 rounded-[4px] px-2 py-1.5 text-left text-xs ${
                   i === hi ? "bg-surface-2 text-text" : "text-text-2"
                 }`}
                 onClick={() => pickSkill(s)}
@@ -925,7 +926,10 @@ export default function ChatInput({
                     : undefined
                 }
               >
-                <span className="truncate font-medium">⚡ {s.name}</span>
+                <span className="flex items-center gap-1 truncate font-medium">
+                  <Zap className="h-3 w-3 shrink-0" aria-hidden />
+                  {s.name}
+                </span>
                 {s.description ? (
                   <span className="truncate text-[11px] text-text-4">
                     {s.description}

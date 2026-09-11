@@ -24,7 +24,8 @@ import {
   type CopilotChatSuggestionView,
 } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
-import { Check, Copy, Music, Pencil, Sparkles, Video } from "lucide-react";
+import { Check, Copy, Megaphone, Music, Pencil, Sparkles, Video, type LucideIcon } from "lucide-react";
+import { TYPE_ICONS } from "@/lib/canvas/type-icons";
 import ChatInput from "./ChatInput";
 import AssistantMessage from "./AssistantMessage";
 import CapabilitiesDialog from "./CapabilitiesDialog";
@@ -109,7 +110,7 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
               m.kind === "image" ? (
                 <a key={`${i}:${m.url}`} href={m.url} target="_blank" rel="noreferrer" aria-label="查看原图">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={assetThumbUrl(m.url)} alt="附件" className="h-14 w-14 rounded-lg border border-hairline object-cover" />
+                  <img src={assetThumbUrl(m.url)} alt="附件" className="h-14 w-14 rounded-lg object-cover" />
                 </a>
               ) : (
                 <a
@@ -225,25 +226,34 @@ function clampChatWidth(w: number): number {
   return Math.min(Math.max(w, 340), upper);
 }
 
+/* 示例入口带图标：此前是 emoji 前缀（✍️🎭🎬📣🧹），而全站图标体系是 lucide
+   ——emoji 是 OS 定色的字形，笔画与光学尺寸都跟不上正文，同一块界面里混两套
+   图标语言（better-ui「one icon library per surface」）。四条正好对应节点类型，
+   直接复用 lib/canvas/type-icons 的 TYPE_ICONS，与卡片徽标同源 */
 const SUGGESTIONS = [
   {
-    title: "✍️ 建个剧本卡",
+    title: "建个剧本卡",
+    icon: TYPE_ICONS.script,
     message: "创建一个剧本卡：写一个 90 秒都市悬疑短片的梗概，标题自拟。",
   },
   {
-    title: "🎭 拆解剧本出设定图",
+    title: "拆解剧本出设定图",
+    icon: TYPE_ICONS.character,
     message: "把画布上的剧本拆解成角色和场景资产清单，建卡后为它们生成设定图。",
   },
   {
-    title: "🎬 拆整表分镜",
+    title: "拆整表分镜",
+    icon: TYPE_ICONS.shotlist,
     message: "把画布上的剧本拆成 20 镜的标准分镜表，写回分镜表卡。",
   },
   {
-    title: "📣 写宣发文案",
+    title: "写宣发文案",
+    icon: Megaphone,
     message: "为画布上的剧本写一版抖音宣发文案，6 条，带话题标签。",
   },
   {
-    title: "🧹 整理画布",
+    title: "整理画布",
+    icon: TYPE_ICONS.group,
     message: "把画布上的卡片按类型分组整理并连好关系，最后调整视口让我看全。",
   },
 ];
@@ -258,7 +268,7 @@ function EmptyStateSuggestions({
   suggestions,
   onSelectSuggestion,
 }: {
-  suggestions: { title: string; message: string }[];
+  suggestions: { title: string; message: string; icon?: LucideIcon }[];
   onSelectSuggestion?: (s: { title: string; message: string }) => void;
 }) {
   const hasMessages = useChatSession((s) => s.hasMessages);
@@ -272,17 +282,21 @@ function EmptyStateSuggestions({
         </p>
       </div>
       <div className="grid grid-cols-2 gap-1.5 px-1 pt-2">
-        {suggestions.map((s) => (
-          <button
-            key={s.title}
-            type="button"
-            data-tip={s.message} aria-label={s.message}
-            onClick={() => onSelectSuggestion?.(s)}
-            className="rounded-lg border border-hairline bg-surface-2 px-2.5 py-2 text-left text-xs leading-snug text-text-2 transition-colors hover:border-accent-soft hover:bg-surface-1 hover:text-text"
-          >
-            {s.title}
-          </button>
-        ))}
+        {suggestions.map((s) => {
+          const Icon = s.icon;
+          return (
+            <button
+              key={s.title}
+              type="button"
+              data-tip={s.message} aria-label={s.message}
+              onClick={() => onSelectSuggestion?.(s)}
+              className="flex items-start gap-1.5 rounded-lg border border-hairline bg-surface-2 px-2.5 py-2 text-left text-xs leading-snug text-text-2 transition-colors hover:border-accent-soft hover:bg-surface-1 hover:text-text"
+            >
+              {Icon ? <Icon className="mt-px h-3.5 w-3.5 shrink-0" /> : null}
+              <span>{s.title}</span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );

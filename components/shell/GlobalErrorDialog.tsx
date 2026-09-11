@@ -33,11 +33,11 @@ export default function GlobalErrorDialog() {
   if (!cur) return null;
   return (
     <div
-      className="fixed inset-0 z-[1400] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1400] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={() => setCur(null)}
     >
       <div
-        className="w-full max-w-md rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="ws-elev-alert w-full max-w-md ws-dialog-in rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-2">

@@ -344,11 +344,11 @@ export default function ImageTemplateDialog({
 
   return (
     <OverlayModal
-      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6"
+      className="fixed inset-0 z-[1300] flex items-center justify-center bg-black/60 p-6 ws-scrim-in"
       onClick={busy ? undefined : onClose}
     >
       <div
-        className="flex max-h-[86vh] w-[min(38rem,92vw)] flex-col gap-3 overflow-y-auto rounded-xl border border-hairline bg-surface-1 p-4 shadow-2xl"
+        className="flex max-h-[86vh] w-[min(38rem,92vw)] flex-col gap-3 overflow-y-auto ws-dialog-in ws-elev-modal rounded-xl bg-surface-1 p-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
