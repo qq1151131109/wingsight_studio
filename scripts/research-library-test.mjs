@@ -312,6 +312,27 @@ print(f"{before}:{after}")
 }
 
 // ---------- 清理 ----------
+// 退出兜底：本测试中途抛错（如浏览器没装）时也要把研究行清掉——主体/图集按
+// era 全库共享，留着会污染真实复用域（本地库实测过一次崩在 playwright 启动、
+// 留下 7 条 e2e 主体）。项目行由正常路径删；兜底只保证研究行不残留。
+process.on("exit", () => {
+  try {
+    py(`
+import sqlite3, imgresearch as ir
+db = sqlite3.connect(str(ir.DB_PATH))
+era = ${JSON.stringify(ERA)}
+db.execute("DELETE FROM research_entries WHERE era = ?", (era,))
+db.execute("DELETE FROM research_subject_refs WHERE era = ?", (era,))
+for pid in (${JSON.stringify(A)}, ${JSON.stringify(B)}, ${JSON.stringify(C)}):
+    db.execute("DELETE FROM research_uses WHERE project_id = ?", (pid,))
+    db.execute("DELETE FROM research_topics WHERE project_id = ?", (pid,))
+    db.execute("DELETE FROM research_entries WHERE project_id = ?", (pid,))
+db.commit(); db.close()
+`);
+  } catch {
+    /* 退出清理尽力而为，不掩盖原始错误 */
+  }
+});
 for (const pid of [A, B, C]) await api(`/projects/${pid}`, { method: "DELETE" });
 py(`
 import sqlite3, imgresearch as ir
