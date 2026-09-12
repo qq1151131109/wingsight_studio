@@ -6,6 +6,7 @@ import { HttpAgent } from "@ag-ui/client";
 import { getToken } from "@/lib/auth";
 import { startThemeSync } from "@/lib/theme";
 import { useChatSession } from "@/lib/chat/session";
+import { attachSnapshotStability } from "@/lib/chat/snapshotStability";
 
 /**
  * LangGraph 主 agent（agent/ 目录，FastAPI + ag-ui-langgraph，8123 端口）。
@@ -23,9 +24,17 @@ const langgraphAgent = new HttpAgent({
   ...(token ? { headers: { Authorization: `Bearer ${token}` } } : {}),
 });
 
+// 快照稳定（见 lib/chat/snapshotStability.ts 顶部注释）：MESSAGES_SNAPSHOT
+// 整表换 id 会让气泡重建、思考行消失——run 边界（前端工具调用）一次不落
+attachSnapshotStability(langgraphAgent);
+
 /** 原始 agent 实例的旁路订阅口（思考透传等需要完整事件流的场景用：
  *  core 注册表里的包装 agent 只转发生命周期子集事件） */
 export { langgraphAgent };
+
+if (typeof window !== "undefined" && process.env.NODE_ENV !== "production") {
+  (window as unknown as { __wsAgent?: unknown }).__wsAgent = langgraphAgent;
+}
 
 export function AgentProvider({ children }: { children: React.ReactNode }) {
   // 全站主题同步（juben 时间规则：边界自动切换 / 多标签同步），只挂一次

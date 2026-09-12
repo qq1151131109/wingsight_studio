@@ -136,6 +136,20 @@ export default function AssistantMessage({
     void useChatBranches.getState().refresh(threadId);
   }, [threadId, message?.id, agent, copilotkit]);
 
+  // 进度播报合并为单条（opencode 单行状态范式）：服务端 _emit_progress 每次发
+  // 新 message_id（AG-UI 桥单次认领、同 id 原地更新不可行），快照稳定修复让
+  // 它们跨 run 存活后会在界面永久累积（52 张出图批每 3s 一条 = 十几条进度
+  // 气泡）。只渲染**最后一条**进度，更早的被更新的顶掉；浮条（TaskEvents）
+  // 与落库（ChatPersistence 跳过 progress_）不受影响
+  if (
+    msgId.startsWith("progress_") &&
+    Array.isArray(messages) &&
+    [...messages].reverse().find((m) => typeof m?.id === "string" && m.id.startsWith("progress_"))
+      ?.id !== msgId
+  ) {
+    return null;
+  }
+
   return (
     <div
       className="ws-asst-msg"

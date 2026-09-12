@@ -47,7 +47,11 @@ interface ChatSessionState {
 
 export const useChatSession = create<ChatSessionState>()((set) => ({
   threadId: undefined,
-  setThreadId: (threadId) => set({ threadId, agentThreadId: agentThreadIdOf(threadId) }),
+  setThreadId: (threadId) => {
+    if (process.env.NODE_ENV !== "production")
+      console.log("[session] setThreadId:", threadId ?? String(threadId), new Error().stack?.split("\n")[2]?.trim());
+    set({ threadId, agentThreadId: agentThreadIdOf(threadId) });
+  },
   // 不能在初始化器里 get()：zustand 创建期 state 尚未赋值，get() 返回
   // undefined 会炸整页。初值 threadId=undefined → agentThreadId 同为 undefined
   agentThreadId: undefined,

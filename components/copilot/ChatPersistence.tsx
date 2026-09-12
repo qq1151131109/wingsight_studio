@@ -177,6 +177,7 @@ export default function ChatPersistence() {
           // ensure 刚建出的会话：只标记水合，不覆盖界面
           skipHydrateKeyRef.current = null;
           hydratedKeyRef.current = key;
+          if (process.env.NODE_ENV !== "production") console.log("[persist] hydrate SKIP (fresh thread):", key);
           return;
         }
         const current = messagesRef.current;
@@ -185,8 +186,12 @@ export default function ChatPersistence() {
           // 空态变化（v2 切线程时会自行清场 agent.messages）不在此列——
           // 曾把清场误判成用户输入，切会话水合被中止、界面停在空列表
           hydratedKeyRef.current = key;
+          if (process.env.NODE_ENV !== "production")
+            console.log("[persist] hydrate ABORT (messages changed):", key, "history=", history?.length);
           return;
         }
+        if (process.env.NODE_ENV !== "production")
+          console.error(`[persist] hydrate OVERWRITE: ${key} history=${history?.length} current=${current.length}`);
         setMessages(
           history.map((h) => ({
             id: h.id,
