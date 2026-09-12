@@ -199,7 +199,8 @@ export interface ChatThreadMeta {
 
 export interface ChatMessageRecord {
   id: string;
-  role: "user" | "assistant";
+  /** reasoning = 思考行（2026-09-12 起随会话落库回放，对齐 codex rollout） */
+  role: "user" | "assistant" | "reasoning";
   content: string;
   createdAt?: string;
 }

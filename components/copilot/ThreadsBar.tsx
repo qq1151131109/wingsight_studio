@@ -125,6 +125,8 @@ export default function ChatSidebarHeader() {
       if (!msgs || msgs.length === 0) return;
       const lines = [`# ${meta}`, ""];
       for (const m of msgs) {
+        // 思考行不进导出稿（对齐气泡口径：过程折叠，导出给用户的是对话正文）
+        if (m.role === "reasoning") continue;
         // 与气泡同口径：旧格式先迁移（导出不该把附件正文再抄一份），导出内容 =
         // 用户可见部分 + 附件与引用清单 + 媒体 URL
         const text = contentToMarkdown(

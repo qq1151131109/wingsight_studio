@@ -8,7 +8,9 @@
  *  - 选中的会话在服务端消失（404）：自愈回"选最新"，不打错误风暴
  *  - 消息变化：debounce 1.2s → PUT 整表覆盖到当前会话；
  *    threadId=null 且有内容时先建会话（跳过随之而来的回填，防清屏竞态）
- *  - 只存 user/assistant 文本；多模态 parts 用 WS_PARTS:: envelope 序列化
+ *  - 只存 user/assistant/reasoning 文本（思考行 2026-09-12 起随会话落库回放，
+ *    对齐 codex rollout；progress_* 瞬时播报仍不落库）；多模态 parts 用
+ *    WS_PARTS:: envelope 序列化
  *  - 读取失败（服务离线）本轮不保存，避免用内存空历史覆盖服务端
  */
 
@@ -39,7 +41,7 @@ type ChatMsg = { id?: string; role?: string; content?: unknown };
 function toRecords(messages: ChatMsg[]): ChatMessageRecord[] {
   const out: ChatMessageRecord[] = [];
   for (const m of messages) {
-    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (m.role !== "user" && m.role !== "assistant" && m.role !== "reasoning") continue;
     // 瞬时进度消息（agent 工具执行中推送的 progress_*）不落库：
     // 它是状态提示不是对话内容，回看历史时应消失
     if (typeof m.id === "string" && m.id.startsWith("progress_")) continue;

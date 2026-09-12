@@ -744,7 +744,10 @@ def save_chat_messages(
             mid = str(m.get("id") or uuid.uuid4().hex[:16])
             role = str(m.get("role") or "")
             content = str(m.get("content") or "")
-            if role not in ("user", "assistant") or not content.strip():
+            # reasoning（思考行）2026-09-12 起随会话落库：刷新回放对齐 codex
+            # rollout / opencode part 持久化；下一轮 run input 回传给服务端重建
+            # AIMessage.reasoning_content（DeepSeek 思考模式硬要求）
+            if role not in ("user", "assistant", "reasoning") or not content.strip():
                 continue
             items.append(
                 {
