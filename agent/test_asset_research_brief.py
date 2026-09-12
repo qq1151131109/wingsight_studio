@@ -19,6 +19,7 @@ import eventbus
 import imagejobs
 import imgresearch
 import skills
+import models
 
 # ---------- 临时库（照 test_research.py 范式换绑 DB_PATH） ----------
 _tmp = Path(tempfile.mkdtemp(prefix="ws-brief-test-"))
@@ -1017,5 +1018,69 @@ finally:
     skills._generate_single_image = _gap_single_backup
     skills._emit_progress = _gap_emit_backup
     skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY = _gap_flow_backup, _gap_key_backup
+
+# ── I3. 生成载荷剥「全局视觉风格：」双重前缀（2026-09-12 使用链路验证实锤）──
+#     前端 4 处与聊天工具都先带「全局视觉风格：」前缀，而 flow 模板的
+#     {visual_notes} 槽位外层还有同名标题——不剥会渲染成双重前缀（真出图
+#     落库 finalPrompt 实锤）。剥点在 compose 之后：指令合成要按前缀提取画风行。
+import json as _json
+
+_orig_gsi_flow, _orig_gsi_id, _orig_gsi_key = (
+    skills.run_flow_blocking, skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY
+)
+_gsi_captured: dict = {}
+
+
+async def _gsi_fake_flow(flow_id, input_value="", tweaks=None, timeout=None):
+    _gsi_captured["tweaks"] = tweaks
+    return _json.dumps({"url": "http://x/img.png", "final_prompt": "渲染后", "model": "m"})
+
+
+skills.run_flow_blocking = _gsi_fake_flow
+skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY = "f", "k"
+try:
+    _gsi_shot = {
+        "name": "唐代宫殿大殿", "assetType": "scene", "description": "唐代宫殿正殿内景",
+        "visualNotes": "全局视觉风格：写实影视质感；考据依据（真实形制与年代，优先遵循）：唐代形制考据。",
+    }
+    asyncio.run(skills._generate_single_image(
+        _gsi_shot, {"model_name": models.DEFAULT_MODEL_ID}
+    ))
+    _gsi_payload = _json.loads(
+        _gsi_captured["tweaks"]["BatchAssetSheet-img02"]["assets_payload"]
+    )["assets"][0]
+    _vn = str(_gsi_payload.get("visual_notes") or "")
+    expect(
+        not _vn.startswith("全局视觉风格：") and _vn.startswith("写实影视质感；考据依据"),
+        f"I3 载荷应剥重复前缀、保留考据段：{_vn[:60]}",
+    )
+    expect("考据依据" in _vn, "I3 考据段完整保留")
+
+    # compose 路径：剥前缀发生在指令合成之后（画风行提取不受影响）
+    _orig_compose = skills.compose_instruction
+    _compose_args: dict = {}
+
+    async def _compose_spy(*a, **k):
+        _compose_args["style_line"] = a[3] if len(a) >= 4 else k.get("style_line")
+        return {"prompt": "合成后", "kept": False}
+
+    skills.compose_instruction = _compose_spy
+    _gsi_shot2 = {**_gsi_shot, "compose": "1", "instruction": "黄昏光线"}
+    asyncio.run(skills._generate_single_image(
+        _gsi_shot2, {"model_name": models.DEFAULT_MODEL_ID}
+    ))
+    expect(
+        str(_compose_args.get("style_line") or "").startswith("写实影视质感"),
+        f"I3 compose 画风行提取不受剥前缀影响：{_compose_args}",
+    )
+    _vn2 = str(_json.loads(
+        _gsi_captured["tweaks"]["BatchAssetSheet-img02"]["assets_payload"]
+    )["assets"][0].get("visual_notes") or "")
+    expect(not _vn2.startswith("全局视觉风格："), f"I3 compose 路径载荷同样剥前缀：{_vn2[:60]}")
+    skills.compose_instruction = _orig_compose
+finally:
+    skills.run_flow_blocking, skills.IMAGEGEN_FLOW_ID, skills.DMX_API_KEY = (
+        _orig_gsi_flow, _orig_gsi_id, _orig_gsi_key
+    )
 
 print(f"✅ 出图考据注入与补考据 {PASS[0]} 项断言全部通过")

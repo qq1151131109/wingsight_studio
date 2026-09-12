@@ -2272,6 +2272,13 @@ async def _generate_single_image(
             description = f"{medium}：由真实演员饰演「{flat(shot.get('name'))}」本人出镜。{description}"
         else:
             description = f"{medium}。{description}"
+    # 剥掉调用方自带的「全局视觉风格：」前缀（前端 4 处与聊天工具都先带前缀，
+    # 而 flow 模板的 {visual_notes} 槽位外层还有「全局视觉风格（…务必遵循）：」
+    # 标题——不剥会渲染成「全局视觉风格（…）：全局视觉风格：写实影视质感」
+    # 双重前缀，落库 finalPrompt 实锤）。放在 compose 之后：指令合成要从
+    # visual_flat 里按该前缀提取画风行。只剥开头一次，后续段落不动。
+    if visual_flat.startswith("全局视觉风格："):
+        visual_flat = visual_flat[len("全局视觉风格："):].strip()
     payload: Dict[str, Any] = {
         "type": shot_type,
         "name": flat(shot.get("name") or "资产"),
