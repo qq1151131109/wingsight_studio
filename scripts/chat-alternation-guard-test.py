@@ -169,7 +169,7 @@ out7 = _sanitize_messages_for_model(seq7)
 assert_legal_alternation(out7, "T7")
 check("T7：守卫放行（可以继续对话，不再 400/哑火）", not _unanswered_frontend_calls(seq7))
 
-print("T8 纯净会话不受影响")
+print("T8 纯净会话不受影响（尾部纯 AI 由收尾守卫剥除——2026-09-11 行为变更）")
 seq8 = [
     SystemMessage("sys"),
     HumanMessage("你好"),
@@ -180,8 +180,8 @@ seq8 = [
     AIMessage("画布是空的。"),
 ]
 out8 = _sanitize_messages_for_model(seq8)
-check("T8：原样透传（不增不减不重排）",
-      [type(m).__name__ for m in out8] == [type(m).__name__ for m in seq8])
+check("T8：透传不增不重排，仅剥尾部纯 AI（收尾守卫，09-11 防 DeepSeek 400）",
+      [type(m).__name__ for m in out8] == [type(m).__name__ for m in seq8[:-1]])
 assert_legal_alternation(out8, "T8")
 
 print()

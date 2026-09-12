@@ -2498,34 +2498,115 @@ def _shape_dump(messages: List[Any]) -> str:
     return " ".join(parts)
 
 
+def _tool_call_sig(tc: Any) -> tuple[str | None, str]:
+    """工具调用的稳定签名（名称 + 键排序后的参数 JSON）：埋点重复判定与
+    确定性循环检测共用的比对基准——参数只进内存哈希，不落库。"""
+    if isinstance(tc, dict):
+        name = tc.get("name")
+        args = tc.get("args")
+    else:
+        name = getattr(tc, "name", None)
+        args = getattr(tc, "args", None)
+    try:
+        return name, json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001
+        return name, repr(args)
+
+
 def _is_repeat_tool_call(messages: List[Any], response: Any) -> bool:
     """本次工具调用与历史上最近一次同工具调用的参数是否完全相同（空转信号）。
     只返回布尔供埋点——参数本身不入库（埋点不记正文铁律）。"""
     calls = getattr(response, "tool_calls", None) or []
     if not calls:
         return False
-
-    def _sig(tc: Any) -> tuple[str | None, str]:
-        if isinstance(tc, dict):
-            name = tc.get("name")
-            args = tc.get("args")
-        else:
-            name = getattr(tc, "name", None)
-            args = getattr(tc, "args", None)
-        try:
-            return name, json.dumps(args or {}, sort_keys=True, ensure_ascii=False, default=str)
-        except Exception:  # noqa: BLE001
-            return name, repr(args)
-
-    name, sig = _sig(calls[0])
+    name, sig = _tool_call_sig(calls[0])
     for m in reversed(messages):
         if not isinstance(m, AIMessage):
             continue
         for prev in getattr(m, "tool_calls", None) or []:
-            pname, psig = _sig(prev)
+            pname, psig = _tool_call_sig(prev)
             if pname == name:
                 return psig == sig
     return False
+
+
+# ---------- 确定性循环检测与步数收尾（2026-09-12 P2）----------
+#
+# LLM 自察不了自己在循环：同工具同参数原样重发，结果不会变，模型却以为
+# 「再试一次」会有转机，一路烧到 recursion_limit——GraphRecursionError 把
+# 本轮全部产出与叙事一起报废。这里用代码判定代替模型自察（codex/opencode
+# 均有同类确定性守卫）：
+#   - 连续第 3 次同签名调用 → 拦下不执行，合成 ToolMessage 反思提醒后自环
+#     重跑（模型仍持有工具：换参数/换工具/汇报收尾都行）。容忍 2 次是给
+#     瞬时故障的原样重试留余地（出图 503 重掷同参是合理行为）
+#   - 收到提醒后仍第 4 次 → 止损：再拦一次并在尾部留 [循环止损] 标记，
+#     下一跳解绑工具强制纯文字收尾——解绑后物理上无法再调用，循环结构上终结
+# 只覆盖后端调用（tool_node 循环才累积步数；前端调用每 run 即 END，
+# recursion_limit 按 invocation 计会重置，不构成递归风险）。
+
+_LOOP_REFLECT_AT = 3
+_LOOP_STOP_AT = 4
+_LOOP_STOP_MARK = "[循环止损]"
+# 步数宽限：距 recursion_limit 还有 8 个 superstep 开始催收尾（一次
+# chat+tool 往返 = 2 步，留约 3-4 次工具调用余量）；最后 2 步硬收尾——
+# chat(limit-2) 若再发工具调用则 tool(limit-1) → 回 chat(limit+1) 必炸
+# GraphRecursionError，此后解绑工具只许说话。
+_CLOSE_MARGIN = 8
+_HARD_CLOSE_MARGIN = 2
+
+
+def _consecutive_repeat(messages: List[Any], name: str | None, sig: str) -> int:
+    """尾部连续同签名工具调用的次数（不含本次响应）。
+
+    从尾往前数：ToolMessage 是调用的应答、跳过；AIMessage 带工具调用则比
+    其第一个调用的签名，相同 +1、不同即断档；HumanMessage / 纯文本 AI 断档
+    （轮次边界；正常轮内不会出现纯文本 AI——那已 goto END）。穿插的其它
+    调用天然断档：validate→ops→validate 的合理复检不算循环。
+    """
+    n = 0
+    for m in reversed(messages):
+        if isinstance(m, ToolMessage):
+            continue
+        if not isinstance(m, AIMessage):
+            break
+        tcs = getattr(m, "tool_calls", None) or []
+        if not tcs:
+            break
+        pname, psig = _tool_call_sig(tcs[0])
+        if pname == name and psig == sig:
+            n += 1
+        else:
+            break
+    return n
+
+
+def _pending_stop_loss(messages: List[Any]) -> bool:
+    """是否处于「止损标记待收尾」状态：末条是止损 ToolMessage。
+
+    只认尾部——该状态只存在于止损拦截后的自环交接瞬间（模型随后文字收尾
+    即 END）。历史中部的旧标记属于早已结束的轮次：后台任务完成续跑等新
+    invocation 不能被它误伤成纯文字模式。
+    """
+    last = messages[-1] if messages else None
+    return isinstance(
+        last, ToolMessage
+    ) and str(getattr(last, "content", "")).startswith(_LOOP_STOP_MARK)
+
+
+def _step_budget(config: RunnableConfig) -> Tuple[int, int]:
+    """(当前 superstep, recursion_limit)。
+
+    langgraph 注入节点 config 的 metadata.langgraph_step 从 1 起计；上限按
+    invocation 计（前端工具续跑每次重置）。任一缺失返回 (0, 0)——判定方
+    （r_limit > 0）会整体跳过，零行为变化。
+    """
+    meta = config.get("metadata") or {}
+    try:
+        step = int(meta.get("langgraph_step") or 0)
+        limit = int(config.get("recursion_limit") or 0)
+    except (TypeError, ValueError):
+        return 0, 0
+    return step, limit
 
 
 async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
@@ -2534,6 +2615,14 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # 有未响应的前端工具调用（含混合调用场景）→ 等浏览器执行回传
     if _unanswered_frontend_calls(messages):
         return Command(goto=END, update={})
+
+    # 步数预算（P2 宽限收尾）：距上限尚远时只算两个 int，零行为变化；
+    # 临近上限或止损标记在尾 → 收尾模式（见下方指令注入与解绑）
+    step_now, r_limit = _step_budget(config)
+    hard_close = _pending_stop_loss(messages) or (
+        r_limit > 0 and step_now >= r_limit - _HARD_CLOSE_MARGIN
+    )
+    soft_close = r_limit > 0 and step_now >= r_limit - _CLOSE_MARGIN
 
     # 思考/推理档位见 _chat_reasoning_kwargs：GLM 系 thinking:enabled；
     # luna 必须 none（DMX 的 reasoning_effort+function tools 即 400）；
@@ -2548,9 +2637,15 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
         **thinking_kwargs,
     )
 
-    model_with_tools = model.bind_tools(
-        [*_frontend_tools(state), *backend_tools],
-        parallel_tool_calls=False,
+    model_with_tools = (
+        model.bind_tools(
+            [*_frontend_tools(state), *backend_tools],
+            parallel_tool_calls=False,
+        )
+        if not hard_close
+        # 硬收尾/止损：解绑工具，模型物理上无法再发起调用——GraphRecursionError
+        # 与「无视提醒继续循环」从结构上不可达，只剩说话一条路
+        else model
     )
 
     # 画布摘要：主通道 = run 的 forwarded_props（前端 setProperties 每轮携带，
@@ -2612,6 +2707,29 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
                     )
                 )
             )
+        # 步数收尾指令（P2）：与 nudge 同范式——只进本次请求不落 checkpoint，
+        # 每一跳按最新步数重新注入，历史保持干净
+        if hard_close:
+            attempt_msgs.append(
+                HumanMessage(
+                    content=(
+                        "[系统提醒] 本轮步数已到终点或循环止损生效，必须现在收尾："
+                        "本轮已禁用工具调用，用纯文本向用户总结当前进展、未完成事项"
+                        "与建议的下一步（可用条目列表），不要再尝试调用任何工具。"
+                    )
+                )
+            )
+        elif soft_close:
+            left = max(r_limit - step_now, 0)
+            attempt_msgs.append(
+                HumanMessage(
+                    content=(
+                        f"[系统提醒] 本轮可用步数即将耗尽（约剩 {left} 步、"
+                        f"{left // 2} 次工具调用）。立即转入收尾：不要再开启新的"
+                        "长任务，用一段话向用户总结已完成与未完成的部分，然后结束本轮。"
+                    )
+                )
+            )
         merged = None
         # WS_DEBUG_SHAPE=1：每次调用前转储入参形状（诊断 provider 契约类 400 用，
         # 只打类型/长度/有无 tool_calls 与 reasoning，不含正文；默认关、零开销）
@@ -2645,6 +2763,17 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     has_frontend_call = any(n and n not in backend_tool_names for n in call_names)
     has_backend_call = any(n in backend_tool_names for n in call_names)
 
+    # 确定性循环检测（P2）：只查纯后端调用路径——前端调用每 run 即 END，
+    # 步数按 invocation 重置，不构成递归风险；hard_close 时工具已解绑、
+    # 真实模型不可能再带 tool_calls
+    consec = 0
+    first_tc_id: str | None = None
+    first_tc_name: str | None = None
+    if has_backend_call and not has_frontend_call and not hard_close:
+        first_tc_id, first_tc_name = _tool_call_info(tool_calls[0])
+        _, first_tc_sig = _tool_call_sig(tool_calls[0])
+        consec = _consecutive_repeat(messages, first_tc_name, first_tc_sig) + 1
+
     # 行为遥测（粗粒度计数，不含正文/参数——「懒」的量化基础）
     events.track(
         "agent.step",
@@ -2655,9 +2784,39 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
             "chars": len(_msg_text(response)),
             "nudge_retries": nudge_retries,
             "repeat_call": _is_repeat_tool_call(messages, response),
+            "consec_repeat": consec,
             "compressed": bool(comp_update),
         },
     )
+
+    # 循环拦截优先于路由：被拦的调用不执行（相同调用不会得到不同结果），
+    # 合成 ToolMessage 保持交替合法，自环回 chat_node 重跑
+    if consec >= _LOOP_REFLECT_AT:
+        stop = consec >= _LOOP_STOP_AT
+        notice = (
+            f"{_LOOP_STOP_MARK} 「{first_tc_name}」在收到拦截提醒后仍以完全相同的"
+            f"参数重复调用（连续 {consec} 次），本次未执行、工具已临时禁用。"
+            "下一步必须用纯文字向用户收尾：说明已完成什么、卡在哪里、建议怎么继续。"
+            if stop
+            else f"[循环拦截] 检测到「{first_tc_name}」已连续 {consec} 次以完全相同的"
+            "参数调用，本次未执行——相同调用不会带来不同结果。停止重复：更换参数或"
+            "改用别的工具；若在等后台任务，向用户说明后结束本轮（任务完成会自动"
+            "续跑）；若上次结果报错，读错误信息换路径，不要原样重试。"
+        )
+        events.track(
+            "agent.loop_guard",
+            {"level": "stop" if stop else "reflect", "tool": str(first_tc_name), "consec": consec},
+        )
+        return Command(
+            goto="chat_node",
+            update={
+                "messages": [
+                    response,
+                    ToolMessage(content=notice, tool_call_id=first_tc_id or ""),
+                ],
+                **comp_update,
+            },
+        )
 
     # 前端工具调用优先：本轮立即结束交给浏览器执行。若同一消息还混着后端
     # 调用，则后端调用本轮不执行（历史清洗会给它补占位响应，模型下一轮
