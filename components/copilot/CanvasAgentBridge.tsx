@@ -35,6 +35,7 @@ import BackendToolCards, {
   requestToolApproval,
   RunningRow,
   ToolCard,
+  ToolCardSlim,
   useToolApproval,
 } from "./toolCards";
 import PlanTools from "./planCards";
@@ -715,7 +716,7 @@ export default function CanvasAgentBridge() {
     render: ({ status, result }) => {
       const r = typeof result === "string" ? result : "";
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<Palette />}
           title={
             status !== "complete"
@@ -724,10 +725,7 @@ export default function CanvasAgentBridge() {
                 ? "用户已选择画风"
                 : "画风面板已关闭"
           }
-          ok
-        >
-          {null}
-        </ToolCard>
+        />
       );
     },
   });
@@ -750,13 +748,10 @@ export default function CanvasAgentBridge() {
     render: ({ status, args }) => {
       const s = String((args as { style?: unknown })?.style ?? "");
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<Palette />}
           title={status !== "complete" ? "正在设定画风" : `画风已设定：「${s.slice(0, 24)}」`}
-          ok
-        >
-          {null}
-        </ToolCard>
+        />
       );
     },
   });
@@ -961,13 +956,10 @@ export default function CanvasAgentBridge() {
     render: ({ status, args }) => {
       const v = saneEra((args as { era?: unknown })?.era);
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<Landmark />}
           title={status !== "complete" ? "正在记录时代口径" : `时代口径：${v}`}
-          ok
-        >
-          {null}
-        </ToolCard>
+        />
       );
     },
   });
@@ -1128,13 +1120,8 @@ export default function CanvasAgentBridge() {
     render: ({ status, args }) => {
       const q = String((args as { query?: unknown })?.query ?? "");
       const title = q ? `检索「${q}」` : "检索画布节点";
-      if (status !== "complete")
-        return <RunningRow icon={<Wrench />} title={`正在${title}`} />;
-      return (
-        <ToolCard icon={<Wrench />} title={title} ok>
-          {null}
-        </ToolCard>
-      );
+      if (status !== "complete") return <RunningRow icon={<Wrench />} title={`正在${title}`} />;
+      return <ToolCardSlim icon={<Wrench />} title={title} />;
     },
   });
 
@@ -1166,15 +1153,17 @@ export default function CanvasAgentBridge() {
         issues?: { severity: string; message: string }[];
         operationCount?: number;
       };
+      const issues = r.issues ?? [];
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<Wrench />}
-          title={`校验 ${r.operationCount ?? 0} 项操作`}
-          ok={Boolean(r.ok)}
-          detail={(r.issues ?? []).map((i) => `${i.severity === "error" ? "✗" : "⚠"} ${i.message}`).join("\n") || "全部通过"}
-        >
-          {null}
-        </ToolCard>
+          title={`校验 ${r.operationCount ?? 0} 项操作${r.ok ? "通过" : `：${issues.length} 个问题`}`}
+          failed={!r.ok}
+          detail={
+            issues.map((i) => `${i.severity === "error" ? "✗" : "⚠"} ${i.message}`).join("\n") ||
+            undefined
+          }
+        />
       );
     },
   });
@@ -1614,14 +1603,14 @@ export default function CanvasAgentBridge() {
       const r = result as unknown as OpResultEx;
       if (r.rejected) {
         return (
-          <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs text-text-3">
+          <div className="rounded-lg border border-hairline bg-surface-3 px-3 py-2 text-xs text-text-3">
             已按你的选择跳过这批删除 / 分组操作。
           </div>
         );
       }
       const ok = r.errors.length === 0;
       return (
-        <div className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs">
+        <div className="rounded-lg border border-hairline bg-surface-3 px-3 py-2 text-xs">
           <div
             className={`flex items-center gap-1.5 font-medium ${
               ok ? "text-good" : "text-warn"

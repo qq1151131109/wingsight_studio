@@ -15,6 +15,7 @@ import { create } from "zustand";
 import { useCopilotAction } from "@copilotkit/react-core";
 import {
   CheckCircle2,
+  ChevronRight,
   CircleAlert,
   Palette,
   ListChecks,
@@ -115,7 +116,7 @@ export function ToolCard({
       // （结果 JSON/文件清单不是对话内容）。计数走数据源时天然不含它们，这里
       // 保持一致——避免「计数 12 却高亮 15 处」
       data-ws-toolcard="1"
-      className="rounded-lg border border-hairline bg-surface-2 px-3 py-2 text-xs"
+      className="rounded-lg border border-hairline bg-surface-3 px-3 py-2 text-xs"
     >
       <div
         className={`flex items-center gap-1.5 font-medium ${
@@ -145,6 +146,56 @@ export function ToolCard({
         </details>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * 过程类工具卡的单行紧凑形态（2026-09-12「满屏都是卡」走查）：读手册/查进度/
+ * 发起调研这类过程调用只值一行——整卡 + 「详情」行让一轮 11 张卡占满整屏，
+ * 有信息量的产物卡反而被淹没（ChatGPT「已搜索」/Claude 时间线同口径：过程收
+ * 一行、产物才占卡）。仍保留「rounded-lg border bg-surface-3」卡类与
+ * data-ws-toolcard 标记：前者让 globals.css 的「卡与卡堆叠 10px」间距规则照常
+ * 命中（不然后卡顶槽变 0），后者让会话搜索继续跳过工具卡子树。
+ * 标题即 <summary>：折叠=一行，展开=结果全文，不再单占一行「详情」。
+ */
+export function ToolCardSlim({
+  icon,
+  title,
+  failed,
+  detail,
+}: {
+  icon: ReactNode;
+  title: string;
+  /** true=该过程有失败语义，标题转警色（正常过程一律中性弱化，不打绿勾） */
+  failed?: boolean;
+  detail?: string;
+}) {
+  return (
+    <details
+      data-ws-toolcard="1"
+      className="group rounded-lg border border-hairline bg-surface-3 px-2.5 py-1 text-xs text-text-3"
+    >
+      <summary className="flex cursor-pointer select-none list-none items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+        <span
+          className={`[&>svg]:h-3.5 [&>svg]:w-3.5 [&>svg]:stroke-2 ${
+            failed ? "text-warn" : "text-text-4"
+          }`}
+        >
+          {icon}
+        </span>
+        <span className={`min-w-0 flex-1 truncate ${failed ? "font-medium text-warn" : ""}`}>
+          {title}
+        </span>
+        {detail ? (
+          <ChevronRight className="h-3 w-3 shrink-0 text-text-4 transition-transform duration-150 group-open:rotate-90" />
+        ) : null}
+      </summary>
+      {detail ? (
+        <div className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all border-t border-hairline-soft pt-1 text-[11px] leading-relaxed text-text-4">
+          {detail}
+        </div>
+      ) : null}
+    </details>
   );
 }
 
@@ -196,7 +247,7 @@ export default function BackendToolCards() {
           />
         );
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<ListChecks />}
           title={name ? `已读取技能手册「${name}」` : "已读取技能手册"}
           detail={typeof result === "string" ? result.slice(0, 400) : undefined}
@@ -280,7 +331,7 @@ export default function BackendToolCards() {
         return <RunningRow icon={<Zap />} title={skill ? `正在执行技能「${skill}」` : "正在执行技能"} />;
       }
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<Zap />}
           title={skill ? `技能「${skill}」执行完成` : "技能执行完成"}
           detail={typeof result === "string" ? result : undefined}
@@ -299,7 +350,7 @@ export default function BackendToolCards() {
         return <RunningRow icon={<Search />} title={`正在发起参考图调研（${n} 项资产）`} />;
       }
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<Search />}
           title={`参考图调研已发起（${n} 项资产，后台执行）`}
           detail={typeof result === "string" ? result : undefined}
@@ -318,7 +369,7 @@ export default function BackendToolCards() {
       }
       const text = typeof result === "string" ? result : "";
       return (
-        <ToolCard
+        <ToolCardSlim
           icon={<ListChecks />}
           title={text.split("\n")[0]?.slice(0, 60) || "调研进度"}
           detail={text || undefined}
@@ -335,7 +386,7 @@ export default function BackendToolCards() {
       status !== "complete" ? (
         <RunningRow icon={<ListChecks />} title="正在查询可用技能" />
       ) : (
-        <ToolCard
+        <ToolCardSlim
           icon={<ListChecks />}
           title="已获取技能清单"
           detail={typeof result === "string" ? result : undefined}

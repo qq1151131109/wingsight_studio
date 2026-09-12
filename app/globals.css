@@ -13,6 +13,10 @@
     --color-surface-0: oklch(0.96 0.013 80);
     --color-surface-1: oklch(0.975 0.006 80);
     --color-surface-2: oklch(0.97 0.012 80);
+    /* 第三档「卡纸」：比纸面深一整档，聊天的工具/计划卡专用——surface-2 与
+       侧栏纸面（surface-1）实测只差 B 通道 8 个色阶，密集卡流层次全靠 1px
+       边框撑着，观感「卡贴卡没间距」（2026-09-12 用户截图走查） */
+    --color-surface-3: oklch(0.953 0.016 80);
 
     /* 描边 — 墨色透明梯度 */
     --color-hairline: oklch(0.30 0.02 60 / 0.16);
@@ -65,6 +69,8 @@ html.dark {
     --color-surface-0: oklch(0.185 0.010 65);
     --color-surface-1: oklch(0.205 0.011 65);
     --color-surface-2: oklch(0.225 0.012 65);
+    /* 暗色下层级反转：卡比底「亮」一档才算浮起 */
+    --color-surface-3: oklch(0.245 0.014 65);
 
     --color-hairline: oklch(0.91 0.010 80 / 0.16);
     --color-hairline-strong: oklch(0.91 0.010 80 / 0.28);

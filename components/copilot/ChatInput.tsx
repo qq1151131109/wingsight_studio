@@ -529,6 +529,23 @@ export default function ChatInput({
   /** 已定稿载荷的统一发送口（submit 与排队排水共用） */
   const sendComposed = useCallback(
     ({ text, mediaParts }: { text: string; mediaParts: ContentPart[] }) => {
+      // 发送后立刻贴底：v2 的自动滚动在「消息已入列、气泡还没长高」的窗口里
+      // 会停在半途，刚发的那条气泡被输入条裁掉半截（2026-09-12 用户截图实证）。
+      // 双 rAF 等气泡渲染，再加一拍兜底；只在本就接近底部时贴（240px 内），
+      // 不打断用户上翻读历史
+      const snapToBottom = () => {
+        const content = document.querySelector(
+          "aside.copilotKitSidebar [data-testid='copilot-scroll-content']",
+        );
+        for (let el = content?.parentElement; el; el = el.parentElement) {
+          if (el.scrollHeight - el.clientHeight < 10) continue;
+          const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 240;
+          if (nearBottom) el.scrollTop = el.scrollHeight;
+          break;
+        }
+      };
+      requestAnimationFrame(() => requestAnimationFrame(snapToBottom));
+      window.setTimeout(snapToBottom, 180);
       if (mediaParts.length > 0) {
         // 多模态消息：text part + 媒体 part（视觉模型服务端透传；文本模型自动降级）
         if (chatAgent) {
