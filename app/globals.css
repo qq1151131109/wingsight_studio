@@ -413,12 +413,12 @@ html.dark img:not([class*="border"]) {
     outline-offset: 2px;
 }
 /* 文本输入类（含搜索框）`:focus-visible` 在浏览器里等价于 `:focus`——输入框只要
-   获得焦点就算 keyboard-visible，所以它们拿到的是"总是有环"，正是打字时需要；
-   环贴内缘（offset -1px）免得在窄容器里被裁掉。
-   用实色 accent 而非 accent-soft：后者 22% 透明度，实测在米黄纸面上太虚，
-   焦点指示器的第一要求是"看得见" */
-.copilotKitSidebar :is(input, textarea, [contenteditable="true"]):focus-visible {
-    outline: 2px solid var(--color-accent);
+   获得焦点就算 keyboard-visible。**聊天编辑器（contenteditable）不在此列了**：
+   2026-09-12 用户实报「红色输入框不好看」——打字全程顶着 2px 朱红内环确实吵；
+   聚焦示意由容器边线加深承担（.copilotKitInput:focus-within）。input/textarea
+   保留环但换成中性墨色（accent-soft 在米黄纸面上太虚，焦点指示器首先要看得见） */
+.copilotKitSidebar :is(input, textarea):focus-visible {
+    outline: 2px solid var(--color-text-3);
     outline-offset: -1px;
 }
 
@@ -1151,12 +1151,13 @@ aside.copilotKitSidebar[aria-hidden="false"] {
     padding: 10px 12px;
     transition: border-color 0.15s ease;
 }
+/* 聚焦描边从 accent 朱红改中性深灰（2026-09-12 用户「红框不好看」实报）：
+   只加深一档边线做聚焦示意，不再上 3px 光晕——纸面风格里安静的聚焦态 */
 .copilotKitSidebar .copilotKitInput:focus-within {
-    border-color: var(--color-accent-soft);
-    box-shadow: 0 0 0 3px var(--color-accent-dim);
+    border-color: var(--color-text-4);
 }
-/* 生成中（回车排队窗）：焦点还在编辑器里，accent 描边会全程亮着——
-   运行态不是「正在输入」，压回纸面细线（ChatInput 落 data-running） */
+/* 生成中（回车排队窗）：焦点还在编辑器里——运行态不是「正在输入」，
+   连聚焦深灰也不上，保持纸面细线（ChatInput 落 data-running） */
 .copilotKitSidebar .copilotKitInput[data-running="true"]:focus-within {
     border-color: var(--color-hairline);
     box-shadow: none;
