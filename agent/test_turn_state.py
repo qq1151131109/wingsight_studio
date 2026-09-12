@@ -296,7 +296,11 @@ async def test_c4_unfixable_raises() -> None:
 
 def test_g_pure() -> None:
     print("G 组：纯函数")
-    anchor = _tool_res(f"资产卡落卡 ops 已生成——**先经 canvas_ops {MARK}**")
+    # 锚点 = 标记句 + {"ops": 载荷连体（与三条生成器返回同形状）
+    anchor = _tool_res(
+        f"资产卡落卡 ops 已生成——**先经 canvas_ops {MARK}**：\n"
+        '{"ops": [{"op": "update_node", "id": "n_x", "imageUrl": "http://x"}]}'
+    )
     call = _ai_tool("canvas_ops", {"ops": []}, "tc_c")
     h = HumanMessage(content="做")
 
@@ -309,6 +313,11 @@ def test_g_pure() -> None:
           graph_mod._unapplied_canvas_ops([anchor, h, _ai_text_msg("好的")]) == 0)
     check("G1e 两锚点夹一次应用 → 余 1",
           graph_mod._unapplied_canvas_ops([h, anchor, call, _tool_res("ok", "tc_c"), anchor]) == 1)
+    # 散文引用不命中（子代理读手册后报告引用标记句、无 ops 载荷——
+    # script-to-assets 手册里就有这句原话，只匹配标记句会白拦主助手收尾）
+    prose = _tool_res(f"手册说产物要「先经 canvas_ops {MARK}，再向用户汇报」，流程如上。")
+    check("G1i 散文引用（无 ops 载荷）不命中",
+          graph_mod._unapplied_canvas_ops([h, prose, _ai_text_msg("总结如上")]) == 0)
 
     gate = SystemMessage(content=f"{graph_mod._TURN_GATE_MARK} 系统对账：……")
     check("G1f 闸门标记本轮命中", graph_mod._turn_gate_fired([h, gate]))

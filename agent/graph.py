@@ -2073,6 +2073,9 @@ async def _run_subagent(task: str, context: str, config: RunnableConfig) -> str:
         api_key=os.environ.get("AGENT_API_KEY", ""),
         temperature=0.2,
         streaming=False,
+        # 子代理整个跑在工具调用里（阻塞主图）：单次调用超时必须远小于
+        # openai 默认 600s——否则 240s 死线过后末次调用还能再挂 10 分钟
+        timeout=120,
         **({"extra_body": {"thinking": {"type": "enabled"}}} if _thinking_enabled() else {"reasoning_effort": "none"}),
     )
     sub_tools = _build_subagent_tools(config)
@@ -2861,7 +2864,16 @@ def _unapplied_canvas_ops(messages: List[Any]) -> int:
     """
     pending = 0
     for m in _current_turn_messages(messages):
-        if isinstance(m, ToolMessage) and _APPLY_OPS_MARK in str(m.content):
+        if (
+            isinstance(m, ToolMessage)
+            and _APPLY_OPS_MARK in str(m.content)
+            # 锚点必须带真载荷：三条生成器返回都是「标记句 + {"ops": …} JSON」
+            # 连体。只匹配标记句会被散文引用误触——script-to-assets 手册里
+            # 就有这句原话，隔离子代理读手册后的报告若引用它、主助手正常
+            # 文字收尾会被白拦一次。子代理报告真带 ops 计划时命中是期望
+            # 行为（委派版「口播完成没落卡」同样该拦）。
+            and '{"ops":' in str(m.content)
+        ):
             pending += 1
         elif isinstance(m, AIMessage):
             for tc in getattr(m, "tool_calls", None) or []:
