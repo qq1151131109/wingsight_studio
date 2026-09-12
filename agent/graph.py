@@ -1718,17 +1718,23 @@ async def _fold_into_summary(prev_summary: str, messages: List[Any]) -> str:
 
 
 async def _compress_history(
-    summary: str, summary_count: int, messages: List[Any]
+    summary: str, summary_count: int, messages: List[Any], force: bool = False
 ) -> tuple[str, int, dict]:
     """超阈值时把较旧的消息折叠进滚动摘要。返回 (新摘要, 新计数, state 增量)。
     阈值 CHAT_COMPRESS_THRESHOLD_TOKENS（默认 400k，字符数近似 token 上界）；
-    触发后保留最近约 40% 预算的消息原文，其余并入摘要。"""
+    触发后保留最近约 40% 预算的消息原文，其余并入摘要。
+
+    force=True 是轮中压缩续跑通道（provider 已报上下文超限时的挽回）：
+    无视阈值判断、只保留最近约 6 条（keep_budget=0），把其余全部并入摘要；
+    消息数 ≤8 时折叠无意义（保底 6 条几乎折不动）返回空增量，调用方据此
+    判定「压不动」原样抛错——最近消息本身就超限（单条巨型工具结果）不是
+    压缩能救的，别在这里死循环重试。"""
     threshold = max(int(os.environ.get("CHAT_COMPRESS_THRESHOLD_TOKENS", "400000")), 20000)
     visible = messages[summary_count:]
     est = sum(len(_msg_text(m)) for m in visible) + len(summary)
-    if est < threshold or len(visible) <= 8:
+    if (est < threshold and not force) or len(visible) <= 8:
         return summary, summary_count, {}
-    keep_budget = int(threshold * 0.4)
+    keep_budget = 0 if force else int(threshold * 0.4)
     acc = 0
     boundary = len(visible)  # visible[boundary:] 为保留的最近消息
     for i in range(len(visible) - 1, -1, -1):
@@ -2609,6 +2615,81 @@ def _step_budget(config: RunnableConfig) -> Tuple[int, int]:
     return step, limit
 
 
+# ---------- 轮中压缩续跑 + 完成闸门（2026-09-12 P2 turn 状态机补完）----------
+#
+# turn 的三个出口此前只有宽限收尾有守卫，另两个都是裸的：
+#   - 上下文爆掉：provider 报超限 400 → 异常上抛 → 整轮报废。滚动压缩是
+#     阈值预防，救不了「单轮内工具结果暴增、两跳之间越线」的情形——
+#     现在捕获超限错误强制折叠历史原地重试（不烧 nudge 轮，压不动才抛）
+#   - 模型说完成：纯文本收轮即 END，宣称与画布现实无对账——091101 事故
+#     「对话框说生成完了、画布一片空白」的模型侧行为（口播已落卡、实际
+#     从没调 canvas_ops）现在有确定性闸门：本轮工具产物携带「落卡 ops」
+#     但之后没有任何 canvas_ops 调用 → 拦下一次给第二次机会（一轮只拦
+#     一次，不与模型拉锯）。闸门通知以 SystemMessage 落进消息流：模型
+#     每跳可见（直到被滚动压缩折叠）、按轮扫描天然去重、前端 system
+#     角色不渲染（RenderMessage default: null）、ChatPersistence 只存
+#     user/assistant/reasoning 刷新即净。
+
+_CTX_OVERFLOW_RETRIES = 2
+_CTX_OVERFLOW_PATTERNS = (
+    "maximum context length",  # OpenAI / DeepSeek 400
+    "context_length_exceeded",  # Anthropic 错误码
+    "prompt is too long",  # Anthropic 文案
+    "exceeds the context",  # 变体兜底
+    "input is too long",  # 变体兜底
+)
+
+
+def _is_context_overflow(exc: Exception) -> bool:
+    """是否 provider 上下文超限类错误（可经强制压缩历史挽回重试）。"""
+    text = f"{type(exc).__name__} {exc}".lower()
+    return any(p in text for p in _CTX_OVERFLOW_PATTERNS)
+
+
+_TURN_GATE_MARK = "[完成闸门]"
+_APPLY_OPS_MARK = "原样应用整批 ops"
+
+
+def _current_turn_messages(messages: List[Any]) -> List[Any]:
+    """当前用户轮的消息切片（最后一条 HumanMessage 之后）。
+
+    闸门与循环计数的轮界口径同源：新用户消息 = 新的守卫周期。"""
+    for i in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[i], HumanMessage):
+            return messages[i + 1 :]
+    return messages
+
+
+def _unapplied_canvas_ops(messages: List[Any]) -> int:
+    """本轮「已生成待落卡 ops」但之后没有任何 canvas_ops 调用的锚点数。
+
+    generate_asset_images / generate_look_images 的返回串带稳定标记
+    「原样应用整批 ops」（091101 事故后服务端算好整批 ops 交模型应用）；
+    模型口播「已落卡」但没调过 canvas_ops 就是宣称与现实不符。锚点之后
+    出现任何 canvas_ops 调用（前端工具，经浏览器执行）即视为已应用——
+    闸门只管「调没调」，应用是否成功由前端结果与模型自行处理。
+    """
+    pending = 0
+    for m in _current_turn_messages(messages):
+        if isinstance(m, ToolMessage) and _APPLY_OPS_MARK in str(m.content):
+            pending += 1
+        elif isinstance(m, AIMessage):
+            for tc in getattr(m, "tool_calls", None) or []:
+                _, name = _tool_call_info(tc)
+                if name == "canvas_ops":
+                    pending = 0
+                    break
+    return pending
+
+
+def _turn_gate_fired(messages: List[Any]) -> bool:
+    """本轮是否已触发过完成闸门（一轮只给一次第二次机会，不与模型拉锯）。"""
+    return any(
+        isinstance(m, SystemMessage) and str(m.content).startswith(_TURN_GATE_MARK)
+        for m in _current_turn_messages(messages)
+    )
+
+
 async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     messages = list(state.get("messages") or [])
 
@@ -2696,7 +2777,9 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
     # 前缀缓存；只进本次请求不落 checkpoint），3 次全空才报错。
     merged: AIMessageChunk | None = None
     nudge_retries = 0
-    for attempt in range(3):
+    overflow_retries = 0
+    attempt = 0
+    while True:
         attempt_msgs = [system_message, *trimmed]
         if attempt > 0:
             attempt_msgs.append(
@@ -2743,10 +2826,27 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
             # 思考档要求 reasoning_content 回传）不看入参形状几乎无法定位——
             # 栈里只有「哪一行调了模型」，看不出哪条消息缺了什么。
             print(f"[模型入参] {type(exc).__name__} | {_shape_dump(attempt_msgs)}", flush=True)
+            # 轮中压缩续跑（P2）：provider 上下文超限 → 强制折叠历史原地重试
+            # （不烧 nudge 轮）；压不动（消息 ≤8 / 最近消息本身就超限）则原样
+            # 抛出——单条巨型工具结果不是压缩能救的，别在这里死循环
+            if _is_context_overflow(exc) and overflow_retries < _CTX_OVERFLOW_RETRIES:
+                forced = await _compress_history(
+                    summary, summary_count, messages, force=True
+                )
+                if forced[2]:
+                    summary, summary_count, comp_update = forced
+                    trimmed = _sanitize_messages_for_model(messages[summary_count:])
+                    trimmed = _cap_embedded_media(trimmed, _EMBED_TOTAL_MAX)
+                    overflow_retries += 1
+                    events.track("agent.ctx_overflow", {"retry": overflow_retries})
+                    continue
             raise
         if merged is not None and _has_model_output(merged):
             break
+        attempt += 1
         nudge_retries += 1
+        if attempt >= 3:
+            break
     if merged is None or not _has_model_output(merged):
         raise RuntimeError("模型连续 3 次未返回内容（空响应，nudge 重试后仍空）")
     response = AIMessage(
@@ -2827,6 +2927,29 @@ async def chat_node(state: AgentState, config: RunnableConfig) -> Command:
 
     if has_backend_call:
         return Command(goto="tool_node", update={"messages": [response], **comp_update})
+
+    # 完成闸门（stop-hook，P2 turn 状态机）：纯文本收轮前做确定性对账——
+    # 本轮工具产物携带「落卡 ops」但之后没有任何 canvas_ops 应用 = 宣称完成
+    # 与画布现实不符（091101 事故形状：口播「已落卡」、画布全空）。拦下一次
+    # 自环重跑给第二次机会；hard_close 不拦（步数只够收尾，且闸门→canvas_ops
+    # →前端 END 会开新 invocation，应用链路的步数预算由那边承担）。
+    pending_ops = _unapplied_canvas_ops(messages)
+    if pending_ops > 0 and not hard_close and not _turn_gate_fired(messages):
+        notice = (
+            f"{_TURN_GATE_MARK} 系统对账：本轮工具产物携带的「落卡 ops」尚未经 "
+            "canvas_ops 应用——「图出了」不等于「卡上有」，你刚才的完成汇报与画布"
+            "实际状态不符。立即用 canvas_ops 原样应用上方工具结果里的整批 ops，"
+            "再据实重新汇报；应用报错就读错误修正后重试；确实无法应用时，向用户"
+            "明确说明哪部分没落卡、怎么补救。"
+        )
+        events.track("agent.turn_gate", {"pending": pending_ops})
+        return Command(
+            goto="chat_node",
+            update={
+                "messages": [response, SystemMessage(content=notice)],
+                **comp_update,
+            },
+        )
 
     # 纯文本回复 → 结束
     return Command(goto=END, update={"messages": [response], **comp_update})
