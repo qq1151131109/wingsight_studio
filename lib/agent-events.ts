@@ -17,7 +17,9 @@ export type AgentJobKind =
   | "shot_images"
   | "decompose"
   | "script_review"
-  | "image_review";
+  | "image_review"
+  /** 进行中进度播报（job_id=thread_id；不进聊天消息流，TaskEvents 浮条渲染） */
+  | "progress";
 
 /** 后台任务终态事件（契约两端同改：agent/eventbus.py publish_job_event） */
 export interface AgentJobEvent {

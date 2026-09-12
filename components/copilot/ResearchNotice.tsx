@@ -13,25 +13,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import { BookOpen, CheckCircle2, CircleAlert, X } from "lucide-react";
-import { langgraphAgent } from "@/app/agent-provider";
 import {
   FOCUS_NODES_EVENT,
   OPEN_RESEARCH_READER_EVENT,
   RESEARCH_TERMINAL_EVENT,
   type ResearchTerminalDetail,
 } from "@/lib/canvas/events";
-
-const CHAT_TEXT: Record<
-  ResearchTerminalDetail["status"],
-  (d: ResearchTerminalDetail) => string
-> = {
-  done: (d) =>
-    `📋 深度调研完成：「${d.title}」（源 ${d.sourcesCount} · 事实 ${d.findingsCount}）。卷宗已就绪——画布调研卡点「卷宗」读完整材料，也可以直接让我把卷宗整理成文稿。`,
-  error: (d) => `⚠️ 深度调研失败：「${d.title}」——${d.error || "未知错误"}`,
-  interrupted: (d) =>
-    `⏸️ 深度调研中断：「${d.title}」——已收集的证据保留，可补研续跑。`,
-  stopped: (d) => `⏹️ 深度调研已取消：「${d.title}」。`,
-};
 
 export default function ResearchNotice() {
   const [notice, setNotice] = useState<ResearchTerminalDetail | null>(null);
@@ -47,17 +34,9 @@ export default function ResearchNotice() {
       const seenKey = `${detail.jobId}:${detail.status}`;
       if (seenRef.current.has(seenKey)) return;
       seenRef.current.add(seenKey);
-      // 聊天瞬时消息（progress_ 前缀 = 不落库，回看历史时消失）
-      const agent = langgraphAgent;
-      agent?.setMessages?.([
-        ...((agent?.messages ?? []) as unknown[]),
-        {
-          id: `progress_research_${Date.now().toString(36)}`,
-          role: "assistant",
-          content: CHAT_TEXT[detail.status]?.(detail) ?? "",
-        },
-      ] as never);
-      // 浮条：最新一条顶掉旧通知，12s 自动收起
+      // 2026-09-12 起不再往聊天流插 progress_* 消息：进度/通知类信息不进
+      // transcript（三家共识），且 progress 消息回传 DeepSeek 会 400；浮条
+      // 即全部可见性，「助手下轮自知终态」由 agent 查 chat_jobs 端点达成
       setNotice(detail);
       if (timerRef.current) clearTimeout(timerRef.current);
       timerRef.current = setTimeout(() => setNotice(null), 12000);

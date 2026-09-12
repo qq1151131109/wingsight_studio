@@ -2084,25 +2084,29 @@ async def generate_asset_images(
 
 
 async def _emit_progress(config: Any, message: str) -> None:
-    """向聊天流推送中途进度消息。
+    """向用户播报中途进度（2026-09-12 起走 SSE 任务事件，不进聊天消息流）。
 
-    copilotkit 包的 emit_message 发 "copilotkit_manually_emit_message"，
-    而当前 ag-ui-langgraph 只认 "manually_emit_message"（版本错位）——
-    直接按 ag-ui 侧期望的事件名与 payload 发送。
-    进度只是锦上添花：任何失败都吞掉，绝不影响工具本身执行。
+    三家业界共识（codex status_indicator / opencode 单行状态 / gemini-cli
+    spinner）：进度是 composer 旁的状态行，不进 transcript。旧实现走
+    `manually_emit_message` 落 progress_* 聊天消息——快照稳定修复让它跨 run
+    存活后会在消息流累积（已靠前端「只渲染最新一条」止血），且 progress 消息
+    回传 DeepSeek 会 400（无 reasoning 的 assistant 历史）。现改为 eventbus
+    广播 kind="progress"（job_id=thread_id，前端 TaskEvents 按 agentThreadId
+    过滤渲染浮条）；无订阅者时空操作，绝不影响工具执行。
     """
-    import uuid as _uuid
+    from eventbus import publish_job_event
 
-    from langchain_core.callbacks import adispatch_custom_event
-
-    try:
-        await adispatch_custom_event(
-            "manually_emit_message",
-            {"message": message, "message_id": f"progress_{_uuid.uuid4().hex[:10]}", "role": "assistant"},
-            config=config,
-        )
-    except Exception as e:  # noqa: BLE001
-        print(f"[emit_progress 失败] {type(e).__name__}: {e}", flush=True)
+    thread_id = str(((config or {}).get("configurable") or {}).get("thread_id") or "")
+    if not thread_id:
+        return
+    publish_job_event(
+        kind="progress",
+        project_id="",
+        job_id=thread_id,
+        status="progress",
+        title=str(message)[:60],
+        summary=str(message)[:400],
+    )
 
 
 async def _extract_image_url(raw: str) -> Optional[str]:

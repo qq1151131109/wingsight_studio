@@ -30,6 +30,7 @@ import {
 import { reconcileRefResearch } from "@/lib/canvas/refReconcile";
 import { onRefCardsDeleted } from "@/lib/canvas/refDismiss";
 import { unadoptRefCandidates } from "@/lib/ref-research";
+import { useChatSession } from "@/lib/chat/session";
 import { useRefStatusStore } from "@/lib/refStatus";
 import { useCanvasStore } from "@/lib/canvas/store";
 
@@ -124,6 +125,8 @@ function noticeLine(e: AgentJobEvent): { ok: boolean; title: string; detail: str
       return { ok: e.status === "done", title: `剧本审查「${e.title}」`, detail: e.summary || e.status };
     case "image_review":
       return { ok: e.status === "done", title: `图片评审「${e.title}」`, detail: e.summary || e.status };
+    case "progress":
+      return { ok: true, title: "进行中", detail: e.summary || e.title };
     default:
       return null; // deep_research 的浮条归 ResearchNotice，这里不重复
   }
@@ -199,6 +202,16 @@ export default function TaskEvents() {
     const handle = (e: AgentJobEvent) => {
       // 事件不带 project_id（历史调用点）或与本画布同项目才处理
       if (e.project_id && projectId && e.project_id !== projectId) return;
+      if (e.kind === "progress") {
+        // 进度播报（job_id=thread_id）：只显示当前会话的，别会话互串
+        if (e.job_id !== useChatSession.getState().agentThreadId) return;
+        const line = noticeLine(e);
+        if (!line) return;
+        setNotice(line);
+        if (timerRef.current) clearTimeout(timerRef.current);
+        timerRef.current = setTimeout(() => setNotice(null), 8000);
+        return;
+      }
       if (e.kind === "deep_research") {
         // 卡面锚 researchId → 定位节点；卡已删时仍自动续跑（卷宗还在库里）
         const node = useCanvasStore
