@@ -582,7 +582,7 @@ function StyleEditDialog({
               <img
                 src={coverUrl}
                 alt="封面"
-                className="h-8 w-14 rounded object-cover"
+                className="h-8 w-14 rounded bg-surface-2 object-contain"
               />
               <button
                 type="button"

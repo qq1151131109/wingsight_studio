@@ -449,7 +449,7 @@ function RefPicker({
                 <img
                   src={assetThumbUrl(item.url)}
                   alt=""
-                  className="h-9 w-9 shrink-0 rounded-md object-cover"
+                  className="h-9 w-9 shrink-0 rounded-md bg-surface-2 object-contain"
                 />
                 <span className="min-w-0 flex-1">
                   <span

@@ -3943,7 +3943,7 @@ function ImageCard({ data, id, selected }: NodeProps) {
               }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={assetThumbUrl(u)} alt="" className="h-9 w-9 object-cover" />
+              <img src={assetThumbUrl(u)} alt="" className="h-9 w-9 bg-surface-2 object-contain" />
             </button>
           ))}
           {Boolean(d.failedCandidates) ? (
@@ -4647,7 +4647,7 @@ function VideoCard({ data, id, selected }: NodeProps) {
               }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={f.data} className="h-10 w-auto object-cover" alt="" />
+              <img src={f.data} className="h-10 w-auto object-contain" alt="" />
               <span className="absolute inset-0 grid place-items-center bg-black/60 text-[9px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
                 +图
               </span>
@@ -7650,7 +7650,7 @@ function ShotListCard({ data, id, selected }: NodeProps) {
                       <img
                         src={assetThumbUrl(rowImg)}
                         alt=""
-                        className="aspect-video w-28 cursor-zoom-in rounded object-cover"
+                        className="aspect-video w-28 cursor-zoom-in rounded bg-surface-2 object-contain"
                       />
                     </button>
                   ) : (

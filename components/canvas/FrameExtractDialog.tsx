@@ -184,7 +184,7 @@ export default function FrameExtractDialog({
                   className="group relative inline-flex items-center overflow-hidden rounded border border-hairline"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={m.thumb} alt={`帧${i + 1}`} className="h-9 w-16 object-cover" />
+                  <img src={m.thumb} alt={`帧${i + 1}`} className="h-9 w-16 bg-surface-2 object-contain" />
                   <span className="absolute bottom-0 left-0 bg-black/60 px-0.5 text-[9px] text-white">
                     {fmt(m.t)}
                   </span>

@@ -1673,7 +1673,7 @@ export default function CanvasAgentBridge() {
                     <img
                       src={assetThumbUrl(m.url)}
                       alt={m.title}
-                      className="h-20 w-full object-cover"
+                      className="h-20 w-full bg-surface-2 object-contain"
                     />
                   ) : (
                     <video

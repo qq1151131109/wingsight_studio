@@ -243,9 +243,9 @@ export default function AssetTray({ onClose }: { onClose: () => void }) {
               <span className="h-8 w-11 shrink-0 overflow-hidden rounded bg-black/10">
                 {a.kind === "image" ? (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={assetThumbUrl(a.url)} alt="" className="h-full w-full object-cover" />
+                  <img src={assetThumbUrl(a.url)} alt="" className="h-full w-full object-contain" />
                 ) : a.kind === "video" ? (
-                  <video src={a.url} muted preload="metadata" className="h-full w-full object-cover" />
+                  <video src={a.url} muted preload="metadata" className="h-full w-full object-contain" />
                 ) : (
                   <span className="grid h-full w-full place-items-center text-text-3">
                     <Music className="h-3.5 w-3.5" />

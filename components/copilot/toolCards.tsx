@@ -244,7 +244,7 @@ export default function BackendToolCards() {
                   className="block shrink-0 cursor-zoom-in overflow-hidden rounded-md border border-hairline transition-shadow hover:shadow-md"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img src={assetThumbUrl(u)} alt="设定图" className="h-16 w-24 object-cover" />
+                  <img src={assetThumbUrl(u)} alt="设定图" className="h-16 w-24 bg-surface-2 object-contain" />
                 </button>
               ))}
             </div>

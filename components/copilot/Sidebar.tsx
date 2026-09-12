@@ -204,7 +204,7 @@ function UserBubble({ message }: { message?: { id?: string; content?: unknown } 
                     <img
                       src={assetThumbUrl(ch.url)}
                       alt={ch.label}
-                      className="h-14 w-14 rounded-lg object-cover"
+                      className="h-14 w-14 rounded-lg bg-surface-2 object-contain"
                     />
                   </a>
                 );

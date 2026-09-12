@@ -78,14 +78,14 @@ function Row({
           src={v.url}
           muted
           preload="metadata"
-          className="h-12 w-12 shrink-0 rounded-md bg-black object-cover"
+          className="h-12 w-12 shrink-0 rounded-md bg-black object-contain"
         />
       ) : (
         // eslint-disable-next-line @next/next/no-img-element
         <img
           src={assetThumbUrl(v.url)}
           alt={label}
-          className="h-12 w-12 shrink-0 rounded-md object-cover"
+          className="h-12 w-12 shrink-0 rounded-md bg-surface-2 object-contain"
         />
       )}
       <span className="min-w-0">

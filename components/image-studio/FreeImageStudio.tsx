@@ -966,7 +966,7 @@ function DoneCard({
                   <img
                     src={assetThumbUrl(u)}
                     alt={`参考图${i + 1}`}
-                    className="h-10 w-10 rounded object-cover"
+                    className="h-10 w-10 rounded bg-surface-2 object-contain"
                   />
                 </span>
               ))}
@@ -1094,7 +1094,7 @@ function Lightbox({
                 <img
                   src={assetThumbUrl(u)}
                   alt={`参考图${i + 1}`}
-                  className="h-10 w-10 rounded object-cover"
+                  className="h-10 w-10 rounded bg-surface-2 object-contain"
                 />
               </span>
             ))}
