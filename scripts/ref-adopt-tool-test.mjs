@@ -160,12 +160,13 @@ const r1 = await run(`给画布上的角色卡黄志恒（${NODE_ID}）做参考
 const started = r1.calls.some((c) => c.name === "research_asset_references");
 check("轮1 发起参考图调研", started, r1.calls.map((c) => c.name).join(","));
 
-// 等调研完成并自动采纳：轮询候选端点直到 adopted≥3——auto_adopt_top 在
-// 终选后落库，adopted 出现即证明「调研完成即自动采纳」。不解析 agent 措辞
-// 取任务号（上一版靠「任务 ID：」正则，agent 说成 batch_id 就全盘脱锚）
+// 等调研完成并自动采纳：轮询候选端点直到出现 adopted——auto_adopt_top 在
+// 终选后一次性落库（adopted>0 即全部落完），张数由终选 adopt_count 判断
+// （1-3 张：一张够就一张、图间矛盾只取最可信，2026-09-12 起不再固定 3）。
+// 不解析 agent 措辞取任务号（上一版靠「任务 ID：」正则，agent 说成 batch_id 就全盘脱锚）
 let autoAdopted = 0;
 let seenTotal = 0;
-for (let i = 0; i < 120 && autoAdopted < 3; i++) {
+for (let i = 0; i < 120 && autoAdopted < 1; i++) {
   await new Promise((r) => setTimeout(r, 4000));
   const verify = await (await fetch(`${BASE}/projects/${pid}/refs/candidates?nodeId=${NODE_ID}`, { headers: H })).json().catch(() => null);
   const cands = verify?.candidates ?? verify ?? [];
@@ -173,7 +174,7 @@ for (let i = 0; i < 120 && autoAdopted < 3; i++) {
   seenTotal = cands.length;
   if (i % 10 === 0) console.log(`    · adopted=${autoAdopted} total=${seenTotal}`);
 }
-check("完成即自动采纳 top-3", autoAdopted === 3, `adopted=${autoAdopted} / 候选 ${seenTotal} 张`);
+check("完成即自动采纳（终选判张数 1-3）", autoAdopted >= 1 && autoAdopted <= 3, `adopted=${autoAdopted} / 候选 ${seenTotal} 张`);
 
 // SSE 终态事件：事件发布在自动采纳之后（batch 状态翻转处），轮询可能先
 // 看见 adopted，给事件几秒到达窗口

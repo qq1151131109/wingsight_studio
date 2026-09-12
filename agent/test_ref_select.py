@@ -153,6 +153,39 @@ async def _group_a() -> None:
     expect(out["missing"][0] == "巷道 近景", f"A8 条目压空白：{out['missing'][:2]}")
     expect(len(out["missing"]) == 8, f"A8 上限 8 条：{len(out['missing'])}")
 
+    # A9. adopt_count 透传（2026-09-12 采纳张数由终选判断）：正整数原样返回
+    _calls.clear(); _responses.clear()
+    _responses.append({"recommended": [2, 1, 0], "adopt_count": 1, "note": "一张就够"})
+    out = await _select(8)
+    expect(out["adopt_count"] == 1, f"A9 adopt_count 透传：{out.get('adopt_count')}")
+
+    # A10. adopt_count 形状清洗：垃圾值当 None（调用方回退固定默认）；可转的转
+    for raw, want in [("abc", None), ("3", 3), (2.7, 2), (0, None), (-2, None), (None, None)]:
+        _calls.clear(); _responses.clear()
+        _responses.append({"recommended": [1], "adopt_count": raw, "note": ""})
+        out = await _select(8)
+        expect(out["adopt_count"] == want, f"A10 adopt_count={raw!r} 应清洗为 {want!r}：{out.get('adopt_count')!r}")
+
+    # A11. 多批：各批 adopt_count 相加作缺省，精排给出有效值则覆盖（全局视角更准）
+    _calls.clear(); _responses.clear()
+    _responses.extend([
+        {"recommended": [2], "adopt_count": 1, "note": "b1"},
+        {"recommended": [55], "adopt_count": 2, "note": "b2"},
+        {"recommended": [55, 2], "adopt_count": 2, "note": "rerank"},
+    ])
+    out = await _select(100)  # 2 批 + 1 次精排
+    expect(out["adopt_count"] == 2, f"A11 精排值覆盖批相加（1+2）：{out.get('adopt_count')}")
+
+    # A12. 精排失败：保持各批相加
+    _calls.clear(); _responses.clear()
+    _responses.extend([
+        {"recommended": [2], "adopt_count": 1, "note": "b1"},
+        {"recommended": [55], "adopt_count": 2, "note": "b2"},
+        RuntimeError("rerank down"), RuntimeError("rerank down"), RuntimeError("rerank down"),
+    ])
+    out = await _select(100)
+    expect(out["adopt_count"] == 3, f"A12 精排失败用批相加 1+2：{out.get('adopt_count')}")
+
 
 asyncio.run(_group_a())
 skills.REF_SELECT_FLOW_ID = _orig_flow_id
@@ -417,6 +450,42 @@ asyncio.run(imgresearch._run_research("j9", PID, "n11", [], {"name": "缺口收�
 expect(len(search_log) == 9, f"C10 缺口在收敛但追补上限 2 轮：{len(search_log)}")
 expect("追补轮数用尽" in job.get("note", ""), f"C10 note 应说明上限：{job.get('note')}")
 
+
+def _adopted_of(node_id: str) -> list[int]:
+    with _db() as _c:
+        return [
+            r["idx_total"]
+            for r in _c.execute(
+                "SELECT idx_total FROM ref_candidates WHERE project_id=? AND node_id=? AND adopted=1"
+                " ORDER BY rec_rank", (PID, node_id),
+            ).fetchall()
+        ]
+
+
+# C12. 采纳张数由终选判断（2026-09-12 用户拍板「按参考图实际情况定」）：
+#      模型说一张够 → 只采纳 1 张（固定 top-3 会在矛盾/重复候选上硬凑噪声）；
+#      模型没给 adopt_count → 回退 3（C1 已锁）
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.append(
+    {"recommended": [0, 1, 2, 3], "adopt_count": 1, "note": "实物照一张锁定形制", "missing": []}
+)
+job = _mk_job("j11"); _reset_sem()
+asyncio.run(imgresearch._run_research("j11", PID, "n13", [], {"name": "一张够", "type": "prop"}))
+expect(job["status"] == "done", f"C12 任务应完成：{job.get('error')}")
+expect(_adopted_of("n13") == [0], f"C12 adopt_count=1 只采纳一张：{_adopted_of('n13')}")
+
+# C13. adopt_count 跨轮累计且钳到留 1 席上限（AUTO_ADOPT_PER_NODE=3）：
+#      两轮各判 2 张 → quota 4 → 采纳 rec_rank 前 3
+search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
+select_responses.extend([
+    {"recommended": [0, 1], "adopt_count": 2, "note": "", "missing": []},
+    {"recommended": [6, 7], "adopt_count": 2, "note": "", "missing": []},
+])
+job = _mk_job("j12"); _reset_sem()
+asyncio.run(imgresearch._run_research("j12", PID, "n14", [], {"name": "累计钳制", "type": "scene"}))
+expect(job["status"] == "done", f"C13 任务应完成：{job.get('error')}")
+expect(_adopted_of("n14") == [0, 1, 6], f"C13 跨轮累计 2+2 钳到 3：{_adopted_of('n14')}")
+
 # C6. 手填词：不跑 planner 不跑文路，全量手工词进首轮
 search_log.clear(); plan_calls.clear(); select_log.clear(); select_responses.clear()
 select_responses.append([0, 3, 6, 5])
@@ -584,4 +653,102 @@ skills.run_ref_select_flow = _orig_sel
 asyncio.sleep = _real_sleep
 
 print(f"C 组（先搜后判再补）通过：{PASS[0]}")
+
+# ───────── G. langflow 抗压：tweak 缓存 + 并发闸（2026-09-12 池打崩事故）─────────
+_g0 = PASS[0]
+
+
+class _FakeResp:
+    def __init__(self, status=200, payload=None):
+        self.status_code = status
+        self._p = payload or {}
+
+    def json(self):
+        return self._p
+
+    text = ""
+
+
+class _FakeAC:
+    """替身 httpx.AsyncClient：计数 GET、可注入异常/状态码/节点表"""
+    calls = 0
+    raise_exc: Exception | None = None
+    status = 200
+
+    def __init__(self, timeout=None):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, headers=None):
+        _FakeAC.calls += 1
+        if _FakeAC.raise_exc is not None:
+            raise _FakeAC.raise_exc
+        return _FakeResp(status=_FakeAC.status, payload={"data": {"nodes": [
+            {"id": "RefSelect-main-abc", "data": {"node": {"display_name": "参考图终选"}}},
+            {"id": "RefPlan-main-xyz", "data": {"node": {"display_name": "搜索词规划"}}},
+        ]}})
+
+
+async def _group_g() -> None:
+    _real_ac = skills.httpx.AsyncClient
+    skills.httpx.AsyncClient = _FakeAC
+    skills._TWEAK_KEY_CACHE.clear()
+    try:
+        # G1. 首次解析 GET 一次，TTL 内复用不再 GET（旧实现每次终选/规划都 GET）
+        _FakeAC.calls = 0; _FakeAC.raise_exc = None; _FakeAC.status = 200
+        out1 = await skills._resolve_tweak_keys("f1", {"RefSelect-main": {"payload": "x"}}, {})
+        expect(out1 == {"RefSelect-main-abc": {"payload": "x"}}, f"G1 前缀解析：{out1}")
+        out2 = await skills._resolve_tweak_keys("f1", {"RefSelect-main": {"payload": "y"}}, {})
+        expect(out2 == {"RefSelect-main-abc": {"payload": "y"}}, f"G1 缓存命中结果一致：{out2}")
+        expect(_FakeAC.calls == 1, f"G1 TTL 内只 GET 一次：{_FakeAC.calls}")
+
+        # G2. TTL 过期后重新 GET；同 flow 新增键合并进映射
+        ts, mapping = skills._TWEAK_KEY_CACHE["f1"]
+        skills._TWEAK_KEY_CACHE["f1"] = (ts - 301.0, mapping)
+        out3 = await skills._resolve_tweak_keys("f1", {"RefPlan-main": {"payload": "z"}}, {})
+        expect(out3 == {"RefPlan-main-xyz": {"payload": "z"}}, f"G2 新键解析：{out3}")
+        expect(_FakeAC.calls == 2, f"G2 过期后重新 GET：{_FakeAC.calls}")
+        # 两个键现在都在缓存里
+        out4 = await skills._resolve_tweak_keys("f1", {"RefSelect-main": {"a": 1}, "RefPlan-main": {"b": 2}}, {})
+        expect(out4 == {"RefSelect-main-abc": {"a": 1}, "RefPlan-main-xyz": {"b": 2}}, f"G2 合并映射全命中：{out4}")
+        expect(_FakeAC.calls == 2, f"G2 全命中不再 GET：{_FakeAC.calls}")
+
+        # G3. httpx 异常包装成可读报错（旧实现空串裸抛，「终选：第1批：」无从排查）
+        _FakeAC.raise_exc = skills.httpx.ReadTimeout("")
+        try:
+            await skills._resolve_tweak_keys("f2", {"RefSelect-main": {"p": 1}}, {})
+            raise AssertionError("G3 应抛 _TweakKeyError")
+        except skills._TweakKeyError as e:
+            expect("ReadTimeout" in str(e) and "langflow" in str(e), f"G3 报错带类型与服务：{e}")
+    finally:
+        skills.httpx.AsyncClient = _real_ac
+        skills._TWEAK_KEY_CACHE.clear()
+
+    # G4. 并发闸：30 个并发任务同时过闸，峰值并发 ≤ _FLOW_CALL_CONCURRENCY
+    async def _gate_probe() -> int:
+        conc = 0
+        peak = 0
+
+        async def task():
+            nonlocal conc, peak
+            async with skills._flow_gate():
+                conc += 1
+                peak = max(peak, conc)
+                await _real_sleep(0.01)
+                conc -= 1
+
+        await asyncio.gather(*[task() for _ in range(30)])
+        return peak
+
+    peak = await _gate_probe()
+    expect(peak <= skills._FLOW_CALL_CONCURRENCY, f"G4 并发峰值 {peak} ≤ 闸门 {skills._FLOW_CALL_CONCURRENCY}")
+
+
+asyncio.run(_group_g())
+print(f"G 组（tweak 缓存/并发闸）通过：{PASS[0] - _g0}")
 print(f"全部通过：{PASS[0]} 项")

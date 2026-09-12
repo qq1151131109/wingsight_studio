@@ -2533,6 +2533,7 @@ async def _run_research(
     all_rows: list[dict[str, Any]] = []  # 全部已下载候选（位次即全局 index）
     rec_order: list[int] = []  # 终选推荐（轮序在前、轮内模型序）
     select_notes: list[str] = []
+    adopt_quota = 0  # 终选判定的采纳张数（跨轮累计；0=全程未产出，回退固定默认）
     gap_covered: list[str] = []  # 终选判定的「已覆盖视觉维度」（跨轮累积）
     gap_missing: list[str] = []  # 终选判定的「仍缺失视觉维度」（喂下一轮 planner）
     brief = ""
@@ -2714,6 +2715,13 @@ async def _run_research(
                     if start <= i < start + len(downloaded)
                 ]
                 rec_order.extend(valid)
+                # 采纳张数由终选判断（2026-09-12 用户拍板「按参考图实际情况定」：
+                # 一张够就一张、图间互相矛盾只取最可信、近似重复只占一席——固定
+                # top-3 会在矛盾/重复的候选上硬凑噪声）；跨轮累计（每轮模型只判
+                # 本轮「前几张值得」，追补轮发现更好的再加），最终钳到留 1 席上限
+                sel_adopt = selection.get("adopt_count")
+                if isinstance(sel_adopt, int) and sel_adopt >= 1:
+                    adopt_quota += sel_adopt
                 if str(selection.get("note") or "").strip():
                     select_notes.append(str(selection["note"]).strip())
                 # 缺口台账（A 档，业界 deep research 的「看缺口再搜」范式）：终选
@@ -2798,8 +2806,12 @@ async def _run_research(
                 )
                 # 终选完自动采纳 top-K 推荐（rec_rank 升序）——LLM 已挑过一轮，
                 # 再等用户逐张手勾是把模型判断抄写一遍；采纳只是标记不花额度，
-                # 用户可在「找参考图」面板随时改选（2026-09-06 用户「为啥没自动选」）
-                auto_adopt_top(project_id, node_id, AUTO_ADOPT_PER_NODE)
+                # 用户可在「找参考图」面板随时改选（2026-09-06 用户「为啥没自动选」）。
+                # K 由终选判断（adopt_count），未产出时回退固定 3；上限仍是
+                # AUTO_ADOPT_PER_NODE（各出图模型参考上限最小 4，留 1 席余量）
+                auto_adopt_top(
+                    project_id, node_id, min(AUTO_ADOPT_PER_NODE, adopt_quota or AUTO_ADOPT_PER_NODE)
+                )
             except Exception as exc:  # noqa: BLE001
                 errors["终选"] = str(exc)[:160]
         # 采纳回流：采纳的图收进主体图集，下一个项目遇到同一主体直接复用。

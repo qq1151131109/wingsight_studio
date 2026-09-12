@@ -891,8 +891,9 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
     node_id 必须取自画布摘要（每行行首的节点 id），画布上没有该资产时
     先用 canvas_ops 建卡、下一轮再调研。20 路并发执行：约每 20 个资产
     一波、每波约 4 分钟，发起后立即返回，用 get_reference_research_status
-    查进度；**完成时系统已按模型终选自动采纳每资产 top-3 推荐参考**（用户
-    可在「找参考图」面板改选，或用 adopt_asset_references 调整张数），
+    查进度；**完成时系统已按模型终选自动采纳每资产 1-3 张推荐参考（张数
+    由终选按参考图实际情况判断：一张够就一张、图间矛盾或重复只取最可信）**
+    （用户可在「找参考图」面板改选，或用 adopt_asset_references 调整张数），
     「补资产图」批量出图会自动带上已采纳参考；参考卡收在画布「考据参考」
     折叠组里。调研有欠账时**考证报告卡**（reportKind=ref-research）头部会写
     「缺参考图待补 Y 个」、工具条有「补调研 Y」一键补齐——用户问「怎么没有
@@ -969,8 +970,9 @@ async def research_asset_references(assets_json: str, config: RunnableConfig) ->
         f"已发起 {len(parsed)} 个资产（{names}）的参考图调研，后台 "
         f"{imgresearch.BATCH_CONCURRENCY} 路并发执行预计约 {est_min} 分钟。batch_id={batch_id}。"
         "用 get_reference_research_status 查询进度；完成时系统已按模型终选"
-        "自动采纳每资产 top-3 推荐（用户可在「找参考图」面板改选，或调 "
-        "adopt_asset_references 调整张数），之后可用「补资产图」批量出图。"
+        "自动采纳每资产 1-3 张推荐（张数由终选按参考图一致性判断），用户可在"
+        "「找参考图」面板改选，或调 adopt_asset_references 调整张数；之后可用"
+        "「补资产图」批量出图。"
     )
 
 
@@ -979,8 +981,9 @@ async def get_reference_research_status(batch_id: str, config: RunnableConfig) -
     """查询参考图调研任务的进度与结果摘要。
 
     发起 research_asset_references 后用户问进度/是否完成时调用；任务完成后
-    返回每个资产的候选数与模型推荐——完成时系统已自动采纳每资产 top-3
-    推荐，用户要换图去「找参考图」面板改选，要调整张数调 adopt_asset_references。
+    返回每个资产的候选数与模型推荐——完成时系统已自动采纳每资产 1-3 张推荐
+    （张数由终选按参考图实际情况判断），用户要换图去「找参考图」面板改选，
+    要调整张数调 adopt_asset_references。
 
     Args:
         batch_id: research_asset_references 返回的任务 id。
@@ -1009,7 +1012,7 @@ async def get_reference_research_status(batch_id: str, config: RunnableConfig) -
             elif cands:
                 summaries.append(f"{item['name']}：候选 {len(cands)} 张，无强推荐，建议用户自行挑选")
         lines.extend(summaries)
-        lines.append("完成时已自动采纳每资产 top-3 推荐；用户要换图去「找参考图」面板改选，要调整张数调 adopt_asset_references。")
+        lines.append("完成时已自动采纳每资产 1-3 张推荐（张数由终选按参考图一致性判断）；用户要换图去「找参考图」面板改选，要调整张数调 adopt_asset_references。")
     return "\n".join(lines)
 
 
@@ -1019,9 +1022,10 @@ async def adopt_asset_references(
 ) -> str:
     """调整资产参考图的自动采纳：按调研终选推荐（rec_rank 升序）补采纳。
 
-    调研完成时系统已自动采纳每资产 top-3 推荐；用户想多带几张（如「每个
-    资产带 5 张参考」）、少带（面板改选更直观）或某资产漏了推荐时用这个
-    工具补齐——等价于在资产卡「找参考图」面板里勾选推荐项，采纳后
+    调研完成时系统已自动采纳每资产 1-3 张推荐（张数由终选按参考图实际
+    情况判断——一张够就一张、图间矛盾只取最可信）；用户想多带几张（如
+    「每个资产带 5 张参考」）、少带（面板改选更直观）或某资产漏了推荐时
+    用这个工具补齐——等价于在资产卡「找参考图」面板里勾选推荐项，采纳后
     「补资产图」批量出图自动带上参考；用户随时可在面板改选。
     （2026-09-06 用户「你帮我选啊」事故：此前采纳只能手动勾。）
 

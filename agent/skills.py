@@ -269,6 +269,33 @@ class _TweakKeyError(Exception):
     """tweaks 逻辑键在 flow 里解析不出唯一节点（零个或多个命中）。"""
 
 
+# tweak 键解析缓存：{flow_id: (monotonic 时间戳, {逻辑键: 解析后节点 id})}
+_TWEAK_KEY_TTL = 300.0
+_TWEAK_KEY_CACHE: Dict[str, Any] = {}
+
+# langflow 并发闸（2026-09-12 连接池打崩事故）：langflow 是 SQLite 后端，
+# 默认连接池 20+30 是给 PostgreSQL 调的（官方注释明说 SQLite 应调小、写并
+# 发有限），每个 flow run 还要写 build/log——调研多批次叠加时并发 flow 调用
+# 可到 40-100，SQLite 写锁让连接全变成等待者，池满后所有请求排队 30s 超时
+# 500（屈原项目 51 资产 + 多项目批次同跑实测打崩）。plan/select 走全局限流，
+# 搜索/下载不占 langflow 不进闸。
+_FLOW_CALL_CONCURRENCY = 10
+_FLOW_CALL_SEM: Optional[asyncio.Semaphore] = None
+_FLOW_CALL_SEM_LOOP: Optional[asyncio.AbstractEventLoop] = None
+
+
+def _flow_gate() -> asyncio.Semaphore:
+    """获取 flow 调用信号量；跨事件循环（测试的多次 asyncio.run）自动重建。
+
+    同一循环内并发任务安全：函数体无 await，事件循环单线程内原子。"""
+    global _FLOW_CALL_SEM, _FLOW_CALL_SEM_LOOP
+    loop = asyncio.get_running_loop()
+    if _FLOW_CALL_SEM is None or _FLOW_CALL_SEM_LOOP is not loop:
+        _FLOW_CALL_SEM = asyncio.Semaphore(_FLOW_CALL_CONCURRENCY)
+        _FLOW_CALL_SEM_LOOP = loop
+    return _FLOW_CALL_SEM
+
+
 async def _resolve_tweak_keys(
     flow_id: str, tweaks: Dict[str, Any], headers: Dict[str, str]
 ) -> Dict[str, Any]:
@@ -280,11 +307,33 @@ async def _resolve_tweak_keys(
     （Language Model），直接透传曾让所有文本模型/温度注入静默空转。规则：
     键命中节点 id 或 display_name → 原样透传；否则按「id 以 键+'-' 开头」
     唯一前缀匹配；零个或多个命中都报错，绝不静默丢弃（铁律）。
-    """
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{LANGFLOW_URL}/api/v1/flows/{flow_id}", headers=headers
-        )
+
+    结果按 flow_id 缓存 TTL 300s（2026-09-12 langflow 连接池打崩事故的减负
+    项）：节点 id 只在 flow 编辑/PATCH 时变，而调研链每次终选/规划前都 GET
+    一次 flow 纯属浪费——51 资产批次光这就要 100+ 次 GET，langflow 拥堵时
+    这些超时调用还占着池等待位把雪崩放大。flow PATCH 后最多 TTL 秒内用旧
+    id（langflow 对未知 tweak 键静默丢弃 → 组件报「payload 为空」，TTL 过后
+    自愈）。"""
+    now = time.monotonic()
+    cached = _TWEAK_KEY_CACHE.get(flow_id)
+    if cached and now - cached[0] < _TWEAK_KEY_TTL:
+        mapping = cached[1]
+        if all(not isinstance(v, dict) or k in mapping for k, v in tweaks.items()):
+            return {
+                (mapping.get(k, k) if isinstance(v, dict) else k): v
+                for k, v in tweaks.items()
+            }
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.get(
+                f"{LANGFLOW_URL}/api/v1/flows/{flow_id}", headers=headers
+            )
+    except httpx.HTTPError as exc:
+        # httpx 超时/连接异常的 str 常为空串——不点明类型，调用方只看到
+        # 「终选：第1批：」这种空报错，无从排查（2026-09-12 实测踩过）
+        raise _TweakKeyError(
+            f"读取 flow 节点失败（langflow 不可达或拥堵：{type(exc).__name__}），flow 调用暂时失败"
+        ) from exc
     if resp.status_code >= 400:
         raise _TweakKeyError(
             f"读取 flow 节点失败（{resp.status_code}）：{resp.text[:160]}"
@@ -297,6 +346,7 @@ async def _resolve_tweak_keys(
         if n.get("data", {}).get("node", {}).get("display_name")
     }
     resolved: Dict[str, Any] = {}
+    new_mapping: Dict[str, str] = dict(cached[1]) if cached else {}
     for key, value in tweaks.items():
         if not isinstance(value, dict):
             # 标量 tweak 是 langflow 原生的「应用到全部节点」语义，不是节点键，原样透传
@@ -304,10 +354,12 @@ async def _resolve_tweak_keys(
             continue
         if key in ids or key in names:
             resolved[key] = value
+            new_mapping[key] = key
             continue
         hits = sorted(k for k in ids if k.startswith(f"{key}-"))
         if len(hits) == 1:
             resolved[hits[0]] = value
+            new_mapping[key] = hits[0]
         elif not hits:
             raise _TweakKeyError(
                 f"tweaks 键 {key!r} 在 flow {flow_id} 里没有匹配节点"
@@ -318,6 +370,7 @@ async def _resolve_tweak_keys(
                 f"tweaks 键 {key!r} 在 flow {flow_id} 里命中多个节点：{hits}，"
                 "请改用完整节点 id"
             )
+    _TWEAK_KEY_CACHE[flow_id] = (now, new_mapping)
     return resolved
 
 
@@ -3169,7 +3222,16 @@ def _parse_flow_json(raw: str, what: str) -> Dict[str, Any]:
 async def run_ref_plan_flow(
     asset: Dict[str, Any], rounds: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
-    """搜索词规划：资产上下文+已完成轮次 → {queries: [...], enough: bool}。"""
+    """搜索词规划：资产上下文+已完成轮次 → {queries: [...], enough: bool}。
+
+    公共入口经 langflow 并发闸（_flow_gate）——见 _FLOW_CALL_CONCURRENCY 注释。"""
+    async with _flow_gate():
+        return await _run_ref_plan_flow(asset, rounds)
+
+
+async def _run_ref_plan_flow(
+    asset: Dict[str, Any], rounds: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     if not REF_PLAN_FLOW_ID:
         raise RuntimeError(
             "未配置 LANGFLOW_REF_PLAN_FLOW_ID（flow 见 agent/flows/ref-research-plan.json）"
@@ -3260,6 +3322,8 @@ async def run_ref_select_flow(
 ) -> Dict[str, Any]:
     """LLM 终选：看候选图 → {recommended: [index...], note: str}。
 
+    公共入口经 langflow 并发闸（_flow_gate）——见 _FLOW_CALL_CONCURRENCY 注释。
+
     索引对应 candidates 顺序（0 基，payload 里已带全局 index），调用方
     负责回填 recommended 字段。看图模型经 DMX（flow 内默认 gemini），
     上游单请求限 50 张图（100 张实测报 "Too many images in request: 51,
@@ -3276,6 +3340,13 @@ async def run_ref_select_flow(
     精排**（业界 reranker 范式；批间顺序只是搜索位次的回声，不精排的话
     top 名次永远出自前 50 张）。精排只定顺序不砍推荐，失败软降级为批序
     合并并在 note 明说。"""
+    async with _flow_gate():
+        return await _run_ref_select_flow(asset, candidates)
+
+
+async def _run_ref_select_flow(
+    asset: Dict[str, Any], candidates: List[Dict[str, Any]]
+) -> Dict[str, Any]:
     if not REF_SELECT_FLOW_ID:
         raise RuntimeError(
             "未配置 LANGFLOW_REF_SELECT_FLOW_ID（flow 见 agent/flows/ref-research-select.json）"
@@ -3287,12 +3358,16 @@ async def run_ref_select_flow(
 
     async def _call(
         batch: List[Dict[str, Any]], label: str
-    ) -> tuple[List[int], str, List[str], List[str]]:
+    ) -> tuple[List[int], str, List[str], List[str], Optional[int]]:
         """单次终选调用（粗排每批一次、精排复用同一路径），3 次重试带间隔：
         批量 10 路并发下终选偶发失败（重试即恢复），失败会导致该资产无推荐
-        预选，审阅体验明显劣化。返回 (推荐, note, covered, missing)——后两者
-        是缺口台账，供调用方驱动下一轮定向补搜（业界 deep research 的
-        「看缺口再搜」范式，见 doc/deep-research-search-loop-research-2026-09.md）。"""
+        预选，审阅体验明显劣化。返回 (推荐, note, covered, missing, adopt_count)
+        ——covered/missing 是缺口台账，供调用方驱动下一轮定向补搜（业界 deep
+        research 的「看缺口再搜」范式，见 doc/deep-research-search-loop-research-
+        2026-09.md）；adopt_count 是模型判断「本批推荐里前几张值得直接采纳为
+        出图参考」（2026-09-12 用户拍板：采纳张数按参考图实际情况定——一张
+        够就一张、图间互相矛盾只取最可信、近似重复只占一席），形状异常当
+        None 由调用方回退固定值。"""
         # 字段拍平成单行：langflow tweaks 传输会把 \n 反转义成裸换行，组件里
         # json.loads 报 Invalid control character（imagegen/画风反推同款防坑；
         # 批量资产的 description 是多行正文，不拍平终选必炸）；所有字符串字段
@@ -3322,11 +3397,18 @@ async def run_ref_select_flow(
                     for i in (out.get("recommended") or [])
                     if isinstance(i, (int, float, str)) and str(i).strip().lstrip("-").isdigit()
                 ]
+                adopt: Optional[int] = None
+                try:
+                    n = int(float(str(out.get("adopt_count")).strip()))
+                    adopt = n if n >= 1 else None
+                except (TypeError, ValueError):
+                    adopt = None
                 return (
                     rec,
                     str(out.get("note") or "").strip(),
                     _str_list(out.get("covered"), 8),
                     _str_list(out.get("missing"), 8),
+                    adopt,
                 )
             except Exception as exc:  # noqa: BLE001 先重试再抛给调用方记批错
                 last_exc = exc
@@ -3340,12 +3422,16 @@ async def run_ref_select_flow(
     covered: List[str] = []
     missing: List[str] = []
     batch_errors: List[str] = []
+    adopt_count: Optional[int] = None
     for bi, batch in enumerate(batches, 1):
         try:
-            rec, note, cov, miss = await _call(batch, f"第{bi}批")
+            rec, note, cov, miss, adopt = await _call(batch, f"第{bi}批")
             recommended.extend(rec)
             covered.extend(cov)
             missing.extend(miss)
+            # 各批粗排的 adopt_count 相加作缺省（每批模型只判本批「前几张值得」，
+            # 多批时是近似值）；下面的全局精排若给出有效值则以它为准
+            adopt_count = (adopt_count or 0) + (adopt or 0) or None
             if note:
                 notes.append(f"第{bi}批：{note}")
         except Exception as exc:  # noqa: BLE001 单批失败记错不拖垮其余批
@@ -3369,10 +3455,15 @@ async def run_ref_select_flow(
         rerank_rows = [by_index[i] for i in ordered if i in by_index]
         if len(rerank_rows) > 1:
             try:
-                rec, note, _cov, _miss = await _call(rerank_rows, "精排")
+                rec, note, _cov, _miss, adopt = await _call(rerank_rows, "精排")
                 head = [i for i in rec if i in seen]
                 head_set = set(head)
                 ordered = head + [i for i in ordered if i not in head_set]
+                # 精排是全局视角重看整个推荐集，它的 adopt_count 比各批粗排
+                # 相加更准（粗排每批只看见自己那 50 张，各自「前 2 张值得」
+                # 合起来未必 4 张都值得）
+                if adopt:
+                    adopt_count = adopt
                 if note:
                     notes.append(f"精排：{note}")
             except Exception as exc:  # noqa: BLE001 精排失败降级为批序合并，明说
@@ -3386,6 +3477,8 @@ async def run_ref_select_flow(
         # 缺口台账（多批按出现顺序保序去重）：covered=已覆盖维度、missing=仍缺维度
         "covered": _dedupe_keep_order(covered),
         "missing": _dedupe_keep_order(missing),
+        # 采纳张数（模型判断，None=未产出，调用方回退固定默认）
+        "adopt_count": adopt_count,
     }
 
 
