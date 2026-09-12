@@ -16,6 +16,9 @@ GraphRecursionError 把本轮全部产出与叙事一起报废。graph.py 现有
        不抛 GraphRecursionError
     B3 不误伤：同工具不同参数连续调用 + 正常文本收尾，零拦截
     B4 前端调用不进循环账：canvas_ops 直接 END 等浏览器
+    B5 混合调用（前端+后端同消息）：前端优先路由 END，守卫不添乱
+    B6 多后端调用违规：第一个是重复 → 只拦第一个，第二个由 sanitize 占位
+    B8 止损 END 后新 run 恢复正常：「临时禁用」只作用于当轮（同 thread 续跑）
 
 跑法：cd agent && uv run python test_loop_guard.py
 """
@@ -70,7 +73,10 @@ class _FakeChatModel:
     """按共享脚本吐 chunk 的假 ChatOpenAI；bind_tools 只记绑定状态。
 
     解绑（hard_close）后脚本仍要求工具时降级为文本——模拟真实 provider
-    没绑工具就物理上调不出工具调用。"""
+    没绑工具就物理上调不出工具调用。脚本条目：
+      ("tool", name, args) 单工具调用 / ("multi", [(name, args), ...]) 一条
+      消息多个调用（复现 parallel_tool_calls=False 被违反）/ ("text", s) 纯文本
+    """
 
     def __init__(self, **kwargs):  # noqa: ARG002
         self.bound = False
@@ -83,18 +89,19 @@ class _FakeChatModel:
         _SHARED["inputs"].append(list(msgs))
         _SHARED["instances"].append(self)
         item = _SHARED["script"].pop(0)
-        if item[0] == "tool":
+        if item[0] in ("tool", "multi"):
             if not self.bound:
                 yield AIMessageChunk(content="（工具已禁用，转为文字收尾）")
                 return
+            pairs = [(item[1], item[2])] if item[0] == "tool" else item[1]
             yield AIMessageChunk(
                 content="",
                 tool_calls=[{
-                    "name": item[1],
-                    "args": item[2],
-                    "id": f"call_{len(_SHARED['inputs'])}",
+                    "name": n,
+                    "args": a,
+                    "id": f"call_{len(_SHARED['inputs'])}_{i}",
                     "type": "tool_call",
-                }],
+                } for i, (n, a) in enumerate(pairs)],
             )
         else:
             yield AIMessageChunk(content=item[1])
@@ -142,14 +149,14 @@ def _build_test_graph():
     return _TEST_GRAPH
 
 
-async def _run(script: list, limit: int, seq: int):
+async def _run(script: list, limit: int, seq: int, thread: str | None = None):
     _install_fakes()
     _SHARED["script"] = list(script)
     try:
         final = await _build_test_graph().ainvoke(
             {"messages": [HumanMessage(content="跑")]},
             config={
-                "configurable": {"thread_id": f"loop-guard-{seq}"},
+                "configurable": {"thread_id": thread or f"loop-guard-{seq}"},
                 "recursion_limit": limit,
             },
         )
@@ -158,6 +165,13 @@ async def _run(script: list, limit: int, seq: int):
         return None, exc
     finally:
         _restore()
+
+
+def _model_inputs_text() -> str:
+    """假模型收到的全部入参拼成一段文本（供指令注入/占位断言）。"""
+    return "\n".join(
+        str(getattr(m, "content", "")) for inputs in _SHARED["inputs"] for m in inputs
+    )
 
 
 def _tc(name: str, args: dict) -> dict:
@@ -369,12 +383,81 @@ async def test_b4_frontend_excluded() -> None:
         check("B4c 无合成拦截 Tool", not any(isinstance(m, ToolMessage) for m in msgs))
 
 
+async def test_b5_mixed_call_not_intercepted() -> None:
+    print("B5：混合调用（前端+后端同消息）走前端优先路由，不进循环账")
+    # 混合调用本身违反宪法，但守卫必须不添乱：consec 只在纯后端路径计算，
+    # 混合 → 前端优先 END（后端调用当轮不执行、模型下轮重发，既有语义）
+    script = [("multi", [("canvas_ops", {"ops": []}), ("echo_probe", {"q": "x"})])]
+    final, err = await _run(script, limit=40, seq=5)
+    check("B5a 无异常", err is None)
+    if final:
+        msgs = final["messages"]
+        tools = [m for m in msgs if isinstance(m, ToolMessage)]
+        check("B5b 一跳即 END 等浏览器", len(msgs) == 2, f"got {len(msgs)}")
+        check("B5c 零合成 Tool（不拦截不执行）", not tools)
+        check("B5d 零 loop_guard 遥测",
+              not [e for e in _RECORDER.events if e[0] == "agent.loop_guard"])
+
+
+async def test_b6_multi_backend_violation() -> None:
+    print("B6：多后端调用违规（第一个是重复）——只拦第一个，第二个由 sanitize 补占位")
+    script = [
+        ("tool", "echo_probe", {"q": "x"}),
+        ("tool", "echo_probe", {"q": "x"}),
+        ("multi", [("echo_probe", {"q": "x"}), ("echo_probe", {"q": "z"})]),
+        ("text", "收到拦截，收尾。"),
+    ]
+    final, err = await _run(script, limit=40, seq=6)
+    check("B6a 无异常收尾", err is None, f"{type(err).__name__}: {err}")
+    if final is None:
+        return
+    msgs = final["messages"]
+    tools = [m for m in msgs if isinstance(m, ToolMessage)]
+    echoes = [m for m in tools if str(m.content) == "echo:x"]
+    intercepts = [m for m in tools if "循环拦截" in str(m.content)]
+    check("B6b 第 3 次同参被拦（只出 1 条拦截 Tool）", len(intercepts) == 1, f"got {len(intercepts)}")
+    check("B6c 拦截 Tool 应答第一个调用（call_id 配对首个）",
+          intercepts and intercepts[0].tool_call_id.endswith("_0"))
+    check("B6d 真执行仍只有前两次", len(echoes) == 2, f"got {len(echoes)}")
+    # 第二个调用（z）无 Tool 应答 → sanitize 补「本轮未执行」占位，交替不炸
+    check("B6e 第二个调用由 sanitize 占位收口",
+          "本轮未执行" in _model_inputs_text())
+    check("B6f 正常文字收尾", isinstance(msgs[-1], AIMessage) and msgs[-1].content == "收到拦截，收尾。")
+
+
+async def test_b8_stop_loss_then_new_run_recovers() -> None:
+    print("B8：止损 END 后新 run 恢复正常（「临时禁用」只作用于当轮）")
+    thread = "loop-guard-resume"
+    script1 = [("tool", "echo_probe", {"q": "x"})] * 4 + [("text", "已收尾。")]
+    final1, err1 = await _run(script1, limit=40, seq=8, thread=thread)
+    check("B8a 首轮止损收尾", err1 is None and final1 is not None
+          and isinstance(final1["messages"][-1], AIMessage))
+    script2 = [("tool", "echo_probe", {"q": "fresh"}), ("text", "新任务完成。")]
+    final2, err2 = await _run(script2, limit=40, seq=9, thread=thread)
+    check("B8b 新 run 无异常", err2 is None, f"{type(err2).__name__}: {err2}")
+    if final2 is None:
+        return
+    tools = [m for m in final2["messages"] if isinstance(m, ToolMessage)]
+    check("B8c 新 run 工具正常绑定执行（echo:fresh 在场）",
+          any(str(m.content) == "echo:fresh" for m in tools))
+    insts = _SHARED["instances"]
+    check("B8d 新 run 全跳绑定（尾部标记只影响自环交接瞬间）",
+          insts and all(i.bound for i in insts))
+    # 同 thread 的 state 保留首轮拦截 Tool——断言「没有新增」而非「不存在」
+    def _guard_count(msgs):
+        return sum(1 for m in msgs if isinstance(m, ToolMessage) and "循环" in str(m.content))
+    check("B8e 新 run 零新增拦截", _guard_count(final2["messages"]) == _guard_count(final1["messages"]))
+
+
 async def main() -> None:
     test_pure()
     await test_b1_loop_full_chain()
     await test_b2_graceful_close()
     await test_b3_no_false_positive()
     await test_b4_frontend_excluded()
+    await test_b5_mixed_call_not_intercepted()
+    await test_b6_multi_backend_violation()
+    await test_b8_stop_loss_then_new_run_recovers()
     total = PASSED + len(FAILS)
     print(f"\n共 {total} 项，通过 {PASSED}，失败 {len(FAILS)}")
     if FAILS:
