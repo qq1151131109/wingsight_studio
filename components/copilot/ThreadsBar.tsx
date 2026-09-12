@@ -22,6 +22,7 @@ import { History, Pencil, Download, Plus, Search, Trash2, X } from "lucide-react
 import { useCanvasStore } from "@/lib/canvas/store";
 import { useChatSession } from "@/lib/chat/session";
 import { useChatSearch } from "@/lib/chat/search";
+import { CTX_MARK } from "@/lib/chat/messageContext";
 import ChatSearch from "./ChatSearch";
 import { contentToMarkdown, decodeContent } from "@/lib/chat/content";
 import { migrateLegacyUserContent } from "@/lib/chat/messageContext";
@@ -66,6 +67,18 @@ function formatTime(iso: string): string {
   if (diff < 60 * min) return `${Math.floor(diff / min)} 分钟前`;
   if (diff < 24 * 60 * min) return `${Math.floor(diff / (60 * min))} 小时前`;
   return d.toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+}
+
+/** 机械标题（服务端过渡态）：等待 LLM 智能命名升级的会话。以服务端下发的
+ *  title_mechanical 为准（首条消息截断/附件名截断都算机械，前端无法自行复算）；
+ *  空标题/遗留字面量/界标截断作前端兜底 */
+function isMechanicalTitle(t: ChatThreadMeta): boolean {
+  return (
+    t.title_mechanical === true ||
+    !t.title ||
+    t.title === "未命名会话" ||
+    t.title.startsWith(CTX_MARK)
+  );
 }
 
 export default function ChatSidebarHeader() {
@@ -147,16 +160,38 @@ export default function ChatSidebarHeader() {
   useEffect(() => {
     if (!projectId) return;
     let alive = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const pollUntilUpgraded = (fetched: ChatThreadMeta[], elapsed: number) => {
+      // 标题升级回显：LLM 智能命名在首存后几秒~几十秒才落库，而这里只在
+      // threadId 变化时拉一次——页签会一直停在机械标题（纯附件会话甚至是
+      // <<<WS-CTX>>> 界标截断，2026-09-12 用户实报）。列表里还有机械标题时
+      // 每 5s 重拉，升级落地即停；60s 封顶（命名失败/失败重试的兜底，全是
+      // 正经标题的存量项目零额外请求）
+      if (!alive || elapsed > 60_000) return;
+      if (!fetched.some((t) => isMechanicalTitle(t))) return;
+      timer = setTimeout(
+        () =>
+          void listChatThreads(projectId)
+            .then((next) => {
+              if (alive) setThreads(next);
+              pollUntilUpgraded(next, elapsed + 5_000);
+            })
+            .catch(() => {}),
+        5_000,
+      );
+    };
     void (async () => {
       try {
         const list = await listChatThreads(projectId);
         if (alive) setThreads(list);
+        pollUntilUpgraded(list, 0);
       } catch {
         if (alive) setThreads([]);
       }
     })();
     return () => {
       alive = false;
+      if (timer) clearTimeout(timer);
     };
   }, [projectId, threadId]);
 

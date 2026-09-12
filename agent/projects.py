@@ -166,7 +166,9 @@ def _migrate_chat_to_threads(conn: sqlite3.Connection) -> None:
         by_project.setdefault(r["project_id"], []).append(r)
     for pid, msgs in by_project.items():
         first_user = next((m for m in msgs if m["role"] == "user"), None)
-        title = (first_user["content"][:18] if first_user else "历史会话") or "历史会话"
+        title = (
+            _fallback_title([dict(m) for m in msgs]) if first_user else "历史会话"
+        ) or "历史会话"
         tid = uuid.uuid4().hex[:12]
         created = msgs[0]["created_at"]
         conn.execute(
@@ -439,6 +441,46 @@ AUTO_TITLE_CHARS = 18  # 自动标题长度（前端历史列表同款规则）
 # 客户端指定的会话 id 形制（与历史服务端生成规则一致：12~32 位十六进制）
 _THREAD_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
 
+# 上下文界标（与前端 lib/chat/messageContext.ts 的 CTX_MARK/MANIFEST_MARK 同值）：
+# 带附件/引用的用户消息正文是「显示文本 + 界标 + 人话段 + manifest」结构，机械
+# 标题若直接切前 N 字会把界标当标题（「<<<WS-CTX>>> （用户未」——2026-09-12
+# 纯附件发消息实报），取材前必须先剥壳
+CTX_MARK = "<<<WS-CTX>>>"
+MANIFEST_MARK = "<<<WS-MANIFEST>>>"
+
+
+def _title_source_text(content: str) -> str:
+    """机械标题的取材文本：界标消息取显示段；纯附件消息显示段为空时退附件名。"""
+    text = str(content or "")
+    if CTX_MARK not in text:
+        return text
+    display = text.split(CTX_MARK, 1)[0].strip()
+    if display:
+        return display
+    if MANIFEST_MARK in text:
+        try:
+            data = json.loads(text.split(MANIFEST_MARK, 1)[1].strip())
+            names = [
+                str(a.get("name") or "").strip()
+                for a in (data.get("attachments") or [])
+                if isinstance(a, dict)
+            ]
+            names = [n for n in names if n]
+            if names:
+                return names[0]
+        except Exception:  # noqa: BLE001 — manifest 形状异常走兜底文案
+            pass
+    return "附件消息"
+
+
+def _fallback_title(messages: List[Dict[str, Any]]) -> str:
+    """机械标题：首条用户消息的显示文本（或附件名）首行截断。"""
+    first_user = next(
+        (str(m.get("content") or "") for m in messages if m.get("role") == "user"), ""
+    )
+    src = _title_source_text(first_user)
+    return (src.splitlines()[0].strip() if src else "")[:AUTO_TITLE_CHARS]
+
 
 def _get_thread(
     conn: sqlite3.Connection, pid: str, tid: str
@@ -468,7 +510,28 @@ def list_threads(pid: str, viewer: Any = ANON_VIEWER) -> List[Dict[str, Any]]:
             " GROUP BY t.id ORDER BY t.updated_at DESC",
             (pid,),
         ).fetchall()
-    return [dict(r) for r in rows]
+        first_users = conn.execute(
+            "SELECT thread_id, content FROM chat_messages"
+            " WHERE project_id = ? AND role = 'user' AND seq = 0",
+            (pid,),
+        ).fetchall()
+    # 标题是否仍是机械产物随列表下发：前端页签靠它在 LLM 智能命名落库后
+    # 及时重拉回显（会话内新建会话不刷新页面，标题升级只有这条通道可见）
+    first_user_by_thread = {r["thread_id"]: r["content"] for r in first_users}
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        first_user = first_user_by_thread.get(d["id"])
+        d["title_mechanical"] = thread_title_is_mechanical(
+            str(d.get("title") or ""),
+            (
+                [{"role": "user", "content": first_user}]
+                if first_user is not None
+                else []
+            ),
+        )
+        out.append(d)
+    return out
 
 
 def create_thread(
@@ -653,15 +716,19 @@ def get_active_branch(thread_id: str, turn_id: str) -> Dict[str, Any] | None:
 
 
 def thread_title_is_mechanical(title: str, messages: list) -> bool:
-    """标题是否仍是机器产物（空 / 「未命名会话」遗留 / 首条用户消息的截断前缀）
-    ——LLM 智能命名的触发条件。用户手动命名后标题不再是首条消息前缀，
-    天然免打扰。"""
+    """标题是否仍是机器产物（空 / 「未命名会话」遗留 / 首条用户消息的截断前缀
+    或界标时代的显示段截断）——LLM 智能命名的触发条件。用户手动命名后标题
+    不再是机械形态，天然免打扰。"""
     if not title or title == "未命名会话":
         return True
     first_user = next(
         (str(m.get("content") or "") for m in messages if m.get("role") == "user"), ""
     )
-    return bool(first_user) and first_user.startswith(title)
+    if bool(first_user) and first_user.startswith(title):
+        return True
+    # 界标消息的机械标题取自显示段/附件名，不再满足 startswith（正文以界标或
+    # 人话段开头）——与 _fallback_title 的产物比对
+    return bool(first_user) and title == _fallback_title(messages)
 
 
 def save_chat_messages(
@@ -702,13 +769,13 @@ def save_chat_messages(
                 for i, it in enumerate(items)
             ],
         )
-        # 自动标题（过渡态）：无标题且有用户消息 → 取首条前 N 字；首组对话
-        # 完成后由 LLM 智能命名升级（见 main.py 保存端点的后台任务）。不落
-        # 「未命名会话」字面量——它会让后续命名逻辑误判"已有标题"而永不改名
+        # 自动标题（过渡态）：无标题且有用户消息 → 取首条显示文本（界标消息
+        # 剥壳，纯附件退附件名）首行截断；首组对话完成后由 LLM 智能命名升级
+        # （见 main.py 保存端点的后台任务）。不落「未命名会话」字面量——它会让
+        # 后续命名逻辑误判"已有标题"而永不改名
         title = thread["title"] or ""
         if not title:
-            first_user = next((it["content"] for it in items if it["role"] == "user"), "")
-            title = first_user[:AUTO_TITLE_CHARS].strip()
+            title = _fallback_title(items)
         conn.execute(
             "UPDATE chat_threads SET title = ?, updated_at = ? WHERE id = ?",
             (title, now, tid),

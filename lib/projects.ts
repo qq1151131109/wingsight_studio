@@ -192,6 +192,9 @@ export interface ChatThreadMeta {
   title: string;
   updated_at: string;
   message_count: number;
+  /** 标题仍是机械产物（首条消息截断/附件名，等待 LLM 智能命名升级）——
+   *  页签据此在升级落库后及时重拉回显 */
+  title_mechanical?: boolean;
 }
 
 export interface ChatMessageRecord {
