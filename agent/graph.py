@@ -15,6 +15,7 @@ import math
 import os
 import re
 import subprocess
+import time
 from datetime import datetime
 from pathlib import Path
 from string import Template
@@ -1971,7 +1972,196 @@ async def list_free_images(config: RunnableConfig, limit: int = 12) -> str:
     return "\n".join(lines)
 
 
-backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_look_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, list_research_library, import_research, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research]
+# ---------- 隔离子代理（2026-09-12 P2，doc/harness-gap 第三档 #9）----------
+#
+# 三个价值点（长阅读隔离 / 干净视角审查 / 干跑-执行分离）共用一个机制：
+# 子代理 = 干净上下文 + 只读工具白名单 + 有界内部循环，只把最终报告带回
+# 主对话——冗长的手册阅读与中间推理不占主上下文。**执行留在主循环**：
+# canvas_ops 是前端工具只能主循环答（工具桥约束），正确分工是「子代理产出
+# ops 计划 → 主对话 canvas_validate_ops 干跑 → canvas_ops 应用」。
+# 递归防护是结构性的：白名单里没有 delegate_task，子代理生不出子代理。
+
+
+_SUBAGENT_MAX_STEPS = 8
+_SUBAGENT_DEADLINE_S = 240
+_SUBAGENT_REPORT_CAP = 6000
+
+_SUBAGENT_SYSTEM = (
+    "你是被主助手委派的隔离子代理：在干净的上下文里完成一项调研/审查/规划"
+    "任务，看不到主对话历史——只依据任务描述、补充材料与你自己查到的事实。\n"
+    "规则：\n"
+    "1. 只读工具（read_skill 读技能手册全文 / read_canvas 读画布真值摘要），"
+    "不改动任何状态。\n"
+    "2. 结论先行，最终报告控制在 1500 字内：先给结论与可执行产物（计划/清单/"
+    "审查意见），再给关键依据；不要复述材料原文。\n"
+    "3. 产出画布操作计划时输出 ops JSON 数组（主助手会经 canvas_validate_ops "
+    "校验后应用）；节点 id 只用 read_canvas 查到的真实 id，绝不编造。\n"
+    "4. 查不到的事实明确说查不到，不要猜。"
+)
+
+
+def _subagent_canvas_digest(pid: str) -> str:
+    """子代理视角的画布真值摘要（服务端权威副本，节点一行一卡）。"""
+    if not pid:
+        return "（当前会话没有关联项目，画布为空）"
+    try:
+        canvas = projects.load_canvas(pid)
+    except Exception as e:  # noqa: BLE001
+        return f"（画布读取失败：{type(e).__name__}: {e}）"
+    if not canvas:
+        return "（项目还没有画布内容）"
+    nodes = canvas.get("nodes") if isinstance(canvas, dict) else None
+    edges = canvas.get("edges") if isinstance(canvas, dict) else None
+    meta = (canvas.get("meta") if isinstance(canvas, dict) else None) or {}
+    lines = [
+        f"画风：{str(meta.get('projectStyle') or '未设定')}；"
+        f"题材：{'虚构' if meta.get('factuality') == 'fiction' else '真实'}；"
+        f"时代：{str(meta.get('era') or '未设定')}"
+    ]
+    shown = 0
+    for n in nodes if isinstance(nodes, list) else []:
+        if not isinstance(n, dict) or shown >= 400:
+            continue
+        data = n.get("data") if isinstance(n.get("data"), dict) else {}
+        tags = [f"id={n.get('id')}"]
+        ntype = str(data.get("nodeType") or "note")
+        tags.append(ntype)
+        title = str(data.get("title") or "").strip()
+        if title:
+            tags.append(f"《{title[:24]}》")
+        if data.get("imageUrl"):
+            tags.append("有图")
+        elif ntype in ("character", "scene", "prop", "costume", "image"):
+            tags.append("无图")
+        rows = data.get("rows")
+        if isinstance(rows, list) and rows:
+            tags.append(f"分镜{len(rows)}行")
+        lines.append("· " + " ".join(tags))
+        shown += 1
+    if shown >= 400:
+        lines.append(f"（节点超 400，仅列前 {shown} 个）")
+    edge_list = [e for e in (edges or []) if isinstance(e, dict)]
+    if edge_list:
+        pairs = [f"{e.get('source')}→{e.get('target')}" for e in edge_list[:60]]
+        lines.append(f"连线（{len(edge_list)} 条）：{'；'.join(pairs)}"
+                     + ("…" if len(edge_list) > 60 else ""))
+    return "\n".join(lines)
+
+
+def _build_subagent_tools(config: RunnableConfig) -> Dict[str, Any]:
+    """子代理的只读工具集（按本次委派闭包项目上下文）。"""
+
+    pid = _pid_from_config(config)
+
+    @tool
+    def read_canvas() -> str:
+        """读取当前项目的画布真值摘要：每张卡一行（id/类型/标题/有无图/分镜行数）+ 连线清单 + 画风题材时代。节点 id 以此为准。"""
+        return _subagent_canvas_digest(pid)
+
+    return {"read_skill": read_skill, "read_canvas": read_canvas}
+
+
+async def _run_subagent(task: str, context: str, config: RunnableConfig) -> str:
+    """隔离子代理主循环：干净上下文 + 只读白名单 + 有界步数。
+
+    超步数/死线的收尾与主图 hard_close 同范式：解绑工具 + 收尾提醒，再要
+    一次纯文本报告——保证有出无炸。报告超长时**显式标记截断**（不做静默
+    截断，主助手与用户都看得出少了一截）。"""
+    model = ChatOpenAI(
+        model=os.environ.get("AGENT_MODEL", "deepseek-flash"),
+        base_url=os.environ.get("AGENT_BASE_URL", "https://api.deepseek.com"),
+        api_key=os.environ.get("AGENT_API_KEY", ""),
+        temperature=0.2,
+        streaming=False,
+        **({"extra_body": {"thinking": {"type": "enabled"}}} if _thinking_enabled() else {"reasoning_effort": "none"}),
+    )
+    sub_tools = _build_subagent_tools(config)
+    bound = model.bind_tools(list(sub_tools.values()), parallel_tool_calls=False)
+    msgs: List[Any] = [
+        SystemMessage(content=_SUBAGENT_SYSTEM),
+        HumanMessage(
+            content=f"# 任务\n{task}"
+            + (f"\n\n# 补充材料\n{context}" if context.strip() else "")
+        ),
+    ]
+    deadline = time.monotonic() + _SUBAGENT_DEADLINE_S
+    tool_uses = 0
+    for _ in range(_SUBAGENT_MAX_STEPS):
+        # 死线检查必须在调模型之前：此处 msgs 尾部要么是 Human 要么是
+        # ToolMessage（交替合法），break 后走解绑收尾；若在拿到带 tool_calls
+        # 的响应之后才断，那批调用无应答、收尾 ainvoke 必 400
+        if time.monotonic() > deadline:
+            break
+        resp = await bound.ainvoke(msgs)
+        msgs.append(resp)
+        tcs = getattr(resp, "tool_calls", None) or []
+        if not tcs:
+            return _finish_subagent(resp, tool_uses)
+        for tc in tcs:
+            name = str(tc.get("name") or "")
+            args = tc.get("args") or {}
+            tool_uses += 1
+            fn = sub_tools.get(name)
+            if fn is None:
+                result = f"未知工具 {name}——子代理只允许：{sorted(sub_tools)}"
+            else:
+                try:
+                    result = str(fn.invoke(args))
+                except Exception as e:  # noqa: BLE001
+                    result = f"工具 {name} 执行失败：{type(e).__name__}: {e}"
+            msgs.append(ToolMessage(content=result[:20000], tool_call_id=str(tc.get("id") or "")))
+    # 步数/死线耗尽：解绑工具强制收尾（镜像主图 hard_close）
+    msgs.append(
+        HumanMessage(
+            content="[系统提醒] 子代理步数或时限已到，必须现在输出最终报告"
+            "（纯文本，不要再调用工具）。"
+        )
+    )
+    final = await model.ainvoke(msgs)
+    return _finish_subagent(final, tool_uses, forced=True)
+
+
+def _finish_subagent(resp: Any, tool_uses: int, forced: bool = False) -> str:
+    text = _msg_text(resp).strip()
+    events.track(
+        "agent.subagent",
+        {"chars": len(text), "tools": tool_uses, "forced_close": forced},
+    )
+    if len(text) > _SUBAGENT_REPORT_CAP:
+        text = (
+            text[:_SUBAGENT_REPORT_CAP]
+            + "\n……（报告超长已截断，可让主助手要求子代理压缩后重跑）"
+        )
+    return text or "（子代理没有产出正文——换种任务描述重试，或主助手自己完成）"
+
+
+_DELEGATE_DOC = """在隔离的干净上下文里委派一项调研/审查/规划子任务，只把最终报告带回主对话——冗长的手册阅读与中间推理不占主上下文。子代理可用工具：read_skill（技能手册全文）、read_canvas（画布真值摘要，服务端权威副本）。
+
+什么时候用：
+- 要通读长材料再产出计划/摘要（如「按 script-to-assets 手册与当前画布，给出这批卡的完整建卡与连线 ops 计划」）
+- 要干净视角的审查/比稿（审一段文案、核对计划与画布实际是否一致——不带主对话的先入之见）
+- 同一份材料要反复查阅、最后只留结论的场合
+
+什么时候别用：
+- 改画布：执行必须留在主对话（canvas_ops 是前端工具，子代理不可用）——正确分工是「子代理产出 ops 计划 → 主对话校验并应用」
+- 一句话能答的简单问题；后台任务进度查询（get_reference_research_status 等）
+
+Args:
+    task: 子任务描述（自包含——子代理看不到主对话，目标与产出格式写清楚）。
+    context: 可选补充材料（正文/计划/文案等，直接并入子代理输入）。
+"""
+
+
+@tool
+async def delegate_task(task: str, context: str = "", config: RunnableConfig = None) -> str:
+    """在隔离的干净上下文里委派一项调研/审查/规划子任务，只回最终报告。"""
+    try:
+        return await _run_subagent(task, context, config or {})
+    except Exception as e:  # noqa: BLE001
+        return f"子代理执行失败：{type(e).__name__}: {e}——主助手可换种任务描述重试，或自己完成。"
+
+
+backend_tools = [list_langflow_skills, decompose_script, generate_storyboard, generate_asset_images, generate_look_images, generate_free_image, list_free_images, run_langflow_skill, read_skill, web_search, web_fetch, research_asset_references, get_reference_research_status, adopt_asset_references, list_research_library, import_research, get_research_material, propose_research_outline, run_research_outline, start_deep_research, confirm_research_plan, get_research_result, cancel_research, delegate_task]
 backend_tool_names = {t.name for t in backend_tools}
 
 # 允许模型调用的前端工具白名单（防止客户端注入无关工具）。
