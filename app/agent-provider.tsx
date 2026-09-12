@@ -7,6 +7,7 @@ import { getToken } from "@/lib/auth";
 import { startThemeSync } from "@/lib/theme";
 import { useChatSession } from "@/lib/chat/session";
 import { attachSnapshotStability } from "@/lib/chat/snapshotStability";
+import { attachRunRetry } from "@/lib/chat/runRetry";
 
 /**
  * LangGraph 主 agent（agent/ 目录，FastAPI + ag-ui-langgraph，8123 端口）。
@@ -27,6 +28,9 @@ const langgraphAgent = new HttpAgent({
 // 快照稳定（见 lib/chat/snapshotStability.ts 顶部注释）：MESSAGES_SNAPSHOT
 // 整表换 id 会让气泡重建、思考行消失——run 边界（前端工具调用）一次不落
 attachSnapshotStability(langgraphAgent);
+// run 级自动重试（见 lib/chat/runRetry.ts 顶部注释）：传输中断自动退避重连，
+// 后挂 = 更外层——错误经快照中间件透传后才被 retry 接住
+attachRunRetry(langgraphAgent);
 
 /** 原始 agent 实例的旁路订阅口（思考透传等需要完整事件流的场景用：
  *  core 注册表里的包装 agent 只转发生命周期子集事件） */
